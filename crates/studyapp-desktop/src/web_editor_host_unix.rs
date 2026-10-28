@@ -212,7 +212,9 @@ impl LinuxHost {
                     ours = true;
                     break;
                 }
-                if candidate <= x11::xlib::PointerRoot as _ || candidate == self.parent_id {
+                if candidate <= x11::xlib::PointerRoot as x11::xlib::Window
+                    || candidate == self.parent_id
+                {
                     break;
                 }
                 let (mut root, mut parent) = (0, 0);
