@@ -89,6 +89,17 @@ pub struct HostedEditor {
     occlusions: RefCell<Vec<OverlayShape>>,
 }
 
+#[cfg(all(target_os = "linux", feature = "ui-test"))]
+struct PaintDiagnostic {
+    widget: gtk::glib::WeakRef<gtk::Widget>,
+    draws: Rc<Cell<u64>>,
+}
+
+#[cfg(all(target_os = "linux", feature = "ui-test"))]
+thread_local! {
+    static PAINT_DIAGNOSTICS: RefCell<Vec<PaintDiagnostic>> = const { RefCell::new(Vec::new()) };
+}
+
 impl HostedEditor {
     pub fn new(parent: ParentWindow, sender: Sender<String>, profile: PathBuf) -> Result<Self> {
         #[cfg(target_os = "linux")]
@@ -145,6 +156,25 @@ impl HostedEditor {
         // Repeat the initial hide after registration so the child is unmapped,
         // even if the user leaves Notes before WebKit reports ready.
         webview.set_visible(false)?;
+        #[cfg(all(target_os = "linux", feature = "ui-test"))]
+        {
+            use gtk::prelude::*;
+            use wry::WebViewExtUnix;
+            let widget: gtk::Widget = webview.webview().upcast();
+            let draws = Rc::new(Cell::new(0_u64));
+            let counter = draws.clone();
+            widget.connect_draw(move |_, _| {
+                counter.set(counter.get() + 1);
+                gtk::glib::Propagation::Proceed
+            });
+            PAINT_DIAGNOSTICS.with(|entries| {
+                entries.borrow_mut().push(PaintDiagnostic {
+                    widget: widget.downgrade(),
+                    draws,
+                });
+            });
+            Self::diagnostic_windows("constructed");
+        }
         Ok(Self {
             webview,
             _context: context,
@@ -153,6 +183,34 @@ impl HostedEditor {
             requested_visible: Cell::new(false),
             applied_visible: Cell::new(false),
             occlusions: RefCell::new(Vec::new()),
+        })
+    }
+
+    /// Return owned GDK references so diagnostics can dispatch draw callbacks
+    /// after all GPUI entity/window borrows have ended. Never retains the widget.
+    #[cfg(all(target_os = "linux", feature = "ui-test"))]
+    pub fn diagnostic_windows(stage: &str) -> Vec<gtk::gdk::Window> {
+        use gtk::prelude::*;
+        PAINT_DIAGNOSTICS.with(|entries| {
+            let mut entries = entries.borrow_mut();
+            entries.retain(|entry| entry.widget.upgrade().is_some());
+            entries.iter().filter_map(|entry| {
+                let widget = entry.widget.upgrade()?;
+                eprintln!(
+                    "native paint [{stage}]: realized={} mapped={} visible={} allocation={:?} widget_clock={} draws={}",
+                    widget.is_realized(), widget.is_mapped(), widget.is_visible(),
+                    widget.allocation(), widget.frame_clock().is_some(), entry.draws.get()
+                );
+                let window = widget.window()?;
+                let top = window.toplevel();
+                eprintln!(
+                    "native paint [{stage}]: window={:?} size={}x{} visible={} viewable={} clock={} top={:?} top_clock={}",
+                    window.window_type(), window.width(), window.height(),
+                    window.is_visible(), window.is_viewable(), window.frame_clock().is_some(),
+                    top.window_type(), top.frame_clock().is_some()
+                );
+                Some(top)
+            }).collect()
         })
     }
 

@@ -98,6 +98,16 @@ jobs:
           GDK_BACKEND: x11
           GPUI_BACKEND: x11
         run: dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1000x24' python3 scripts/smoke-unix.py --binary target/debug/studyapp --data-dir "$RUNNER_TEMP/native-interactive" --interactive
+      - name: Preserve Linux paint diagnostics immediately
+        if: always() && matrix.platform == 'linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-paint-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-interactive/native-markdown-editor*.png
+            ${{ runner.temp }}/native-interactive/page-4.png
+            ${{ runner.temp }}/native-interactive.stderr.log
+          if-no-files-found: warn
       - name: macOS native editor regression
         if: matrix.platform == 'macos'
         run: python3 scripts/smoke-unix.py --binary target/debug/studyapp --data-dir "$RUNNER_TEMP/native-interactive" --interactive

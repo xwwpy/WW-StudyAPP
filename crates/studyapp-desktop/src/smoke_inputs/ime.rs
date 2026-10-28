@@ -939,8 +939,15 @@ async fn cases(
         ("enter-candidate", VK_RETURN),
     ] {
         let mut case = open_case(window, view, native, database, session, name, cx)?;
-        for _ in 0..4 {
+        // A newly installed Pinyin TIP can activate before its mode
+        // compartments become available on the first focused text control.
+        // Wait for the actual state without fabricating a mode or input event.
+        for _ in 0..120 {
             tick(cx).await;
+            let state = case.sample("focus-ready-wait", evidence, cx)?;
+            if state["targetFocused"] == true && state["ime"]["chineseMode"].is_boolean() {
+                break;
+            }
         }
         let state = case.sample("focused", evidence, cx)?;
         ensure!(

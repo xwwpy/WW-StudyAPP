@@ -167,6 +167,41 @@ pub async fn exercise(
                 .expect("capture initialized native editor");
             })
             .unwrap();
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let capture_root = |name: &str| {
+            let status = std::process::Command::new("import")
+                .args(["-window", "root", "-silent"])
+                .arg(database.with_file_name(name))
+                .status()
+                .expect("capture X11 root");
+            assert!(status.success(), "X11 root capture failed: {status}");
+        };
+        capture_root("native-markdown-editor-root.png");
+        let native_windows =
+            crate::web_editor_host::HostedEditor::diagnostic_windows("before-flush");
+        for native_window in native_windows {
+            use gtk::glib::translate::ToGlibPtr;
+            // SAFETY: an owned GDK reference on its GTK foreground thread;
+            // no GPUI borrows are held while expose/draw callbacks run.
+            unsafe {
+                gtk::gdk::ffi::gdk_window_process_updates(native_window.to_glib_none().0, 1);
+            }
+        }
+        for _ in 0..4 {
+            pause(cx).await;
+            crate::web_editor_host::HostedEditor::pump_events();
+        }
+        crate::web_editor_host::HostedEditor::diagnostic_windows("after-flush");
+        window
+            .update(cx, |_, window, _| {
+                crate::smoke::capture(
+                    window,
+                    database.with_file_name("native-markdown-editor-flushed.png"),
+                )
+                .expect("capture native editor after explicit GDK updates");
+            })
+            .unwrap();
+        capture_root("native-markdown-editor-flushed-root.png");
     }
     #[cfg(windows)]
     {
