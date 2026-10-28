@@ -148,6 +148,26 @@ pub async fn exercise(
     let rendered = bridge(window, &editor, json!({"type":"snapshot"}), cx).await;
     assert_eq!(rendered["text"], first);
     assert_eq!(rendered["source"], false);
+    #[cfg(target_os = "linux")]
+    {
+        // The initial navigation capture may precede WebKit readiness. Keep
+        // actual X11 pixels after content has reached the live editor as well.
+        window
+            .update(cx, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        for _ in 0..4 {
+            pause(cx).await;
+        }
+        window
+            .update(cx, |_, window, _| {
+                crate::smoke::capture(
+                    window,
+                    database.with_file_name("native-markdown-editor.png"),
+                )
+                .expect("capture initialized native editor");
+            })
+            .unwrap();
+    }
     #[cfg(windows)]
     {
         let count = window

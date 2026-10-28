@@ -140,6 +140,11 @@ impl HostedEditor {
         let webview = builder
             .build_as_child(&parent)
             .context("无法启动系统 WebKit 编辑器")?;
+        #[cfg(target_os = "linux")]
+        // Wry initializes its GTK window before registering the X11 container.
+        // Repeat the initial hide after registration so the child is unmapped,
+        // even if the user leaves Notes before WebKit reports ready.
+        webview.set_visible(false)?;
         Ok(Self {
             webview,
             _context: context,

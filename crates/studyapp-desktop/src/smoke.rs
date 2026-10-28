@@ -7,7 +7,7 @@ use std::{
 use studyapp_core::{Command, Engine};
 
 #[cfg(feature = "ui-test")]
-fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> {
+pub(crate) fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> {
     #[cfg(not(target_os = "linux"))]
     window.render_to_image()?.save(path)?;
     #[cfg(target_os = "linux")]

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import uuid
 
 
@@ -13,8 +14,11 @@ def verify(data, interactive):
         if not (data / report).read_text(encoding="utf-8").startswith("PASS:"):
             raise ValueError(f"Native smoke did not pass: {report}")
     if interactive:
-        for index in range(5):
-            image = data / f"page-{index}.png"
+        captures = [f"page-{index}.png" for index in range(5)]
+        if sys.platform.startswith("linux"):
+            captures.append("native-markdown-editor.png")
+        for name in captures:
+            image = data / name
             if not image.is_file() or image.stat().st_size < 1000:
                 raise ValueError(f"Missing native page capture: {image}")
         draft_id = (data / "native-close-draft-id.txt").read_text(encoding="utf-8").strip()

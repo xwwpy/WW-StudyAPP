@@ -122,7 +122,7 @@ def dmg(binary, destination, release_version):
     arch = platform.machine()
     if arch not in ("arm64", "x86_64"):
         raise ValueError("Unsupported macOS architecture")
-    run("lipo", "-verify_arch", arch, binary)
+    run("lipo", binary, "-verify_arch", arch)
     stage = Path(tempfile.mkdtemp(prefix="studyapp-dmg-"))
     stage.chmod(0o755)
     app = stage / f"{APP_NAME}.app"
