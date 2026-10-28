@@ -197,10 +197,19 @@ impl HostedEditor {
             entries.iter().filter_map(|entry| {
                 let widget = entry.widget.upgrade()?;
                 eprintln!(
-                    "native paint [{stage}]: realized={} mapped={} visible={} allocation={:?} widget_clock={} draws={}",
+                    "native paint [{stage}]: realized={} mapped={} visible={} allocation={:?} clip={:?} widget_clock={} draws={}",
                     widget.is_realized(), widget.is_mapped(), widget.is_visible(),
-                    widget.allocation(), widget.frame_clock().is_some(), entry.draws.get()
+                    widget.allocation(), widget.clip(), widget.frame_clock().is_some(), entry.draws.get()
                 );
+                let mut ancestor = widget.parent();
+                while let Some(parent) = ancestor {
+                    eprintln!(
+                        "native paint [{stage}]: parent={} mapped={} visible={} allocation={:?} clip={:?} clock={}",
+                        parent.type_().name(), parent.is_mapped(), parent.is_visible(),
+                        parent.allocation(), parent.clip(), parent.frame_clock().is_some()
+                    );
+                    ancestor = parent.parent();
+                }
                 let window = widget.window()?;
                 let top = window.toplevel();
                 eprintln!(
@@ -235,7 +244,9 @@ impl HostedEditor {
                     assert_eq!(
                         size,
                         (parent.allocated_width(), parent.allocated_height()),
-                        "native editor does not fill its GTK container"
+                        "native editor does not fill parent {} (clip {:?})",
+                        parent.type_().name(),
+                        parent.clip()
                     );
                 }
             }
@@ -307,15 +318,21 @@ impl HostedEditor {
             .parent()
             .and_then(|parent| parent.downcast::<gtk::Box>().ok())
             .context("系统 WebKit 编辑器缺少 GTK 布局容器")?;
+        let top = container
+            .parent()
+            .and_then(|parent| parent.downcast::<gtk::Window>().ok())
+            .context("系统 WebKit 编辑器缺少 GTK 宿主窗口")?;
         let allocation = gtk::Allocation::new(0, 0, size.width, size.height);
-        if container.allocation() != allocation
+        if top.allocation() != allocation
+            || container.allocation() != allocation
             || widget.allocated_width() != size.width
             || widget.allocated_height() != size.height
         {
             // Wry resizes the X11 window while this subtree may be hidden.
             // GTK skips hidden children, and showing the foreign GtkWindow
-            // only queues a resize. Allocate its visible GtkBox explicitly so
-            // normal box layout propagates our logical size to WebKit now.
+            // only queues a resize. Allocate the visible hierarchy top-down:
+            // sizing only the box leaves its GtkWindow allocation/clip at 1x1.
+            top.size_allocate(&allocation);
             container.size_allocate(&allocation);
             #[cfg(feature = "ui-test")]
             Self::diagnostic_windows("allocated");

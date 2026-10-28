@@ -158,7 +158,6 @@ pub async fn exercise(
         for _ in 0..4 {
             pause(cx).await;
         }
-        crate::web_editor_host::HostedEditor::assert_visible_content_allocated();
         window
             .update(cx, |_, window, _| {
                 crate::smoke::capture(
@@ -169,6 +168,7 @@ pub async fn exercise(
             })
             .unwrap();
         crate::web_editor_host::HostedEditor::diagnostic_windows("initialized");
+        crate::web_editor_host::HostedEditor::assert_visible_content_allocated();
     }
     #[cfg(windows)]
     {
