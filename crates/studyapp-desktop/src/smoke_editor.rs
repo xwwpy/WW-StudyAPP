@@ -262,6 +262,7 @@ pub async fn exercise(
     .await;
     assert_eq!(back["text"], first);
     bridge(window, &editor, json!({"type":"select","anchor":first.encode_utf16().count(),"head":first.encode_utf16().count()}), cx).await;
+    #[cfg(windows)]
     let capture = window
         .update(cx, |_, _, cx| {
             editor
@@ -270,6 +271,7 @@ pub async fn exercise(
                 .unwrap()
         })
         .unwrap();
+    #[cfg(windows)]
     for attempt in 0..100 {
         pause(cx).await;
         if let Ok(result) = capture.try_recv() {
@@ -525,6 +527,7 @@ pub async fn exercise(
 }
 
 /// The PowerShell runner verifies this last draft after normal window shutdown.
+#[cfg(windows)]
 pub async fn exercise_multiple_drafts(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
@@ -859,6 +862,7 @@ pub async fn exercise_multiple_drafts(
     exercise_save_view(window, view, database, cx).await;
 }
 
+#[cfg(windows)]
 async fn exercise_save_view(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,

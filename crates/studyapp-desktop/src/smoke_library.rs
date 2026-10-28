@@ -409,6 +409,7 @@ pub(crate) fn scroll_settings(window: &mut Window, delta: f32, cx: &mut App) {
     window.render_frame(cx);
 }
 
+#[cfg(windows)]
 pub async fn exercise(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,

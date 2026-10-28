@@ -51,7 +51,7 @@ mod smoke_editor;
 mod smoke_inputs;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_interactions;
-#[cfg(all(windows, feature = "ui-test"))]
+#[cfg(feature = "ui-test")]
 mod smoke_library;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_note_rename;

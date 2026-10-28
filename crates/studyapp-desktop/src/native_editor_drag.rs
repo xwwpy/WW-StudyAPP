@@ -118,21 +118,15 @@ mod tests {
         // Exercise WebKit's return-value contract even on a headless Windows runner.
         let handle = platform_handler(sender, false);
         let position = (0, 0);
-        assert_eq!(
-            handle(DragDropEvent::Enter {
-                paths: vec![],
-                position
-            }),
-            false
-        );
+        assert!(!handle(DragDropEvent::Enter {
+            paths: vec![],
+            position
+        }));
         assert!(!handle(DragDropEvent::Over { position }));
-        assert_eq!(
-            handle(DragDropEvent::Drop {
-                paths: vec![],
-                position
-            }),
-            false
-        );
+        assert!(!handle(DragDropEvent::Drop {
+            paths: vec![],
+            position
+        }));
         assert!(!handle(DragDropEvent::Leave));
         assert!(receiver.try_recv().is_err());
         let paths = vec![PathBuf::from("/tmp/a.png")];
