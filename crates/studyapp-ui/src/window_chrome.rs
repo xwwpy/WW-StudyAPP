@@ -1,11 +1,12 @@
 //! App-drawn window chrome with native Windows non-client hit regions.
 //!
 //! Keep action groups outside the Drag region. Window management stays in the
-//! platform: in particular Close dispatches WM_CLOSE and the app's existing
-//! `on_window_should_close` persistence/unsaved-settings barrier.
+//! platform on Windows. Unix uses client pointer callbacks; Close always enters
+//! the app's existing persistence/unsaved-settings barrier.
 use crate::components::{BORDER, INK, MUTED};
 use gpui_kit::{
     component::{Icon, IconName, Sizable, tooltip::Tooltip},
+    prelude::FluentBuilder,
     *,
 };
 use std::rc::Rc;
@@ -22,6 +23,7 @@ fn window_control(
     active: bool,
     request_close: CloseRequest,
 ) -> impl IntoElement {
+    let pointer_close = request_close.clone();
     let palette = crate::theme::palette();
     let close = matches!(area, WindowControlArea::Close);
     let hover_fill = if close {
@@ -55,6 +57,19 @@ fn window_control(
             WindowControlArea::Max => window.zoom_window(),
             WindowControlArea::Close => request_close(window, cx),
             WindowControlArea::Drag => {}
+        })
+        // Linux/macOS do not implement native window-control hit testing.
+        // Windows already dispatches non-client clicks: never attach a second action there.
+        .when(!cfg!(windows), |control| {
+            control.on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                match area {
+                    WindowControlArea::Min => window.minimize_window(),
+                    WindowControlArea::Max => window.zoom_window(),
+                    WindowControlArea::Close => pointer_close(window, cx),
+                    WindowControlArea::Drag => {}
+                }
+            })
         })
         .tooltip(move |window, cx| Tooltip::new(label).build(window, cx))
         .window_control_area(area)
@@ -156,6 +171,20 @@ pub fn title_bar(
                 .id("window-title-drag")
                 .test_support()
                 .window_control_area(WindowControlArea::Drag)
+                // This handler belongs only to the empty/title region, so
+                // navigation, document actions and controls cannot start a move.
+                .when(!cfg!(windows), |drag| {
+                    drag.on_mouse_down(MouseButton::Left, |event, window, cx| {
+                        cx.stop_propagation();
+                        if event.click_count == 2 {
+                            if window.window_controls().maximize {
+                                window.zoom_window();
+                            }
+                        } else {
+                            window.start_window_move();
+                        }
+                    })
+                })
                 .flex()
                 .items_center()
                 .flex_1()
@@ -186,4 +215,61 @@ pub fn title_bar(
                 .children(actions),
         )
         .child(controls)
+}
+
+#[cfg(all(test, feature = "ui-test", not(windows)))]
+mod tests {
+    use super::*;
+    use gpui_kit::test::TestWindowExt;
+    use std::cell::Cell;
+
+    #[gpui_kit::test]
+    fn pointer_close_uses_the_supplied_barrier_and_actions_stay_independent(
+        cx: &mut TestAppContext,
+    ) {
+        struct Fixture {
+            closes: Rc<Cell<usize>>,
+            actions: Rc<Cell<usize>>,
+        }
+        impl Render for Fixture {
+            fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let closes = self.closes.clone();
+                let actions = self.actions.clone();
+                title_bar(
+                    "Document",
+                    vec![],
+                    vec![
+                        div()
+                            .id("document-action")
+                            .test_support()
+                            .w(px(80.))
+                            .h_full()
+                            .on_click(move |_, _, _| actions.set(actions.get() + 1))
+                            .child("Save")
+                            .into_any_element(),
+                    ],
+                    window,
+                    move |_, _| closes.set(closes.get() + 1),
+                )
+            }
+        }
+        cx.update(gpui_kit::init);
+        let closes = Rc::new(Cell::new(0));
+        let actions = Rc::new(Cell::new(0));
+        let (_, cx) = cx.add_window_view({
+            let closes = closes.clone();
+            let actions = actions.clone();
+            move |_, _| Fixture { closes, actions }
+        });
+        cx.update(|window, cx| {
+            window.click("document-action", cx);
+            window.click("window-close", cx);
+        });
+        assert_eq!(actions.get(), 1);
+        assert_eq!(
+            closes.get(),
+            1,
+            "pointer close must enter the persistence barrier exactly once"
+        );
+    }
 }

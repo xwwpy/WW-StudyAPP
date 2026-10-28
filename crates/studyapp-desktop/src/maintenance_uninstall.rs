@@ -562,7 +562,7 @@ fn guard_sqlite_sidecars(database: &Path) -> Result<Vec<File>> {
     Ok(files)
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     fn msi_owner_transition_fixture() -> (PreparedMaintenance, InstallReceipt) {

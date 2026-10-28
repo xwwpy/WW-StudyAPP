@@ -28,7 +28,7 @@ pub(crate) use uninstall::{apply_authenticated_uninstall, prepare_uninstall};
 mod acceptance;
 #[cfg(all(windows, feature = "ui-test"))]
 pub(crate) use acceptance::run_if_requested as run_acceptance_if_requested;
-#[cfg(test)]
+#[cfg(all(test, windows))]
 #[path = "maintenance_execute_tests.rs"]
 mod transaction_tests;
 

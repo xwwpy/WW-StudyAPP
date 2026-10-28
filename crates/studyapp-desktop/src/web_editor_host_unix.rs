@@ -118,6 +118,7 @@ impl HostedEditor {
             .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
             .with_download_started_handler(|_, _| false)
             .with_navigation_handler(|url| editor_page_allowed(&url))
+            .with_drag_drop_handler(super::native_drag::handler(sender.clone()))
             .with_ipc_handler(move |request| {
                 if !ipc_allowed(&request.uri().to_string(), request.body().len()) {
                     return;

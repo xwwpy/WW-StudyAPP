@@ -1,4 +1,7 @@
 //! Pure geometry and OS-drag gates shared by the native host and its tests.
+#[cfg(test)]
+pub use super::native_drag::DragGate;
+#[cfg(test)]
 use std::path::PathBuf;
 
 pub type LogicalRect = (f64, f64, f64, f64);
@@ -212,26 +215,6 @@ pub fn clipped_occlusions(
     result.sort_unstable();
     result.dedup();
     result
-}
-
-#[derive(Default)]
-pub struct DragGate {
-    paths: Option<Vec<PathBuf>>,
-}
-impl DragGate {
-    pub fn enter(&mut self, paths: Vec<PathBuf>) -> bool {
-        if paths.is_empty() || self.paths.as_ref() == Some(&paths) {
-            return false;
-        }
-        self.paths = Some(paths);
-        true
-    }
-    pub fn leave(&mut self) -> bool {
-        self.paths.take().is_some()
-    }
-    pub fn drop_paths(&mut self, paths: Vec<PathBuf>) -> bool {
-        self.paths.take().is_some() && !paths.is_empty()
-    }
 }
 
 #[cfg(test)]

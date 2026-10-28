@@ -442,8 +442,8 @@ mod tests {
                 }],
             }),
             library: LibraryDiscovery {
-                database_path: Some(PathBuf::from(r"C:\Library\studyapp.sqlite3")),
-                verified_database: Some((PathBuf::from(r"C:\Library\studyapp.sqlite3"), identity)),
+                database_path: Some(PathBuf::from(r"C:/Library/studyapp.sqlite3")),
+                verified_database: Some((PathBuf::from(r"C:/Library/studyapp.sqlite3"), identity)),
                 ..Default::default()
             },
             issues: vec![],

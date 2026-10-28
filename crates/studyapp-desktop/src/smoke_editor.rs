@@ -1027,9 +1027,10 @@ pub async fn close_with_draft(window: AnyWindowHandle, view: &Entity<StudyApp>, 
     #[cfg(not(windows))]
     window
         .update(cx, |_, window, cx| {
+            window.click("window-close", cx);
             assert!(
-                !view.update(cx, |app, cx| app.handle_close(window, cx)),
-                "close must wait for the editor and disk acknowledgements"
+                view.read(cx).note_editor.is_some(),
+                "pointer close must wait for the editor and disk acknowledgements"
             );
         })
         .unwrap();

@@ -222,6 +222,7 @@ mod tests {
         assert!(!root.join("WW-StudyApp.exe").exists());
     }
     #[test]
+    #[cfg(windows)]
     fn maintenance_reconciliation_only_creates_missing_verified_components() {
         let fixture = root();
         let (path, hash) = package(&fixture, env!("CARGO_PKG_VERSION"), |_, _| {});

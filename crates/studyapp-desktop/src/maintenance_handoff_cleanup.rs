@@ -671,7 +671,7 @@ fn remove_empty_stage(_stage: &Path, _expected: &FileIdentity) -> Result<()> {
     anyhow::bail!("维护清理仅支持 Windows")
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     fn fixture() -> PathBuf {
@@ -790,7 +790,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod early_failure_tests {
     use super::*;
     fn root() -> PathBuf {

@@ -1,5 +1,8 @@
 //! The native child-window host for the continuous Markdown editor.
 
+#[path = "native_editor_drag.rs"]
+mod native_drag;
+
 #[cfg(windows)]
 #[path = "native_surface_geometry.rs"]
 mod surface_geometry;
@@ -55,7 +58,7 @@ mod windows_host {
     use super::{
         editor_page_allowed, embedded_response, ipc_allowed,
         surface_geometry::{
-            DragGate, PhysicalRect, PhysicalShape, clipped_occlusions, physical_overlay_shapes,
+            PhysicalRect, PhysicalShape, clipped_occlusions, physical_overlay_shapes,
         },
     };
     use anyhow::{Context as _, Result, ensure};
@@ -69,7 +72,7 @@ mod windows_host {
     };
     use studyapp_ui::bubble::OverlayShape;
     use wry::{
-        DragDropEvent, NewWindowResponse, PermissionResponse, WebContext, WebView, WebViewBuilder,
+        NewWindowResponse, PermissionResponse, WebContext, WebView, WebViewBuilder,
         WebViewBuilderExtWindows, WebViewExtWindows,
         dpi::{LogicalPosition, LogicalSize},
         raw_window_handle::{
@@ -141,8 +144,6 @@ mod windows_host {
         pub fn new(parent: ParentWindow, sender: Sender<String>, profile: PathBuf) -> Result<Self> {
             std::fs::create_dir_all(&profile).context("无法创建本地编辑器运行目录")?;
             let mut context = WebContext::new(Some(profile));
-            let drag_sender = sender.clone();
-            let drag_gate = RefCell::new(DragGate::default());
             let builder = WebViewBuilder::new_with_web_context(&mut context)
                 .with_custom_protocol("studyapp".to_owned(), |_, request| {
                     embedded_response(request)
@@ -169,35 +170,7 @@ mod windows_host {
                 .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
                 .with_download_started_handler(|_, _| false)
                 .with_navigation_handler(|url| editor_page_allowed(&url))
-                .with_drag_drop_handler(move |event| {
-                    // Only OS-provided paths enter this trusted host channel.
-                    // Over carries position only: suppress it to avoid invalidating
-                    // the shell on every native pointer movement.
-                    let change = match event {
-                        DragDropEvent::Enter { paths, .. } => drag_gate
-                            .borrow_mut()
-                            .enter(paths.clone())
-                            .then_some(("enter", paths)),
-                        DragDropEvent::Drop { paths, .. } => drag_gate
-                            .borrow_mut()
-                            .drop_paths(paths.clone())
-                            .then_some(("drop", paths)),
-                        DragDropEvent::Leave => drag_gate
-                            .borrow_mut()
-                            .leave()
-                            .then_some(("leave", Vec::new())),
-                        _ => None,
-                    };
-                    if let Some((phase, paths)) = change {
-                        let _ = drag_sender.send(
-                            serde_json::json!({
-                                "type": "externalDrag", "phase": phase, "paths": paths
-                            })
-                            .to_string(),
-                        );
-                    }
-                    true
-                })
+                .with_drag_drop_handler(super::native_drag::handler(sender.clone()))
                 .with_ipc_handler(move |request| {
                     if ipc_allowed(&request.uri().to_string(), request.body().len()) {
                         #[derive(serde::Deserialize)]

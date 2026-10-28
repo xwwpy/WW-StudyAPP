@@ -69,6 +69,9 @@ jobs:
       - name: Prepare isolated macOS test keychain
         if: matrix.platform == 'macos'
         run: |
+          # Test fixtures are ordinary directories. macOS's /var alias must not
+          # turn them into symlink tests: the app deliberately rejects links.
+          echo "TMPDIR=$(python3 -c 'import os, tempfile; print(os.path.realpath(tempfile.gettempdir()))')" >> "$GITHUB_ENV"
           security create-keychain -p fixture-password "$RUNNER_TEMP/studyapp-tests.keychain-db"
           security default-keychain -s "$RUNNER_TEMP/studyapp-tests.keychain-db"
           security unlock-keychain -p fixture-password "$RUNNER_TEMP/studyapp-tests.keychain-db"
@@ -85,6 +88,8 @@ jobs:
         run: cargo test --locked --no-fail-fast -p studyapp-desktop -p studyapp-ui
       - name: Build native interactive validation binary
         run: cargo build --locked -p studyapp-desktop --bin studyapp --features ui-test
+      - name: Verify shared native UI behavior
+        run: cargo test --locked -p studyapp-ui --features ui-test --lib
       - name: Linux native editor regression
         if: matrix.platform == 'linux'
         env:

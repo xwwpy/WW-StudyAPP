@@ -161,7 +161,7 @@ pub(super) fn delete_empty_directory(path: &Path, identity: &FileIdentity) -> Re
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     fn fixture() -> std::path::PathBuf {

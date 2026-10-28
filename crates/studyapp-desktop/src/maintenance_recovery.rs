@@ -606,7 +606,7 @@ pub(crate) fn apply_recovery(request: &RecoveryRequest) -> Result<MaintenanceSta
     Ok(status)
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 mod tests {
     use super::*;
     #[test]

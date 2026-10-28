@@ -711,12 +711,12 @@ mod tests {
             product_code: "{FB2C8337-21E5-4406-83E2-4211C5691D1E}".into(),
             upgrade_code: MSI_UPGRADE_CODE.into(),
             user_sid: "S-1-5-21-1".into(),
-            install_root: PathBuf::from(r"C:\Programs\Study"),
+            install_root: PathBuf::from(r"C:/Programs/Study"),
             version: "0.8.0".into(),
         };
         assert!(
             matching_msi_owner(
-                std::path::Path::new(r"C:\Programs\Study\Uninstall.exe"),
+                std::path::Path::new(r"C:/Programs/Study/Uninstall.exe"),
                 std::slice::from_ref(&owner)
             )
             .unwrap()
@@ -724,7 +724,7 @@ mod tests {
         );
         assert!(
             matching_msi_owner(
-                std::path::Path::new(r"C:\Portable\WW-StudyApp.exe"),
+                std::path::Path::new(r"C:/Portable/WW-StudyApp.exe"),
                 &[owner]
             )
             .unwrap()
@@ -737,11 +737,11 @@ mod tests {
             product_code: "{FB2C8337-21E5-4406-83E2-4211C5691D1E}".into(),
             upgrade_code: MSI_UPGRADE_CODE.into(),
             user_sid: String::new(),
-            install_root: PathBuf::from(r"C:\Programs\Study"),
+            install_root: PathBuf::from(r"C:/Programs/Study"),
             version: "0.8.0".into(),
         };
         assert!(
-            matching_msi_owner(Path::new(r"C:\Programs\Study\Uninstall.exe"), &[owner]).is_err()
+            matching_msi_owner(Path::new(r"C:/Programs/Study/Uninstall.exe"), &[owner]).is_err()
         );
     }
     #[test]
