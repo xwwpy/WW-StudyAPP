@@ -45,6 +45,7 @@ pub struct StudyApp {
     pub notice: Option<Result<String, String>>,
     pub search: Entity<InputState>,
     pub summary: Entity<TextareaState>,
+    pub summary_editor: Entity<studyapp_ui::compact_markdown::CompactMarkdown>,
     pub minutes: Entity<InputState>,
     pub start: Entity<InputState>,
     pub interval: Entity<InputState>,
@@ -362,6 +363,12 @@ impl StudyApp {
             },
         )
         .detach();
+        let summary = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .placeholder("记录你学到了什么，支持 Markdown，也可以使用笔记变更摘要…")
+        });
+        let summary_editor =
+            cx.new(|cx| studyapp_ui::compact_markdown::CompactMarkdown::new(summary.clone(), cx));
         Self {
             sync_panel,
             folders,
@@ -435,10 +442,8 @@ impl StudyApp {
             page: Page::Today,
             notice: None,
             search,
-            summary: cx.new(|cx| {
-                TextareaState::new(window, cx)
-                    .placeholder("记录你学到了什么，也可以使用笔记变更摘要…")
-            }),
+            summary,
+            summary_editor,
             minutes: input("分钟", "30", window, cx),
             start: input(
                 "YYYY-MM-DD HH:MM",
@@ -732,6 +737,8 @@ impl StudyApp {
                 });
                 if self.editor.is_none() {
                     self.editor = Some(EditorMode::Pending(session.id.clone()));
+                    self.summary_editor
+                        .update(cx, |editor, cx| editor.reset(cx));
                     self.summary.update(cx, |s, cx| {
                         s.set_value(session.suggested_summary.clone(), window, cx)
                     });
@@ -953,6 +960,8 @@ impl StudyApp {
         }
         self.summary
             .update(cx, |s, cx| s.set_value(text, window, cx));
+        self.summary_editor
+            .update(cx, |editor, cx| editor.reset(cx));
         self.editor = Some(mode);
         self.page = Page::Today;
         self.saving = false;

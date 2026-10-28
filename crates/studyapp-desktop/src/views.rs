@@ -6,14 +6,16 @@ use crate::{
 };
 use chrono::{Local, TimeZone, Utc};
 use gpui_kit::component::{
-    Disableable, IconName, Selectable, Sizable,
-    button::ButtonVariants,
-    input::{Input, Textarea},
-    scroll::ScrollableElement,
+    Disableable, IconName, Selectable, Sizable, button::ButtonVariants, input::Input,
+    scroll::ScrollableElement, text::TextView,
 };
 use gpui_kit::{prelude::FluentBuilder, *};
 use studyapp_core::{Command, Review, SessionStatus, Snapshot};
 use studyapp_desktop::presentation::{duration, stamp};
+use studyapp_ui::{
+    compact_markdown::summary_markdown_style,
+    markdown_content::{markdown_excerpt, markdown_preview},
+};
 
 fn review_text(title: String, metadata: String) -> Div {
     column()
@@ -21,12 +23,20 @@ fn review_text(title: String, metadata: String) -> Div {
         .min_w_0()
         .gap_1()
         .child(
-            heading(title)
+            div()
                 .w_full()
                 .min_w_0()
                 .whitespace_normal()
                 .id("review-summary")
-                .test_support(),
+                .test_support()
+                .child(
+                    TextView::markdown("review-summary-markdown", markdown_preview(&title))
+                        .style(summary_markdown_style())
+                        .on_link_click(|_, _, _, _| {})
+                        .w_full()
+                        .min_w_0()
+                        .scrollable(false),
+                ),
         )
         .child(muted(metadata).w_full().min_w_0().whitespace_normal())
 }
@@ -510,7 +520,7 @@ impl StudyApp {
             );
         }
         view = view
-            .child(Textarea::new(&self.summary).h(px(115.)))
+            .child(self.summary_editor.clone())
             .child(muted(
                 "关联学习笔记（可多选；摘要可以修改，只有提交后才算已学习）",
             ))
@@ -667,7 +677,7 @@ impl StudyApp {
                     .child(div().truncate().child(if session.summary.is_empty() {
                         "尚未填写学习内容".into()
                     } else {
-                        session.summary.chars().take(160).collect::<String>()
+                        markdown_excerpt(&session.summary, 160)
                     }))
                     .child(muted(format!(
                         "{}  ·  {} 分钟  ·  {} 份关联笔记 · {} 个快照",

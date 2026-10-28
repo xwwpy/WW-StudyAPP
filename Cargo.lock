@@ -7734,7 +7734,7 @@ dependencies = [
 
 [[package]]
 name = "studyapp-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7749,7 +7749,7 @@ dependencies = [
 
 [[package]]
 name = "studyapp-desktop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -7784,7 +7784,7 @@ dependencies = [
 
 [[package]]
 name = "studyapp-sync"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "chrono",
  "hmac",
@@ -7800,9 +7800,10 @@ dependencies = [
 
 [[package]]
 name = "studyapp-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gpui-kit",
+ "pulldown-cmark",
  "serde_json",
  "studyapp-core",
 ]

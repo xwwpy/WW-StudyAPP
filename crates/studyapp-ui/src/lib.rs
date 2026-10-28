@@ -1,9 +1,12 @@
 //! Shared visual system and reusable GPUI controls. No application IO or business workers.
 pub mod bubble;
+pub mod compact_markdown;
 pub mod components;
 pub mod controls;
 pub mod design;
 pub mod feedback;
+pub mod markdown_content;
+pub mod markdown_format;
 pub mod modal_frame;
 pub mod notice_queue;
 pub mod notifications;

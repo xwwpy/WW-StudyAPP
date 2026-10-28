@@ -219,7 +219,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert!(view.read(cx).chosen_versions.contains(&version));
                 window.click(SharedString::from(format!("associate-version-{version}")), cx);
                 assert!(!view.read(cx).chosen_versions.contains(&version));
-                view.update(cx, |app, cx| app.summary.update(cx, |s, cx| s.set_value("确认阅读了选定的所有权快照", window, cx)));
+                view.update(cx, |app, cx| app.summary.update(cx, |s, cx| s.set_value("## 学习摘要\n\n- 确认阅读了**所有权**快照\n- `中文🧠`", window, cx)));
                 window.click("save-learning", cx);
             }).expect("version selection validation");
             cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -229,17 +229,28 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 let version = view.read(cx).snapshot.as_ref().unwrap().versions[0].id.clone();
                 window.click(SharedString::from(format!("associate-version-{version}")), cx);
                 window.render_to_image().unwrap().save(database.with_file_name("learning-editor.png")).unwrap();
+                window.click("summary-preview", cx);
+                window.render_frame(cx);
+                assert!(view.read(cx).summary_editor.read(cx).is_preview());
+                assert!(window.try_find("summary-markdown-preview").is_some());
+                window.render_to_image().unwrap().save(database.with_file_name("learning-summary-preview.png")).unwrap();
                 window.click("save-learning", cx);
             }).expect("save selected version");
             cx.background_executor().timer(Duration::from_secs(1)).await;
-            window.update(cx, |_, _, cx| {
+            window.update(cx, |_, window, cx| {
                 let app = view.read(cx);
                 assert!(app.editor.is_none());
                 let snapshot = app.snapshot.as_ref().unwrap();
                 assert_eq!(snapshot.sessions.len(), 2);
-                let session = snapshot.sessions.iter().find(|s| s.summary == "确认阅读了选定的所有权快照").unwrap();
+                let source = "## 学习摘要\n\n- 确认阅读了**所有权**快照\n- `中文🧠`";
+                let session = snapshot.sessions.iter().find(|s| s.summary == source).unwrap();
                 assert_eq!(session.version_ids, vec![snapshot.versions[0].id.clone()]);
                 assert_eq!(snapshot.reviews.len(), 2);
+                let session_id = session.id.clone();
+                view.update(cx, |app, cx| app.open_editor(crate::app::EditorMode::Edit(session_id), window, cx));
+                assert_eq!(view.read(cx).summary.read(cx).value().as_str(), source);
+                assert!(!view.read(cx).summary_editor.read(cx).is_preview());
+                window.click("cancel-editor", cx);
             }).expect("saved learning snapshot association");
 
             // Exercise native file-drop delivery, then the actual managed-note controls.
