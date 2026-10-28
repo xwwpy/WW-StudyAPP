@@ -6,6 +6,33 @@ use std::{
 };
 use studyapp_core::{Command, Engine};
 
+#[cfg(feature = "ui-test")]
+fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> {
+    #[cfg(not(target_os = "linux"))]
+    window.render_to_image()?.save(path)?;
+    #[cfg(target_os = "linux")]
+    {
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        // GPUI's Linux renderer has no readback implementation. Capture the
+        // actual X11 window (including WebKit children) on the remote runner.
+        anyhow::ensure!(
+            std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+            "Native Linux captures are restricted to GitHub runners"
+        );
+        let id = match HasWindowHandle::window_handle(window)?.as_raw() {
+            RawWindowHandle::Xcb(handle) => u64::from(handle.window.get()),
+            RawWindowHandle::Xlib(handle) => handle.window,
+            _ => anyhow::bail!("Linux smoke requires an X11 window"),
+        };
+        let status = std::process::Command::new("import")
+            .args(["-window", &id.to_string(), "-silent"])
+            .arg(path)
+            .status()?;
+        anyhow::ensure!(status.success(), "X11 window capture failed: {status}");
+    }
+    Ok(())
+}
+
 pub fn prepare(database: &Path) -> anyhow::Result<()> {
     anyhow::ensure!(
         !database.exists(),
@@ -103,7 +130,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             {
                 let screenshot = database.with_file_name(format!("page-{index}.png"));
                 let capture = window.update(cx, |_, window, _| -> anyhow::Result<()> {
-                    window.render_to_image()?.save(screenshot)?;
+                    capture(window, screenshot)?;
                     Ok(())
                 });
                 if !matches!(capture, Ok(Ok(()))) { eprintln!("screenshot failed: {capture:?}"); std::process::exit(3); }
@@ -228,12 +255,12 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert!(view.read(cx).notice.as_ref().is_some_and(Result::is_err));
                 let version = view.read(cx).snapshot.as_ref().unwrap().versions[0].id.clone();
                 window.click(SharedString::from(format!("associate-version-{version}")), cx);
-                window.render_to_image().unwrap().save(database.with_file_name("learning-editor.png")).unwrap();
+                capture(window, database.with_file_name("learning-editor.png")).unwrap();
                 window.click("summary-preview", cx);
                 window.render_frame(cx);
                 assert!(view.read(cx).summary_editor.read(cx).is_preview());
                 assert!(window.try_find("summary-markdown-preview").is_some());
-                window.render_to_image().unwrap().save(database.with_file_name("learning-summary-preview.png")).unwrap();
+                capture(window, database.with_file_name("learning-summary-preview.png")).unwrap();
                 window.click("save-learning", cx);
             }).expect("save selected version");
             cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -323,7 +350,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert!(panel.status.last_success.is_some(), "{}", panel.status.message);
                 assert!(sync_folder.join("StudyApp/notes").join(format!("{managed_id}.md")).is_file());
                 window.render_frame(cx);
-                window.render_to_image().unwrap().save(database.with_file_name("sync-settings.png")).unwrap();
+                capture(window, database.with_file_name("sync-settings.png")).unwrap();
             }).expect("synced markdown verified");
             #[cfg(windows)]
             Box::pin(crate::smoke_library::exercise(window, &view, &database, cx)).await;

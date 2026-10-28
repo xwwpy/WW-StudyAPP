@@ -184,9 +184,23 @@ mod tests {
             window.click("summary-bold", cx);
             assert_eq!(input.read(cx).value().as_str(), "前 **中😀文** 后");
             assert_eq!(input.read(cx).selected_value().as_str(), "中😀文");
-            window.press("ctrl-z", cx);
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-z"
+                } else {
+                    "ctrl-z"
+                },
+                cx,
+            );
             assert_eq!(input.read(cx).value().as_str(), "前 中😀文 后");
-            window.press("ctrl-y", cx);
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-shift-z"
+                } else {
+                    "ctrl-y"
+                },
+                cx,
+            );
             assert_eq!(input.read(cx).value().as_str(), "前 **中😀文** 后");
             window.click("summary-preview", cx);
             assert!(editor.read(cx).is_preview());

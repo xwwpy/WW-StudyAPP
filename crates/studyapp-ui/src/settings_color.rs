@@ -892,7 +892,14 @@ mod tests {
         });
         cx.update(|window, cx| {
             window.click("color-value-pointer", cx);
-            window.press("ctrl-a", cx);
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-a"
+                } else {
+                    "ctrl-a"
+                },
+                cx,
+            );
             window.input("#AABBCC", cx);
         });
         draw(cx);

@@ -55,13 +55,13 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           shared-key: native-${{ matrix.platform }}-${{ matrix.arch }}
-          key: native-${{ matrix.platform }}-${{ matrix.arch }}
+          key: native-${{ matrix.platform }}-${{ matrix.arch }}-ui-v2
           cache-on-failure: true
       - name: Install Linux native dependencies
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libdbus-1-dev vulkan-validationlayers libvulkan1 mesa-vulkan-drivers fonts-noto-cjk xwayland xvfb dbus-x11 gnome-keyring dpkg-dev desktop-file-utils
+          sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libdbus-1-dev vulkan-validationlayers libvulkan1 mesa-vulkan-drivers fonts-noto-cjk xwayland xvfb imagemagick dbus-x11 gnome-keyring dpkg-dev desktop-file-utils
       - name: Verify package and smoke evidence logic
         run: |
           python3 scripts/test-package-unix.py
