@@ -1,9 +1,14 @@
-//! The Windows child-window host for the continuous Markdown editor.
+//! The native child-window host for the continuous Markdown editor.
 
+#[cfg(windows)]
 #[path = "native_surface_geometry.rs"]
 mod surface_geometry;
 
+#[cfg(windows)]
 const EDITOR_PAGE: &str = "https://studyapp.editor/index.html";
+#[cfg(not(windows))]
+const EDITOR_PAGE: &str = "studyapp://editor/index.html";
+
 // JSON may expand each raw byte to six bytes (\u0000); allow the full 10 MiB
 // document plus bounded transaction metadata. The document itself is checked
 // separately by the native protocol and by the editor transaction filter.
@@ -39,10 +44,16 @@ fn ipc_allowed(url: &str, bytes: usize) -> bool {
 #[cfg(windows)]
 pub use windows_host::{HostedEditor, ParentWindow};
 
+#[cfg(not(windows))]
+#[path = "web_editor_host_unix.rs"]
+mod unix_host;
+#[cfg(not(windows))]
+pub use unix_host::{HostedEditor, ParentWindow};
+
 #[cfg(windows)]
 mod windows_host {
     use super::{
-        EditorAsset, editor_asset, editor_page_allowed, ipc_allowed,
+        editor_page_allowed, embedded_response, ipc_allowed,
         surface_geometry::{
             DragGate, PhysicalRect, PhysicalShape, clipped_occlusions, physical_overlay_shapes,
         },
@@ -50,7 +61,6 @@ mod windows_host {
     use anyhow::{Context as _, Result, ensure};
     use gpui_kit::{Bounds, Pixels, Window};
     use std::{
-        borrow::Cow,
         cell::{Cell, RefCell},
         marker::PhantomData,
         path::PathBuf,
@@ -62,16 +72,10 @@ mod windows_host {
         DragDropEvent, NewWindowResponse, PermissionResponse, WebContext, WebView, WebViewBuilder,
         WebViewBuilderExtWindows, WebViewExtWindows,
         dpi::{LogicalPosition, LogicalSize},
-        http::{Method, Request, Response, StatusCode},
         raw_window_handle::{
             HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
         },
     };
-
-    const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; \
-        style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; \
-        frame-src 'none'; frame-ancestors 'none'; object-src 'none'; \
-        media-src 'none'; font-src 'none'; form-action 'none'; base-uri 'none'";
 
     /// An owned copy of the HWND, without a borrow of the GPUI window or App.
     ///
@@ -635,45 +639,53 @@ mod windows_host {
             Ok(receiver)
         }
     }
+}
 
-    fn embedded_response(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
-        let asset = if request.method() == Method::GET {
-            editor_asset(&request.uri().to_string())
-        } else {
-            None
-        };
-        let (status, content_type, body): (_, _, &'static [u8]) = match asset {
-            Some(EditorAsset::Html) => (
-                StatusCode::OK,
-                "text/html; charset=utf-8",
-                include_bytes!("../editor/dist/index.html"),
-            ),
-            Some(EditorAsset::Script) => (
-                StatusCode::OK,
-                "text/javascript; charset=utf-8",
-                include_bytes!("../editor/dist/editor.js"),
-            ),
-            Some(EditorAsset::Stylesheet) => (
-                StatusCode::OK,
-                "text/css; charset=utf-8",
-                include_bytes!("../editor/dist/editor.css"),
-            ),
-            None => (
-                StatusCode::NOT_FOUND,
-                "text/plain; charset=utf-8",
-                b"Editor resource not found",
-            ),
-        };
-        Response::builder()
-            .status(status)
-            .header("Content-Type", content_type)
-            .header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
-            .header("X-Content-Type-Options", "nosniff")
-            .header("Referrer-Policy", "no-referrer")
-            .header("Cache-Control", "no-store")
-            .body(Cow::Borrowed(body))
-            .expect("static editor response headers are valid")
-    }
+use std::borrow::Cow;
+use wry::http::{Method, Request, Response, StatusCode};
+
+const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; \
+    frame-src 'none'; frame-ancestors 'none'; object-src 'none'; \
+    media-src 'none'; font-src 'none'; form-action 'none'; base-uri 'none'";
+
+fn embedded_response(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
+    let asset = if request.method() == Method::GET {
+        editor_asset(&request.uri().to_string())
+    } else {
+        None
+    };
+    let (status, content_type, body): (_, _, &'static [u8]) = match asset {
+        Some(EditorAsset::Html) => (
+            StatusCode::OK,
+            "text/html; charset=utf-8",
+            include_bytes!("../editor/dist/index.html"),
+        ),
+        Some(EditorAsset::Script) => (
+            StatusCode::OK,
+            "text/javascript; charset=utf-8",
+            include_bytes!("../editor/dist/editor.js"),
+        ),
+        Some(EditorAsset::Stylesheet) => (
+            StatusCode::OK,
+            "text/css; charset=utf-8",
+            include_bytes!("../editor/dist/editor.css"),
+        ),
+        None => (
+            StatusCode::NOT_FOUND,
+            "text/plain; charset=utf-8",
+            b"Editor resource not found",
+        ),
+    };
+    Response::builder()
+        .status(status)
+        .header("Content-Type", content_type)
+        .header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Referrer-Policy", "no-referrer")
+        .header("Cache-Control", "no-store")
+        .body(Cow::Borrowed(body))
+        .expect("static editor response headers are valid")
 }
 
 #[cfg(test)]
@@ -712,9 +724,13 @@ mod tests {
     #[test]
     fn ipc_accepts_only_the_loaded_editor_document() {
         assert!(editor_page_allowed(EDITOR_PAGE));
-        assert!(editor_page_allowed(
-            "https://studyapp.editor/index.html#heading"
-        ));
+        assert!(editor_page_allowed(&format!("{EDITOR_PAGE}#heading")));
+        let foreign_page = if cfg!(windows) {
+            "studyapp://editor/index.html"
+        } else {
+            "https://studyapp.editor/index.html"
+        };
+        assert!(!editor_page_allowed(foreign_page));
         for url in [
             "http://studyapp.editor/index.html",
             "https://studyapp.editor.evil/index.html",
@@ -722,7 +738,6 @@ mod tests {
             "https://studyapp.editor:443/index.html",
             "https://studyapp.editor/editor.js",
             "https://studyapp.editor/index.html?remote=yes",
-            "studyapp://editor/index.html",
             "about:blank",
             "data:text/html,hello",
         ] {

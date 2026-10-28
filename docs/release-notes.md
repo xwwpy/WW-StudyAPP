@@ -1,13 +1,10 @@
-# WW-StudyAPP 0.1.1
+# WW-StudyApp 0.1.2
 
-- 学习摘要支持 Markdown，可在填写提醒、手动补记和更正记录时使用。
-- 使用紧凑工具栏快速插入标题、粗体、斜体、列表、引用、代码和表格，支持编辑与预览切换。
-- 复习卡片按 Markdown 排版显示摘要，记录列表显示易读文字；已有摘要可继续编辑。
+- 新增 Linux x86_64 `.deb` 安装包，支持 Ubuntu 24.04 及兼容系统，在 X11/XWayland 桌面运行。
+- 新增 macOS 15 及以上的 `.dmg` 安装包，分别适用于 Apple Silicon 和 Intel Mac。
+- Linux 和 macOS 支持连续 Markdown 笔记编辑、摘要编写与复习；同步密码和图床密钥保存到系统钥匙串。
+- README 新增 Linux、macOS 的下载与安装命令。更新时下载安装对应平台的安装包，已有资料库会保留。
 
-## 安装与使用
+Linux 使用 `sudo apt install ./WW-StudyApp-0.1.2-linux-x86_64.deb` 安装。macOS 打开对应芯片的 DMG，将 WW-StudyApp 拖入「应用程序」。macOS 安装包未经过 Apple 公证，首次打开可能需要在「系统设置 → 隐私与安全性」允许打开。Linux 保存远程同步或图床凭据需要已解锁的 Secret Service（如 GNOME Keyring）。
 
-下载安装程序 `WW-StudyApp-0.1.1-windows-x86_64-Setup.exe`，按提示选择安装目录。也可下载便携版 ZIP，解压后运行 `START-WW-STUDYAPP.cmd`。
-
-已有安装时会沿用原安装目录；如需更换目录，请先卸载并保留学习数据，再重新安装。
-
-详见[使用说明](https://github.com/xwwpy/WW-StudyAPP/blob/v0.1.1/docs/user-guide.md)。
+Windows 用户继续使用 Setup 安装包或便携包。各平台安装文件的校验值见 `SHA256SUMS.txt`。

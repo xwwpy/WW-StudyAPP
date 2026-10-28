@@ -1,4 +1,4 @@
-//! WebDAV secrets are protected for the current Windows account with DPAPI.
+//! Secrets use Windows DPAPI or an opaque reference to the user's system keychain.
 
 use anyhow::{Result, ensure};
 use zeroize::Zeroizing;
@@ -105,8 +105,22 @@ fn crypt(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {
 }
 
 #[cfg(not(windows))]
-fn crypt(_: &[u8], _: bool) -> Result<Vec<u8>> {
-    anyhow::bail!("当前版本仅在 Windows 上提供系统保护的凭据存储")
+fn crypt(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {
+    use anyhow::Context as _;
+    use studyapp_desktop::credential_reference::{protect_with, unprotect_with};
+    const SERVICE: &str = "io.studyapp.WW-StudyApp";
+    if encrypt {
+        protect_with(input, |id, secret| {
+            keyring::Entry::new(SERVICE, id)?.set_secret(secret)
+                .context("无法保存凭据，请解锁系统钥匙串；Linux 需要运行 Secret Service（如 GNOME Keyring）")
+        })
+    } else {
+        unprotect_with(input, |id| {
+            keyring::Entry::new(SERVICE, id)?
+                .get_secret()
+                .context("无法读取系统钥匙串中的凭据，请解锁钥匙串或重新填写凭据")
+        })
+    }
 }
 
 #[cfg(all(test, windows))]

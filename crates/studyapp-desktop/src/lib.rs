@@ -1,3 +1,4 @@
+pub mod credential_reference;
 pub mod draft_viewmodel;
 pub mod editor_protocol;
 pub mod maintenance;

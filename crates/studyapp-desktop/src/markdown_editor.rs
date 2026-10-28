@@ -109,7 +109,6 @@ pub struct MarkdownEditor {
     document: EditorDocument,
     sender: mpsc::Sender<String>,
     receiver: mpsc::Receiver<String>,
-    #[cfg(windows)]
     host: Option<crate::web_editor_host::HostedEditor>,
     creating: bool,
     ready: bool,
@@ -140,6 +139,8 @@ impl MarkdownEditor {
                 cx.background_executor()
                     .timer(Duration::from_millis(25))
                     .await;
+                #[cfg(target_os = "linux")]
+                crate::web_editor_host::HostedEditor::pump_events();
                 if this.update_in(cx, |this, _, cx| this.poll(cx)).is_err() {
                     break;
                 }
@@ -149,7 +150,6 @@ impl MarkdownEditor {
             document: EditorDocument::new(String::new()),
             sender,
             receiver,
-            #[cfg(windows)]
             host: None,
             creating: false,
             ready: false,
@@ -256,7 +256,6 @@ impl MarkdownEditor {
         if !self.occlusions.set(source, shapes) {
             return;
         }
-        #[cfg(windows)]
         if let Some(host) = &self.host
             && let Err(error) = host.set_occlusions(self.occlusions.all())
         {
@@ -341,7 +340,6 @@ impl MarkdownEditor {
     }
 
     fn evaluate(&self, script: &str) -> anyhow::Result<()> {
-        #[cfg(windows)]
         if let Some(host) = &self.host {
             return host.evaluate(script);
         }
@@ -437,7 +435,6 @@ impl MarkdownEditor {
             return;
         }
         self.visible = visible;
-        #[cfg(windows)]
         if let Some(host) = &self.host
             && let Err(error) = host.set_visible(visible && self.ready)
         {
@@ -683,7 +680,6 @@ impl MarkdownEditor {
         }
     }
 
-    #[cfg(windows)]
     fn ensure_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.host.is_some() || self.creating || self.error.is_some() || !self.visible {
             return;
@@ -707,7 +703,9 @@ impl MarkdownEditor {
         cx.spawn(async move |this, cx| {
             // Wry pumps Windows messages. Absolutely no GPUI App/entity borrow
             // may be held during the constructor (including a render callback).
-            cx.background_executor().timer(Duration::from_millis(1)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(1))
+                .await;
             #[cfg(feature = "ui-test")]
             eprintln!("native editor: creating WebView");
             let result = crate::web_editor_host::HostedEditor::new(parent, sender, profile);
@@ -723,10 +721,14 @@ impl MarkdownEditor {
                         this.host = Some(host);
                         cx.notify();
                     }
-                    Err(error) => this.fail(format!("连续编辑器启动失败：{error:#}。请确认 Microsoft Edge WebView2 Runtime 已安装。"), cx),
+                    Err(error) => this.fail(
+                        format!("连续编辑器启动失败：{error:#}。请确认系统 WebView 运行时可用。"),
+                        cx,
+                    ),
                 }
             });
-        }).detach();
+        })
+        .detach();
     }
 
     #[cfg(feature = "ui-test")]
@@ -807,7 +809,6 @@ impl MarkdownEditor {
 
 impl Render for MarkdownEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        #[cfg(windows)]
         self.ensure_host(window, cx);
         let weak = cx.weak_entity();
         column()
@@ -842,7 +843,6 @@ impl Render for MarkdownEditor {
                     move |bounds, window, cx| {
                         let bounds = bounds.intersect(&window.content_mask().bounds);
                         let _ = weak.update(cx, |this, cx| {
-                            #[cfg(windows)]
                             if let Some(host) = &this.host {
                                 let result = host.set_bounds(bounds).and_then(|()| {
                                     host.set_visible(

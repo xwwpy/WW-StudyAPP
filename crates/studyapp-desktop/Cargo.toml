@@ -23,9 +23,10 @@ ui-test = [
 ]
 
 [dependencies]
-studyapp-ui = { version = "0.1.1", path = "../studyapp-ui" }
-studyapp-core = { version = "0.1.1", path = "../studyapp-core" }
-studyapp-sync = { version = "0.1.1", path = "../studyapp-sync" }
+wry = "=0.57.0"
+studyapp-ui = { version = "0.1.2", path = "../studyapp-ui" }
+studyapp-core = { version = "0.1.2", path = "../studyapp-core" }
+studyapp-sync = { version = "0.1.2", path = "../studyapp-sync" }
 anyhow = "1"
 chrono = "0.4"
 config = { version = "=0.15.27", default-features = false, features = ["json"] }
@@ -49,10 +50,16 @@ ed25519-dalek = "2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
-wry = "=0.57.0"
 webview2-com = "=0.39.1"
 windows = { version = "0.62", features = ["Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_Graphics_Gdi"] }
 
 [dev-dependencies]
 tempfile = "3"
 chrono-tz = "0.10"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+keyring = { version = "=3.6.3", features = ["sync-secret-service", "crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "=3.6.3", features = ["apple-native"] }

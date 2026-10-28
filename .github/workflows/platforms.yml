@@ -1,0 +1,140 @@
+name: Linux and macOS packages
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches: [main, 'codex/**']
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    name: ${{ matrix.platform }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x86_64
+            kind: deb
+          - runner: macos-15
+            platform: macos
+            arch: arm64
+            kind: dmg
+          - runner: macos-15-intel
+            platform: macos
+            arch: x86_64
+            kind: dmg
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      MACOSX_DEPLOYMENT_TARGET: '15.0'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          shared-key: native-${{ matrix.platform }}-${{ matrix.arch }}
+          key: native-${{ matrix.platform }}-${{ matrix.arch }}
+          cache-on-failure: true
+      - name: Install Linux native dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libdbus-1-dev vulkan-validationlayers libvulkan1 mesa-vulkan-drivers fonts-noto-cjk xwayland xvfb dbus-x11 gnome-keyring dpkg-dev desktop-file-utils
+      - name: Verify package and smoke evidence logic
+        run: |
+          python3 scripts/test-package-unix.py
+          python3 scripts/test-smoke-unix.py
+      - name: Verify native Rust tests
+        run: cargo test --locked -p studyapp-desktop -p studyapp-ui
+      - name: Build native interactive validation binary
+        run: cargo build --locked -p studyapp-desktop --bin studyapp --features ui-test
+      - name: Linux native editor regression
+        if: matrix.platform == 'linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GDK_BACKEND: x11
+          GPUI_BACKEND: x11
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
+        run: dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1000x24' python3 scripts/smoke-unix.py --binary target/debug/studyapp --data-dir "$RUNNER_TEMP/native-interactive" --interactive
+      - name: macOS native editor regression
+        if: matrix.platform == 'macos'
+        run: python3 scripts/smoke-unix.py --binary target/debug/studyapp --data-dir "$RUNNER_TEMP/native-interactive" --interactive
+      - name: Build production executable
+        run: cargo build --locked --release -p studyapp-desktop --bin studyapp
+      - name: Prepare macOS icon conversion
+        if: matrix.platform == 'macos'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/package-venv"
+          "$RUNNER_TEMP/package-venv/bin/python" -m pip install Pillow==12.0.0
+      - name: Package Debian executable
+        if: matrix.platform == 'linux'
+        run: python3 scripts/package-unix.py deb
+      - name: Package macOS app bundle
+        if: matrix.platform == 'macos'
+        run: '"$RUNNER_TEMP/package-venv/bin/python" scripts/package-unix.py dmg'
+      - name: Verify installed Debian package and production startup
+        if: matrix.platform == 'linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GDK_BACKEND: x11
+          GPUI_BACKEND: x11
+          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
+        run: |
+          (cd dist && sha256sum --check *.sha256)
+          dpkg-deb --contents dist/*.deb
+          sudo apt-get install -y ./dist/*.deb
+          cmp target/release/studyapp /usr/bin/studyapp
+          desktop-file-validate /usr/share/applications/studyapp.desktop
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1000x24' python3 scripts/smoke-unix.py --binary /usr/bin/studyapp --data-dir "$RUNNER_TEMP/native-installed"
+      - name: Verify DMG installation and production startup
+        if: matrix.platform == 'macos'
+        run: |
+          (cd dist && shasum -a 256 --check *.sha256)
+          mkdir "$RUNNER_TEMP/dmg-mount" "$RUNNER_TEMP/installed"
+          hdiutil attach dist/*.dmg -readonly -nobrowse -mountpoint "$RUNNER_TEMP/dmg-mount"
+          test "$(readlink "$RUNNER_TEMP/dmg-mount/Applications")" = /Applications
+          ditto "$RUNNER_TEMP/dmg-mount/WW-StudyApp.app" "$RUNNER_TEMP/installed/WW-StudyApp.app"
+          cmp "$RUNNER_TEMP/dmg-mount/WW-StudyApp.app/Contents/MacOS/studyapp" "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/MacOS/studyapp"
+          hdiutil detach "$RUNNER_TEMP/dmg-mount"
+          plutil -lint "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/Info.plist"
+          codesign --verify --strict --verbose=2 "$RUNNER_TEMP/installed/WW-StudyApp.app"
+          python3 scripts/smoke-unix.py --binary "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/MacOS/studyapp" --data-dir "$RUNNER_TEMP/native-installed"
+      - name: Preserve native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-interactive*
+            ${{ runner.temp }}/native-installed*
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Preserve verified release package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/*.deb
+            dist/*.dmg
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 90

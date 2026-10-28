@@ -99,7 +99,7 @@ impl UpdatePanel {
         let status_sender = sender.clone();
         std::thread::spawn(move || {
             let _ = status_sender.send(UpdateReply::Previous(read_last_update_status()));
-            if !cfg!(test) && startup_check_allowed(std::env::args_os()) {
+            if cfg!(windows) && !cfg!(test) && startup_check_allowed(std::env::args_os()) {
                 let _ = status_sender.send(UpdateReply::RepairState(portable_repair_needed()));
             }
         });
@@ -564,7 +564,7 @@ impl UpdatePanel {
         if self.fixture.is_some() {
             return true;
         }
-        !cfg!(test) && startup_check_allowed(std::env::args_os())
+        cfg!(windows) && !cfg!(test) && startup_check_allowed(std::env::args_os())
     }
 
     /// Remote smoke only: reuse strict release parsing while replacing all IO.
@@ -623,6 +623,23 @@ fn progress_text(progress: &UpdateProgress) -> String {
 
 impl Render for UpdatePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !cfg!(windows) {
+            return card()
+                .id("application-updates")
+                .child(heading("软件更新"))
+                .child(muted(format!("WW-StudyApp {}", env!("CARGO_PKG_VERSION"))))
+                .child(muted(
+                    "下载适合当前系统的安装包后安装更新，原有资料库会保留。",
+                ))
+                .child(
+                    Button::new("open-releases")
+                        .label("打开发布页面")
+                        .on_click(|_, _, cx| {
+                            cx.open_url("https://github.com/xwwpy/WW-StudyAPP/releases/latest")
+                        }),
+                )
+                .into_any_element();
+        }
         let release_url = self
             .release
             .as_ref()
@@ -675,6 +692,7 @@ impl Render for UpdatePanel {
                 }))))
             .children(self.repair_needed.then(|| muted("修复会下载当前版本并验证程序文件，补齐卸载程序及安装记录；不会改变笔记和资料库。")))
             .child(muted("安装前会保存草稿并处理未保存的设置。更新只处理属于当前安装的程序文件，保留资料库；安装目录不可写时可从发布页面手动更新。"))
+            .into_any_element()
     }
 }
 

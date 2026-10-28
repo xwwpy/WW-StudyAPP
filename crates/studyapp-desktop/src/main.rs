@@ -81,7 +81,6 @@ mod update_nsis;
 mod update_signature;
 mod update_ui;
 mod views;
-#[cfg(windows)]
 mod web_editor_host;
 mod window_chrome;
 mod worker;
@@ -191,50 +190,52 @@ fn run() -> anyhow::Result<()> {
         smoke::prepare(&database)?;
     }
     let worker = worker::Worker::start(database.clone(), config);
-    application()
-        .with_assets(assets::StudyAssets)
-        .run(move |cx| {
-            init(cx);
-            Theme::change(ThemeMode::Light, None, cx);
-            let theme = Theme::global_mut(cx);
-            theme.font_family = design::UI_FONT.into();
-            theme.font_size = px(14.);
-            theme.colors.primary = rgb(components::GREEN).into();
-            theme.colors.primary_foreground = rgb(0xFFFFFF).into();
-            theme.colors.ring = rgb(components::GREEN).into();
-            let options = WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some("WW-StudyApp".into()),
-                    appears_transparent: true,
-                    ..Default::default()
-                }),
-                app_owns_titlebar_drag: true,
-                // DWM owns this material; no CPU blur or per-frame backdrop
-                // capture. Opaque content surfaces cover it outside navigation.
-                window_background: WindowBackgroundAppearance::MicaBackdrop,
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(1280.), px(860.)),
-                    cx,
-                ))),
-                window_min_size: Some(size(px(1000.), px(700.))),
+    #[cfg(target_os = "linux")]
+    let desktop = gpui_kit::platform::linux(WindowingModes::X11);
+    #[cfg(not(target_os = "linux"))]
+    let desktop = application();
+    desktop.with_assets(assets::StudyAssets).run(move |cx| {
+        init(cx);
+        Theme::change(ThemeMode::Light, None, cx);
+        let theme = Theme::global_mut(cx);
+        theme.font_family = design::UI_FONT.into();
+        theme.font_size = px(14.);
+        theme.colors.primary = rgb(components::GREEN).into();
+        theme.colors.primary_foreground = rgb(0xFFFFFF).into();
+        theme.colors.ring = rgb(components::GREEN).into();
+        let options = WindowOptions {
+            titlebar: Some(TitlebarOptions {
+                title: Some("WW-StudyApp".into()),
+                appears_transparent: true,
                 ..Default::default()
-            };
-            let (window, view) = open_window(options, cx, |window, cx| {
-                cx.new(|cx| app::StudyApp::new(worker, window, cx))
-            })
-            .expect("创建 WW-StudyApp 窗口失败");
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
-            if smoke_test {
-                smoke::exercise(window, view, database, cx);
+            }),
+            app_owns_titlebar_drag: true,
+            // DWM owns this material; no CPU blur or per-frame backdrop
+            // capture. Opaque content surfaces cover it outside navigation.
+            window_background: WindowBackgroundAppearance::MicaBackdrop,
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None,
+                size(px(1280.), px(860.)),
+                cx,
+            ))),
+            window_min_size: Some(size(px(1000.), px(700.))),
+            ..Default::default()
+        };
+        let (window, view) = open_window(options, cx, |window, cx| {
+            cx.new(|cx| app::StudyApp::new(worker, window, cx))
+        })
+        .expect("创建 WW-StudyApp 窗口失败");
+        cx.on_window_closed(|cx, _| {
+            if cx.windows().is_empty() {
+                cx.quit();
             }
-            cx.activate(true);
-        });
+        })
+        .detach();
+        if smoke_test {
+            smoke::exercise(window, view, database, cx);
+        }
+        cx.activate(true);
+    });
     Ok(())
 }
 
