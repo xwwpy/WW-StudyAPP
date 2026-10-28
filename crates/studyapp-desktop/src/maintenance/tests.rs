@@ -60,7 +60,7 @@ fn preview(database: bool) -> UninstallPreview {
             configuration: false,
             database,
         },
-        Some((PathBuf::from(r"C:\Library\studyapp.sqlite3"), identity())),
+        Some((PathBuf::from(r"C:/Library/studyapp.sqlite3"), identity())),
         vec![],
     )
     .unwrap()
@@ -203,7 +203,7 @@ fn maintenance_database_requires_two_additional_confirmations() {
     assert!(
         token
             .validate_database(Some((
-                &PathBuf::from(r"C:\Library\studyapp.sqlite3"),
+                &PathBuf::from(r"C:/Library/studyapp.sqlite3"),
                 &identity()
             )))
             .is_ok()
@@ -215,7 +215,7 @@ fn maintenance_database_requires_two_additional_confirmations() {
     assert!(
         token
             .validate_database(Some((
-                &PathBuf::from(r"C:\Library\studyapp.sqlite3"),
+                &PathBuf::from(r"C:/Library/studyapp.sqlite3"),
                 &changed
             )))
             .is_err()

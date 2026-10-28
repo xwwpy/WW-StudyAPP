@@ -78,11 +78,11 @@ jobs:
         run: |
           dbus-run-session -- bash -e -c '
             printf "fixture-password" | gnome-keyring-daemon --unlock --components=secrets
-            cargo test --locked -p studyapp-desktop -p studyapp-ui
+            cargo test --locked --no-fail-fast -p studyapp-desktop -p studyapp-ui
           '
       - name: Verify macOS Rust tests and system keychain
         if: matrix.platform == 'macos'
-        run: cargo test --locked -p studyapp-desktop -p studyapp-ui
+        run: cargo test --locked --no-fail-fast -p studyapp-desktop -p studyapp-ui
       - name: Build native interactive validation binary
         run: cargo build --locked -p studyapp-desktop --bin studyapp --features ui-test
       - name: Linux native editor regression
