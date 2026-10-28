@@ -35,6 +35,9 @@ pub fn markdown_preview(source: &str) -> String {
                 output.push_str(&source[cursor..range.start]);
                 if image {
                     output.push_str("\\[图片：");
+                } else if label.trim().is_empty() {
+                    // An empty link must not join surrounding image tokens.
+                    label = "链接".into();
                 }
                 // Labels cannot become new images, raw HTML, or formatting.
                 push_literal(&mut output, &label);
@@ -159,6 +162,8 @@ mod tests {
             "![图]<span></span>(https://example.com/a.png)",
             "[标签]<span></span>(https://example.com)",
             "![图]<span></span>[ref]\n\n[ref]: https://example.com/a.png",
+            "![图][]()(https://example.com/a.png)",
+            "![图][ ]()[ref]\n\n[ref]: https://example.com/a.png",
         ] {
             let safe = markdown_preview(source);
             assert!(
