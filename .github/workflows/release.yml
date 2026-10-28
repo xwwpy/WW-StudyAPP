@@ -38,7 +38,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           python -c 'import os; from pathlib import Path; import subprocess; tag=os.environ["RELEASE_TAG"]; sha=subprocess.check_output(["git","rev-parse","refs/tags/"+tag+"^{commit}"], text=True).strip(); Path(os.environ["GITHUB_ENV"]).open("a").write("RELEASE_SHA="+sha+"\n")'
-      - name: Require applicable real Pinyin evidence for 0.8 and later
+      - name: Require applicable real Pinyin evidence for 0.1 and later
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -48,7 +48,7 @@ jobs:
           import subprocess, sys, tomllib
           version = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']
           release = tuple(int(part) for part in version.split('-')[0].split('+')[0].split('.'))
-          if release >= (0, 8, 0):
+          if release >= (0, 1, 0):
               subprocess.run([sys.executable, 'scripts/ime-ci.py', 'verify-release'], check=True)
           PY
       - name: Validate source, successful suites, manifest and every asset hash

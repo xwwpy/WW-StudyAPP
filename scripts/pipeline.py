@@ -534,7 +534,7 @@ def asset_names(version):
     if parsed is None:
         raise ValueError('Invalid package version')
     stem = f'WW-StudyApp-{version}-windows-x86_64'
-    suffixes = ('.zip', '-portable.zip', '.msi', '-Setup.exe') if tuple(map(int, parsed.groups()[:3])) >= (0, 8, 0) else ('.zip',)
+    suffixes = ('.zip', '-portable.zip', '.msi', '-Setup.exe') if tuple(map(int, parsed.groups()[:3])) >= (0, 1, 0) else ('.zip',)
     return tuple(name for suffix in suffixes for name in (stem+suffix, stem+suffix+'.sha256'))
 
 

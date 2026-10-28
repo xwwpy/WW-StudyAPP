@@ -19,8 +19,8 @@ SPEC.loader.exec_module(p)
 
 class Fingerprints(unittest.TestCase):
     def setUp(self):
-        self.tree = {'Cargo.toml': b'[workspace.package]\nversion="0.7.2"\n[profile.release]\nlto="thin"\n',
-                     'Cargo.lock': b'version=4\n[[package]]\nname="studyapp-core"\nversion="0.7.2"\n[[package]]\nname="dep"\nversion="1.0.0"\n',
+        self.tree = {'Cargo.toml': b'[workspace.package]\nversion="0.0.2"\n[profile.release]\nlto="thin"\n',
+                     'Cargo.lock': b'version=4\n[[package]]\nname="studyapp-core"\nversion="0.0.2"\n[[package]]\nname="dep"\nversion="1.0.0"\n',
                      'crates/studyapp-core/src/lib.rs': b'core',
                      'crates/studyapp-sync/src/lib.rs': b'sync',
                      'crates/studyapp-ui/src/lib.rs': b'ui',
@@ -40,8 +40,8 @@ class Fingerprints(unittest.TestCase):
         return {g for g in p.GROUPS if p.fingerprint(self.tree, g) != p.fingerprint(other, g)}
 
     def test_identical_and_version_only_content_reuses_tests(self):
-        self.assertEqual(self.changed('Cargo.toml', self.tree['Cargo.toml'].replace(b'0.7.2', b'0.7.3')), set())
-        self.assertEqual(self.changed('Cargo.lock', self.tree['Cargo.lock'].replace(b'0.7.2', b'0.7.3')), set())
+        self.assertEqual(self.changed('Cargo.toml', self.tree['Cargo.toml'].replace(b'0.0.2', b'0.0.3')), set())
+        self.assertEqual(self.changed('Cargo.lock', self.tree['Cargo.lock'].replace(b'0.0.2', b'0.0.3')), set())
         self.assertEqual(p.fingerprint(self.tree, 'desktop'), p.fingerprint(dict(self.tree), 'desktop'))
 
     def test_real_dependency_and_profile_changes_invalidate(self):
@@ -165,38 +165,38 @@ class Manifests(unittest.TestCase):
         base = Path(__file__).resolve().parents[1] / '.scratch' / 'pipeline-tests'
         base.mkdir(parents=True, exist_ok=True)
         self.root = Path(tempfile.mkdtemp(dir=base))
-        self.name = 'WW-StudyApp-0.7.3-windows-x86_64.zip'
+        self.name = 'WW-StudyApp-0.0.3-windows-x86_64.zip'
         (self.root / self.name).write_bytes(b'normal production package')
         digest = hashlib.sha256((self.root / self.name).read_bytes()).hexdigest()
         (self.root / (self.name + '.sha256')).write_text(f'{digest}  {self.name}\n')
-        self.manifest = p.make_manifest(self.root, '0.7.3', 'a'*40, 11, 'owner/repo')
+        self.manifest = p.make_manifest(self.root, '0.0.3', 'a'*40, 11, 'owner/repo')
 
     def test_provenance_and_hashes_roundtrip(self):
-        p.verify_manifest(self.root, self.manifest, '0.7.3', 'a'*40, 'owner/repo', 11)
+        p.verify_manifest(self.root, self.manifest, '0.0.3', 'a'*40, 'owner/repo', 11)
 
     def test_wrong_version_sha_repository_run_or_hash_fails(self):
-        for field, value in [('version', '0.7.4'), ('sha', 'b'*40), ('repository', 'fork/repo'), ('run_id', 12)]:
+        for field, value in [('version', '0.0.4'), ('sha', 'b'*40), ('repository', 'fork/repo'), ('run_id', 12)]:
             bad = dict(self.manifest, **{field: value})
             with self.subTest(field=field), self.assertRaises(ValueError):
-                p.verify_manifest(self.root, bad, '0.7.3', 'a'*40, 'owner/repo', 11)
+                p.verify_manifest(self.root, bad, '0.0.3', 'a'*40, 'owner/repo', 11)
         (self.root / self.name).write_bytes(b'tampered')
         with self.assertRaises(ValueError):
-            p.verify_manifest(self.root, self.manifest, '0.7.3', 'a'*40, 'owner/repo', 11)
+            p.verify_manifest(self.root, self.manifest, '0.0.3', 'a'*40, 'owner/repo', 11)
 
     def test_arbitrary_artifacts_and_wrong_checksum_rejected(self):
         (self.root / 'private.txt').write_text('do not ship')
         with self.assertRaises(ValueError):
-            p.make_manifest(self.root, '0.7.3', 'a'*40, 11, 'owner/repo')
+            p.make_manifest(self.root, '0.0.3', 'a'*40, 11, 'owner/repo')
         (self.root / 'private.txt').unlink()
         (self.root / (self.name + '.sha256')).write_text('0'*64 + '  ' + self.name)
         with self.assertRaises(ValueError):
-            p.make_manifest(self.root, '0.7.3', 'a'*40, 11, 'owner/repo')
+            p.make_manifest(self.root, '0.0.3', 'a'*40, 11, 'owner/repo')
 
     def test_semver_tag_exactly_matches_workspace(self):
-        p.check_tag('v0.7.3', '0.7.3')
-        for tag in ('v0.7.2', '0.7.3', 'v00.7.3', 'v0.7.3-01'):
+        p.check_tag('v0.0.3', '0.0.3')
+        for tag in ('v0.0.2', '0.0.3', 'v00.0.3', 'v0.0.3-01'):
             with self.subTest(tag=tag), self.assertRaises(ValueError):
-                p.check_tag(tag, '0.7.3')
+                p.check_tag(tag, '0.0.3')
 
     def test_partial_draft_recovers_without_overwriting_existing_assets(self):
         expected = {'a.zip': 'aaa', 'a.zip.sha256': 'bbb'}
@@ -320,7 +320,7 @@ class Planner(unittest.TestCase):
 
 
 class ArchiveVerification(unittest.TestCase):
-    def archive(self, sha='a'*40, version='0.7.3', corrupt=False):
+    def archive(self, sha='a'*40, version='0.0.3', corrupt=False):
         name = p.asset_names(version)[0]
         payload = b'package'
         checksum = (hashlib.sha256(payload).hexdigest()+'  '+name+'\n').encode()
@@ -339,21 +339,27 @@ class ArchiveVerification(unittest.TestCase):
         api = SimpleNamespace(repository='owner/repo', run=lambda _: run,
                               jobs=lambda _: [{'name': 'Checked Windows release package', 'conclusion': 'success'}])
         with patch.object(p.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), patch.dict(p.os.environ, {'GITHUB_SHA': 'a'*40}):
-            p.verify_archive(self.archive(), '0.7.3', 'a'*40, api)
-            for raw in (self.archive(sha='b'*40), self.archive(version='0.7.4'), self.archive(corrupt=True)):
+            p.verify_archive(self.archive(), '0.0.3', 'a'*40, api)
+            for raw in (self.archive(sha='b'*40), self.archive(version='0.0.4'), self.archive(corrupt=True)):
                 with self.subTest(raw=hashlib.sha256(raw).hexdigest()), self.assertRaises(ValueError):
-                    p.verify_archive(raw, '0.7.3', 'a'*40, api)
+                    p.verify_archive(raw, '0.0.3', 'a'*40, api)
             run['conclusion'] = 'failure'
             with self.assertRaises(ValueError):
-                p.verify_archive(self.archive(), '0.7.3', 'a'*40, api)
+                p.verify_archive(self.archive(), '0.0.3', 'a'*40, api)
 
 
 class ModernManifests(unittest.TestCase):
+    def test_restarted_version_requires_installer_and_portable_assets(self):
+        names = p.asset_names('0.1.0')
+        self.assertEqual(len(names), 8)
+        self.assertIn('WW-StudyApp-0.1.0-windows-x86_64.msi', names)
+        self.assertIn('WW-StudyApp-0.1.0-windows-x86_64-portable.zip', names)
+
     def fixture(self):
         base = Path(__file__).resolve().parents[1] / '.scratch' / 'pipeline-tests'
         base.mkdir(parents=True, exist_ok=True)
         root = Path(tempfile.mkdtemp(dir=base))
-        stem = 'WW-StudyApp-0.8.0-windows-x86_64'
+        stem = 'WW-StudyApp-0.1.0-windows-x86_64'
         names = [stem + suffix for suffix in ('.zip', '-portable.zip', '.msi', '-Setup.exe')]
         for name in names:
             payload = ('verified ' + name).encode()
@@ -363,7 +369,7 @@ class ModernManifests(unittest.TestCase):
 
     def test_exact_eight_assets_and_every_checksum_required(self):
         root, names = self.fixture()
-        manifest = p.make_manifest(root, '0.8.0', 'a'*40, 11, 'owner/repo')
+        manifest = p.make_manifest(root, '0.1.0', 'a'*40, 11, 'owner/repo')
         self.assertEqual(set(manifest['assets']), {n for name in names for n in (name, name + '.sha256')})
         for name in names:
             with self.subTest(name=name):
@@ -371,12 +377,12 @@ class ModernManifests(unittest.TestCase):
                 original = path.read_bytes()
                 path.write_text('0'*64 + '  ' + name)
                 with self.assertRaises(ValueError):
-                    p.make_manifest(root, '0.8.0', 'a'*40, 11, 'owner/repo')
+                    p.make_manifest(root, '0.1.0', 'a'*40, 11, 'owner/repo')
                 path.write_bytes(original)
 
     def test_modern_provenance_verifies_each_payload(self):
         root, names = self.fixture()
-        manifest = p.make_manifest(root, '0.8.0', 'a'*40, 11, 'owner/repo')
+        manifest = p.make_manifest(root, '0.1.0', 'a'*40, 11, 'owner/repo')
         (root / 'release-manifest.json').write_text(json.dumps(manifest))
         raw = io.BytesIO()
         with zipfile.ZipFile(raw, 'w') as archive:
@@ -387,14 +393,14 @@ class ModernManifests(unittest.TestCase):
         api = SimpleNamespace(repository='owner/repo', run=lambda _: run,
             jobs=lambda _: [{'name': 'Checked Windows release package', 'conclusion': 'success'}])
         with patch.object(p.subprocess, 'run', return_value=SimpleNamespace(returncode=0)), patch.dict(p.os.environ, {'GITHUB_SHA': 'a'*40}):
-            self.assertEqual(p.verify_archive(raw.getvalue(), '0.8.0', 'a'*40, api), manifest)
+            self.assertEqual(p.verify_archive(raw.getvalue(), '0.1.0', 'a'*40, api), manifest)
         for name in names:
             with self.subTest(name=name):
                 path = root / name
                 original = path.read_bytes()
                 path.write_bytes(b'wrong package')
                 with self.assertRaises(ValueError):
-                    p.verify_manifest(root, manifest, '0.8.0', 'a'*40, 'owner/repo', 11)
+                    p.verify_manifest(root, manifest, '0.1.0', 'a'*40, 'owner/repo', 11)
                 path.write_bytes(original)
 
 
@@ -484,7 +490,7 @@ class PublishRecovery(unittest.TestCase):
 
     def publish(self):
         with redirect_stdout(io.StringIO()):
-            p.publish(self.api, self.root, 'v0.7.3', self.manifest)
+            p.publish(self.api, self.root, 'v0.0.3', self.manifest)
 
     def test_interrupted_upload_resumes_same_draft_without_reuploading_good_asset(self):
         self.api.fail_upload = 2
@@ -501,8 +507,8 @@ class PublishRecovery(unittest.TestCase):
         self.assertEqual(set(self.api.files[1]), set(self.manifest['assets']))
 
     def test_duplicate_matching_drafts_are_rejected(self):
-        self.api.add_draft('v0.7.3')
-        self.api.add_draft('v0.7.3')
+        self.api.add_draft('v0.0.3')
+        self.api.add_draft('v0.0.3')
         with self.assertRaises(ValueError):
             self.publish()
         self.assertEqual(self.api.created,2)

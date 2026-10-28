@@ -603,8 +603,8 @@ def main():
         match = pipeline.SEMVER.fullmatch(version)
         if match is None:
             raise ValueError('Invalid workspace version')
-        if tuple(map(int, match.groups()[:3])) < (0, 8, 0):
-            print('Native Pinyin gate starts with version 0.8.0')
+        if tuple(map(int, match.groups()[:3])) < (0, 1, 0):
+            print('Native Pinyin gate starts with version 0.1.0')
             return
         proof = find_proof(api, sha)
         if proof is None:
