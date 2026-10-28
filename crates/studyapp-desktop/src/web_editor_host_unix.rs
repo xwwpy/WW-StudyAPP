@@ -214,6 +214,34 @@ impl HostedEditor {
         })
     }
 
+    #[cfg(all(target_os = "linux", feature = "ui-test"))]
+    pub fn assert_visible_content_allocated() {
+        use gtk::prelude::*;
+        PAINT_DIAGNOSTICS.with(|entries| {
+            let entries = entries.borrow();
+            let visible: Vec<_> = entries
+                .iter()
+                .filter_map(|entry| entry.widget.upgrade())
+                .filter(|widget| widget.is_visible())
+                .collect();
+            assert!(!visible.is_empty(), "no visible native editor");
+            for widget in visible {
+                assert!(widget.is_mapped(), "native editor is not mapped");
+                let size = (widget.allocated_width(), widget.allocated_height());
+                assert!(size.0 > 1 && size.1 > 1, "native editor is only {size:?}");
+                let container = widget.parent().expect("native editor GTK container");
+                let top = container.parent().expect("native editor GTK window");
+                for parent in [container, top] {
+                    assert_eq!(
+                        size,
+                        (parent.allocated_width(), parent.allocated_height()),
+                        "native editor does not fill its GTK container"
+                    );
+                }
+            }
+        });
+    }
+
     /// Called outside GPUI entity/window borrows: GTK callbacks may dispatch native events.
     #[cfg(target_os = "linux")]
     pub fn pump_events() {
@@ -261,6 +289,40 @@ impl HostedEditor {
         self.update_visibility()
     }
 
+    #[cfg(target_os = "linux")]
+    fn allocate_linux_content(&self) -> Result<()> {
+        use gtk::prelude::*;
+        use wry::WebViewExtUnix;
+
+        let Some(bounds) = self.bounds.get() else {
+            return Ok(());
+        };
+        let size = LogicalSize::new(
+            f64::from(bounds.size.width.max(px(1.))),
+            f64::from(bounds.size.height.max(px(1.))),
+        )
+        .cast::<i32>();
+        let widget = self.webview.webview();
+        let container = widget
+            .parent()
+            .and_then(|parent| parent.downcast::<gtk::Box>().ok())
+            .context("系统 WebKit 编辑器缺少 GTK 布局容器")?;
+        let allocation = gtk::Allocation::new(0, 0, size.width, size.height);
+        if container.allocation() != allocation
+            || widget.allocated_width() != size.width
+            || widget.allocated_height() != size.height
+        {
+            // Wry resizes the X11 window while this subtree may be hidden.
+            // GTK skips hidden children, and showing the foreign GtkWindow
+            // only queues a resize. Allocate its visible GtkBox explicitly so
+            // normal box layout propagates our logical size to WebKit now.
+            container.size_allocate(&allocation);
+            #[cfg(feature = "ui-test")]
+            Self::diagnostic_windows("allocated");
+        }
+        Ok(())
+    }
+
     fn update_visibility(&self) -> Result<()> {
         // Native child views paint above GPUI. Hide only while an overlapping
         // floating surface is present; the document/selection stays mounted.
@@ -288,6 +350,10 @@ impl HostedEditor {
         if self.applied_visible.get() != visible {
             self.webview.set_visible(visible)?;
             self.applied_visible.set(visible);
+        }
+        #[cfg(target_os = "linux")]
+        if visible {
+            self.allocate_linux_content()?;
         }
         Ok(())
     }
