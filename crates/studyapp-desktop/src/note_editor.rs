@@ -711,18 +711,23 @@ impl StudyApp {
                     .id("note-editor-toolbar")
                     .flex_shrink_0()
                     .child(
-                        div().id("note-title").flex_1().min_w_0().child(
-                            Input::new(&self.note_title)
-                                .large()
-                                .text_size(title_size)
-                                .line_height(
-                                    title_size
-                                        * studyapp_ui::design::line_height(
-                                            studyapp_ui::design::TypeRole::Title,
-                                        ),
-                                )
-                                .disabled(busy || draft.note_id.is_some()),
-                        ),
+                        div()
+                            .id("note-title")
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                Input::new(&self.note_title)
+                                    .large()
+                                    .text_size(title_size)
+                                    .line_height(
+                                        title_size
+                                            * studyapp_ui::design::line_height(
+                                                studyapp_ui::design::TypeRole::Title,
+                                            ),
+                                    )
+                                    .disabled(busy || draft.note_id.is_some()),
+                            ),
                     )
                     .child(
                         Button::new("save-note")

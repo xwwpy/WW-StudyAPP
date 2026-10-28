@@ -7866,6 +7866,7 @@ dependencies = [
  "config",
  "directories",
  "ed25519-dalek",
+ "gdkx11",
  "gpui-kit",
  "gtk",
  "image",
@@ -7888,6 +7889,7 @@ dependencies = [
  "windows 0.62.2",
  "windows-sys 0.61.2",
  "wry",
+ "x11",
  "zeroize",
  "zip",
 ]

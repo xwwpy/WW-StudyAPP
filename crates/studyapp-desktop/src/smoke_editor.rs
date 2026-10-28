@@ -14,6 +14,30 @@ async fn pause(cx: &AsyncApp) {
         .await;
 }
 
+#[cfg(target_os = "linux")]
+async fn native_keyboard_snapshot(
+    window: AnyWindowHandle,
+    editor: &Entity<MarkdownEditor>,
+    suffix: &str,
+    cx: &mut AsyncApp,
+) -> Value {
+    for attempt in 0..100 {
+        pause(cx).await;
+        let snapshot = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        if snapshot["text"]
+            .as_str()
+            .is_some_and(|text| text.ends_with(suffix))
+        {
+            return snapshot;
+        }
+        assert!(
+            attempt < 99,
+            "native Linux keyboard input missing: {snapshot}"
+        );
+    }
+    unreachable!()
+}
+
 pub(crate) async fn bridge(
     window: AnyWindowHandle,
     editor: &Entity<MarkdownEditor>,
@@ -169,6 +193,143 @@ pub async fn exercise(
             .unwrap();
         crate::web_editor_host::HostedEditor::diagnostic_windows("initialized");
         crate::web_editor_host::HostedEditor::assert_visible_content_allocated();
+        // Exercise the real X11 pointer/keyboard route on the remote runner:
+        // browser transactions alone cannot prove a native child accepts input.
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        let root_capture = std::process::Command::new("import")
+            .args(["-window", "root", "-silent"])
+            .arg(database.with_file_name("native-markdown-editor-root.png"))
+            .status()
+            .expect("capture X11 screen pixels");
+        assert!(root_capture.success(), "X11 screen capture failed");
+        let native_id =
+            crate::web_editor_host::HostedEditor::visible_native_test_window().to_string();
+        let input = |args: &[&str]| {
+            let output = std::process::Command::new("xdotool")
+                .args(args)
+                .output()
+                .expect("run native X11 input");
+            assert!(
+                output.status.success(),
+                "native X11 input failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        input(&[
+            "mousemove",
+            "--window",
+            &native_id,
+            "200",
+            "100",
+            "click",
+            "1",
+        ]);
+        for _ in 0..4 {
+            pause(cx).await;
+        }
+        input(&["key", "--clearmodifiers", "ctrl+End"]);
+        pause(cx).await;
+        let probe = "Linux-native-keyboard-probe";
+        input(&["type", "--clearmodifiers", "--delay", "1", probe]);
+        let typed = native_keyboard_snapshot(window, &editor, probe, cx).await;
+        let typed_text = typed["text"].as_str().expect("native editor text");
+        let restored = bridge(
+            window,
+            &editor,
+            json!({"type":"replace","from":0,"to":typed_text.encode_utf16().count(),"text":first}),
+            cx,
+        )
+        .await;
+        assert_eq!(restored["text"], first);
+
+        // Keep the WebKit view visible while returning native focus to a GPUI
+        // input. A logical GPUI focus change alone does not move X11 focus.
+        let (parent_id, title_x, title_y, original_title) = window
+            .update(cx, |_, window, cx| {
+                use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                window.render_frame(cx);
+                let id = match HasWindowHandle::window_handle(window).unwrap().as_raw() {
+                    RawWindowHandle::Xcb(handle) => u64::from(handle.window.get()),
+                    RawWindowHandle::Xlib(handle) => handle.window,
+                    _ => panic!("native Linux input requires X11"),
+                };
+                let center = window.find("note-title").bounds().center();
+                let scale = f64::from(window.scale_factor());
+                (
+                    id.to_string(),
+                    ((f64::from(center.x) * scale).round() as i32).to_string(),
+                    ((f64::from(center.y) * scale).round() as i32).to_string(),
+                    view.read(cx).note_title.read(cx).value().to_string(),
+                )
+            })
+            .unwrap();
+        input(&[
+            "mousemove",
+            "--window",
+            &parent_id,
+            &title_x,
+            &title_y,
+            "click",
+            "1",
+        ]);
+        for _ in 0..4 {
+            pause(cx).await;
+        }
+        input(&["key", "--clearmodifiers", "ctrl+End"]);
+        pause(cx).await;
+        let title_probe = "Title-native-keyboard-probe";
+        input(&["type", "--clearmodifiers", "--delay", "1", title_probe]);
+        for attempt in 0..100 {
+            pause(cx).await;
+            let title = window
+                .update(cx, |_, _, cx| {
+                    view.read(cx).note_title.read(cx).value().to_string()
+                })
+                .unwrap();
+            if title.ends_with(title_probe) {
+                break;
+            }
+            assert!(
+                attempt < 99,
+                "native focus did not return to GPUI title: {title:?}"
+            );
+        }
+        assert_eq!(
+            bridge(window, &editor, json!({"type":"snapshot"}), cx).await["text"],
+            first
+        );
+        window
+            .update(cx, |_, window, cx| {
+                view.read(cx).note_title.clone().update(cx, |title, cx| {
+                    title.set_value(original_title, window, cx);
+                });
+            })
+            .unwrap();
+        input(&[
+            "mousemove",
+            "--window",
+            &native_id,
+            "200",
+            "100",
+            "click",
+            "1",
+        ]);
+        for _ in 0..4 {
+            pause(cx).await;
+        }
+        input(&["key", "--clearmodifiers", "ctrl+End"]);
+        pause(cx).await;
+        input(&["type", "--clearmodifiers", "--delay", "1", probe]);
+        let returned = native_keyboard_snapshot(window, &editor, probe, cx).await;
+        let length = returned["text"].as_str().unwrap().encode_utf16().count();
+        let restored = bridge(
+            window,
+            &editor,
+            json!({"type":"replace","from":0,"to":length,"text":first}),
+            cx,
+        )
+        .await;
+        assert_eq!(restored["text"], first);
     }
     #[cfg(windows)]
     {

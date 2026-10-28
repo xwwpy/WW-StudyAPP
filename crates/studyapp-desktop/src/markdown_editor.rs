@@ -811,6 +811,8 @@ impl Render for MarkdownEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_host(window, cx);
         let weak = cx.weak_entity();
+        #[cfg(target_os = "linux")]
+        let focus_weak = weak.clone();
         column()
             .id("continuous-markdown-editor")
             .test_support()
@@ -858,7 +860,23 @@ impl Render for MarkdownEditor {
                             }
                         });
                     },
-                    |_, _, _, _| {},
+                    move |_, _, _window, _| {
+                        #[cfg(target_os = "linux")]
+                        {
+                            let weak = focus_weak.clone();
+                            // Mouse listeners belong to the paint phase. Return
+                            // X11 focus before GPUI handles its own input fields.
+                            _window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
+                                if phase.capture() {
+                                    let _ = weak.update(cx, |editor, _| {
+                                        if let Some(host) = &editor.host {
+                                            host.restore_focus_for_parent_click(event.position);
+                                        }
+                                    });
+                                }
+                            });
+                        }
+                    },
                 )
                 .size_full()
                 .min_h(px(180.)),

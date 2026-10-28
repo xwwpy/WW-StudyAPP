@@ -21,6 +21,8 @@ use wry::{
 #[derive(Clone)]
 pub struct ParentWindow {
     raw: RawWindowHandle,
+    #[cfg(target_os = "linux")]
+    scale_factor: f64,
     _ui_thread: PhantomData<Rc<()>>,
 }
 
@@ -36,6 +38,8 @@ impl ParentWindow {
         let raw = xlib_parent(raw)?;
         Ok(Self {
             raw,
+            #[cfg(target_os = "linux")]
+            scale_factor: f64::from(window.scale_factor()),
             _ui_thread: PhantomData,
         })
     }
@@ -81,12 +85,176 @@ impl HasWindowHandle for ParentWindow {
 
 pub struct HostedEditor {
     webview: WebView,
+    // Fields drop in declaration order: destroy WebKit before its GTK host.
+    #[cfg(target_os = "linux")]
+    gtk_host: LinuxHost,
     _context: WebContext,
     _parent: ParentWindow,
     bounds: Cell<Option<Bounds<Pixels>>>,
     requested_visible: Cell<bool>,
     applied_visible: Cell<bool>,
     occlusions: RefCell<Vec<OverlayShape>>,
+}
+
+/// GTK owns this native window and its frame clock. Only the GPUI parent is
+/// foreign; replacing GtkWindow's own GdkWindow breaks GTK's rendering lifecycle.
+#[cfg(target_os = "linux")]
+struct LinuxHost {
+    window: gtk::Window,
+    container: gtk::Box,
+    native: gtk::gdk::Window,
+    _parent: gtk::gdk::Window,
+    display: gdkx11::X11Display,
+    parent_id: std::os::raw::c_ulong,
+    gpui_scale: f64,
+}
+
+#[cfg(target_os = "linux")]
+impl LinuxHost {
+    fn new(parent: &ParentWindow) -> Result<Self> {
+        use gtk::{glib::translate::*, prelude::*};
+        let RawWindowHandle::Xlib(raw) = parent.raw else {
+            anyhow::bail!("编辑器需要 X11 父窗口");
+        };
+        let display = gtk::gdk::Display::default()
+            .and_then(|display| display.downcast::<gdkx11::X11Display>().ok())
+            .context("编辑器需要 X11 GDK 显示连接")?;
+        // The C function may return null when the GPUI window has closed.
+        let foreign: Option<gtk::gdk::Window> = unsafe {
+            from_glib_full(gdkx11::ffi::gdk_x11_window_foreign_new_for_display(
+                display.to_glib_none().0,
+                raw.window,
+            ))
+        };
+        let foreign = foreign.context("编辑器父窗口已不可用")?;
+        let window = gtk::Window::new(gtk::WindowType::Toplevel);
+        window.set_decorated(false);
+        window.set_focus_on_map(false);
+        window.set_accept_focus(true);
+        window.set_skip_taskbar_hint(true);
+        window.set_skip_pager_hint(true);
+        window.set_default_size(1, 1);
+        let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        window.add(&container);
+        window.realize();
+        let Some(native) = window.window() else {
+            // GTK retains toplevels; dropping a Rust reference alone is not enough.
+            unsafe { window.destroy() };
+            anyhow::bail!("无法创建 GTK 编辑器窗口");
+        };
+        let host = Self {
+            window,
+            container,
+            native,
+            _parent: foreign,
+            display,
+            parent_id: raw.window,
+            gpui_scale: parent.scale_factor,
+        };
+        // Before first map, embed the GTK-owned window. GDK preserves its
+        // toplevel/frame-clock bookkeeping when the parent is foreign.
+        host.native.reparent(&host._parent, 0, 0);
+        anyhow::ensure!(host.native.frame_clock().is_some(), "GTK 编辑器缺少帧时钟");
+        Ok(host)
+    }
+
+    fn geometry(&self, bounds: Bounds<Pixels>) -> (LogicalPosition<i32>, LogicalSize<i32>) {
+        use gtk::prelude::*;
+        // GPUI and GDK may choose different scale factors. Map through physical
+        // pixels so the embedded rectangle stays aligned with the GPUI canvas.
+        let ratio = self.gpui_scale / f64::from(self.window.scale_factor().max(1));
+        (
+            LogicalPosition::new(
+                f64::from(bounds.origin.x) * ratio,
+                f64::from(bounds.origin.y) * ratio,
+            )
+            .cast(),
+            LogicalSize::new(
+                f64::from(bounds.size.width.max(px(1.))) * ratio,
+                f64::from(bounds.size.height.max(px(1.))) * ratio,
+            )
+            .cast(),
+        )
+    }
+
+    fn set_bounds(&self, bounds: Bounds<Pixels>) {
+        use gtk::prelude::*;
+        let (position, size) = self.geometry(bounds);
+        self.window.resize(size.width.max(1), size.height.max(1));
+        self.native.move_resize(
+            position.x,
+            position.y,
+            size.width.max(1),
+            size.height.max(1),
+        );
+        self.window.size_allocate(&gtk::Allocation::new(
+            0,
+            0,
+            size.width.max(1),
+            size.height.max(1),
+        ));
+    }
+
+    fn restore_parent_focus(&self) {
+        use gtk::{glib::translate::ToGlibPtr, prelude::*};
+        // Restore only focus in our GTK subtree, never another application's.
+        unsafe {
+            let display = gdkx11::ffi::gdk_x11_display_get_xdisplay(self.display.to_glib_none().0);
+            let own = gdkx11::ffi::gdk_x11_window_get_xid(self.native.as_ptr().cast());
+            let mut focused = 0;
+            let mut revert = 0;
+            self.display.error_trap_push();
+            x11::xlib::XGetInputFocus(display, &mut focused, &mut revert);
+            let mut candidate = focused;
+            let mut ours = false;
+            for _ in 0..32 {
+                if candidate == own {
+                    ours = true;
+                    break;
+                }
+                if candidate <= x11::xlib::PointerRoot as _ || candidate == self.parent_id {
+                    break;
+                }
+                let (mut root, mut parent) = (0, 0);
+                let mut children = std::ptr::null_mut();
+                let mut count = 0;
+                let ok = x11::xlib::XQueryTree(
+                    display,
+                    candidate,
+                    &mut root,
+                    &mut parent,
+                    &mut children,
+                    &mut count,
+                );
+                if !children.is_null() {
+                    x11::xlib::XFree(children.cast());
+                }
+                if ok == 0 || parent == candidate || candidate == root {
+                    break;
+                }
+                candidate = parent;
+            }
+            if ours {
+                x11::xlib::XSetInputFocus(
+                    display,
+                    self.parent_id,
+                    x11::xlib::RevertToParent,
+                    x11::xlib::CurrentTime,
+                );
+            }
+            self.display.error_trap_pop_ignored();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for LinuxHost {
+    fn drop(&mut self) {
+        use gtk::prelude::*;
+        self.restore_parent_focus();
+        // The WebView field has already been dropped on the GTK foreground thread.
+        unsafe { self.window.destroy() };
+    }
 }
 
 #[cfg(all(target_os = "linux", feature = "ui-test"))]
@@ -113,6 +281,8 @@ impl HostedEditor {
         }
         std::fs::create_dir_all(&profile)?;
         let mut context = WebContext::new(Some(profile));
+        #[cfg(target_os = "linux")]
+        let gtk_host = LinuxHost::new(&parent)?;
         let builder = WebViewBuilder::new_with_web_context(&mut context)
             .with_custom_protocol("studyapp".into(), |_, request| embedded_response(request))
             .with_url(EDITOR_PAGE)
@@ -148,14 +318,40 @@ impl HostedEditor {
             });
         #[cfg(feature = "ui-test")]
         let builder = builder.with_initialization_script("window.__STUDYAPP_EDITOR_TEST__ = true;");
+        #[cfg(not(target_os = "linux"))]
         let webview = builder
             .build_as_child(&parent)
             .context("无法启动系统 WebKit 编辑器")?;
         #[cfg(target_os = "linux")]
-        // Wry initializes its GTK window before registering the X11 container.
-        // Repeat the initial hide after registration so the child is unmapped,
-        // even if the user leaves Notes before WebKit reports ready.
-        webview.set_visible(false)?;
+        let webview = {
+            use gtk::{glib::translate::ToGlibPtr, prelude::*};
+            use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
+            let webview = builder
+                .build_gtk(&gtk_host.container)
+                .context("无法启动 GTK WebKit 编辑器")?;
+            let native = gtk_host.native.downgrade();
+            let display = gtk_host.display.clone();
+            webview
+                .webview()
+                .connect_button_press_event(move |_, event| {
+                    if let Some(native) = native.upgrade() {
+                        // A real click transfers keyboard focus into the embedded
+                        // window. Do not ask the WM to activate an unmanaged child.
+                        unsafe {
+                            display.error_trap_push();
+                            x11::xlib::XSetInputFocus(
+                                gdkx11::ffi::gdk_x11_display_get_xdisplay(display.to_glib_none().0),
+                                gdkx11::ffi::gdk_x11_window_get_xid(native.as_ptr().cast()),
+                                x11::xlib::RevertToParent,
+                                event.time().into(),
+                            );
+                            display.error_trap_pop_ignored();
+                        }
+                    }
+                    gtk::glib::Propagation::Proceed
+                });
+            webview
+        };
         #[cfg(all(target_os = "linux", feature = "ui-test"))]
         {
             use gtk::prelude::*;
@@ -177,6 +373,8 @@ impl HostedEditor {
         }
         Ok(Self {
             webview,
+            #[cfg(target_os = "linux")]
+            gtk_host,
             _context: context,
             _parent: parent,
             bounds: Cell::new(None),
@@ -236,11 +434,20 @@ impl HostedEditor {
             assert!(!visible.is_empty(), "no visible native editor");
             for widget in visible {
                 assert!(widget.is_mapped(), "native editor is not mapped");
+                assert!(
+                    widget.frame_clock().is_some(),
+                    "native editor has no GTK frame clock"
+                );
                 let size = (widget.allocated_width(), widget.allocated_height());
                 assert!(size.0 > 1 && size.1 > 1, "native editor is only {size:?}");
                 let container = widget.parent().expect("native editor GTK container");
                 let top = container.parent().expect("native editor GTK window");
                 for parent in [container, top] {
+                    assert!(
+                        parent.frame_clock().is_some(),
+                        "parent {} has no GTK frame clock",
+                        parent.type_().name()
+                    );
                     assert_eq!(
                         size,
                         (parent.allocated_width(), parent.allocated_height()),
@@ -251,6 +458,22 @@ impl HostedEditor {
                 }
             }
         });
+    }
+
+    #[cfg(all(target_os = "linux", feature = "ui-test"))]
+    pub fn visible_native_test_window() -> u64 {
+        use gtk::prelude::*;
+        PAINT_DIAGNOSTICS.with(|entries| {
+            let widget = entries
+                .borrow()
+                .iter()
+                .filter_map(|entry| entry.widget.upgrade())
+                .find(|widget| widget.is_visible() && widget.is_mapped())
+                .expect("visible native editor for remote input regression");
+            let window = widget.window().expect("realized native editor");
+            // GTK's X11 backend owns this live window; GTK retains its reference.
+            unsafe { gdkx11::ffi::gdk_x11_window_get_xid(window.as_ptr().cast()) as u64 }
+        })
     }
 
     /// Called outside GPUI entity/window borrows: GTK callbacks may dispatch native events.
@@ -273,6 +496,9 @@ impl HostedEditor {
 
     pub fn set_bounds(&self, bounds: Bounds<Pixels>) -> Result<()> {
         if self.bounds.get() != Some(bounds) {
+            #[cfg(target_os = "linux")]
+            self.gtk_host.set_bounds(bounds);
+            #[cfg(not(target_os = "linux"))]
             self.webview.set_bounds(wry::Rect {
                 position: LogicalPosition::new(
                     f64::from(bounds.origin.x),
@@ -301,6 +527,23 @@ impl HostedEditor {
     }
 
     #[cfg(target_os = "linux")]
+    pub fn restore_focus_for_parent_click(&self, position: gpui_kit::Point<Pixels>) {
+        // XInput events from the child can also reach the GPUI parent. Never
+        // undo the native click-to-focus bridge while the click is in its area.
+        if self.applied_visible.get()
+            && self
+                .bounds
+                .get()
+                .is_some_and(|bounds| bounds.contains(&position))
+        {
+            return;
+        }
+        // This checks the X11 focus ancestry before returning focus, so a click
+        // cannot take focus away from a different application or another child.
+        self.gtk_host.restore_parent_focus();
+    }
+
+    #[cfg(target_os = "linux")]
     fn allocate_linux_content(&self) -> Result<()> {
         use gtk::prelude::*;
         use wry::WebViewExtUnix;
@@ -308,11 +551,7 @@ impl HostedEditor {
         let Some(bounds) = self.bounds.get() else {
             return Ok(());
         };
-        let size = LogicalSize::new(
-            f64::from(bounds.size.width.max(px(1.))),
-            f64::from(bounds.size.height.max(px(1.))),
-        )
-        .cast::<i32>();
+        let (_, size) = self.gtk_host.geometry(bounds);
         let widget = self.webview.webview();
         let container = widget
             .parent()
@@ -328,10 +567,8 @@ impl HostedEditor {
             || widget.allocated_width() != size.width
             || widget.allocated_height() != size.height
         {
-            // Wry resizes the X11 window while this subtree may be hidden.
-            // GTK skips hidden children, and showing the foreign GtkWindow
-            // only queues a resize. Allocate the visible hierarchy top-down:
-            // sizing only the box leaves its GtkWindow allocation/clip at 1x1.
+            // Apply GPUI's layout synchronously after showing hidden children;
+            // subsequent page repaints use GTK's normal frame-clock lifecycle.
             top.size_allocate(&allocation);
             container.size_allocate(&allocation);
             #[cfg(feature = "ui-test")]
@@ -365,6 +602,19 @@ impl HostedEditor {
         });
         let visible = self.requested_visible.get() && !covered;
         if self.applied_visible.get() != visible {
+            #[cfg(target_os = "linux")]
+            {
+                use gtk::prelude::*;
+                if visible {
+                    self.gtk_host.window.show_all();
+                    if let Some(bounds) = self.bounds.get() {
+                        self.gtk_host.set_bounds(bounds);
+                    }
+                } else {
+                    self.gtk_host.restore_parent_focus();
+                    self.gtk_host.window.hide();
+                }
+            }
             self.webview.set_visible(visible)?;
             self.applied_visible.set(visible);
         }
