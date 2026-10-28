@@ -157,7 +157,7 @@ pub(super) fn delete_empty_directory(path: &Path, identity: &FileIdentity) -> Re
     #[cfg(not(windows))]
     {
         let _ = identity;
-        bail!("此维护操作仅支持 Windows")
+        anyhow::bail!("此维护操作仅支持 Windows")
     }
 }
 

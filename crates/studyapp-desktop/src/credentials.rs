@@ -123,7 +123,7 @@ fn crypt(input: &[u8], encrypt: bool) -> Result<Vec<u8>> {
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

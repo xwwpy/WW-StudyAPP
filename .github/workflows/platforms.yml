@@ -2,6 +2,10 @@ name: Linux and macOS packages
 
 on:
   workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
   workflow_dispatch:
   push:
     branches: [main, 'codex/**']
@@ -43,6 +47,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
+          ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
@@ -61,7 +66,22 @@ jobs:
         run: |
           python3 scripts/test-package-unix.py
           python3 scripts/test-smoke-unix.py
-      - name: Verify native Rust tests
+      - name: Prepare isolated macOS test keychain
+        if: matrix.platform == 'macos'
+        run: |
+          security create-keychain -p fixture-password "$RUNNER_TEMP/studyapp-tests.keychain-db"
+          security default-keychain -s "$RUNNER_TEMP/studyapp-tests.keychain-db"
+          security unlock-keychain -p fixture-password "$RUNNER_TEMP/studyapp-tests.keychain-db"
+          security set-keychain-settings -lut 7200 "$RUNNER_TEMP/studyapp-tests.keychain-db"
+      - name: Verify Linux Rust tests and system keyring
+        if: matrix.platform == 'linux'
+        run: |
+          dbus-run-session -- bash -e -c '
+            printf "fixture-password" | gnome-keyring-daemon --unlock --components=secrets
+            cargo test --locked -p studyapp-desktop -p studyapp-ui
+          '
+      - name: Verify macOS Rust tests and system keychain
+        if: matrix.platform == 'macos'
         run: cargo test --locked -p studyapp-desktop -p studyapp-ui
       - name: Build native interactive validation binary
         run: cargo build --locked -p studyapp-desktop --bin studyapp --features ui-test
@@ -72,7 +92,6 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           GDK_BACKEND: x11
           GPUI_BACKEND: x11
-          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
         run: dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1000x24' python3 scripts/smoke-unix.py --binary target/debug/studyapp --data-dir "$RUNNER_TEMP/native-interactive" --interactive
       - name: macOS native editor regression
         if: matrix.platform == 'macos'
@@ -97,7 +116,6 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           GDK_BACKEND: x11
           GPUI_BACKEND: x11
-          WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS: '1'
         run: |
           (cd dist && sha256sum --check *.sha256)
           dpkg-deb --contents dist/*.deb

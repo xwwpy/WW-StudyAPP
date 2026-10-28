@@ -1,6 +1,8 @@
 //! System WebKit host. Linux deliberately uses X11 (including XWayland).
 use super::{EDITOR_PAGE, editor_page_allowed, embedded_response, ipc_allowed};
-use anyhow::{Context as _, Result, ensure};
+#[cfg(target_os = "macos")]
+use anyhow::ensure;
+use anyhow::{Context as _, Result};
 use gpui_kit::{Bounds, Pixels, Window, px};
 use std::{
     cell::{Cell, RefCell},
@@ -31,14 +33,41 @@ impl ParentWindow {
             "编辑器需要 macOS 原生窗口"
         );
         #[cfg(target_os = "linux")]
-        ensure!(
-            matches!(raw, RawWindowHandle::Xlib(_) | RawWindowHandle::Xcb(_)),
-            "编辑器需要 X11 或 XWayland 会话"
-        );
+        let raw = xlib_parent(raw)?;
         Ok(Self {
             raw,
             _ui_thread: PhantomData,
         })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn xlib_parent(raw: RawWindowHandle) -> Result<RawWindowHandle> {
+    match raw {
+        RawWindowHandle::Xlib(_) => Ok(raw),
+        RawWindowHandle::Xcb(xcb) => {
+            // XCB and Xlib use the same server-side XIDs. Wry accepts only the
+            // Xlib representation, while GPUI exposes its XCB connection.
+            let mut xlib = wry::raw_window_handle::XlibWindowHandle::new(xcb.window.get().into());
+            xlib.visual_id = xcb.visual_id.map_or(0, |id| id.get().into());
+            Ok(RawWindowHandle::Xlib(xlib))
+        }
+        _ => anyhow::bail!("编辑器需要 X11 或 XWayland 会话"),
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    #[test]
+    fn gpui_xcb_window_becomes_wry_xlib_without_changing_server_ids() {
+        let mut xcb = wry::raw_window_handle::XcbWindowHandle::new(123_u32.try_into().unwrap());
+        xcb.visual_id = Some(456_u32.try_into().unwrap());
+        let RawWindowHandle::Xlib(xlib) = xlib_parent(RawWindowHandle::Xcb(xcb)).unwrap() else {
+            panic!("Wry requires Xlib");
+        };
+        assert_eq!(xlib.window, 123);
+        assert_eq!(xlib.visual_id, 456);
     }
 }
 
@@ -63,7 +92,14 @@ pub struct HostedEditor {
 impl HostedEditor {
     pub fn new(parent: ParentWindow, sender: Sender<String>, profile: PathBuf) -> Result<Self> {
         #[cfg(target_os = "linux")]
-        gtk::init().context("无法初始化 GTK，请在 X11/XWayland 桌面会话运行")?;
+        {
+            if !gtk::is_initialized() {
+                // GDK otherwise prefers Wayland even when the GPUI parent is
+                // X11. Wry's child-window embedding requires an X11 GDK display.
+                gtk::gdk::set_allowed_backends("x11");
+            }
+            gtk::init().context("无法初始化 GTK，请在 X11/XWayland 桌面会话运行")?;
+        }
         std::fs::create_dir_all(&profile)?;
         let mut context = WebContext::new(Some(profile));
         let builder = WebViewBuilder::new_with_web_context(&mut context)

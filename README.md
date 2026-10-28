@@ -5,7 +5,7 @@
 - Markdown 笔记编辑、文件夹管理、搜索与自动保存。
 - 学习记录、定时提醒、间隔复习与学习统计。
 - 图片管理、备份恢复，以及 WebDAV、本地文件夹和 NAS 同步。
-- 主题与快捷键设置，支持应用内检查更新。
+- 主题与快捷键设置；Windows 支持应用内检查更新。
 
 从 [Releases](https://github.com/xwwpy/WW-StudyAPP/releases) 下载对应系统的安装包。详细操作见[使用指南](docs/user-guide.md)。
 

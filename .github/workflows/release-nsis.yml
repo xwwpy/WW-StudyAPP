@@ -1,4 +1,4 @@
-name: Release (NSIS)
+name: Release
 
 # Tag-triggered cargo-sweep style release: build the NSIS setup, sign it, build
 # the installer/portable wrappers and SHA256SUMS, then publish latest.json and
@@ -23,8 +23,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  native:
+    uses: ./.github/workflows/platforms.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
   release:
-    name: Build, sign and publish the NSIS release
+    name: Build and sign Windows installers
     runs-on: windows-latest
     timeout-minutes: 45
     permissions:
@@ -129,18 +133,34 @@ jobs:
           [IO.File]::WriteAllLines((Join-Path 'release' 'SHA256SUMS.txt'), $sums, [Text.Encoding]::ASCII)
           Get-ChildItem -LiteralPath release | Select-Object Name, Length | Format-Table -AutoSize
 
-      - name: Publish the GitHub Release
+      - name: Preserve verified Windows release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-windows
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish all verified platform packages
+    needs: [release, native]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+      - name: Verify complete release publication logic
+        run: python3 scripts/test-publish-release.py
+      - name: Publish complete GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          $tag = $env:RELEASE_TAG
-          $exists = gh release view $tag --json tagName 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "WW-StudyApp $env:APP_VERSION" --notes-file docs/release-notes.md
-            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
-          }
-          $assets = Get-ChildItem -LiteralPath release -File | ForEach-Object { $_.FullName }
-          gh release upload $tag @assets --clobber
-          if ($LASTEXITCODE -ne 0) { throw 'Asset upload failed' }
-          gh release view $tag --json assets | python -c "import json,sys; d=json.load(sys.stdin); [print(a['name'], a['size']) for a in d['assets']]"
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: python3 scripts/publish-release.py --tag "$RELEASE_TAG" --directory release
