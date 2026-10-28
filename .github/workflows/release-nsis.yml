@@ -1,0 +1,146 @@
+name: Release (NSIS)
+
+# Tag-triggered cargo-sweep style release: build the NSIS setup, sign it, build
+# the installer/portable wrappers and SHA256SUMS, then publish latest.json and
+# the checksummed assets in one GitHub Release. A tag must only be pushed after
+# the CI run for main is green; this workflow builds from that immutable tag.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build (never moved)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-nsis-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, sign and publish the NSIS release
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve tag and require a matching workspace version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+          if ($LASTEXITCODE -ne 0) { throw 'Workspace version unavailable' }
+          if ($env:RELEASE_TAG -ne "v$version") { throw "Tag $env:RELEASE_TAG does not match workspace version $version" }
+          "APP_VERSION=$version" >> $env:GITHUB_ENV
+          "RELEASE_TAG=$env:RELEASE_TAG" >> $env:GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.0
+
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          cache-on-failure: true
+
+      - name: Verify installer source contracts
+        run: |
+          python scripts/test-nsis-sources.py
+          if ($LASTEXITCODE -ne 0) { throw 'NSIS source checks failed' }
+
+      - name: Fetch locked dependencies
+        run: cargo fetch --locked
+
+      - name: Build release application
+        run: cargo build --release --locked --bin studyapp
+
+      - name: Build portable payload
+        run: ./scripts/package.ps1 -Version $env:APP_VERSION
+
+      - name: Build NSIS setup
+        run: |
+          $makensis = 'C:\Program Files (x86)\NSIS\makensis.exe'
+          if (-not (Test-Path -LiteralPath $makensis)) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed' }
+          }
+          if (-not (Test-Path -LiteralPath $makensis)) { throw 'makensis is unavailable' }
+          $payload = (Resolve-Path "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64").Path
+          $icon = (Resolve-Path 'assets/icon.ico').Path
+          $out = Join-Path (Get-Location) "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64-Setup.exe"
+          & $makensis "/DVERSION=$env:APP_VERSION" "/DPAYLOAD=$payload" "/DICON=$icon" "/DOUTFILE=$out" installer/studyapp.nsi
+          if ($LASTEXITCODE -ne 0) { throw 'makensis failed' }
+          if (-not (Test-Path -LiteralPath $out)) { throw 'Setup executable was not produced' }
+
+      - name: Verify application and setup icons
+        run: |
+          python scripts/app-icon.py --exe target/release/studyapp.exe --installer "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64-Setup.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Application icon verification failed' }
+
+      - name: Verify chosen install directory and lifecycle
+        run: ./scripts/test-nsis-install.ps1 -SetupPath "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64-Setup.exe" -Version $env:APP_VERSION
+
+      - name: Preserve installer acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: nsis-acceptance-${{ github.run_attempt }}
+          path: .scratch/nsis-acceptance/
+          if-no-files-found: ignore
+
+      - name: Sign the setup with the release key
+        env:
+          STUDYAPP_SIGNING_KEY: ${{ secrets.STUDYAPP_SIGNING_KEY }}
+        run: |
+          if (-not $env:STUDYAPP_SIGNING_KEY) { throw 'STUDYAPP_SIGNING_KEY secret is required to sign the release' }
+          $keyPath = Join-Path $env:RUNNER_TEMP 'studyapp-signing.key'
+          [IO.File]::WriteAllText($keyPath, $env:STUDYAPP_SIGNING_KEY.Trim() + "`n", [Text.Encoding]::ASCII)
+          $setup = "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64-Setup.exe"
+          python scripts/update-signature.py sign --private $keyPath --file $setup --out "$setup.sig"
+          if ($LASTEXITCODE -ne 0) { throw 'Setup signing failed' }
+          python scripts/update-manifest.py --version $env:APP_VERSION --tag $env:RELEASE_TAG --setup $setup --private $keyPath --notes-file docs/release-notes.md --output dist/latest.json --repository xwwpy/WW-StudyAPP
+          if ($LASTEXITCODE -ne 0) { throw 'latest.json generation failed' }
+          Remove-Item -LiteralPath $keyPath -Force
+
+      - name: Package installer and portable wrappers
+        run: |
+          ./scripts/package-release.ps1 -Version $env:APP_VERSION -SetupPath "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64-Setup.exe" -PayloadDirectory "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64" -OutputDirectory release
+          $setup = "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64-Setup.exe"
+          Copy-Item -LiteralPath $setup -Destination release -Force
+          Copy-Item -LiteralPath "$setup.sig" -Destination release -Force
+          Copy-Item -LiteralPath 'dist/latest.json' -Destination release -Force
+          $sums = Get-ChildItem -LiteralPath release -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
+          }
+          [IO.File]::WriteAllLines((Join-Path 'release' 'SHA256SUMS.txt'), $sums, [Text.Encoding]::ASCII)
+          Get-ChildItem -LiteralPath release | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $tag = $env:RELEASE_TAG
+          $exists = gh release view $tag --json tagName 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "WW-StudyApp $env:APP_VERSION" --notes-file docs/release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw 'Release creation failed' }
+          }
+          $assets = Get-ChildItem -LiteralPath release -File | ForEach-Object { $_.FullName }
+          gh release upload $tag @assets --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Asset upload failed' }
+          gh release view $tag --json assets | python -c "import json,sys; d=json.load(sys.stdin); [print(a['name'], a['size']) for a in d['assets']]"

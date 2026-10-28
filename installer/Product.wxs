@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="WW-StudyApp" Manufacturer="WW-StudyApp" Version="$(var.Version)"
+           ProductCode="*" UpgradeCode="{4CF5A7C2-094D-4D97-AB25-24C6C2BAA4CD}"
+           Scope="perUser" InstallerVersion="500" Compressed="yes">
+    <MajorUpgrade Schedule="afterInstallInitialize" AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of WW-StudyApp is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/xwwpy/WW-StudyAPP" />
+    <Launch Condition="NOT ALLUSERS" Message="WW-StudyApp supports current-user installation only." />
+    <SetProperty Id="ARPINSTALLLOCATION" Action="SetInstallLocation" Value="[INSTALLFOLDER]"
+                 Before="InstallValidate" Sequence="execute" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="PROGRAMS" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="WW-StudyApp">
+          <Component Id="Application" Guid="{C532F175-22DF-45D0-B85D-5987E8D1BFFB}">
+            <File Id="Application" Source="$(var.PayloadDir)\WW-StudyApp.exe" />
+            <RegistryValue Id="Application" Root="HKCU" Key="Software\WW-StudyApp\Installer" Name="Application" Value="1" Type="integer" KeyPath="yes" />
+            <RemoveFolder Id="RemoveInstall" On="uninstall" />
+            <RemoveFolder Id="RemovePrograms" Directory="PROGRAMS" On="uninstall" />
+          </Component>
+          <Component Id="Uninstaller" Guid="{58ACFE77-F88B-4767-BF86-A4037265B873}">
+            <File Id="Uninstaller" Source="$(var.PayloadDir)\Uninstall.exe" />
+            <RegistryValue Id="Uninstaller" Root="HKCU" Key="Software\WW-StudyApp\Installer" Name="Uninstaller" Value="1" Type="integer" KeyPath="yes" />
+          </Component>
+          <Component Id="Runtime" Guid="{53AB8163-A013-43AB-9688-C9227FB328A9}">
+            <File Id="Runtime" Source="$(var.PayloadDir)\vcruntime140.dll" />
+            <RegistryValue Id="Runtime" Root="HKCU" Key="Software\WW-StudyApp\Installer" Name="Runtime" Value="1" Type="integer" KeyPath="yes" />
+          </Component>
+          <Component Id="Runtime1" Guid="{F03C1EDE-82F7-4A81-96D2-BC264DBACDBE}">
+            <File Id="Runtime1" Source="$(var.PayloadDir)\vcruntime140_1.dll" />
+            <RegistryValue Id="Runtime1" Root="HKCU" Key="Software\WW-StudyApp\Installer" Name="Runtime1" Value="1" Type="integer" KeyPath="yes" />
+          </Component>
+          <Directory Id="SUPPORT" Name="support">
+            <Component Id="License" Guid="{7B86658D-CFF9-4DF2-BB36-A590B8605A3F}">
+              <File Id="License" Source="$(var.PayloadDir)\support\LICENSE" />
+              <RegistryValue Id="License" Root="HKCU" Key="Software\WW-StudyApp\Installer" Name="License" Value="1" Type="integer" KeyPath="yes" />
+              <RemoveFolder Id="RemoveSupport" On="uninstall" />
+            </Component>
+            <Component Id="Notices" Guid="{558A9E74-B8D6-4EFC-9941-CB39D9424CDD}">
+              <File Id="Notices" Source="$(var.PayloadDir)\support\THIRD-PARTY-NOTICES.txt" />
+              <RegistryValue Id="Notices" Root="HKCU" Key="Software\WW-StudyApp\Installer" Name="Notices" Value="1" Type="integer" KeyPath="yes" />
+            </Component>
+            <Component Id="Manifest" Guid="{72E800BC-9F33-4C99-A4E0-391633CDAB58}">
+              <File Id="Manifest" Source="$(var.PayloadDir)\support\manifest.json" />
+              <RegistryValue Id="Manifest" Root="HKCU" Key="Software\WW-StudyApp\Installer" Name="Manifest" Value="1" Type="integer" KeyPath="yes" />
+            </Component>
+          </Directory>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="APPLICATIONMENU" Name="WW-StudyApp">
+        <Component Id="Shortcuts" Guid="{673C8B3C-300A-47FB-B1FD-036A7FA7FDD0}">
+          <Shortcut Id="ApplicationShortcut" Name="WW-StudyApp" Target="[INSTALLFOLDER]WW-StudyApp.exe" WorkingDirectory="INSTALLFOLDER" />
+          <Shortcut Id="UninstallShortcut" Name="Uninstall WW-StudyApp" Target="[INSTALLFOLDER]Uninstall.exe" WorkingDirectory="INSTALLFOLDER" />
+          <RegistryValue Id="ShortcutKey" Root="HKCU" Key="Software\WW-StudyApp\Installer" Name="Shortcuts" Value="1" Type="integer" KeyPath="yes" />
+          <RemoveFolder Id="RemoveMenu" On="uninstall" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="ApplicationFeature" Title="WW-StudyApp" Level="1">
+      <ComponentRef Id="Application" /><ComponentRef Id="Uninstaller" />
+      <ComponentRef Id="Runtime" /><ComponentRef Id="Runtime1" />
+      <ComponentRef Id="License" /><ComponentRef Id="Notices" /><ComponentRef Id="Manifest" />
+      <ComponentRef Id="Shortcuts" />
+    </Feature>
+  </Package>
+</Wix>

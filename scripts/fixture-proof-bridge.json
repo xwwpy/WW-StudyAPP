@@ -1,0 +1,51 @@
+{
+  "id": "maintenance-upgrade-fixture-09883d8-v5",
+  "anchor": "09883d80a8718a167bf0352e24c7489c35c32002",
+  "groups": [
+    "editor",
+    "core-linux",
+    "core-windows",
+    "desktop",
+    "policy",
+    "security",
+    "ime"
+  ],
+  "fixture": {
+    "old": "e5ac0ac7e4de1eaef54b5ab57b57a0f516802d2edcb5a281b72b9f7100b01f79",
+    "new": "79646c94719e23aeeaba67a483bebb96716cb32cfc7549de283d90881b9d192e"
+  },
+  "repair_fixture": {
+    "old": "9d056e367790c235071375dd009eb3ec6573324da7a1c3b92eb74238766f5c8f",
+    "new": "25cb9638e3a0b9c5e0fe4dfd762cbfce6923840208df75ec201f757cfb568f5d"
+  },
+  "maintenance_script_fixture": {
+    "old": "96774377484ba32415c0836a2c90203935677a11b9a97f407a5a9d153d5d0a09",
+    "new": "43d9fe79da5b1cbff7bde38ecfef9b4df6a3aa34b2ca9f8f14386a018b1a91b0"
+  },
+  "maintenance_source_tests_fixture": {
+    "old": "23724b577b7ef6271f6ff975917795ce05e287f91ad51d2c392c13f8262d29c0",
+    "new": "7c4c74a370c0a5afdb899f60c64ad0278631e2ec0f068a32be056e34b4569d9e"
+  },
+  "smoke_fixture": {
+    "old": "2784ef780820400baf886335bd3bb6245b9f80c2f8aa787d8483348eaf9566e1",
+    "new": "4eb3ac0104e5756a57959c018e7a7774bda318c156bacaa11088c9d384ed603c"
+  },
+  "policy": {
+    "scripts/pipeline.py": {
+      "old": "6ee4848295b4c200d75cd82377eb66e920d69387d3309d0ee9b9883a427c0273",
+      "new": "d8155f4508bdab5dfc594150079dc57cffb5552d69099292a15acfda461dd8b7"
+    },
+    "scripts/test-pipeline.py": {
+      "old": "905262811a8ad5995dc90258d8c731c8f6c6c3dc467cecb456a123e649c2d560",
+      "new": "150d126f838905a27405a5a9956bbdf4612b6a2f182329a2bb14c8bb182a03e8"
+    },
+    "scripts/ime-ci.py": {
+      "old": "6ebb3af6826e3395729540599c8f1bc7e76e938c16cd3c302b0069d151e2c319",
+      "new": "17b7bafa0a8b9f5d84ca9ef9bc3eaae3a25d95344442d7e96a011fdf6125a352"
+    },
+    "scripts/test-fixture-proof-bridge.py": {
+      "old": null,
+      "new": "9c38f51ac0943910252a62245f922a0280cee80132369fb010c11169f9a2ad08"
+    }
+  }
+}

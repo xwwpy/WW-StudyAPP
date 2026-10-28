@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  # New releases publish through Release (NSIS), which builds and signs the
+  # setup from the tag. This workflow remains for promoting older, already
+  # verified MSI releases by explicit dispatch.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to promote (never moved)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Promote verified Windows package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve existing tag to its immutable source commit
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python -c 'import os; from pathlib import Path; import subprocess; tag=os.environ["RELEASE_TAG"]; sha=subprocess.check_output(["git","rev-parse","refs/tags/"+tag+"^{commit}"], text=True).strip(); Path(os.environ["GITHUB_ENV"]).open("a").write("RELEASE_SHA="+sha+"\n")'
+      - name: Require applicable real Pinyin evidence for 0.8 and later
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          export GITHUB_SHA="$RELEASE_SHA"
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, sys, tomllib
+          version = tomllib.loads(Path('Cargo.toml').read_text())['workspace']['package']['version']
+          release = tuple(int(part) for part in version.split('-')[0].split('+')[0].split('.'))
+          if release >= (0, 8, 0):
+              subprocess.run([sys.executable, 'scripts/ime-ci.py', 'verify-release'], check=True)
+          PY
+      - name: Validate source, successful suites, manifest and every asset hash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: GITHUB_SHA="$RELEASE_SHA" python scripts/pipeline.py promote --tag "$RELEASE_TAG"
+      - name: Publish complete assets with draft recovery and no overwrites
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: GITHUB_SHA="$RELEASE_SHA" python scripts/pipeline.py publish --tag "$RELEASE_TAG"

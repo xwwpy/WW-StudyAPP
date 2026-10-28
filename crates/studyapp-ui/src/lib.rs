@@ -1,0 +1,17 @@
+//! Shared visual system and reusable GPUI controls. No application IO or business workers.
+pub mod bubble;
+pub mod components;
+pub mod controls;
+pub mod design;
+pub mod feedback;
+pub mod modal_frame;
+pub mod notice_queue;
+pub mod notifications;
+pub mod settings_color;
+pub mod settings_color_value;
+pub mod settings_components;
+pub mod theme;
+pub mod update_available;
+pub mod update_dialog;
+pub mod virtual_list_scrollbar;
+pub mod window_chrome;

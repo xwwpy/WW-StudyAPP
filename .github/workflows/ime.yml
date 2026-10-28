@@ -1,0 +1,125 @@
+name: Native Pinyin
+
+on:
+  push:
+    branches: [main, 'codex/**']
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+concurrency:
+  group: ime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Native Pinyin verification plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reuse only applicable real composition evidence
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ime-ci.py plan
+      - name: Verify changed native Pinyin evidence policy
+        if: steps.plan.outputs.run == 'true'
+        run: python scripts/test-ime-ci.py
+
+  composition:
+    name: Windows Pinyin composition
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 80
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Allocate isolated Pinyin diagnostics
+        run: |
+          $imeRoot = Join-Path $env:RUNNER_TEMP ('studyapp-ime-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $imeRoot | Out-Null
+          "IME_ROOT=$imeRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Prepare official Chinese capability and Pinyin profile
+        timeout-minutes: 18
+        run: ./scripts/prepare-ime.ps1 -EvidenceDirectory "$env:IME_ROOT/setup"
+      - name: Resolve a verified native validation binary
+        id: binary
+        timeout-minutes: 21
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ime-ci.py binary --directory "$env:IME_ROOT/binary" --wait-seconds 1200
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        if: steps.binary.outputs.needs_build == 'true'
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        if: steps.binary.outputs.needs_build == 'true'
+        with:
+          shared-key: desktop-windows-windows
+          key: desktop-windows
+          cache-on-failure: true
+      - name: Build missing native validation executable
+        if: steps.binary.outputs.needs_build == 'true'
+        timeout-minutes: 30
+        run: |
+          cargo build --locked -p studyapp-desktop --features ui-test
+          if ($LASTEXITCODE -ne 0) { throw 'Native Pinyin validation build failed' }
+      - name: Preserve compiled Pinyin validation binary
+        if: steps.binary.outputs.needs_build == 'true'
+        id: compiled-binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ime-validation-binary-${{ github.run_attempt }}
+          path: target/debug/studyapp.exe
+          if-no-files-found: error
+          retention-days: 90
+      - name: Verify uploaded fallback binary against the local build
+        if: steps.binary.outputs.needs_build == 'true'
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IME_BINARY_ID: ${{ steps.compiled-binary.outputs.artifact-id }}
+          IME_BINARY_DIGEST: ${{ steps.compiled-binary.outputs.artifact-digest }}
+        run: python scripts/ime-ci.py bind-built --directory "$env:IME_ROOT/binary" --executable target/debug/studyapp.exe --artifact-id "$env:IME_BINARY_ID" --artifact-digest "sha256:$env:IME_BINARY_DIGEST"
+      - name: Verify real Pinyin composition and candidate confirmation
+        timeout-minutes: 4
+        run: ./scripts/smoke-ime.ps1 -DataDirectory "$env:IME_ROOT/library" -BinaryPath "$env:IME_ROOT/binary/studyapp.exe"
+      - name: Record native Pinyin proof and original evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ime-ci.py record --directory "$env:IME_ROOT/proof" --data "$env:IME_ROOT/library" --binary-metadata "$env:IME_ROOT/binary/binary-metadata.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ime-proof-${{ github.run_attempt }}
+          path: ${{ env.IME_ROOT }}/proof/*
+          if-no-files-found: error
+          retention-days: 90
+      - name: Preserve capability and native failure diagnostics
+        if: always() && env.IME_ROOT != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ime-diagnostics-${{ github.run_attempt }}
+          path: |
+            ${{ env.IME_ROOT }}/setup/*
+            ${{ env.IME_ROOT }}/binary/binary-metadata.json
+            ${{ env.IME_ROOT }}/library/native-ime-*
+            ${{ env.IME_ROOT }}/library.*.log
+          if-no-files-found: warn
+          retention-days: 14

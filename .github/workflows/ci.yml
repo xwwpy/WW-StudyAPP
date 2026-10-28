@@ -1,0 +1,541 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'codex/**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: Run every verification group without reusing receipts
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  plan:
+    name: Verification plan
+    runs-on: ubuntu-latest
+    outputs:
+      editor: ${{ steps.plan.outputs['editor'] }}
+      core-linux: ${{ steps.plan.outputs['core-linux'] }}
+      core-windows: ${{ steps.plan.outputs['core-windows'] }}
+      desktop: ${{ steps.plan.outputs['desktop'] }}
+      policy: ${{ steps.plan.outputs['policy'] }}
+      maintenance-policy: ${{ steps.plan.outputs['maintenance-policy'] }}
+      maintenance-native: ${{ steps.plan.outputs['maintenance-native'] }}
+      security: ${{ steps.plan.outputs['security'] }}
+      package_run: ${{ steps.plan.outputs['package_run'] }}
+      plan: ${{ steps.plan.outputs['plan'] }}
+      desktop_delta: ${{ steps.plan.outputs.desktop_delta }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test verification and promotion policy
+        run: python scripts/test-production-delta.py
+      - name: Select executed or reusable verification groups
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_ALL: ${{ inputs.force_all || false }}
+        run: python scripts/pipeline.py plan --force-all "$FORCE_ALL"
+
+  source-policy:
+    name: Source formatting and user documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+      - run: python scripts/check-user-docs.py
+      - run: python scripts/test-nsis-sources.py
+      - run: python scripts/app-icon.py
+
+  editor:
+    needs: plan
+    if: needs.plan.outputs.editor == 'true'
+    uses: ./.github/workflows/editor.yml
+  core-linux:
+    needs: plan
+    if: needs.plan.outputs['core-linux'] == 'true'
+    name: Core and sync (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: core-sync-ubuntu-latest-core
+          key: core-sync-ubuntu-latest
+      - run: cargo test --locked -p studyapp-core -p studyapp-sync
+
+  core-windows:
+    needs: plan
+    if: needs.plan.outputs['core-windows'] == 'true'
+    name: Core and sync (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: core-sync-windows-latest-core
+          key: core-sync-windows-latest
+      - run: cargo test --locked -p studyapp-core -p studyapp-sync
+
+  windows:
+    needs: plan
+    if: needs.plan.outputs.desktop == 'true'
+    name: Windows desktop and native smoke
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      native_binary: ${{ steps.native-artifact.outputs.artifact-id }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.98.0
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          shared-key: desktop-windows-windows
+          key: desktop-windows
+          cache-on-failure: true
+      - name: Validate source-run environment without launching
+        run: ./scripts/run-dev.ps1 -CheckOnly
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      # Core/sync tests already run in the dedicated Windows verification group.
+      - run: cargo test --locked -p studyapp-desktop -p studyapp-ui --all-features
+      - run: cargo build --locked -p studyapp-desktop --features ui-test
+        id: native-build
+      - name: Preserve compiled native validation binary
+        id: native-artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-validation-binary-${{ github.run_attempt }}
+          path: target/debug/studyapp.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: Exercise native window and capture five pages
+        timeout-minutes: 10
+        run: |
+          $smokeDir = Join-Path $env:RUNNER_TEMP ('studyapp-smoke-' + [guid]::NewGuid().ToString('N'))
+          "SMOKE_DIR=$smokeDir" >> $env:GITHUB_ENV
+          ./scripts/smoke.ps1 -DataDirectory $smokeDir
+      - name: Verify settings interactions and performance independently
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          $settingsDir = Join-Path $env:RUNNER_TEMP ('studyapp-settings-' + [guid]::NewGuid().ToString('N'))
+          "SETTINGS_DIR=$settingsDir" >> $env:GITHUB_ENV
+          ./scripts/smoke-settings.ps1 -DataDirectory $settingsDir
+      - name: Verify native window movement
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        timeout-minutes: 2
+        run: |
+          $dragDir = Join-Path $env:RUNNER_TEMP ('studyapp-window-drag-' + [guid]::NewGuid().ToString('N'))
+          "DRAG_DIR=$dragDir" >> $env:GITHUB_ENV
+          ./scripts/smoke-window-drag.ps1 -DataDirectory $dragDir -BinaryPath ./target/debug/studyapp.exe
+      - name: Verify real Windows image clipboard
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        timeout-minutes: 4
+        run: |
+          $clipboardDir = Join-Path $env:RUNNER_TEMP ('studyapp-clipboard-' + [guid]::NewGuid().ToString('N'))
+          "CLIPBOARD_DIR=$clipboardDir" >> $env:GITHUB_ENV
+          ./scripts/smoke-clipboard.ps1 -DataDirectory $clipboardDir
+      - name: Preserve native screenshots and result
+        if: always() && env.SMOKE_DIR != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-native-smoke-${{ github.run_attempt }}
+          path: |
+            ${{ env.SMOKE_DIR }}/*.png
+            ${{ env.SMOKE_DIR }}/*.bmp
+            ${{ env.SMOKE_DIR }}/native-*.json
+            ${{ env.SMOKE_DIR }}/smoke-result.txt
+            ${{ env.SMOKE_DIR }}/smoke-input-mode.txt
+            ${{ env.SMOKE_DIR }}/library-smoke-result.txt
+            ${{ env.SMOKE_DIR }}/interactions-smoke-result.txt
+            ${{ env.SMOKE_DIR }}/workspace-smoke-result.txt
+            ${{ env.SMOKE_DIR }}/native-shortcut-settings-result.txt
+            ${{ env.SMOKE_DIR }}/native-image-smoke-result.txt
+            ${{ env.SMOKE_DIR }}/native-multiple-drafts-result.txt
+            ${{ env.SMOKE_DIR }}/native-save-view-result.txt
+            ${{ env.SMOKE_DIR }}/settings-capture-smoke-result.txt
+            ${{ env.SMOKE_DIR }}/workspace-drag-performance.json
+            ${{ env.SMOKE_DIR }}/workspace-saved-layout.json
+            ${{ env.SMOKE_DIR }}/settings-*.png
+            ${{ env.SMOKE_DIR }}/settings-render-timing.json
+            ${{ env.SMOKE_DIR }}/*.log
+            ${{ env.SETTINGS_DIR }}/settings-*
+            ${{ env.SETTINGS_DIR }}/native-*.json
+            ${{ env.SETTINGS_DIR }}/native-*.bmp
+            ${{ env.SETTINGS_DIR }}/storage-render-timing.json
+            ${{ env.SETTINGS_DIR }}/*.log
+            ${{ env.SETTINGS_DIR }}/smoke-input-mode.txt
+            ${{ env.DRAG_DIR }}/window-drag-*
+            ${{ env.DRAG_DIR }}/window-controls-result.txt
+            ${{ env.DRAG_DIR }}.jsonl
+            ${{ env.DRAG_DIR }}.*.log
+            ${{ env.CLIPBOARD_DIR }}/clipboard-evidence.json
+            ${{ env.CLIPBOARD_DIR }}/native-clipboard.bmp
+            ${{ env.CLIPBOARD_DIR }}/*.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Prepare isolated feature evidence directory
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        run: |
+          $featureRoot = Join-Path $env:RUNNER_TEMP ('studyapp-features-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $featureRoot | Out-Null
+          "FEATURE_EVIDENCE_DIR=$featureRoot" >> $env:GITHUB_ENV
+      - name: Verify native input character delivery
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          $inputDir = Join-Path $env:FEATURE_EVIDENCE_DIR 'inputs'
+          "INPUT_DIR=$inputDir" >> $env:GITHUB_ENV
+          ./scripts/smoke-inputs.ps1 -DataDirectory $inputDir
+      - name: Verify startup update availability and controls
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          $updateDir = Join-Path $env:FEATURE_EVIDENCE_DIR 'updates'
+          "UPDATE_DIR=$updateDir" >> $env:GITHUB_ENV
+          ./scripts/smoke-updates.ps1 -DataDirectory $updateDir
+      - name: Verify captured managed-note rename
+        if: ${{ !cancelled() && steps.native-build.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          $renameDir = Join-Path $env:FEATURE_EVIDENCE_DIR 'rename'
+          "RENAME_DIR=$renameDir" >> $env:GITHUB_ENV
+          ./scripts/smoke-note-rename.ps1 -DataDirectory $renameDir
+      - name: Preserve new native regression evidence
+        if: always() && env.FEATURE_EVIDENCE_DIR != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-feature-native-${{ github.run_attempt }}
+          path: |
+            ${{ env.FEATURE_EVIDENCE_DIR }}/**/*.json
+            ${{ env.FEATURE_EVIDENCE_DIR }}/**/*.txt
+            ${{ env.FEATURE_EVIDENCE_DIR }}/**/*.png
+            ${{ env.FEATURE_EVIDENCE_DIR }}/**/*.bmp
+            ${{ env.FEATURE_EVIDENCE_DIR }}/**/*.log
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build optimized settings validation binary
+        run: cargo build --locked --release -p studyapp-desktop --features ui-test
+      - name: Verify optimized settings rendering
+        timeout-minutes: 5
+        run: |
+          $settingsDir = Join-Path $env:RUNNER_TEMP ('studyapp-optimized-settings-' + [guid]::NewGuid().ToString('N'))
+          "OPTIMIZED_SETTINGS_DIR=$settingsDir" >> $env:GITHUB_ENV
+          ./scripts/smoke-settings.ps1 -DataDirectory $settingsDir -BinaryPath ./target/release/studyapp.exe
+      - name: Preserve optimized settings evidence
+        if: always() && env.OPTIMIZED_SETTINGS_DIR != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-optimized-settings-${{ github.run_attempt }}
+          path: |
+            ${{ env.OPTIMIZED_SETTINGS_DIR }}/settings-*
+            ${{ env.OPTIMIZED_SETTINGS_DIR }}/native-*.json
+            ${{ env.OPTIMIZED_SETTINGS_DIR }}/native-*.bmp
+            ${{ env.OPTIMIZED_SETTINGS_DIR }}/storage-render-timing.json
+            ${{ env.OPTIMIZED_SETTINGS_DIR }}/*.log
+            ${{ env.OPTIMIZED_SETTINGS_DIR }}/smoke-input-mode.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  policy:
+    name: Updater and package policies
+    needs: plan
+    if: needs.plan.outputs.policy == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+      - name: Verify safe updater handoff and rollback (PowerShell 5.1)
+        run: |
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/test-update-helper.ps1 -FixtureDirectory $env:RUNNER_TEMP -RequireReparseFixture
+          if ($LASTEXITCODE -ne 0) { throw 'Updater regression tests failed' }
+      - name: Verify portable package contents policy
+        run: ./scripts/test-package.ps1 -FixtureDirectory $env:RUNNER_TEMP
+
+  maintenance-policy:
+    name: Installer and modern package policies
+    needs: plan
+    if: needs.plan.outputs['maintenance-policy'] == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Verify modern archive and installer policies
+        run: |
+          ./scripts/test-modern-package.ps1 -FixtureDirectory $env:RUNNER_TEMP
+          ./scripts/test-installers.ps1
+          ./scripts/test-installer-rollback.ps1 -FixtureDirectory $env:RUNNER_TEMP
+          python scripts/test-installer-sources.py
+          if ($LASTEXITCODE -ne 0) { throw 'Installer source policy failed' }
+          python scripts/test-maintenance-sources.py
+          if ($LASTEXITCODE -ne 0) { throw 'Maintenance source policy failed' }
+
+  security:
+    needs: plan
+    if: needs.plan.outputs.security == 'true'
+    uses: ./.github/workflows/security.yml
+
+  receipt:
+    name: Verified suite receipt
+    needs: [plan, source-policy, editor, core-linux, core-windows, windows, policy, maintenance-policy, security, package, maintenance-native]
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' &&
+      !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Record actual executed source for every group
+        env:
+          CI_PLAN: ${{ needs.plan.outputs.plan }}
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/pipeline.py receipt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: ci-receipt-${{ github.run_attempt }}
+          path: ci-receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Keep failures blocking release acceptance
+        if: contains(needs.*.result, 'failure')
+        run: exit 1
+
+  package:
+    name: Checked Windows release package
+    needs: [plan, source-policy, editor, core-linux, core-windows, windows, policy, maintenance-policy, security]
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' &&
+      !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'push'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    outputs:
+      release_artifact: ${{ steps.release-artifact.outputs.artifact-id }}
+      fixture_artifact: ${{ steps.fixture-artifact.outputs.artifact-id }}
+      native_binary: ${{ steps.validation-artifact.outputs.artifact-id || needs.windows.outputs.native_binary }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Reuse a checked exact-SHA release package
+        if: needs.plan.outputs.package_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_RUN: ${{ needs.plan.outputs.package_run }}
+        run: python scripts/pipeline.py promote
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        if: needs.plan.outputs.package_run == ''
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        if: needs.plan.outputs.package_run == ''
+        with:
+          shared-key: desktop-windows-windows
+          key: desktop-windows
+          cache-on-failure: true
+      - name: Reuse this run's compiled validation binary for private MSI fixtures
+        if: needs.plan.outputs['maintenance-native'] == 'true' && needs.windows.outputs.native_binary != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.windows.outputs.native_binary }}
+          path: target/native-validation
+          merge-multiple: true
+      - name: Build validation harness only when previous desktop proofs were reused
+        if: needs.plan.outputs['maintenance-native'] == 'true' && needs.windows.outputs.native_binary == ''
+        run: |
+          cargo build --locked -p studyapp-desktop --features ui-test
+          if ($LASTEXITCODE -ne 0) { throw 'Native validation build failed' }
+          New-Item -ItemType Directory -Force -Path target/native-validation | Out-Null
+          Copy-Item -LiteralPath target/debug/studyapp.exe -Destination target/native-validation/studyapp.exe
+      - name: Preserve newly compiled maintenance validation binary
+        id: validation-artifact
+        if: needs.plan.outputs['maintenance-native'] == 'true' && needs.windows.outputs.native_binary == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: maintenance-validation-binary-${{ github.run_attempt }}
+          path: target/native-validation/studyapp.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: Build normal production binary and check portable package
+        id: production-package
+        if: needs.plan.outputs.package_run == ''
+        env:
+          RUN_NATIVE: ${{ needs.plan.outputs['maintenance-native'] }}
+        run: |
+          cargo build --locked --release -p studyapp-desktop
+          if ($LASTEXITCODE -ne 0) { throw 'Production build failed' }
+          $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+          if ($LASTEXITCODE -ne 0) { throw 'Workspace version unavailable' }
+          $fixtureArguments = @{}
+          if ($env:RUN_NATIVE -eq 'true') { $fixtureArguments.UiTestBinaryPath = './target/native-validation/studyapp.exe' }
+          ./scripts/package.ps1 -Version $version -IncludeInstallers -BuildLifecycleFixtures:($env:RUN_NATIVE -eq 'true') @fixtureArguments
+          python scripts/pipeline.py manifest
+          if ($LASTEXITCODE -ne 0) { throw 'Package provenance validation failed' }
+      - name: Verify exact MSI owner transition regressions
+        if: needs.plan.outputs.package_run == ''
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP ('msi-owner-delta-' + [guid]::NewGuid().ToString('N'))
+          "MSI_DELTA_DIR=$evidence" >> $env:GITHUB_ENV
+          python scripts/test-msi-owner-delta.py --directory $evidence --package-directory dist
+          if ($LASTEXITCODE -ne 0) { throw 'Exact MSI owner regressions failed' }
+      - name: Preserve exact MSI owner regression evidence
+        if: needs.plan.outputs.package_run == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msi-owner-delta-${{ github.run_attempt }}
+          path: ${{ env.MSI_DELTA_DIR }}/msi-owner-delta.json
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        id: release-artifact
+        with:
+          name: windows-release-${{ github.run_attempt }}
+          path: |
+            dist/*.zip
+            dist/*.msi
+            dist/*-Setup.exe
+            dist/*.sha256
+            dist/release-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Preserve private installer fixtures
+        id: fixture-artifact
+        if: needs.plan.outputs['maintenance-native'] == 'true' && steps.production-package.outputs['installer-fixtures'] != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: installer-lifecycle-fixtures-${{ github.run_attempt }}
+          path: ${{ steps.production-package.outputs['installer-fixtures'] }}
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve installer compiler diagnostics
+        if: always() && steps.production-package.outputs['installer-evidence'] != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: installer-compiler-evidence-${{ github.run_attempt }}
+          path: |
+            ${{ steps.production-package.outputs['installer-evidence'] }}/*.log
+            ${{ steps.production-package.outputs['installer-evidence'] }}/*.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  maintenance-native:
+    name: Windows installer and maintenance lifecycle
+    needs: [plan, package]
+    if: >-
+      always() && !cancelled() && needs.package.result == 'success' &&
+      needs.plan.outputs['maintenance-native'] == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.package.outputs.release_artifact }}
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.package.outputs.fixture_artifact }}
+          path: installer-fixtures
+          merge-multiple: true
+      - name: Reuse this run's compiled validation binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: ${{ needs.package.outputs.native_binary }}
+          path: target/debug
+          merge-multiple: true
+      - name: Verify authentic maintenance, installer and confirmation lifecycle
+        run: |
+          $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
+          if ($LASTEXITCODE -ne 0) { throw 'Workspace version unavailable' }
+          $execution = Join-Path $env:RUNNER_TEMP ('studyapp-execution-' + [guid]::NewGuid().ToString('N'))
+          $lifecycle = Join-Path $env:RUNNER_TEMP ('studyapp-lifecycle-' + [guid]::NewGuid().ToString('N'))
+          "EXECUTION_DIR=$execution" >> $env:GITHUB_ENV
+          "LIFECYCLE_DIR=$lifecycle" >> $env:GITHUB_ENV
+          ./scripts/test-maintenance.ps1 -BinaryPath ./target/debug/studyapp.exe -PackageDirectory dist -Version $version -PreviousPackageDirectory installer-fixtures -OutputDirectory $execution
+          ./scripts/smoke-maintenance.ps1 -Phase All -PackageDirectory dist -Version $version -PreviousPackageDirectory installer-fixtures -UiTestBinaryPath ./target/debug/studyapp.exe -ExecutionEvidenceDirectory (Join-Path $execution 'execution') -OutputDirectory $lifecycle
+      - name: Preserve authentic maintenance evidence
+        if: always() && env.EXECUTION_DIR != '' && env.LIFECYCLE_DIR != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-maintenance-native-${{ github.run_attempt }}
+          path: |
+            ${{ env.EXECUTION_DIR }}/**/*.json
+            ${{ env.EXECUTION_DIR }}/**/*.jsonl
+            ${{ env.EXECUTION_DIR }}/**/*.png
+            ${{ env.EXECUTION_DIR }}/**/*.log
+            ${{ env.LIFECYCLE_DIR }}/**/*.json
+            ${{ env.LIFECYCLE_DIR }}/**/*.png
+            ${{ env.LIFECYCLE_DIR }}/**/*.log
+          if-no-files-found: error
+          retention-days: 14

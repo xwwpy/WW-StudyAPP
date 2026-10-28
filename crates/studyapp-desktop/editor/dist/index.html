@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'none'; img-src data:; media-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>WW-StudyApp 笔记编辑器</title>
+  <link rel="stylesheet" href="editor.css">
+  <script defer src="editor.js"></script>
+</head>
+<body>
+  <main aria-label="Markdown 笔记编辑器">
+    <div id="toolbar" role="toolbar" aria-label="笔记格式">
+      <div class="toolbar-group" role="group" aria-label="段落与标题">
+        <button type="button" id="format-toggle" aria-label="格式菜单" aria-haspopup="menu" aria-expanded="false" aria-controls="format-menu">格式⌄</button>
+      </div>
+      <div class="toolbar-group format-controls" role="group" aria-label="文字样式">
+        <button type="button" data-command="bold" aria-label="粗体"><strong>B</strong></button>
+        <button type="button" data-command="italic" aria-label="斜体"><em>I</em></button>
+        <button type="button" data-command="strike" aria-label="删除线"><s>S</s></button>
+        <button type="button" data-command="code" aria-label="行内代码">&lt;/&gt;</button>
+      </div>
+      <div class="toolbar-group format-controls" role="group" aria-label="列表与引用">
+        <button type="button" data-command="bullet" aria-label="列表">•</button>
+        <button type="button" data-command="ordered" aria-label="有序列表">1.</button>
+        <button type="button" data-command="task" aria-label="任务列表">☑</button>
+        <button type="button" data-command="quote" aria-label="引用">❝</button>
+      </div>
+      <div class="toolbar-group format-controls" role="group" aria-label="插入内容">
+        <button type="button" data-command="link" aria-label="插入链接">↗</button>
+        <button type="button" data-command="insert-image" aria-label="插入图片">▧</button>
+        <button type="button" data-command="table" aria-label="插入表格">▦</button>
+      </div>
+      <div class="toolbar-group" role="group" aria-label="编辑历史">
+        <button type="button" data-command="undo" aria-label="撤销">↶</button>
+        <button type="button" data-command="redo" aria-label="重做">↷</button>
+      </div>
+      <div id="format-menu" role="menu" aria-label="格式" hidden>
+        <button type="button" role="menuitem" data-command="paragraph" aria-label="正文">正文</button>
+        <button type="button" role="menuitem" data-command="heading-1" aria-label="1 级标题">H1　1 级标题</button>
+        <button type="button" role="menuitem" data-command="heading-2" aria-label="2 级标题">H2　2 级标题</button>
+        <button type="button" role="menuitem" data-command="heading-3" aria-label="3 级标题">H3　3 级标题</button>
+        <button type="button" role="menuitem" data-command="heading-4" aria-label="4 级标题">H4　4 级标题</button>
+        <button type="button" role="menuitem" data-command="heading-5" aria-label="5 级标题">H5　5 级标题</button>
+        <button type="button" role="menuitem" data-command="heading-6" aria-label="6 级标题">H6　6 级标题</button>
+        <span class="menu-divider"></span>
+        <button type="button" role="menuitem" data-menu-command="bold" aria-label="粗体">B　粗体</button>
+        <button type="button" role="menuitem" data-menu-command="italic" aria-label="斜体">I　斜体</button>
+        <button type="button" role="menuitem" data-menu-command="strike" aria-label="删除线">S　删除线</button>
+        <button type="button" role="menuitem" data-menu-command="code" aria-label="行内代码">&lt;/&gt;　行内代码</button>
+        <span class="menu-divider" role="separator"></span>
+        <button type="button" role="menuitem" data-menu-command="bullet" aria-label="列表">•　无序列表</button>
+        <button type="button" role="menuitem" data-menu-command="ordered" aria-label="有序列表">1.　有序列表</button>
+        <button type="button" role="menuitem" data-menu-command="task" aria-label="任务列表">☑　任务列表</button>
+        <button type="button" role="menuitem" data-menu-command="quote" aria-label="引用">❝　引用</button>
+        <span class="menu-divider" role="separator"></span>
+        <button type="button" role="menuitem" data-menu-command="link" aria-label="插入链接">↗　插入链接</button>
+        <button type="button" role="menuitem" data-menu-command="insert-image" aria-label="插入图片">▧　插入图片</button>
+        <button type="button" role="menuitem" data-menu-command="table" aria-label="插入表格">▦　插入表格</button>
+      </div>
+      <button type="button" id="source-toggle" data-command="source" aria-label="源码模式" aria-pressed="false">Markdown</button>
+    </div>
+    <div id="editor"></div>
+    <div id="editor-footer" aria-label="写作信息">
+      <span id="editor-status" role="status" aria-live="polite"></span>
+      <span id="editor-theme-warning" role="status" title="自定义颜色对比度不足，已按您的设置保留。可在外观设置中调整。" hidden>⚠ 对比度较低</span>
+      <span id="editor-statistics" title="按当前 Markdown 原文统计，不计空白字符。汉字逐字计数，其他语言按词计数，阅读时间按每分钟 400 字词估算。"></span>
+    </div>
+  </main>
+</body>
+</html>

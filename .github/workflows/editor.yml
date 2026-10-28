@@ -1,0 +1,38 @@
+name: Offline editor checks
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  editor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: crates/studyapp-desktop/editor
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: crates/studyapp-desktop/editor/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm run bundle:check
+      - run: npm audit --audit-level=high
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      - name: Preserve browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: offline-editor-tests-${{ github.run_attempt }}
+          path: crates/studyapp-desktop/editor/test-results/
+          if-no-files-found: warn
+          retention-days: 14

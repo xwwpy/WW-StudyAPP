@@ -1,0 +1,30 @@
+# Audit advisories separately with cargo-audit; no advisory ignore list.
+[graph]
+targets = ["x86_64-pc-windows-msvc"]
+all-features = true
+
+[licenses]
+confidence-threshold = 0.8
+# Observed in the locked Windows graph. OR expressions may select an allowed branch.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

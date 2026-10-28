@@ -1,0 +1,27 @@
+[workspace]
+members = ["crates/studyapp-core", "crates/studyapp-desktop", "crates/studyapp-sync", "crates/studyapp-ui"]
+default-members = ["crates/studyapp-desktop"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+repository = "https://github.com/xwwpy/WW-StudyAPP"
+
+[profile.dev]
+debug = 0
+
+[patch.crates-io]
+# Preserve bounds observers without repainting unchanged Windows client content.
+gpui-pre = { path = "vendor/gpui-pre" }
+# Preserve native WebView child visibility beneath the GPUI shell.
+gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
+# Consistent menu cursors, native menu bounds and scroll viewport geometry.
+gpui-component = { path = "vendor/gpui-component" }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

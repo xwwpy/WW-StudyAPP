@@ -1,0 +1,72 @@
+{
+  "contract": 1,
+  "id": "msi-owner-production-delta-v1",
+  "basis": "d64797551f2a8af0f7827b007b570d8b6838d83c",
+  "production": {
+    "execute": {
+      "old": "be5d005ebadf0b16bcd775e706e66c15d5cf97242930059ad6f9ab5dd08ce1be",
+      "new": "f98e81a43c66102ad87ed403f20ece8bc79d2568670fa3b80d80989e3e122f77"
+    },
+    "msi": {
+      "old": "da4fc29347a426643f473e93053eddc2a6f254da18cf32ed76da8936dd476c52",
+      "new": "a0aeb9b7c1a4b465214935afc72c2fe618a8cbdc86f6f2b358a713696af1c8ad"
+    },
+    "uninstall": {
+      "old": "0cb9f77595e51c95e361bdd00dddde0efdeaf93cf3dd8164f691d299d9480159",
+      "new": "c1138bd1cdfe36f2a3a83e37007794a235dd8f5babc0b78f2b35b7371f9f3755"
+    }
+  },
+  "policy": {
+    ".github/workflows/ci.yml": {
+      "old": "53b440f6ca09f784897fc362b644d1c6e14bc85d34b4ccfed0f8835be345f2f8",
+      "new": "89845908f90744c489b9499219b5c9510d1a91bb61d239d077785bbdc15fda68"
+    },
+    "scripts/pipeline.py": {
+      "old": "d8155f4508bdab5dfc594150079dc57cffb5552d69099292a15acfda461dd8b7",
+      "new": "cbf46ae9583a21f72298e4650a5e3a02e40bf417f15ab2c26d99a890a5af635c"
+    },
+    "scripts/ime-ci.py": {
+      "old": "17b7bafa0a8b9f5d84ca9ef9bc3eaae3a25d95344442d7e96a011fdf6125a352",
+      "new": "f0c22e4796374af155160030752120e6bc2cf9b12fcc78d95a1c496dac792bbd"
+    },
+    "scripts/production_delta.py": {
+      "old": null,
+      "new": "008436282e7af04088b938ca72ab63d1cd8ad4072fe5a74e8dcf3a08bd4a13c4"
+    },
+    "scripts/test-production-delta.py": {
+      "old": null,
+      "new": "ae5f368fd09d5e252a96f7d1efb4fd03c192b8fd8db02ae68b182fe2513dc65d"
+    },
+    "scripts/test-msi-owner-delta.py": {
+      "old": null,
+      "new": "6231f02206be9df0a4e05ad35678874f9d15cbd9641ab5edea0eea7fba6cf8cb"
+    },
+    "scripts/installer-policy.ps1": {
+      "old": "ce0382b60babde31dbba3705f9903ddff78a97e7d9748023185fbd3e7446120c",
+      "new": "59619c5796b489df92b09caa50319d55479f0ea5656f3cdd4d6502d13927660b"
+    },
+    "scripts/test-maintenance.ps1": {
+      "old": "43d9fe79da5b1cbff7bde38ecfef9b4df6a3aa34b2ca9f8f14386a018b1a91b0",
+      "new": "c9c4fa968536776d9d754bfab4847e30a3b74a767b9903db5f2e011e52885b7c"
+    },
+    "scripts/smoke-maintenance.ps1": {
+      "old": "4eb3ac0104e5756a57959c018e7a7774bda318c156bacaa11088c9d384ed603c",
+      "new": "ffa572a99e562ee1846185c7140ecb8ae65f21639da4923679525af150b22617"
+    },
+    "scripts/test-maintenance-sources.py": {
+      "old": "7c4c74a370c0a5afdb899f60c64ad0278631e2ec0f068a32be056e34b4569d9e",
+      "new": "bdf398ccc68662be4a49619f00c725da41e09aef7c8ff21e9b6ea901bc3c2039"
+    }
+  },
+  "coverage": {
+    "unaffected_groups": [
+      "editor",
+      "core-linux",
+      "core-windows",
+      "policy",
+      "security"
+    ],
+    "ime": "Original ordinary Pinyin composition and candidate/Enter behavior; MSI ownership transition is outside this coverage.",
+    "desktop": "Historical desktop coverage except changed MSI target binding and completed-control cleanup; compose only with seven current regressions and full current maintenance-native."
+  }
+}
