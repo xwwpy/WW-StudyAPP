@@ -219,9 +219,13 @@ pub fn title_bar(
 
 #[cfg(all(test, feature = "ui-test", not(windows)))]
 mod tests {
-    use super::*;
+    use super::title_bar;
     use gpui_kit::test::TestWindowExt;
-    use std::cell::Cell;
+    use gpui_kit::{
+        Context, InteractiveElement, IntoElement, ParentElement, Render,
+        StatefulInteractiveElement, Styled, TestAppContext, TestSupportExt, Window, div, px,
+    };
+    use std::{cell::Cell, rc::Rc};
 
     #[gpui_kit::test]
     fn pointer_close_uses_the_supplied_barrier_and_actions_stay_independent(
