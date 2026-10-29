@@ -37,8 +37,8 @@ fn safe_dir(path: &Path, owner: u32) -> Result<()> {
 fn bounded(path: &Path, owner: u32, limit: u64) -> Result<Vec<u8>> {
     let f = io(OpenOptions::new()
         .read(true)
-        .custom_flags(0x20000)
-        .open(path))?; // O_NOFOLLOW
+        .custom_flags(0x20000 | 0x800)
+        .open(path))?; // O_NOFOLLOW | O_NONBLOCK (reject FIFOs without waiting for writers)
     let meta = io(f.metadata())?;
     if !meta.is_file() || meta.uid() != owner || meta.nlink() != 1 || meta.len() > limit {
         return Err("Unsafe update file".into());
@@ -154,6 +154,12 @@ pub fn prepare(package: &VerifiedPackage, data_directory: Option<PathBuf>) -> Re
 }
 /// Readiness must succeed before the caller closes its window.
 pub fn spawn(dir: &Path) -> Result<()> {
+    // Attempts are single-use. A retained readiness marker must never authorize a new close.
+    if fs::symlink_metadata(dir.join("ready")).is_ok() {
+        return Err("This update attempt was already started; prepare a fresh transaction".into());
+    }
+    let tx = transaction(dir, uid()?)?;
+    write_new(&dir.join("launch-claimed"), tx.id.as_bytes())?;
     let mut child = io(Command::new(dir.join("supervisor"))
         .arg("--update-supervisor")
         .arg(dir)
@@ -172,9 +178,27 @@ pub fn spawn(dir: &Path) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+    if io(child.try_wait())?.is_some() {
+        return Err("Update supervisor exited during readiness".into());
+    }
+    if bounded(&dir.join("ready"), tx.uid, 36)? != tx.id.as_bytes() {
+        let _ = child.kill();
+        return Err("Update supervisor readiness identity mismatch".into());
+    }
     Ok(())
 }
 pub fn supervise(dir: &Path) -> Result<()> {
+    safe_dir(dir, uid()?)?;
+    persist_failure(dir, || supervise_inner(dir))
+}
+fn persist_failure(dir: &Path, action: impl FnOnce() -> Result<()>) -> Result<()> {
+    let result = action();
+    if let Err(error) = &result {
+        record(dir, "failed", error)?;
+    }
+    result
+}
+fn supervise_inner(dir: &Path) -> Result<()> {
     let owner = uid()?;
     let tx = transaction(dir, owner)?;
     let package = VerifiedPackage::verify(dir)?;
@@ -353,6 +377,53 @@ mod tests {
             data_directory: None,
         };
         wait_old(&tx).unwrap();
+    }
+    #[test]
+    fn update_install_stale_readiness_never_authorizes_close() {
+        let dir = directory();
+        write_new(&dir.join("ready"), b"previous-attempt").unwrap();
+        fs::copy("/usr/bin/false", dir.join("supervisor")).unwrap();
+        let error = spawn(&dir).unwrap_err();
+        assert!(error.contains("fresh transaction"));
+    }
+    #[test]
+    fn update_install_fifo_rejection_is_bounded() {
+        let dir = directory();
+        let fifo = dir.join("fifo");
+        assert!(
+            Command::new("/usr/bin/mkfifo")
+                .arg(&fifo)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let owner = uid().unwrap();
+        std::thread::spawn(move || {
+            let _ = sender.send(bounded(&fifo, owner, 16));
+        });
+        assert!(
+            receiver
+                .recv_timeout(Duration::from_secs(2))
+                .expect("FIFO open blocked")
+                .is_err()
+        );
+    }
+    #[test]
+    fn update_install_all_supervisor_failures_are_retained() {
+        for message in ["wait timeout", "installed query failed", "relaunch failed"] {
+            let dir = directory();
+            assert!(persist_failure(&dir, || Err(message.into())).is_err());
+            let records: Vec<_> = fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(records.len(), 1);
+            let record: serde_json::Value =
+                serde_json::from_slice(&fs::read(&records[0]).unwrap()).unwrap();
+            assert_eq!(record["state"], "failed");
+            assert_eq!(record["message"], message);
+        }
     }
     #[test]
     fn update_install_source_binary_cannot_run_privileged_worker() {

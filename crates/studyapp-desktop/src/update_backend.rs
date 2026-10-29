@@ -289,7 +289,6 @@ mod tests {
 const MAX_PACKAGE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CHECKSUM_BYTES: u64 = 8192;
-const RELEASE_API: &str = "https://api.github.com/repos/xwwpy/WW-StudyAPP/releases/latest";
 const HELPER: &str = include_str!("update_helper.ps1");
 
 pub type UpdateResult<T> = Result<T, UpdateError>;
@@ -569,17 +568,6 @@ fn response_ok(response: reqwest::blocking::Response) -> UpdateResult<reqwest::b
         403 | 429 => Err(failure(UpdateErrorKind::RateLimited)),
         _ => Err(failure(UpdateErrorKind::Network)),
     }
-}
-
-/// Read-only, blocking network check. Never run this on the GPUI thread.
-pub fn check_for_update(current_version: &str) -> UpdateResult<UpdateCheck> {
-    let kind = crate::maintenance_runtime::current_payload_kind(&current_installation()?)
-        .map_err(|_| failure(UpdateErrorKind::InstallationChanged))?;
-    release_for_kind(
-        &fetch_release_json(RELEASE_API, &RepairTransport::Live)?,
-        current_version,
-        kind,
-    )
 }
 
 /// Called only after the user chooses to repair this exact running version.
