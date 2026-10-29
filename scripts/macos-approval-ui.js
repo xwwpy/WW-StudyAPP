@@ -133,9 +133,23 @@ function run(argv) {
     const button = at(expected.button_path);
     if (argv[0] === "scroll") {
         if (button.role !== "AXButton" || button.name !== expected.label || !button.enabled) throw new Error("Approval scroll target is unavailable");
-        const result = $.AXUIElementPerformAction(references[expected.button_path.join("/")], $("AXScrollToVisible"));
-        if (result !== 0) throw new Error("Approval scroll failed: " + result);
-        return JSON.stringify({scrolled: expected.label});
+        for (let length = expected.button_path.length - 1; length > 0; length--) {
+            const path = expected.button_path.slice(0, length);
+            const area = at(path);
+            if (area.role !== "AXScrollArea") continue;
+            const bars = area.children.map((node, index) => ({node, path: path.concat(index)}))
+                .filter(item => item.node.role === "AXScrollBar" && item.node.visible && item.node.enabled &&
+                    scalar(references[item.path.join("/")], "AXOrientation", "") === "AXVerticalOrientation");
+            if (bars.length !== 1 || !button.position || !area.position) throw new Error("Ambiguous approval scroll area");
+            const bar = references[bars[0].path.join("/")];
+            const current = scalar(bar, "AXValue", null);
+            if (typeof current !== "number" || current < 0 || current > 1) throw new Error("Unexpected approval scrollbar range");
+            const value = button.position[1] > area.position[1] ? 1 : 0;
+            const result = $.AXUIElementSetAttributeValue(bar, $("AXValue"), $(value));
+            if (result !== 0) throw new Error("Approval scrollbar failed: " + result);
+            return JSON.stringify({scrolled: expected.label, scrollbar: bars[0].path, value: value});
+        }
+        throw new Error("No containing approval scroll area");
     }
     if (button.role !== "AXButton" || button.name !== expected.label || !button.visible || !button.enabled) throw new Error("Approval button is unavailable");
     const result = $.AXUIElementPerformAction(references[expected.button_path.join("/")], $("AXPress"));
