@@ -161,6 +161,7 @@ function run(argv) {
     const button = at(expected.button_path);
     if (argv[0] === "authenticate") {
         let phase = "permission";
+        const focusObservations = [];
         try {
         if (!$.CGPreflightPostEventAccess()) throw new Error("System event permission unavailable");
         phase = "identity";
@@ -192,6 +193,18 @@ function run(argv) {
             function requireFocus() {
                 phase = fieldName + "-focus";
                 const focused = attribute($.AXUIElementCreateSystemWide(), "AXFocusedUIElement");
+                const path = fieldName === "password" ? expected.password_path : expected.username_path;
+                let fresh = children(application, "AXWindows")[path[0]];
+                for (const index of path.slice(1)) fresh = children(fresh, "AXChildren")[index];
+                const pid = Ref();
+                const pidKnown = focused !== null && $.AXUIElementGetPid(focused, pid) === 0;
+                const observation = {field: fieldName, local: scalar(control, "AXFocused", false),
+                    globalPresent: focused !== null, globalRole: focused === null ? null : scalar(focused, "AXRole", null),
+                    globalSubrole: focused === null ? null : scalar(focused, "AXSubrole", null),
+                    sameProcess: pidKnown && pid[0] === processId,
+                    matchesOriginal: focused !== null && Boolean($.CFEqual(focused, control)),
+                    matchesFresh: focused !== null && Boolean($.CFEqual(focused, fresh))};
+                if (!observation.local || !observation.matchesOriginal) focusObservations.push(observation);
                 if (scalar(control, "AXFocused", false) !== true || focused === null || !$.CFEqual(focused, control)) throw new Error("System credential focus changed");
             }
             requireFocus();
@@ -233,7 +246,7 @@ function run(argv) {
         return JSON.stringify({authenticationSubmitted: true, postEventAllowed: true,
             requestedPoint: point, cursor: [cursor.x, cursor.y]});
         } catch (_) {
-            throw new Error("Authentication failed at " + phase);
+            return JSON.stringify({authenticationSubmitted: false, phase: phase, focusObservations: focusObservations});
         }
     }
     if (argv[0] === "scroll") {
