@@ -10,6 +10,9 @@ struct Request {
     sha256: String,
     health: Option<PathBuf>,
     created: u64,
+    #[cfg(feature = "update-acceptance")]
+    #[serde(default)]
+    acceptance_directory: Option<PathBuf>,
 }
 fn now() -> Result<u64> {
     std::time::SystemTime::now()
@@ -180,6 +183,8 @@ pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
             sha256: binary_hash(&candidate)?,
             health: None,
             created: now()?,
+            #[cfg(feature = "update-acceptance")]
+            acceptance_directory: None,
         };
         write_new(
             &dir.join("request.json"),
@@ -281,6 +286,10 @@ pub(crate) fn early_launch(args: &[std::ffi::OsString]) -> Result<()> {
     while started.elapsed() < Duration::from_secs(30) {
         if bounded(&dir.join("continue"), uid()?, 36).ok().as_deref() == Some(req.nonce.as_bytes())
         {
+            #[cfg(feature = "update-acceptance")]
+            if let Some(path) = req.acceptance_directory {
+                crate::update_acceptance::accept_launch_directory(path)?;
+            }
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -357,6 +366,8 @@ pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candi
         sha256: binary_hash(&tx.target)?,
         health: health.map(Path::to_owned),
         created: now()?,
+        #[cfg(feature = "update-acceptance")]
+        acceptance_directory: tx.acceptance_directory.clone(),
     };
     write_new(
         &dir.join("request.json"),

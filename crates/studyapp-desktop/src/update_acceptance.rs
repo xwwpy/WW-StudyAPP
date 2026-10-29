@@ -13,9 +13,54 @@ pub fn hold_autosave() -> bool {
     HOLD_AUTOSAVE.load(Ordering::Relaxed)
 }
 static CHECKS_READY: AtomicBool = AtomicBool::new(false);
+static LAUNCH_DIRECTORY: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+#[cfg(target_os = "macos")]
+pub(crate) fn accept_launch_directory(path: PathBuf) -> Result<(), String> {
+    if !path.is_absolute() || !path.join("fixture.json").is_file() {
+        return Err("Invalid acceptance launch context".into());
+    }
+    LAUNCH_DIRECTORY
+        .set(path)
+        .map_err(|_| "Acceptance context already set".into())
+}
+pub(crate) fn launch_directory() -> Option<PathBuf> {
+    resolve_directory(
+        LAUNCH_DIRECTORY.get().cloned(),
+        std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+        std::env::var_os("STUDYAPP_UPDATE_ACCEPTANCE_DIR").map(PathBuf::from),
+    )
+}
+fn resolve_directory(
+    handoff: Option<PathBuf>,
+    runner: bool,
+    environment: Option<PathBuf>,
+) -> Option<PathBuf> {
+    handoff.or_else(|| runner.then_some(environment).flatten())
+}
+#[cfg(test)]
+mod launch_context_tests {
+    use super::resolve_directory;
+    use std::path::PathBuf;
+    #[test]
+    fn bound_launch_context_survives_missing_environment() {
+        let fixture = PathBuf::from("fixture");
+        assert_eq!(
+            resolve_directory(Some(fixture.clone()), false, None),
+            Some(fixture.clone())
+        );
+        assert_eq!(resolve_directory(None, false, Some(fixture.clone())), None);
+        assert_eq!(
+            resolve_directory(None, true, Some(fixture.clone())),
+            Some(fixture.clone())
+        );
+        assert_eq!(
+            resolve_directory(Some(fixture.clone()), true, Some(PathBuf::from("stale"))),
+            Some(fixture)
+        );
+    }
+}
 pub fn active() -> bool {
-    std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
-        && std::env::var_os("STUDYAPP_UPDATE_ACCEPTANCE_DIR").is_some()
+    launch_directory().is_some()
 }
 pub fn checks_allowed() -> bool {
     CHECKS_READY.load(Ordering::Relaxed)
@@ -24,9 +69,13 @@ fn directory() -> Result<PathBuf, String> {
     if !active() {
         return Err("Acceptance fixture is not active".into());
     }
-    std::env::var_os("STUDYAPP_UPDATE_ACCEPTANCE_DIR")
-        .map(PathBuf::from)
-        .ok_or("Missing fixture directory".into())
+    launch_directory().ok_or("Missing fixture directory".into())
+}
+fn transaction_directory() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    return crate::update_install::macos::acceptance_health_directory();
+    #[cfg(not(target_os = "macos"))]
+    std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)
 }
 fn configuration() -> Result<Value, String> {
     serde_json::from_slice(
@@ -225,7 +274,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             assert_eq!(live["text"],marker);
             presented(window, cx).await;
             window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("restored.png")).unwrap()).unwrap();
-            save("new-observation.json",json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":id,"live_text":live["text"],"database":database,"source_sha":config["source_sha"],"transaction":std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)}));
+            save("new-observation.json",json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":id,"live_text":live["text"],"database":database,"source_sha":config["source_sha"],"transaction":transaction_directory()}));
             return;
         }
         if directory().unwrap().join("old-observation.json").exists(){
@@ -240,7 +289,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         crate::smoke_editor::bridge(window,&editor,json!({"type":"replace","from":0,"to":0,"text":marker}),cx).await;
         let live=crate::smoke_editor::bridge(window,&editor,json!({"type":"snapshot"}),cx).await;
         assert_eq!(live["text"],marker);
-        let before=window.update(cx,|_,_,cx|{let app=view.read(cx);json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":app.active_draft_id,"committed":baseline,"database":database,"source_sha":config["source_sha"],"transaction":std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)})}).unwrap();
+        let before=window.update(cx,|_,_,cx|{let app=view.read(cx);json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":app.active_draft_id,"committed":baseline,"database":database,"source_sha":config["source_sha"],"transaction":transaction_directory()})}).unwrap();
         save("old-observation.json",before);
         CHECKS_READY.store(true,Ordering::Relaxed);
         window.update(cx,|_,_,cx|{let panel=view.read(cx).update_panel.clone();panel.update(cx,|p,cx|p.acceptance_check(cx));}).unwrap();
@@ -258,6 +307,19 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         presented(window, cx).await;
         window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("update-card.png")).unwrap()).unwrap();
         click_visible(window, "update-dialog-install".into(), cx).await;
+        #[cfg(target_os = "macos")]
+        {
+            // Normal system approval may leave the first attempt on its retry card.
+            // This signal only clicks that card; production prepare still verifies receipt.
+            let started = Instant::now();
+            while !directory().unwrap().join("system-approved.json").exists() {
+                assert!(started.elapsed() < Duration::from_secs(180), "System approval did not complete");
+                cx.background_executor().timer(Duration::from_millis(250)).await;
+            }
+            presented(window, cx).await;
+            window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("approved-retry-card.png")).unwrap()).unwrap();
+            click_visible(window, "update-dialog-install".into(), cx).await;
+        }
         // The application and its supervisor own all remaining install/restart work.
     }).detach();
 }

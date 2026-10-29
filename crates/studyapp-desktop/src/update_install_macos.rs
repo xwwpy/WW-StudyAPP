@@ -13,12 +13,19 @@ const BUNDLE_ID: &str = "io.github.xwwpy.studyapp";
 #[path = "update_install_macos_launch.rs"]
 mod launch;
 pub(crate) use launch::{dispatch_probe, early_launch};
+#[cfg(feature = "update-acceptance")]
+pub(crate) fn acceptance_health_directory() -> Option<PathBuf> {
+    launch::health_directory()
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MacTransaction {
     transaction: InstallTransaction,
     target: PathBuf,
     elevated: bool,
+    #[cfg(feature = "update-acceptance")]
+    #[serde(default)]
+    acceptance_directory: Option<PathBuf>,
 }
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| e.to_string())
@@ -277,6 +284,8 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
         },
         target,
         elevated,
+        #[cfg(feature = "update-acceptance")]
+        acceptance_directory: crate::update_acceptance::launch_directory(),
     };
     write_new(
         &dir.join("transaction.json"),
