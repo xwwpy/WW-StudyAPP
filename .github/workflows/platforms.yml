@@ -105,7 +105,7 @@ jobs:
       - name: Build native interactive validation binary
         run: cargo build --locked -p studyapp-desktop --bin studyapp --features ui-test
       - name: Verify headless updater transaction rules
-        run: cargo test --locked -p studyapp-desktop --bin studyapp update_install
+        run: cargo test --locked -p studyapp-desktop --bin studyapp update_install -- --show-output
       - name: Check native acceptance feature before system approval
         run: cargo check --locked -p studyapp-desktop --bin studyapp --features update-acceptance
       - name: Verify shared native UI behavior

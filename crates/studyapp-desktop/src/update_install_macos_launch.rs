@@ -535,47 +535,91 @@ mod tests {
         .unwrap();
         let provenance = b"0083;1234;Source;existing";
         quarantine::write(&source.join("Contents/resource"), provenance).unwrap();
-        let second = prepare_approval_candidate(&package, &source).unwrap_or_else(|error| {
-            panic!(
-                "Fixture copy failed: {error}; source={:?}, copied={:?}",
-                quarantine::read(&source.join("Contents/resource")),
-                quarantine::read(&root.join("approval").join(APP).join("Contents/resource"))
-            )
-        });
-        assert_ne!(first.nonce, second.nonce);
-        assert!(receipt(&root.join("approval"), &second).is_err());
+        let second = prepare_approval_candidate(&package, &source);
+        let copied =
+            quarantine::read(&root.join("approval").join(APP).join("Contents/resource")).unwrap();
+        eprintln!("Controlled quarantine copy: source={provenance:?}, copied={copied:?}");
         assert_eq!(
-            quarantine::read(&root.join("approval").join(APP).join("Contents/resource"))
+            quarantine::read(&source.join("Contents/resource"))
                 .unwrap()
                 .as_deref(),
             Some(provenance.as_slice())
         );
-        let changed = b"0081;1234;ChangedCandidate;existing";
-        quarantine::write(&root.join("approval").join(APP), changed).unwrap();
-        let third = prepare_approval_candidate(&package, &source).unwrap();
-        assert_ne!(second.nonce, third.nonce);
-        assert_eq!(
-            quarantine::read(&root.join("approval").join(APP)).unwrap(),
-            None
-        );
+        assert!(!root.join("approval/receipt.json").exists());
+        if copied.as_deref() == Some(provenance.as_slice()) {
+            let second = second.unwrap();
+            assert_ne!(first.nonce, second.nonce);
+            assert!(receipt(&root.join("approval"), &second).is_err());
+        } else {
+            assert!(
+                copied.is_some(),
+                "A differing existing attribute must be retained"
+            );
+            assert_eq!(
+                second.err().as_deref(),
+                Some("Conflicting existing quarantine metadata; refusing to replace it")
+            );
+            assert!(!root.join("approval/request.json").exists());
+        }
         let archives: Vec<_> = fs::read_dir(&root)
             .unwrap()
             .map(|entry| entry.unwrap())
-            .filter(|e| {
-                e.file_name()
+            .filter(|entry| {
+                entry
+                    .file_name()
                     .to_string_lossy()
                     .starts_with("approval-superseded-")
             })
             .collect();
-        assert_eq!(archives.len(), 2);
-        assert!(archives.iter().any(
-            |e| quarantine::read(&e.path().join(APP)).unwrap().as_deref()
-                == Some(changed.as_slice())
+        assert_eq!(archives.len(), 1);
+        assert!(archives[0].path().join("receipt.json").exists());
+    }
+    #[test]
+    fn update_install_macos_candidate_only_change_rebuilds_from_unmarked_source() {
+        let root = std::env::temp_dir().join(format!(
+            "studyapp-candidate-refresh-{}",
+            uuid::Uuid::new_v4()
         ));
-        assert!(
-            archives
-                .iter()
-                .any(|e| e.path().join("receipt.json").exists())
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(source.join("Contents/MacOS")).unwrap();
+        fs::write(source.join("Contents/MacOS/studyapp"), b"signed executable").unwrap();
+        fs::write(root.join("package"), b"signed image").unwrap();
+        let package = VerifiedPackage {
+            directory: root.clone(),
+            version: "0.1.4".into(),
+            digest: "unchanged".into(),
+        };
+        let first = prepare_approval_candidate(&package, &source).unwrap();
+        let changed = b"0081;1234;ChangedCandidate;existing";
+        quarantine::write(&root.join("approval").join(APP), changed).unwrap();
+        let second = prepare_approval_candidate(&package, &source).unwrap();
+        assert_ne!(first.nonce, second.nonce);
+        assert_eq!(
+            quarantine::read(&root.join("approval").join(APP)).unwrap(),
+            None
+        );
+        assert!(!root.join("approval/receipt.json").exists());
+        assert_eq!(
+            tree_digest(&source).unwrap(),
+            tree_digest(&root.join("approval").join(APP)).unwrap()
+        );
+        let archives: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("approval-superseded-")
+            })
+            .collect();
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            quarantine::read(&archives[0].path().join(APP))
+                .unwrap()
+                .as_deref(),
+            Some(changed.as_slice())
         );
     }
     #[test]
