@@ -1,12 +1,19 @@
 //! Offline Markdown presentation for compact learning text.
 
 pub fn markdown_preview(source: &str) -> String {
+    preview(source, false)
+}
+
+fn preview(source: &str, safe_links: bool) -> String {
     use pulldown_cmark::{Event, Tag};
     let mut events = parser(source).into_offset_iter();
     let mut output = String::new();
     let mut cursor = 0;
     while let Some((event, range)) = events.next() {
         match event {
+            Event::Start(Tag::Link { ref dest_url, .. })
+                if safe_links
+                    && (dest_url.starts_with("https://") || dest_url.starts_with("http://")) => {}
             Event::Html(_) | Event::InlineHtml(_) => {
                 output.push_str(&source[cursor..range.start]);
                 // Preserve the boundary as literal text: removing it (or adding
@@ -176,5 +183,42 @@ mod tests {
                 "unsafe interpretation: {safe}"
             );
         }
+    }
+}
+
+/// Keeps only the latest release's sanitized source; TextView retains its parsed
+/// state under the stable element id when that source does not change.
+pub fn release_notes(source: &str) -> gpui_kit::SharedString {
+    use std::cell::RefCell;
+    thread_local! {
+        static CACHE: RefCell<Option<(String, gpui_kit::SharedString)>> = const { RefCell::new(None) };
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((old, rendered)) = cache.as_ref()
+            && old == source
+        {
+            return rendered.clone();
+        }
+        let rendered: gpui_kit::SharedString = preview(source, true).into();
+        *cache = Some((source.to_owned(), rendered.clone()));
+        rendered
+    })
+}
+
+#[cfg(test)]
+mod release_tests {
+    #[test]
+    fn mixed_release_markdown_keeps_formatting_and_safe_links() {
+        let source = "# Changes\n\n- **Bold** and `code`\n\n```rust\nlet x = 1;\n```\n\n[Help](https://example.com/help)\n\n![remote](https://example.com/a.png)\n\n[bad](javascript:alert)\n<script>bad</script>";
+        let safe = super::release_notes(source);
+        assert!(safe.contains("# Changes"));
+        assert!(safe.contains("**Bold**"));
+        assert!(safe.contains("```rust"));
+        assert!(safe.contains("[Help](https://example.com/help)"));
+        assert!(!safe.contains("![remote]"));
+        assert!(!safe.contains("javascript:"));
+        assert!(!safe.contains("<script>"));
+        assert_eq!(safe, super::release_notes(source));
     }
 }

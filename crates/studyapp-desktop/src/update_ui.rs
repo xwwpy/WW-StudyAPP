@@ -50,6 +50,7 @@ pub struct UpdatePanel {
     isolated_launch: bool,
     busy: bool,
     check_policy: UpdateCheckPolicy,
+    check_epoch: std::time::Instant,
     release: Option<UpdateRelease>,
     prepared: Option<(String, PreparedUpdate)>,
     status: String,
@@ -117,6 +118,7 @@ impl UpdatePanel {
             library: String::new(),
             busy: false,
             check_policy: UpdateCheckPolicy::default(),
+            check_epoch: std::time::Instant::now(),
             release: None,
             prepared: None,
             isolated_launch: std::env::args_os().any(|arg| arg == "--data-dir"),
@@ -152,6 +154,7 @@ impl UpdatePanel {
 
     /// The dialog mirrors the panel's own state; it never starts work by itself.
     pub fn dialog_content(&self) -> Option<studyapp_ui::update_dialog::UpdateDialogContent> {
+        self.dialog.as_ref()?;
         if let Some(manifest) = &self.nsis {
             let phase = if let Some(error) = self.nsis_error.clone() {
                 UpdateDialogPhase::Failed(error.into())
@@ -215,6 +218,9 @@ impl UpdatePanel {
         if self.busy {
             return;
         }
+        if let Some(version) = &self.dialog {
+            self.check_policy.dismiss(version);
+        }
         self.dialog = None;
         cx.notify();
     }
@@ -251,7 +257,10 @@ impl UpdatePanel {
                 self.nsis_error = None;
                 self.nsis_progress = None;
                 self.nsis_version = Some(manifest.version.to_string());
-                self.dialog = Some(manifest.version.to_string());
+                self.dialog = self
+                    .check_policy
+                    .should_prompt(origin, &manifest.version.to_string())
+                    .then(|| manifest.version.to_string());
                 self.status = format!("发现新版本 {}", manifest.version);
                 self.nsis = Some(manifest);
                 self.release = None;
@@ -320,6 +329,10 @@ impl UpdatePanel {
             return;
         }
         // Claim startup even while a manual request is running: never queue a retry.
+        if origin != CheckOrigin::Periodic {
+            self.check_policy
+                .periodic_due(self.check_epoch.elapsed().as_secs(), false);
+        }
         let started = self.check_policy.start(origin);
         if !started {
             return;
@@ -394,6 +407,13 @@ impl UpdatePanel {
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) {
+        if self.checks_allowed()
+            && self
+                .check_policy
+                .periodic_due(self.check_epoch.elapsed().as_secs(), self.busy)
+        {
+            self.check(CheckOrigin::Periodic, cx);
+        }
         let mut changed = false;
         while let Ok(reply) = self.receiver.try_recv() {
             changed = true;
@@ -482,7 +502,10 @@ impl UpdatePanel {
                     release.version,
                     release.package_size as f64 / 1_048_576.
                 );
-                self.dialog = Some(release.version.clone());
+                self.dialog = self
+                    .check_policy
+                    .should_prompt(origin, &release.version)
+                    .then(|| release.version.clone());
                 self.progress = None;
                 self.release = Some(*release);
             }
@@ -594,6 +617,11 @@ impl UpdatePanel {
     }
 
     #[cfg(feature = "ui-test")]
+    pub(crate) fn fixture_automatic_prompt_allowed(&self, version: &str) -> bool {
+        self.check_policy
+            .should_prompt(CheckOrigin::Periodic, version)
+    }
+    #[cfg(feature = "ui-test")]
     pub(crate) fn fixture_state(&self) -> (usize, usize, bool, bool) {
         let fixture = self.fixture.as_ref().expect("isolated update fixture");
         (
@@ -666,7 +694,7 @@ impl Render for UpdatePanel {
                     .on_click(move |_, _, cx| cx.open_url(&release_url))))
             .children(self.release.as_ref().map(|release|
                 scroll_body("update-release-notes", &self.notes_scroll).max_h(px(180.)).pr_3()
-                    .child(div().child(release.notes.clone()))))
+                    .child(gpui_kit::component::text::TextView::markdown("update-settings-markdown", studyapp_ui::markdown_content::release_notes(&release.notes)))))
             .children(self.prepared.as_ref().map(|(_, update)| {
                 let status = update.status_path.clone();
                 column().gap_1().child(muted(format!("安装位置：{}", studyapp_desktop::presentation::display_path(&update.installation_directory.to_string_lossy()))))
@@ -759,7 +787,7 @@ impl crate::app::StudyApp {
         self.continue_close(window, cx);
     }
 
-    /// Renders the cargo-sweep style prompt; the panel owns all state.
+    /// Renders the update card; the panel owns all state.
     pub fn update_dialog_view(&self, cx: &mut Context<Self>) -> AnyElement {
         let (content, scroll) = {
             let panel = self.update_panel.read(cx);
@@ -815,6 +843,7 @@ mod tests {
             receiver,
             sender,
             check_policy: Default::default(),
+            check_epoch: std::time::Instant::now(),
             _poll: Task::ready(()),
             #[cfg(feature = "ui-test")]
             fixture: None,
@@ -849,6 +878,27 @@ mod tests {
         assert!(!panel.busy);
     }
 
+    #[::core::prelude::v1::test]
+    fn automatic_checks_respect_dismissal_and_manual_reopens() {
+        let mut panel = panel();
+        let manifest = crate::update_manifest::UpdateManifest {
+            version: semver::Version::parse("0.9.0").unwrap(),
+            notes: "# Changes\n- **New**".into(),
+            pub_date: None,
+            setup_url: "https://example.com/setup.exe".into(),
+            signature: "fixture".into(),
+        };
+        panel.check_policy.dismiss("0.9.0");
+        panel.finish_nsis_check(CheckOrigin::Periodic, Ok(Some(manifest.clone())));
+        assert!(!panel.dialog_visible());
+        panel.finish_nsis_check(CheckOrigin::Manual, Ok(Some(manifest.clone())));
+        assert!(panel.dialog_visible());
+        panel.dialog = None;
+        let mut newer = manifest;
+        newer.version = semver::Version::parse("0.9.1").unwrap();
+        panel.finish_nsis_check(CheckOrigin::Periodic, Ok(Some(newer)));
+        assert!(panel.dialog_visible());
+    }
     #[::core::prelude::v1::test]
     fn update_startup_failure_is_quiet_and_manual_retry_is_visible() {
         let mut panel = panel();

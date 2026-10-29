@@ -12,7 +12,7 @@ fn release(version: &str) -> String {
     let url = format!("https://github.com/xwwpy/WW-StudyAPP/releases/download/v{version}/{name}");
     serde_json::json!({
         "tag_name": format!("v{version}"), "draft": false, "prerelease": false,
-        "body": "Update fixture", "html_url": format!("https://github.com/xwwpy/WW-StudyAPP/releases/tag/v{version}"),
+        "body": "# Update fixture\n\n- **Formatting** and `code`\n\n[Help](https://example.com/help)", "html_url": format!("https://github.com/xwwpy/WW-StudyAPP/releases/tag/v{version}"),
         "assets": [
             {"name": name, "browser_download_url": url, "state": "uploaded", "size": 1024, "digest": format!("sha256:{}", "a".repeat(64))},
             {"name": format!("{name}.sha256"), "browser_download_url": format!("{url}.sha256"), "state": "uploaded", "size": 112, "digest": format!("sha256:{}", "b".repeat(64))}
@@ -105,6 +105,16 @@ pub(crate) async fn exercise(
                 window.try_find("update-dialog").is_some(),
                 "a detected release opens the dialog"
             );
+            let panel = view.read(cx).update_panel.clone();
+            let content = panel.read(cx).dialog_content().expect("update content");
+            assert!(content.notes.contains("# Update fixture"));
+            assert!(content.notes.contains("**Formatting**"));
+            assert!(matches!(
+                content.phase,
+                studyapp_ui::update_dialog::UpdateDialogPhase::Ready
+            ));
+            assert!(window.try_find("update-dialog-notes").is_some());
+            assert!(window.try_find("update-dialog-install").is_some());
             window
                 .render_to_image()
                 .unwrap()
@@ -115,6 +125,19 @@ pub(crate) async fn exercise(
             assert!(
                 window.try_find("update-dialog").is_none(),
                 "later dismisses the dialog"
+            );
+            assert!(
+                !view
+                    .read(cx)
+                    .update_panel
+                    .read(cx)
+                    .fixture_automatic_prompt_allowed("99.0.0")
+            );
+            assert!(
+                view.read(cx)
+                    .update_panel
+                    .read(cx)
+                    .fixture_automatic_prompt_allowed("99.0.1")
             );
             let button = window.find("sidebar-update").bounds();
             let version = window.find("sidebar-version").bounds();

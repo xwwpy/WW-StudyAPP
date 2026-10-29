@@ -3,15 +3,34 @@
 pub enum CheckOrigin {
     Startup,
     Manual,
+    Periodic,
 }
 
 #[derive(Default)]
 pub struct UpdateCheckPolicy {
     startup_claimed: bool,
     in_flight: bool,
+    next_due: Option<u64>,
+    dismissed: Option<String>,
 }
 
 impl UpdateCheckPolicy {
+    /// Seconds since the panel's monotonic epoch; busy periods coalesce into one check.
+    pub fn periodic_due(&mut self, now: u64, busy: bool) -> bool {
+        if busy || self.in_flight || self.next_due.is_some_and(|due| now < due) {
+            return false;
+        }
+        self.next_due = Some(now.saturating_add(3600));
+        true
+    }
+
+    pub fn dismiss(&mut self, version: &str) {
+        self.dismissed = Some(version.to_owned());
+    }
+
+    pub fn should_prompt(&self, origin: CheckOrigin, version: &str) -> bool {
+        origin == CheckOrigin::Manual || self.dismissed.as_deref() != Some(version)
+    }
     pub fn start(&mut self, origin: CheckOrigin) -> bool {
         if origin == CheckOrigin::Startup {
             if self.startup_claimed {
@@ -97,5 +116,40 @@ mod tests {
         ] {
             assert!(!startup_check_allowed(args));
         }
+    }
+}
+
+#[cfg(test)]
+mod periodic_tests {
+    use super::*;
+    #[test]
+    fn startup_completion_allows_hourly_retry_without_startup_repetition() {
+        let mut policy = UpdateCheckPolicy::default();
+        assert!(policy.periodic_due(0, false));
+        assert!(policy.start(CheckOrigin::Startup));
+        policy.finish(); // Failure and success both release the same check claim.
+        assert!(!policy.start(CheckOrigin::Startup));
+        assert!(!policy.periodic_due(3599, false));
+        assert!(policy.periodic_due(3600, false));
+        assert!(policy.start(CheckOrigin::Periodic));
+    }
+    #[test]
+    fn hourly_boundary_and_busy_resume_without_burst() {
+        let mut policy = UpdateCheckPolicy::default();
+        assert!(policy.periodic_due(0, false));
+        assert!(!policy.periodic_due(3599, false));
+        assert!(!policy.periodic_due(3600, true));
+        assert!(policy.periodic_due(3601, false));
+        assert!(!policy.periodic_due(3601, false));
+        assert!(!policy.periodic_due(7200, false));
+        assert!(policy.periodic_due(7201, false));
+    }
+    #[test]
+    fn dismissal_is_version_specific_and_manual_reopens() {
+        let mut policy = UpdateCheckPolicy::default();
+        policy.dismiss("0.9.0");
+        assert!(!policy.should_prompt(CheckOrigin::Startup, "0.9.0"));
+        assert!(policy.should_prompt(CheckOrigin::Manual, "0.9.0"));
+        assert!(policy.should_prompt(CheckOrigin::Startup, "0.9.1"));
     }
 }

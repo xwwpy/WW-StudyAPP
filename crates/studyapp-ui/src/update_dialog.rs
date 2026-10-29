@@ -1,15 +1,15 @@
-//! Update-available dialog modelled on the reference project's prompt.
+//! Shared update card with release notes and explicit installation actions.
 //!
 //! Pure presentation: the caller owns the check/download state and wires the
 //! install and "later" actions. The dialog never starts work by itself.
 use crate::{
-    components::{heading, muted, row, scroll_body},
+    components::{heading, row, scroll_body},
     controls::Button,
     theme::ResolvedTheme,
 };
 use gpui_kit::{
     assets::IconName,
-    component::{Disableable, Icon, Sizable, button::ButtonVariants},
+    component::{Disableable, Icon, Sizable, button::ButtonVariants, text::TextView},
     *,
 };
 
@@ -146,33 +146,8 @@ impl DialogColors {
     }
 }
 
-fn version_block(
-    colors: &DialogColors,
-    label: &str,
-    value: &str,
-    accent: bool,
-) -> impl IntoElement {
-    let value_color = if accent { colors.accent } else { colors.text };
-    row()
-        .flex_col()
-        .gap_0p5()
-        .child(
-            gpui_kit::div()
-                .text_size(px(11.))
-                .text_color(rgb(colors.muted))
-                .child(label.to_owned()),
-        )
-        .child(
-            gpui_kit::div()
-                .text_size(px(16.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(rgb(value_color))
-                .child(value.to_owned()),
-        )
-}
-
 impl RenderOnce for UpdateDialog {
-    fn render(self, _: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let colors = DialogColors::resolve(crate::theme::palette());
         let phase = self.content.phase.clone();
         let busy = phase.busy();
@@ -195,7 +170,13 @@ impl RenderOnce for UpdateDialog {
         };
 
         let install = Button::new("update-dialog-install")
-            .label(if busy { "正在更新" } else { "立即更新" })
+            .label(if busy {
+                "正在更新"
+            } else if failed {
+                "重试更新"
+            } else {
+                "立即更新"
+            })
             .disabled(busy)
             .icon(IconName::ArrowUp);
         let install = match self.on_install {
@@ -209,8 +190,8 @@ impl RenderOnce for UpdateDialog {
             .test_support()
             .flex()
             .flex_col()
-            .w(px(540.))
-            .rounded(px(16.))
+            .w((window.viewport_size().width - px(32.)).min(px(440.)))
+            .rounded(px(28.))
             .border_1()
             .border_color(rgb(colors.border))
             .bg(rgb(colors.surface))
@@ -231,67 +212,22 @@ impl RenderOnce for UpdateDialog {
                             .text_color(rgb(colors.accent_text))
                             .child(Icon::new(IconName::ArrowUp)),
                     )
-                    .child(close),
-            )
-            .child(
-                gpui_kit::div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
                     .child(
                         gpui_kit::div()
-                            .text_size(px(11.))
-                            .text_color(rgb(colors.accent))
-                            .child("UPDATE AVAILABLE"),
-                    )
-                    .child(heading(phase.headline()))
-                    .child(muted("升级到最新版本，获得更稳定的使用体验。")),
-            )
-            .child(
-                row()
-                    .items_center()
-                    .gap_4()
-                    .p_3()
-                    .rounded(px(10.))
-                    .border_1()
-                    .border_color(rgb(colors.border))
-                    .bg(rgb(colors.inset))
-                    .child(version_block(
-                        &colors,
-                        "当前版本",
-                        &format!("v{}", self.content.current_version),
-                        false,
-                    ))
-                    .child(
-                        gpui_kit::div()
-                            .text_color(rgb(colors.muted))
-                            .child("→".to_owned()),
-                    )
-                    .child(
-                        row()
-                            .flex_col()
-                            .gap_0p5()
+                            .flex_1()
+                            .px_3()
+                            .child(heading(phase.headline()))
                             .child(
                                 gpui_kit::div()
-                                    .text_size(px(11.))
+                                    .text_size(px(12.))
                                     .text_color(rgb(colors.muted))
-                                    .child("最新版本".to_owned()),
-                            )
-                            .child(
-                                gpui_kit::div()
-                                    .text_size(px(16.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(rgb(colors.accent))
-                                    .child(format!("v{}", self.content.latest_version)),
+                                    .child(format!(
+                                        "v{} → v{}",
+                                        self.content.current_version, self.content.latest_version
+                                    )),
                             ),
                     )
-                    .child(gpui_kit::div().flex_1())
-                    .child(
-                        gpui_kit::div()
-                            .text_size(px(11.))
-                            .text_color(rgb(colors.muted))
-                            .child(self.content.published.clone()),
-                    ),
+                    .child(close),
             )
             .child(
                 row()
@@ -315,7 +251,8 @@ impl RenderOnce for UpdateDialog {
                     .rounded(px(10.))
                     .border_1()
                     .border_color(rgb(colors.border))
-                    .max_h(px(180.))
+                    .bg(rgb(colors.inset))
+                    .max_h(px(240.))
                     .overflow_hidden()
                     .child(
                         scroll_body("update-dialog-notes", &self.notes_scroll)
@@ -324,7 +261,10 @@ impl RenderOnce for UpdateDialog {
                                 gpui_kit::div()
                                     .text_size(px(13.))
                                     .text_color(rgb(colors.text))
-                                    .child(notes),
+                                    .child(TextView::markdown(
+                                        "update-dialog-markdown",
+                                        crate::markdown_content::release_notes(&notes),
+                                    )),
                             ),
                     ),
             );
@@ -338,9 +278,9 @@ impl RenderOnce for UpdateDialog {
             UpdateDialogPhase::Installing => gpui_kit::div()
                 .text_size(px(12.))
                 .text_color(rgb(colors.muted))
-                .child("安装过程中请保持应用开启，完成后会自动重启。"),
+                .child("安装前会保存草稿并关闭应用，安装完成后重新打开。"),
             UpdateDialogPhase::Downloading { downloaded, total } => {
-                let fraction = phase.fraction().unwrap_or(0.35);
+                let fraction = phase.fraction().unwrap_or(0.);
                 gpui_kit::div()
                     .flex()
                     .flex_col()
@@ -387,7 +327,7 @@ impl RenderOnce for UpdateDialog {
                         gpui_kit::div()
                             .text_size(px(11.))
                             .text_color(rgb(colors.muted))
-                            .child("安装过程中请保持应用开启，完成后会自动重启。"),
+                            .child("安装前会保存草稿并关闭应用，安装完成后重新打开。"),
                     )
             }
         });
