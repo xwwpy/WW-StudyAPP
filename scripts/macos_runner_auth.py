@@ -121,9 +121,9 @@ def password_command(command, password):
                     directory_errors.update(code.decode("ascii") for code in re.findall(rb"\beDS[A-Za-z]+\b", pending))
                 except OSError:
                     continue
-                    if re.search(rb"password[^\r\n]{0,80}:\s*$", pending.lower()):
+                if re.search(rb"password[^\r\n]{0,80}:\s*$", pending.lower()):
                     prompt = pending.lower()
-                        stage = "old" if b"old password" in prompt or b"current password" in prompt or b"admin password" in prompt else "repeat" if b"retype" in prompt or b"verify" in prompt else "new" if b"new" in prompt else "unspecified"
+                    stage = "old" if b"old password" in prompt or b"current password" in prompt or b"admin password" in prompt else "repeat" if b"retype" in prompt or b"verify" in prompt else "new" if b"new" in prompt else "unspecified"
                     stages.append(stage)
                     if stage == "old":
                         raise RuntimeError("Runner password reset requires its existing password; no credential guessed")
