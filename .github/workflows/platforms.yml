@@ -61,6 +61,7 @@ jobs:
       - name: Verify macOS native scripting bridge
         if: matrix.platform == 'macos'
         run: |
+          python3 -c 'import sys; sys.path.insert(0,"scripts"); from macos_quarantine import read_quarantine; value=read_quarantine("Cargo.toml"); print({"darwin_quarantine_read":True,"present":value is not None})'
           osascript -l JavaScript scripts/macos-approval-ui.js bridge-self-test > "$RUNNER_TEMP/macos-bridge.json"
           python3 -c 'import json,os; from pathlib import Path; p=json.loads((Path(os.environ["RUNNER_TEMP"])/"macos-bridge.json").read_text()); assert p["windowArray"] is True and isinstance(p["permissions"]["accessibilityTrusted"],bool); print(p)'
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec

@@ -7,10 +7,31 @@ import tempfile
 import os
 from macos_runner_auth import select_authentication, authentication_candidates, unique_authentication, runner_credential, authentication_log_summary, authentication_identity_summary
 import json
+from macos_quarantine import read_quarantine
 spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_name("assess-macos-update.py"))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_darwin_quarantine_reader_preserves_bytes_and_distinguishes_errors(self):
+        import ctypes
+        def native(path, name, output, size, position, flags):
+            self.assertEqual(name, b"com.apple.quarantine")
+            self.assertEqual((position, flags), (0, 1))
+            output.raw = b"value\n" + b"\0" * (size - 6)
+            return 6
+        library = MagicMock()
+        library.getxattr.side_effect = native
+        with patch("macos_quarantine.ctypes.CDLL", return_value=library):
+            self.assertEqual(read_quarantine(Path("fixture")), b"value\n".hex())
+            library.getxattr.side_effect = None
+            library.getxattr.return_value = -1
+            with patch("macos_quarantine.ctypes.get_errno", return_value=93):
+                self.assertIsNone(read_quarantine(Path("fixture")))
+            for error in (1, 2, 13, 34):
+                with patch("macos_quarantine.ctypes.get_errno", return_value=error):
+                    with self.assertRaises(OSError):
+                        read_quarantine(Path("fixture"))
+            self.assertIs(library.getxattr.restype, ctypes.c_ssize_t)
     def test_authentication_identity_diagnostics_never_publish_identity_values(self):
         base = {"processImagePath": "/system/coreautha", "timestamp": "2026-10-29T19:00:00+00:00",
                 "subsystem": "com.apple.LocalAuthentication", "category": "Passcode"}

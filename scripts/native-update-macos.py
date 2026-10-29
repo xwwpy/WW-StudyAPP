@@ -1,6 +1,5 @@
 """Real installed DMG/card/system-approval/save/restart transition on macOS CI."""
 import argparse
-import errno
 import importlib.util
 import json
 import os
@@ -11,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+from macos_quarantine import read_quarantine as quarantine
 
 
 def load(name, filename):
@@ -22,15 +22,6 @@ def load(name, filename):
 
 common = load("native_common", "native-update-acceptance.py")
 policy = load("native_policy", "assess-macos-update.py")
-
-
-def quarantine(path):
-    try:
-        return os.getxattr(path, "com.apple.quarantine", follow_symlinks=False).hex()
-    except OSError as error:
-        if error.errno == errno.ENOATTR:
-            return None
-        raise
 
 
 def mount(package, destination):
