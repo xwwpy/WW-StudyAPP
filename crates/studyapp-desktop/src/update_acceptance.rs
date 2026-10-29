@@ -37,28 +37,6 @@ fn resolve_directory(
 ) -> Option<PathBuf> {
     handoff.or_else(|| runner.then_some(environment).flatten())
 }
-#[cfg(test)]
-mod launch_context_tests {
-    use super::resolve_directory;
-    use std::path::PathBuf;
-    #[test]
-    fn bound_launch_context_survives_missing_environment() {
-        let fixture = PathBuf::from("fixture");
-        assert_eq!(
-            resolve_directory(Some(fixture.clone()), false, None),
-            Some(fixture.clone())
-        );
-        assert_eq!(resolve_directory(None, false, Some(fixture.clone())), None);
-        assert_eq!(
-            resolve_directory(None, true, Some(fixture.clone())),
-            Some(fixture.clone())
-        );
-        assert_eq!(
-            resolve_directory(Some(fixture.clone()), true, Some(PathBuf::from("stale"))),
-            Some(fixture)
-        );
-    }
-}
 pub fn active() -> bool {
     launch_directory().is_some()
 }
@@ -407,6 +385,29 @@ pub fn startup_failure(error: &str) {
         save(
             &format!("startup-error-{}.json", std::process::id()),
             json!({"pid":std::process::id(),"error":error,"version":env!("CARGO_PKG_VERSION")}),
+        );
+    }
+}
+
+#[cfg(test)]
+mod launch_context_tests {
+    use super::resolve_directory;
+    use std::path::PathBuf;
+    #[test]
+    fn bound_launch_context_survives_missing_environment() {
+        let fixture = PathBuf::from("fixture");
+        assert_eq!(
+            resolve_directory(Some(fixture.clone()), false, None),
+            Some(fixture.clone())
+        );
+        assert_eq!(resolve_directory(None, false, Some(fixture.clone())), None);
+        assert_eq!(
+            resolve_directory(None, true, Some(fixture.clone())),
+            Some(fixture.clone())
+        );
+        assert_eq!(
+            resolve_directory(Some(fixture.clone()), true, Some(PathBuf::from("stale"))),
+            Some(fixture)
         );
     }
 }

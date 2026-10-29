@@ -187,7 +187,7 @@ jobs:
         run: python3 scripts/smoke-unix.py --binary "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/MacOS/studyapp" --data-dir "$RUNNER_TEMP/native-installed"
       - name: Verify real macOS update card and DMG transition
         if: matrix.platform == 'macos'
-        run: python3 scripts/native-update-macos.py --work-dir "$RUNNER_TEMP/native-update" --production-binary target/release/studyapp
+        run: '"$RUNNER_TEMP/package-venv/bin/python" scripts/native-update-macos.py --work-dir "$RUNNER_TEMP/native-update" --production-binary target/release/studyapp'
       - name: Preserve native evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

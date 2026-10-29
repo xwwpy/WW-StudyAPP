@@ -8,6 +8,7 @@ import platform
 import plistlib
 import shutil
 import subprocess
+import sys
 import time
 
 
@@ -48,7 +49,7 @@ def main():
         common.snapshot(source, archive, version)
         common.run(["cargo", "build", "--locked", "-p", "studyapp-desktop", "--bin", "studyapp", "--features", "update-acceptance"], cwd=source, env=build_env)
         output = root / (label + "-packages")
-        common.run(["python3", source / "scripts/package-unix.py", "dmg", "--binary", common.ROOT / "target/update-acceptance/debug/studyapp", "--output", output], cwd=source)
+        common.run([sys.executable, source / "scripts/package-unix.py", "dmg", "--binary", common.ROOT / "target/update-acceptance/debug/studyapp", "--output", output], cwd=source)
         packages[label] = next(output.glob("*.dmg"))
     fixture = root / "fixture"
     fixture.mkdir(mode=0o700)
