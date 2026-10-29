@@ -106,7 +106,7 @@ def system_approval(output):
     click("System Settings", ["Open Anyway"])
     time.sleep(2)
     screenshot("allow-confirmation")
-    click("CoreServicesUIAgent", ["Open"])
+    click("CoreServicesUIAgent", ["Open Anyway", "Open"])
     click("System Settings", ["Open"])
     screenshot("allow-result")
     actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", "universalAccessAuthWarn"], 10))
