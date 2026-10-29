@@ -731,6 +731,16 @@ impl crate::app::StudyApp {
             self.push_notice(Err(error.message.to_string()), cx);
             return;
         }
+        // GPUI drops its platform window before its view entities. Tear down
+        // every Linux WebKit host first, after all close barriers have passed.
+        #[cfg(target_os = "linux")]
+        {
+            self.note_content
+                .update(cx, |editor, _| editor.close_native_host());
+            if let Some(preview) = &self.preferences_ui.appearance_preview {
+                preview.update(cx, |editor, _| editor.close_native_host());
+            }
+        }
         self.close_allowed = true;
         window.remove_window();
     }

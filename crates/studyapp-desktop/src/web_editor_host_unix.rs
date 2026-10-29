@@ -256,6 +256,9 @@ impl Drop for LinuxHost {
         self.restore_parent_focus();
         // The WebView field has already been dropped on the GTK foreground thread.
         unsafe { self.window.destroy() };
+        // GPUI uses a separate XCB connection. Complete GTK's destruction requests
+        // before the caller can destroy the GPUI parent on that connection.
+        self.display.sync();
     }
 }
 

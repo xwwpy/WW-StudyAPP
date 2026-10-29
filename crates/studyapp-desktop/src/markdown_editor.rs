@@ -110,6 +110,8 @@ pub struct MarkdownEditor {
     sender: mpsc::Sender<String>,
     receiver: mpsc::Receiver<String>,
     host: Option<crate::web_editor_host::HostedEditor>,
+    #[cfg(target_os = "linux")]
+    native_closed: bool,
     creating: bool,
     ready: bool,
     visible: bool,
@@ -133,6 +135,14 @@ impl EventEmitter<MarkdownEvent> for MarkdownEditor {}
 
 impl MarkdownEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        #[cfg(target_os = "linux")]
+        cx.on_app_quit(|this, _| {
+            // This must run synchronously: GPUI clears its windows before it
+            // polls futures returned by quit observers.
+            this.close_native_host();
+            async {}
+        })
+        .detach();
         let (sender, receiver) = mpsc::channel();
         let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
@@ -151,6 +161,8 @@ impl MarkdownEditor {
             sender,
             receiver,
             host: None,
+            #[cfg(target_os = "linux")]
+            native_closed: false,
             creating: false,
             ready: false,
             visible: false,
@@ -169,6 +181,15 @@ impl MarkdownEditor {
             test_results: Default::default(),
             _poll: poll,
         }
+    }
+
+    /// Run after durable persistence, while the GPUI X11 parent still exists.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn close_native_host(&mut self) {
+        self.native_closed = true;
+        self.visible = false;
+        self.ready = false;
+        drop(self.host.take());
     }
 
     pub fn value(&self) -> &str {
@@ -681,6 +702,10 @@ impl MarkdownEditor {
     }
 
     fn ensure_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(target_os = "linux")]
+        if self.native_closed {
+            return;
+        }
         if self.host.is_some() || self.creating || self.error.is_some() || !self.visible {
             return;
         }
@@ -706,6 +731,13 @@ impl MarkdownEditor {
             cx.background_executor()
                 .timer(Duration::from_millis(1))
                 .await;
+            #[cfg(target_os = "linux")]
+            if this
+                .update(cx, |this, _| this.native_closed)
+                .unwrap_or(true)
+            {
+                return;
+            }
             #[cfg(feature = "ui-test")]
             eprintln!("native editor: creating WebView");
             let result = crate::web_editor_host::HostedEditor::new(parent, sender, profile);
@@ -713,6 +745,11 @@ impl MarkdownEditor {
             eprintln!("native editor: constructor finished");
             let _ = this.update(cx, |this, cx| {
                 this.creating = false;
+                #[cfg(target_os = "linux")]
+                if this.native_closed {
+                    drop(result);
+                    return;
+                }
                 match result {
                     Ok(host) => {
                         if let Err(error) = host.set_occlusions(this.occlusions.all()) {
