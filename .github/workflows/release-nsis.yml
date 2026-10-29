@@ -27,6 +27,10 @@ jobs:
     uses: ./.github/workflows/platforms.yml
     with:
       ref: ${{ inputs.tag || github.ref_name }}
+  windows-update:
+    uses: ./.github/workflows/update-windows.yml
+    with:
+      ref: ${{ inputs.tag || github.ref_name }}
   release:
     name: Build and sign Windows installers
     runs-on: windows-latest
@@ -142,7 +146,7 @@ jobs:
 
   publish:
     name: Publish all verified platform packages
-    needs: [release, native]
+    needs: [release, native, windows-update]
     runs-on: ubuntu-latest
     permissions:
       contents: write

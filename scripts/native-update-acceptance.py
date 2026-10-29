@@ -128,7 +128,8 @@ def main():
     archive = subprocess.check_output(["git", "archive", "--format=tar", "HEAD"], cwd=ROOT)
     packages = {}
     binaries = {}
-    environment = dict(os.environ, CARGO_TARGET_DIR=str(root / "target"))
+    fixture_target = ROOT / "target/update-acceptance"
+    environment = dict(os.environ, CARGO_TARGET_DIR=str(fixture_target))
     old_version = workspace_version(ROOT)
     candidate_version = next_patch(old_version)
     for label, version in [("old", old_version), ("candidate", candidate_version)]:
@@ -136,7 +137,7 @@ def main():
         snapshot(source, archive, version)
         run(["cargo", "build", "--locked", "-p", "studyapp-desktop", "--bin", "studyapp", "--features", "update-acceptance"], cwd=source, env=environment)
         binary = root / f"{label}-studyapp"
-        shutil.copy2(root / "target/debug/studyapp", binary)
+        shutil.copy2(fixture_target / "debug/studyapp", binary)
         output = root / f"{label}-packages"
         run(["python3", source / "scripts/package-unix.py", "deb", "--binary", binary, "--output", output], cwd=source)
         packages[label] = next(output.glob("*.deb"))

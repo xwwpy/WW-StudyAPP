@@ -24,6 +24,8 @@ def apis():
     security = c.WinDLL("advapi32", use_last_error=True)
     kernel.GetCurrentProcess.restype = w.HANDLE
     kernel.CloseHandle.argtypes = [w.HANDLE]
+    kernel.LocalFree.argtypes = [c.c_void_p]
+    kernel.LocalFree.restype = c.c_void_p
     kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
     kernel.OpenProcess.restype = w.HANDLE
     kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
@@ -32,6 +34,7 @@ def apis():
     kernel.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)]
     security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, c.POINTER(w.HANDLE)]
     security.GetTokenInformation.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)]
+    security.ConvertSidToStringSidW.argtypes = [c.c_void_p, c.POINTER(w.LPWSTR)]
     security.CreateRestrictedToken.argtypes = [w.HANDLE, w.DWORD, w.DWORD, c.c_void_p,
                                               w.DWORD, c.c_void_p, w.DWORD, c.c_void_p, c.POINTER(w.HANDLE)]
     security.CreateProcessWithTokenW.argtypes = [w.HANDLE, w.DWORD, w.LPCWSTR, w.LPWSTR,
@@ -51,6 +54,22 @@ def elevated(security, token):
     return value.value != 0
 
 
+def token_sid(kernel, security, token):
+    size = w.DWORD()
+    security.GetTokenInformation(token, 1, None, 0, c.byref(size))
+    if not 0 < size.value < 65536:
+        raise RuntimeError("Invalid TokenUser buffer size")
+    buffer = c.create_string_buffer(size.value)
+    require(security.GetTokenInformation(token, 1, buffer, size, c.byref(size)))
+    sid = c.cast(buffer, c.POINTER(c.c_void_p))[0]
+    text = w.LPWSTR()
+    require(security.ConvertSidToStringSidW(sid, c.byref(text)))
+    try:
+        return text.value
+    finally:
+        kernel.LocalFree(c.cast(text, c.c_void_p))
+
+
 def inspect_process(pid):
     kernel, security = apis()
     process = kernel.OpenProcess(0x1000, False, pid)
@@ -60,7 +79,8 @@ def inspect_process(pid):
         require(security.OpenProcessToken(process, 8, c.byref(token)))
         path, size = c.create_unicode_buffer(32768), w.DWORD(32768)
         require(kernel.QueryFullProcessImageNameW(process, 0, path, c.byref(size)))
-        return {"pid": pid, "elevated": elevated(security, token), "executable": path.value}
+        return {"pid": pid, "elevated": elevated(security, token), "executable": path.value,
+                "user_sid": token_sid(kernel, security, token)}
     finally:
         if token.value:
             kernel.CloseHandle(token)
@@ -103,6 +123,8 @@ def launch(executable, arguments, environment):
             selected = limited
         if elevated(security, selected):
             raise RuntimeError("Runner could not supply a non-elevated same-user token")
+        if token_sid(kernel, security, selected) != token_sid(kernel, security, current):
+            raise RuntimeError("Acceptance launch token changed the user identity")
         executable = str(Path(executable).resolve(strict=True))
         command = c.create_unicode_buffer(subprocess.list2cmdline([executable, *map(str, arguments)]))
         block = c.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(environment.items())) + "\0\0")

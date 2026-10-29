@@ -34,7 +34,8 @@ def main():
     archive = subprocess.check_output(["git", "archive", "--format=tar", "HEAD"], cwd=common.ROOT)
     old_version = common.workspace_version(common.ROOT)
     candidate_version = common.next_patch(old_version)
-    environment = dict(os.environ, CARGO_TARGET_DIR=str(root / "target"))
+    fixture_target = common.ROOT / "target/update-acceptance"
+    environment = dict(os.environ, CARGO_TARGET_DIR=str(fixture_target))
     makensis = Path(r"C:\Program Files (x86)\NSIS\makensis.exe")
     if not makensis.is_file():
         common.run(["choco", "install", "nsis", "-y", "--no-progress"])
@@ -44,7 +45,7 @@ def main():
         common.snapshot(source, archive, version)
         common.run(["cargo", "build", "--locked", "-p", "studyapp-desktop", "--bin", "studyapp", "--features", "update-acceptance"], cwd=source, env=environment)
         binary = root / f"{label}-studyapp.exe"
-        shutil.copy2(root / "target/debug/studyapp.exe", binary)
+        shutil.copy2(fixture_target / "debug/studyapp.exe", binary)
         output = root / f"{label}-packages"
         common.run(["pwsh", "-NoProfile", "-File", source / "scripts/package.ps1", "-Version", version,
                     "-BinaryPath", binary, "-OutputDirectory", output], cwd=source, env=environment)
@@ -75,7 +76,8 @@ def main():
     try:
         old = windows.launch(installed, ["--data-dir", data], child_env)
         old_context = windows.inspect_process(old.pid)
-        assert not old_context["elevated"]
+        harness_context = windows.inspect_process(os.getpid())
+        assert not old_context["elevated"] and old_context["user_sid"] == harness_context["user_sid"]
         before = common.wait_file(fixture / "old-observation.json", 120, old)
         assert old.wait(180) == 0
         after = common.wait_file(fixture / "new-observation.json", 180)
@@ -98,6 +100,7 @@ def main():
         assert receipt == {"id": tx["id"], "version": candidate_version, "pid": after["pid"]}
         new_context = windows.inspect_process(after["pid"])
         assert not new_context["elevated"] and Path(new_context["executable"]).resolve() == installed.resolve()
+        assert new_context["user_sid"] == old_context["user_sid"] == harness_context["user_sid"]
         pending = json.loads((fixture / "close-pending.json").read_text(encoding="utf-8"))
         ack = json.loads((fixture / "close-ack.json").read_text(encoding="utf-8"))
         handoff = json.loads((fixture / "helper-handoff.json").read_text(encoding="utf-8"))
@@ -110,7 +113,7 @@ def main():
             assert (fixture / name).stat().st_size > 1000
         result = {"source_sha": source_sha, "old_version": old_version, "installed_version": registered_version,
                   "installed_sha256": common.sha(installed), "candidate_sha256": common.sha(binaries["candidate"]),
-                  "old_process": old_context, "new_process": new_context, "health": receipt,
+                  "old_process": old_context, "new_process": new_context, "harness_user_sid": harness_context["user_sid"], "health": receipt,
                   "real_nsis": True, "app_owned_restart": True, "draft_preserved": True,
                   "production_rejected_fixture_key": True}
         (root / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
