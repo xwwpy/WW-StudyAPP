@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 
 
-def authentication_log_summary(records, since):
+def authentication_log_summary(records, since, secret=None, username=None):
     summary = []
     for record in records:
         process = str(record.get("processImagePath", "")).rsplit("/", 1)[-1]
@@ -30,12 +30,18 @@ def authentication_log_summary(records, since):
         names = re.findall(r"\berr(?:Authorization|Sec)[A-Za-z]+\b", message)
         signals = [word for word in ("authentication succeeded", "authentication failed", "authorization denied", "policy denied", "credential rejected") if word in message.lower()]
         if codes or names or signals:
-            summary.append({"process": process, "timestamp": record["timestamp"], "codes": codes, "names": names, "signals": signals,
-                            "subsystem": record.get("subsystem"), "category": record.get("category")})
+            entry = {"process": process, "timestamp": record["timestamp"], "codes": codes, "names": names, "signals": signals,
+                     "subsystem": record.get("subsystem"), "category": record.get("category")}
+            if secret and username and record.get("subsystem") == "com.apple.LocalAuthentication" and record.get("category") == "Passcode" and "5100" in codes:
+                reason = message.replace(secret, "[credential]").replace(username, "[test-user]")
+                reason = re.sub(r"/[\w./~-]+", "[path]", reason)
+                reason = re.sub(r"\b[0-9a-fA-F-]{24,}\b", "[identifier]", reason)
+                entry["reason"] = " ".join(reason.split())[:240]
+            summary.append(entry)
     return summary
 
 
-def authentication_diagnostics(since):
+def authentication_diagnostics(since, credential, username):
     result = subprocess.run(["/usr/bin/log", "show", "--last", "1m", "--style", "json", "--predicate",
                              'process == "coreautha" OR process == "authd"'], capture_output=True, text=True, timeout=20)
     if result.returncode != 0:
@@ -44,7 +50,8 @@ def authentication_diagnostics(since):
         records = json.loads(result.stdout)
         if not isinstance(records, list) or len(records) > 5000:
             return {"available": False, "reason": "bounded log query exceeded"}
-        return {"available": True, "records": authentication_log_summary(records, since)}
+        secret = credential.read_text(encoding="utf-8")
+        return {"available": True, "records": authentication_log_summary(records, since, secret, username)}
     except ValueError:
         return {"available": False, "reason": "log format unavailable"}
 

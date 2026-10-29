@@ -18,6 +18,12 @@ class LaunchEvidence(unittest.TestCase):
         self.assertEqual(summary[0]["codes"], ["-60005"])
         self.assertEqual(summary[0]["names"], ["errAuthorizationDenied"])
         self.assertNotIn("private-credential", json.dumps(summary))
+        records[0].update(subsystem="com.apple.LocalAuthentication", category="Passcode",
+                          eventMessage="error=5100 reason for private-credential user-one at /private/secret/location")
+        summary = authentication_log_summary(records, 0, "private-credential", "user-one")
+        self.assertIn("[credential]", summary[0]["reason"])
+        for sensitive in ("private-credential", "user-one", "/private/secret/location"):
+            self.assertNotIn(sensitive, json.dumps(summary))
     def test_runner_credential_write_failure_removes_the_single_file(self):
         original = os.fdopen
         @contextlib.contextmanager

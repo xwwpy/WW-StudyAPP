@@ -138,7 +138,7 @@ def system_approval(output):
                                         "stderr": failure_stage.group(1) if failure_stage else ""})
                         time.sleep(2)
                         actions.append({"command": ["authentication-status-codes"], "exit_code": 0,
-                                        "stdout": json.dumps(authentication_diagnostics(submitted_at)), "stderr": ""})
+                                        "stdout": json.dumps(authentication_diagnostics(submitted_at, credential, username)), "stderr": ""})
                 except RuntimeError as error:
                     actions.append({"command": ["runner-authentication"], "exit_code": 1, "stdout": "", "stderr": str(error)})
                 time.sleep(2)
