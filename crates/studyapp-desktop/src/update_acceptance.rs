@@ -284,14 +284,24 @@ fn committed(app: &StudyApp) -> Value {
             .collect::<Vec<_>>()
     )
 }
+fn restored_run(target: &str, current: &str, scenario: &str, observed: bool) -> bool {
+    target == current || (scenario == "authorization-denied" && observed)
+}
 pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathBuf, cx: &mut App) {
     cx.spawn(async move|cx|{
         cx.background_executor().timer(Duration::from_millis(500)).await;
         wait(window,&view,cx,"library and drafts",|a,_|a.snapshot.is_some()&&!a.startup_busy&&!a.draft_loading).await;
         let config=configuration().unwrap();let marker=config["draft_marker"].as_str().unwrap();
-        if config["target_version"].as_str()==Some(env!("CARGO_PKG_VERSION")){
+        if restored_run(config["target_version"].as_str().unwrap(),env!("CARGO_PKG_VERSION"),config["scenario"].as_str().unwrap_or(""),directory().unwrap().join("old-observation.json").exists()){
             let previous:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("old-observation.json")).unwrap()).unwrap();
             let id=previous["draft_id"].as_str().unwrap();
+            if config["scenario"] == "authorization-denied" {
+                let notice=window.update(cx,|_,_,cx|view.read(cx).notice.clone()).unwrap();
+                assert!(matches!(notice, Some(Err(_))), "Recovery must show the installation failure");
+                save("recovery-notice.json",json!({"notice":notice,"pid":std::process::id()}));
+                presented(window,cx).await;
+                window.update(cx,|_,window,_|capture(window,"recovery-notice.png")).unwrap();
+            }
             window.update(cx,|_,_,cx|{
                 assert_eq!(committed(view.read(cx)),previous["committed"]);
                 view.update(cx,|a,cx|{a.page=Page::Notes;a.clear_notices(cx);cx.notify();});
@@ -458,5 +468,22 @@ mod launch_context_tests {
             resolve_directory(Some(fixture.clone()), true, Some(PathBuf::from("stale"))),
             Some(fixture)
         );
+    }
+    #[test]
+    fn authorization_recovery_requires_a_previous_observed_run() {
+        assert!(!super::restored_run(
+            "0.1.4",
+            "0.1.3",
+            "authorization-denied",
+            false
+        ));
+        assert!(super::restored_run(
+            "0.1.4",
+            "0.1.3",
+            "authorization-denied",
+            true
+        ));
+        assert!(!super::restored_run("0.1.4", "0.1.3", "", true));
+        assert!(super::restored_run("0.1.4", "0.1.4", "", true));
     }
 }

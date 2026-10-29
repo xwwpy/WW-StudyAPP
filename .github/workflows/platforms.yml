@@ -207,6 +207,11 @@ jobs:
             ${{ runner.temp }}/native-update/fixture/*.json
             ${{ runner.temp }}/native-update/fixture/*.png
             ${{ runner.temp }}/native-update/transaction-evidence/**
+            ${{ runner.temp }}/native-update/authorization-denied/transition-result.json
+            ${{ runner.temp }}/native-update/authorization-denied/application.log
+            ${{ runner.temp }}/native-update/authorization-denied/fixture/*.json
+            ${{ runner.temp }}/native-update/authorization-denied/fixture/*.png
+            ${{ runner.temp }}/native-update/authorization-denied/transaction-evidence/**
           if-no-files-found: warn
           retention-days: 14
       - name: Preserve verified release package

@@ -115,6 +115,49 @@ def collect_diagnostics(root):
                 (target / "copy-error.txt").write_text(str(error), encoding="utf-8")
 
 
+def authorization_denied(root, packages, binaries, source_sha, old_version, candidate_version, user):
+    """Exercise actual polkit denial and application-owned ordinary-user recovery."""
+    root.mkdir()
+    fixture = root / "fixture"
+    fixture.mkdir()
+    config = sign_fixture(fixture, packages["candidate"], source_sha, candidate_version)
+    config["scenario"] = "authorization-denied"
+    (fixture / "fixture.json").write_text(json.dumps(config), encoding="utf-8")
+    run(["sudo", "apt-get", "install", "--reinstall", "--allow-downgrades", "-y", str(packages["old"])])
+    rule = root / "deny.rules"
+    rule.write_text('polkit.addRule(function(action, subject) { if (action.id == "org.freedesktop.policykit.exec" && subject.user == ' + json.dumps(user) + ' && action.lookup("program") == "/usr/bin/studyapp" && action.lookup("command_line").indexOf("/usr/bin/studyapp --update-worker ") == 0) { return polkit.Result.NO; } });\n', encoding="utf-8")
+    run(["sudo", "install", "-m", "0644", rule, "/etc/polkit-1/rules.d/00-studyapp-update-denied.rules"])
+    run(["sudo", "systemctl", "restart", "polkit"])
+    data = root / "library"
+    try:
+        with (root / "application.log").open("wb") as log:
+            old = subprocess.Popen(["/usr/bin/studyapp", "--data-dir", str(data)], env=dict(os.environ, STUDYAPP_UPDATE_ACCEPTANCE_DIR=str(fixture)), stdout=log, stderr=subprocess.STDOUT)
+            before = wait_file(fixture / "old-observation.json", 120, old)
+            assert old.wait(timeout=120) == 0
+            after = wait_file(fixture / "new-observation.json", 120)
+            directory = Path(json.loads((fixture / "attempt.json").read_text())["directory"])
+            assert list(directory.glob("status-cancelled-*.json"))
+            assert list(directory.glob("status-failed-*.json"))
+            assert not list(directory.glob("status-installed-*.json"))
+            assert not (directory / "health.json").exists()
+            installed = subprocess.check_output(["dpkg-query", "-W", "-f=${Version}", "studyapp"], text=True).strip()
+            assert installed == after["version"] == old_version
+            assert sha("/usr/bin/studyapp") == sha(binaries["old"])
+            assert before["pid"] == old.pid != after["pid"]
+            assert os.readlink(f'/proc/{after["pid"]}/exe') == "/usr/bin/studyapp"
+            uid_line = next(line for line in Path(f'/proc/{after["pid"]}/status').read_text().splitlines() if line.startswith("Uid:"))
+            assert all(int(value) == os.getuid() for value in uid_line.split()[1:])
+            draft = json.loads((data / "drafts" / f'{before["draft_id"]}.json').read_text())
+            assert draft["draft"]["content"] == after["live_text"] == config["draft_marker"]
+            (root / "transition-result.json").write_text(json.dumps({"source_sha": source_sha, "scenario": "authorization-denied",
+                "real_pkexec": True, "real_polkit_denial": True, "system_cancel_button_exercised": False,
+                "supervisor_reopened_old_version": installed, "old_pid": old.pid, "reopened_pid": after["pid"],
+                "uid": os.getuid(), "draft_preserved": True, "installer_not_started": True}, indent=2))
+            os.kill(after["pid"], 15)
+    finally:
+        collect_diagnostics(root)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -204,6 +247,7 @@ def main():
             os.kill(after["pid"], 15)
     finally:
         collect_diagnostics(root)
+    authorization_denied(root / "authorization-denied", packages, binaries, source_sha, old_version, candidate_version, user)
 
 if __name__ == "__main__":
     main()
