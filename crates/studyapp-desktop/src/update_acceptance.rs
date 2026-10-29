@@ -440,6 +440,11 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         #[cfg(target_os = "macos")]
         if config["scenario"] == "quarantine-refusal" {
             wait(window,&view,cx,"visible system launch refusal",|a,cx|a.update_panel.read(cx).acceptance_install_error().is_some()).await;
+            let started=Instant::now();
+            while !directory().unwrap().join("system-refusal-dismissed.json").exists(){
+                assert!(started.elapsed()<Duration::from_secs(60),"System rejection warning was not observed and dismissed");
+                cx.background_executor().timer(Duration::from_millis(100)).await;
+            }
             presented(window,cx).await;
             let state=window.update(cx,|_,window,cx|{
                 let app=view.read(cx);

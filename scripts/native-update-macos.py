@@ -99,19 +99,24 @@ def transition(root, packages, source_sha, old_version, target_version, producti
             old = subprocess.Popen([installed / "Contents/MacOS/studyapp", "--data-dir", data], env=environment, stdout=log, stderr=log)
             before = common.wait_file(fixture / "old-observation.json", 120, old)
             if scenario == "quarantine-refusal":
-                refusal = common.wait_file(fixture / "quarantine-refused.json", 120, old)
                 pointer = Path.home() / "Library/Application Support/io.StudyApp.StudyApp/update-policy-probe.txt"
-                probe = Path(pointer.read_text())
-                downloaded = common.wait_file(fixture / "download-metadata.json", 5)
-                assert probe.resolve() == (Path(downloaded["path"]).parent / "approval").resolve()
-                request = json.loads((probe / "request.json").read_text())
-                assert request["version"] == target_version and request["sha256"] == expected_hash
+                downloaded = common.wait_file(fixture / "download-metadata.json", 120, old)
+                expected_probe = (Path(downloaded["path"]).parent / "approval").resolve()
+                deadline = time.monotonic() + 60
+                while True:
+                    if old.poll() is not None:
+                        raise RuntimeError("Old app exited before system refusal was observed")
+                    try:
+                        probe = Path(pointer.read_text())
+                        request = json.loads((probe / "request.json").read_text())
+                        if probe.resolve() == expected_probe and request["version"] == target_version and request["sha256"] == expected_hash:
+                            break
+                    except (FileNotFoundError, json.JSONDecodeError):
+                        pass
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Current quarantined candidate was not prepared for LaunchServices")
+                    time.sleep(.1)
                 assert not (probe / "receipt.json").exists()
-                assert old.poll() is None and refusal["state"]["pid"] == before["pid"] == old.pid
-                assert refusal["state"]["version"] == old_version and common.sha(installed / "Contents/MacOS/studyapp") == old_hash
-                assert refusal["live_text"] == config["draft_marker"] and refusal["unsaved_draft_preserved"] is True
-                assert not (fixture / "helper-handoff.json").exists() and not (fixture / "attempt.json").exists()
-                downloaded = common.wait_file(fixture / "download-metadata.json", 5)
                 image_quarantine = quarantine(Path(downloaded["path"]))
                 candidate_quarantine = quarantine(probe / "WW-StudyApp.app")
                 assert image_quarantine is not None and candidate_quarantine == image_quarantine
@@ -120,16 +125,29 @@ def transition(root, packages, source_sha, old_version, target_version, producti
                 system = policy.capture(["/usr/sbin/spctl", "--status"])
                 assert "assessments enabled" in system["stdout"] + system["stderr"]
                 script = Path(__file__).with_name("macos-approval-ui.js")
-                dialog = policy.capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", "CoreServicesUIAgent"], 20)
+                deadline = time.monotonic() + 30
+                while True:
+                    dialog = policy.capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", "CoreServicesUIAgent"], 5)
+                    choice = policy.select_approval(json.loads(dialog["stdout"]), "Done") if dialog["exit_code"] == 0 else None
+                    if choice is not None:
+                        break
+                    if time.monotonic() >= deadline:
+                        actions.extend([assessment, system, dialog])
+                        raise TimeoutError("Actual own-app blocked system dialog was not observed")
+                    time.sleep(.2)
                 actions.extend([assessment, system, dialog])
-                assert dialog["exit_code"] == 0
-                choice = policy.select_approval(json.loads(dialog["stdout"]), "Done")
-                assert choice is not None, "Actual own-app blocked system dialog required"
                 actions.append(policy.capture(["/usr/sbin/screencapture", "-x", str(root / "system-refusal.png")]))
                 # Close only the verified rejection warning; never approve the candidate.
                 dismissed = policy.capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "click", "CoreServicesUIAgent", json.dumps(choice)])
                 actions.append(dismissed)
-                assert dismissed["exit_code"] == 0
+                assert dismissed["exit_code"] == 0 and json.loads(dismissed["stdout"]).get("clicked") == "Done"
+                (fixture / "system-refusal-dismissed.json").write_text(json.dumps({"probe":str(probe),"request":request,"rejected":True,"clicked":"Done"}))
+                refusal = common.wait_file(fixture / "quarantine-refused.json", 60, old)
+                assert not (probe / "receipt.json").exists()
+                assert old.poll() is None and refusal["state"]["pid"] == before["pid"] == old.pid
+                assert refusal["state"]["version"] == old_version and common.sha(installed / "Contents/MacOS/studyapp") == old_hash
+                assert refusal["live_text"] == config["draft_marker"] and refusal["unsaved_draft_preserved"] is True
+                assert not (fixture / "helper-handoff.json").exists() and not (fixture / "attempt.json").exists()
                 (root / "transition-result.json").write_text(json.dumps({"source_sha":source_sha,"scenario":scenario,"old_pid":old.pid,
                     "old_version":old_version,"installed_sha256":old_hash,"old_gui_alive":True,"no_helper_handoff":True,
                     "unsaved_draft_preserved":True,"launch_receipt":None,"image_quarantine":image_quarantine,
@@ -238,6 +256,8 @@ def transition(root, packages, source_sha, old_version, target_version, producti
             # This stops only the completed final scenario app, never the unhealthy candidate.
             os.kill(after["pid"], 15)
     finally:
+        if not (root / "transition-result.json").exists():
+            actions.append(policy.capture(["/usr/sbin/screencapture", "-x", str(root / "native-macos-failure.png")], 10))
         (root / "approval-actions.json").write_text(json.dumps(actions, indent=2))
         common.collect_diagnostics(root)
 

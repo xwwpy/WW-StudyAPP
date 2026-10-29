@@ -233,6 +233,7 @@ jobs:
             ${{ runner.temp }}/native-update/quarantine-refusal/application.log
             ${{ runner.temp }}/native-update/quarantine-refusal/approval-actions.json
             ${{ runner.temp }}/native-update/quarantine-refusal/system-refusal.png
+            ${{ runner.temp }}/native-update/quarantine-refusal/native-macos-failure.png
             ${{ runner.temp }}/native-update/quarantine-refusal/fixture/*.json
             ${{ runner.temp }}/native-update/quarantine-refusal/fixture/*.png
             ${{ runner.temp }}/native-update/quarantine-refusal/transaction-evidence/**
