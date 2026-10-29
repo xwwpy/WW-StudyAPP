@@ -51,14 +51,23 @@ def main():
         output = root / (label + "-packages")
         common.run([sys.executable, source / "scripts/package-unix.py", "dmg", "--binary", common.ROOT / "target/update-acceptance/debug/studyapp", "--output", output], cwd=source)
         packages[label] = next(output.glob("*.dmg"))
+    transition(root, packages, source_sha, old_version, target_version, args.production_binary, "positive")
+    negative = root / "health-failure"
+    negative.mkdir(mode=0o700)
+    transition(negative, packages, source_sha, old_version, target_version, args.production_binary, "health-failure")
+
+
+def transition(root, packages, source_sha, old_version, target_version, production_binary, scenario):
     fixture = root / "fixture"
     fixture.mkdir(mode=0o700)
     config = common.sign_fixture(fixture, packages["candidate"], source_sha, target_version, "macos-" + platform.machine())
+    config["scenario"] = scenario
+    (fixture / "fixture.json").write_text(json.dumps(config), encoding="utf-8")
     verify = root / "verify-production"
     verify.mkdir(mode=0o700)
     shutil.copy2(fixture / "latest.json", verify / "manifest.json")
     shutil.copy2(packages["candidate"], verify / "package")
-    if subprocess.run([args.production_binary.resolve(), "--update-verify-package", verify], timeout=20).returncode != 1:
+    if subprocess.run([production_binary.resolve(), "--update-verify-package", verify], timeout=20).returncode != 1:
         raise RuntimeError("Production accepted fixture signing key")
     installed = root / "installed/WW-StudyApp.app"
     installed.parent.mkdir(mode=0o700)
@@ -67,6 +76,7 @@ def main():
         common.run(["ditto", source, installed])
     finally:
         common.run(["hdiutil", "detach", root / "old-mount"])
+    old_hash = common.sha(installed / "Contents/MacOS/studyapp")
     candidate = mount(packages["candidate"], root / "candidate-mount")
     try:
         expected_hash = common.sha(candidate / "Contents/MacOS/studyapp")
@@ -105,32 +115,63 @@ def main():
                 time.sleep(.25)
             assert old.returncode == 0
             # Restart is owned by the supervisor; only normal system controls may be approved here.
-            deadline = time.monotonic() + 120
+            deadline = time.monotonic() + (180 if scenario == "health-failure" else 120)
             next_approval = time.monotonic() + 8
+            observed_unhealthy = None
             while not (fixture / "new-observation.json").exists():
+                failures = [*fixture.glob("panic-*.json"), *fixture.glob("startup-error-*.json")]
+                if failures:
+                    raise RuntimeError("Native candidate failure: " + failures[0].read_text(encoding="utf-8"))
                 if time.monotonic() > deadline:
                     raise TimeoutError("Installed candidate did not restore its library")
-                if time.monotonic() >= next_approval:
+                if scenario == "health-failure" and observed_unhealthy is None and (fixture / "unhealthy-candidate.json").exists():
+                    observed_unhealthy = common.wait_file(fixture / "unhealthy-candidate.json", 5)
+                    pid = observed_unhealthy["pid"]
+                    assert observed_unhealthy["version"] == target_version
+                    assert Path(observed_unhealthy["executable"]).resolve() == (installed / "Contents/MacOS/studyapp").resolve()
+                    assert int(subprocess.check_output(["ps", "-o", "uid=", "-p", str(pid)], text=True)) == os.getuid()
+                    assert common.sha(installed / "Contents/MacOS/studyapp") == expected_hash
+                    assert not (Path(observed_unhealthy["transaction"]) / "health.json").exists()
+                    (root / "unhealthy-process-alive.json").write_text(json.dumps({"pid": pid, "uid": os.getuid(),
+                        "time": time.time(), "installed_sha256": expected_hash, "harness_sent_signal": False}))
+                if observed_unhealthy is None and time.monotonic() >= next_approval:
                     actions.extend(policy.system_approval(root / "native-macos-restart.json"))
                     next_approval = time.monotonic() + 30
                 time.sleep(1)
             after = common.wait_file(fixture / "new-observation.json", 10)
-            transaction = Path(after["transaction"])
+            transaction = Path(common.wait_file(fixture / "attempt.json", 5)["directory"])
             tx = json.loads((transaction / "transaction.json").read_text())["transaction"]
-            health = common.wait_file(transaction / "health.json", 30)
-            deadline = time.monotonic() + 30
-            while not list(transaction.glob("status-healthy-*.json")):
-                if time.monotonic() > deadline:
-                    raise TimeoutError("Supervisor did not confirm installed app health")
-                time.sleep(.2)
+            health = None
+            if scenario == "positive":
+                health = common.wait_file(transaction / "health.json", 30)
+                deadline = time.monotonic() + 30
+                while not list(transaction.glob("status-healthy-*.json")):
+                    if time.monotonic() > deadline:
+                        raise TimeoutError("Supervisor did not confirm installed app health")
+                    time.sleep(.2)
+            else:
+                assert observed_unhealthy is not None
+                assert subprocess.run(["ps", "-p", str(observed_unhealthy["pid"])], capture_output=True).returncode == 1
+                assert list(transaction.glob("status-recovering-*.json")) and list(transaction.glob("status-recovered-*.json"))
+                recovering = [json.loads(path.read_text()) for path in transaction.glob("status-recovering-*.json")]
+                assert any(value["message"] == "Updated application startup timeout" for value in recovering), "A premature candidate exit cannot prove supervisor stop"
+                assert list(transaction.glob("status-failed-*.json")) and not (transaction / "health.json").exists()
+                retained = list(installed.parent.glob(".WW-StudyApp-failed-*.app"))
+                assert len(retained) == 1 and common.sha(retained[0] / "Contents/MacOS/studyapp") == expected_hash
+                assert policy.capture(["xattr", "-p", "com.apple.quarantine", str(retained[0])])["exit_code"] == 0
             executable = installed / "Contents/MacOS/studyapp"
             info = plistlib.loads((installed / "Contents/Info.plist").read_bytes())
-            assert info["CFBundleShortVersionString"] == after["version"] == target_version
-            assert common.sha(executable) == expected_hash
+            expected_version = target_version if scenario == "positive" else old_version
+            installed_hash = expected_hash if scenario == "positive" else old_hash
+            assert info["CFBundleShortVersionString"] == after["version"] == expected_version
+            assert common.sha(executable) == installed_hash
             assert Path(after["executable"]).resolve() == executable.resolve()
             assert before["pid"] == old.pid == tx["old_pid"] != after["pid"]
             assert int(subprocess.check_output(["ps", "-o", "uid=", "-p", str(after["pid"])], text=True)) == os.getuid()
-            assert health == {"id": tx["id"], "version": target_version, "pid": after["pid"]}
+            if scenario == "positive":
+                assert health == {"id": tx["id"], "version": target_version, "pid": after["pid"]}
+            else:
+                assert after["pid"] != observed_unhealthy["pid"]
             pending = json.loads((fixture / "close-pending.json").read_text())
             ack = json.loads((fixture / "close-ack.json").read_text())
             handoff = json.loads((fixture / "helper-handoff.json").read_text())
@@ -140,11 +181,15 @@ def main():
             draft = json.loads((data / "drafts" / f'{before["draft_id"]}.json').read_text())
             assert draft["draft"]["content"] == after["live_text"] == config["draft_marker"]
             quarantine = policy.capture(["xattr", "-p", "com.apple.quarantine", str(installed)])
-            assert quarantine["exit_code"] == 0
-            (root / "transition-result.json").write_text(json.dumps({"source_sha": source_sha, "old_version": old_version,
-                "installed_version": target_version, "installed_sha256": expected_hash, "health": health,
+            if scenario == "positive":
+                assert quarantine["exit_code"] == 0
+            (root / "transition-result.json").write_text(json.dumps({"source_sha": source_sha, "scenario": scenario, "old_version": old_version,
+                "installed_version": expected_version, "installed_sha256": installed_hash, "health": health,
                 "uid": os.getuid(), "new_pid": after["pid"], "real_dmg": True, "app_owned_restart": True,
-                "draft_preserved": True, "quarantine": quarantine, "production_rejected_fixture_key": True}, indent=2))
+                "draft_preserved": True, "quarantine": quarantine, "production_rejected_fixture_key": True,
+                "supervisor_stopped_unhealthy_candidate": observed_unhealthy["pid"] if observed_unhealthy else None}, indent=2))
+            # This stops only the completed final scenario app, never the unhealthy candidate.
+            os.kill(after["pid"], 15)
     finally:
         (root / "approval-actions.json").write_text(json.dumps(actions, indent=2))
         common.collect_diagnostics(root)

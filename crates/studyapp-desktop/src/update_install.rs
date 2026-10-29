@@ -322,6 +322,10 @@ mod tests {
 }
 
 pub fn acknowledge_health() {
+    #[cfg(feature = "update-acceptance")]
+    if crate::update_acceptance::withhold_health() {
+        return;
+    }
     #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

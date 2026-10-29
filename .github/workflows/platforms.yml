@@ -148,6 +148,16 @@ jobs:
       - name: Package macOS app bundle
         if: matrix.platform == 'macos'
         run: '"$RUNNER_TEMP/package-venv/bin/python" scripts/package-unix.py dmg'
+      - name: Retain DMG for system-approval diagnostics
+        if: matrix.platform == 'macos'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: diagnostic-dmg-${{ matrix.arch }}-${{ github.run_id }}
+          path: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+          retention-days: 3
+          if-no-files-found: error
       - name: Verify installed Debian package and production startup
         if: matrix.platform == 'linux'
         env:
@@ -214,6 +224,14 @@ jobs:
             ${{ runner.temp }}/native-update/authorization-denied/fixture/*.json
             ${{ runner.temp }}/native-update/authorization-denied/fixture/*.png
             ${{ runner.temp }}/native-update/authorization-denied/transaction-evidence/**
+            ${{ runner.temp }}/native-update/health-failure/transition-result.json
+            ${{ runner.temp }}/native-update/health-failure/unhealthy-process-alive.json
+            ${{ runner.temp }}/native-update/health-failure/application.log
+            ${{ runner.temp }}/native-update/health-failure/approval-actions.json
+            ${{ runner.temp }}/native-update/health-failure/native-macos-*.png
+            ${{ runner.temp }}/native-update/health-failure/fixture/*.json
+            ${{ runner.temp }}/native-update/health-failure/fixture/*.png
+            ${{ runner.temp }}/native-update/health-failure/transaction-evidence/**
           if-no-files-found: warn
           retention-days: 14
       - name: Preserve verified release package

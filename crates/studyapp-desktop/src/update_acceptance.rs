@@ -46,6 +46,18 @@ pub fn active() -> bool {
 pub fn checks_allowed() -> bool {
     CHECKS_READY.load(Ordering::Relaxed)
 }
+fn withhold_candidate_health(scenario: &str, target: &str, current: &str) -> bool {
+    scenario == "health-failure" && target == current
+}
+pub(crate) fn withhold_health() -> bool {
+    configuration().is_ok_and(|config| {
+        withhold_candidate_health(
+            config["scenario"].as_str().unwrap_or(""),
+            config["target_version"].as_str().unwrap_or(""),
+            env!("CARGO_PKG_VERSION"),
+        )
+    })
+}
 fn directory() -> Result<PathBuf, String> {
     if !active() {
         return Err("Acceptance fixture is not active".into());
@@ -297,7 +309,7 @@ fn committed(app: &StudyApp) -> Value {
     )
 }
 fn restored_run(target: &str, current: &str, scenario: &str, observed: bool) -> bool {
-    target == current || (scenario == "authorization-denied" && observed)
+    target == current || (matches!(scenario, "authorization-denied" | "health-failure") && observed)
 }
 pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathBuf, cx: &mut App) {
     cx.spawn(async move|cx|{
@@ -307,7 +319,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         if restored_run(config["target_version"].as_str().unwrap(),env!("CARGO_PKG_VERSION"),config["scenario"].as_str().unwrap_or(""),directory().unwrap().join("old-observation.json").exists()){
             let previous:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("old-observation.json")).unwrap()).unwrap();
             let id=previous["draft_id"].as_str().unwrap();
-            if config["scenario"] == "authorization-denied" {
+            if config["scenario"] == "authorization-denied" || (config["scenario"] == "health-failure" && config["target_version"] != env!("CARGO_PKG_VERSION")) {
                 let notice=window.update(cx,|_,_,cx|view.read(cx).notice.clone()).unwrap();
                 assert!(matches!(notice, Some(Err(_))), "Recovery must show the installation failure");
                 save("recovery-notice.json",json!({"notice":notice,"pid":std::process::id()}));
@@ -331,8 +343,9 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             let live=crate::smoke_editor::bridge(window,&editor,json!({"type":"snapshot"}),cx).await;
             assert_eq!(live["text"],marker);
             presented(window, cx).await;
-            window.update(cx,|_,window,_|capture(window,"restored.png")).unwrap();
-            save("new-observation.json",json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":id,"live_text":live["text"],"database":database,"source_sha":config["source_sha"],"transaction":transaction_directory()}));
+            window.update(cx,|_,window,_|capture(window,if withhold_health(){"unhealthy-candidate.png"}else{"restored.png"})).unwrap();
+            let name=if withhold_health() {"unhealthy-candidate.json"} else {"new-observation.json"};
+            save(name,json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":id,"live_text":live["text"],"database":database,"source_sha":config["source_sha"],"transaction":transaction_directory()}));
             return;
         }
         if directory().unwrap().join("old-observation.json").exists(){
@@ -560,5 +573,19 @@ mod launch_context_tests {
         ));
         assert!(!super::restored_run("0.1.4", "0.1.3", "", true));
         assert!(super::restored_run("0.1.4", "0.1.4", "", true));
+    }
+    #[test]
+    fn health_failure_injection_only_holds_the_requested_candidate() {
+        assert!(super::withhold_candidate_health(
+            "health-failure",
+            "0.1.4",
+            "0.1.4"
+        ));
+        assert!(!super::withhold_candidate_health(
+            "health-failure",
+            "0.1.4",
+            "0.1.3"
+        ));
+        assert!(!super::withhold_candidate_health("", "0.1.4", "0.1.4"));
     }
 }
