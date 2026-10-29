@@ -483,10 +483,6 @@ fn replace_bundle(target: &Path, stage: &Path, old: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn assess(app: &Path) -> Result<()> {
-    output("/usr/sbin/spctl", &["--assess","--type","execute","--verbose=4",text(app)?]).map_err(|error|format!("macOS distribution assessment rejected the update; the current app remains available. A system-approved distribution is required: {error}"))?;
-    Ok(())
-}
 struct Mount {
     detach: String,
     armed: bool,

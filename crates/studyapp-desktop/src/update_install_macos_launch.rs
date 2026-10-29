@@ -267,12 +267,11 @@ pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
         pointer.parent().ok_or("Missing probe pointer parent")?,
     ))?;
     io(fs::write(pointer, text(&dir)?))?;
-    let assessment = assess(&candidate)
-        .err()
-        .unwrap_or_else(|| "Assessment accepted; awaiting normal system launch".into());
+    let launch_id = uuid::Uuid::new_v4();
     write_new(
-        &dir.join(format!("assessment-{}.txt", uuid::Uuid::new_v4())),
-        assessment.as_bytes(),
+        &dir.join(format!("launch-requested-{launch_id}.json")),
+        &serde_json::to_vec(&serde_json::json!({"nonce":req.nonce,"created":now()?}))
+            .map_err(|e| e.to_string())?,
     )?;
     // open invokes normal LaunchServices/Gatekeeper; never execute the candidate directly.
     let mut child = io(Command::new("/usr/bin/open")
@@ -285,6 +284,13 @@ pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn())?;
+    write_new(
+        &dir.join(format!("launch-spawned-{launch_id}.json")),
+        &serde_json::to_vec(
+            &serde_json::json!({"nonce":req.nonce,"pid":child.id(),"created":now()?}),
+        )
+        .map_err(|e| e.to_string())?,
+    )?;
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(3) {
         if receipt(&dir, &req).is_ok()

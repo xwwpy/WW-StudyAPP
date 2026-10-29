@@ -53,6 +53,33 @@ def observe_relaunch(fixture):
         acknowledgement.write_text(json.dumps({"pid": pid, "observed_without_activation": True}))
 
 
+def collect_approval(root):
+    fixture = root / "fixture"
+    try:
+        downloaded = json.loads((fixture / "download-metadata.json").read_text())
+        approval = Path(downloaded["path"]).parent / "approval"
+        destination = root / "transaction-evidence" / "approval"
+        destination.mkdir(parents=True, exist_ok=True)
+        for pattern in ("request.json", "receipt.json", "assessment-*.txt", "launch-requested-*.json", "launch-spawned-*.json"):
+            for path in approval.glob(pattern):
+                if path.is_file() and not path.is_symlink() and path.stat().st_size <= 65536:
+                    shutil.copyfile(path, destination / path.name)
+        # No command lines/environment: only bounded state of this attempt's known PIDs.
+        pids = set()
+        for path in [*approval.glob("launch-spawned-*.json"), fixture / "old-observation.json"]:
+            try:
+                pid = json.loads(path.read_text())["pid"]
+                if isinstance(pid, int) and pid > 1:
+                    pids.add(pid)
+            except (OSError, ValueError, KeyError):
+                pass
+        if pids:
+            result = policy.capture(["/bin/ps", "-o", "pid=,ppid=,stat=,etime=,comm=", "-p", ",".join(map(str, sorted(pids)))], 5)
+            (destination / "process-state.json").write_text(json.dumps(result))
+    except (OSError, ValueError, KeyError) as error:
+        (fixture / "approval-collection-error.json").write_text(json.dumps({"error_type":type(error).__name__}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -284,6 +311,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
         if not (root / "transition-result.json").exists():
             actions.append(policy.capture(["/usr/sbin/screencapture", "-x", str(root / "native-macos-failure.png")], 10))
         (root / "approval-actions.json").write_text(json.dumps(actions, indent=2))
+        collect_approval(root)
         common.collect_diagnostics(root)
 
 

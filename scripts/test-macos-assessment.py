@@ -12,6 +12,24 @@ spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_approval_collection_keeps_metadata_not_bundle_or_unbounded_files(self):
+        native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
+        native = importlib.util.module_from_spec(native_spec)
+        native_spec.loader.exec_module(native)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            fixture = root / "fixture"
+            fixture.mkdir()
+            approval = root / "download" / "approval"
+            approval.mkdir(parents=True)
+            (fixture / "download-metadata.json").write_text(json.dumps({"path":str(approval.parent / "package.dmg")}))
+            (approval / "request.json").write_text('{"nonce":"current"}')
+            (approval / "receipt.json").write_bytes(b"x" * 65537)
+            (approval / "bundle-secret").write_text("not evidence")
+            native.collect_approval(root)
+            collected = root / "transaction-evidence" / "approval"
+            self.assertEqual([p.name for p in collected.iterdir()], ["request.json"])
+
     def test_relaunch_observation_requires_natural_window_before_ack(self):
         native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
         native = importlib.util.module_from_spec(native_spec)
