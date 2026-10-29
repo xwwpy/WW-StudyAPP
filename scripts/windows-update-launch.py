@@ -196,6 +196,36 @@ def allow_same_user_desktop(kernel, security, sid_text):
         kernel.LocalFree(sid)
 
 
+def allow_same_user_default_dacl(kernel, security, token):
+    """Preserve the derived token ACL and let its user own newly created objects."""
+    class Trustee(c.Structure):
+        _fields_ = [("multiple", c.c_void_p), ("operation", c.c_int), ("form", c.c_int), ("kind", c.c_int), ("name", c.c_void_p)]
+    class Access(c.Structure):
+        _fields_ = [("permissions", w.DWORD), ("mode", c.c_int), ("inheritance", w.DWORD), ("trustee", Trustee)]
+    security.SetEntriesInAclW.argtypes = [w.ULONG, c.POINTER(Access), c.c_void_p, c.POINTER(c.c_void_p)]
+    size = w.DWORD()
+    security.GetTokenInformation(token, 6, None, 0, c.byref(size))
+    if not 0 < size.value < 65536:
+        raise RuntimeError("Invalid derived token ACL buffer")
+    buffer = c.create_string_buffer(size.value)
+    require(security.GetTokenInformation(token, 6, buffer, size, c.byref(size)))
+    old = c.cast(buffer, c.POINTER(c.c_void_p))[0]
+    if not old:
+        raise RuntimeError("Refusing to replace a missing token default ACL")
+    sid, new = c.c_void_p(), c.c_void_p()
+    require(security.ConvertStringSidToSidW(token_sid(kernel, security, token), c.byref(sid)))
+    try:
+        entry = Access(0x10000000, 1, 0, Trustee(None, 0, 0, 1, sid))
+        error = security.SetEntriesInAclW(1, c.byref(entry), old, c.byref(new))
+        if error:
+            raise c.WinError(error)
+        require(security.SetTokenInformation(token, 6, c.byref(new), c.sizeof(new)))
+    finally:
+        if new.value:
+            kernel.LocalFree(new)
+        kernel.LocalFree(sid)
+
+
 def launch(executable, arguments, environment, headless=False, inherit_desktop=None):
     if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Ordinary-user acceptance launch is restricted to Windows CI")
@@ -242,6 +272,7 @@ def launch(executable, arguments, environment, headless=False, inherit_desktop=N
             raise RuntimeError(f"Acceptance token integrity is above ordinary user: {integrity}")
         if restricted:
             allow_same_user_desktop(kernel, security, token_sid(kernel, security, selected))
+            allow_same_user_default_dacl(kernel, security, selected)
         session, length = w.DWORD(), w.DWORD()
         require(security.GetTokenInformation(selected, 12, c.byref(session), c.sizeof(session), c.byref(length)))
         LAST_LAUNCH.update({"user_sid": token_sid(kernel, security, selected), "integrity_sid": integrity,

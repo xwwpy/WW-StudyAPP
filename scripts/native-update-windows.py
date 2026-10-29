@@ -37,7 +37,10 @@ def main():
     harness_context = windows.inspect_process(os.getpid())
     # Only this fresh CI fixture directory receives access for the existing user SID.
     common.run(["icacls", root, "/grant:r", f'*{harness_context["user_sid"]}:(OI)(CI)M'])
-    preflight = {"harness": harness_context, "fixture_directory": str(root)}
+    child_temp = root / "temp"
+    child_temp.mkdir()
+    child_env["TEMP"] = child_env["TMP"] = str(child_temp)
+    preflight = {"harness": harness_context, "fixture_directory": str(root), "child_temp": str(child_temp)}
     try:
         preflight["matrix"] = []
         selected = None

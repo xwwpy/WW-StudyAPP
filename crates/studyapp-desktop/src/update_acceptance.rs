@@ -117,10 +117,22 @@ async fn wait(
         {
             return;
         }
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "Acceptance timeout: {description}"
-        );
+        if started.elapsed() >= Duration::from_secs(60) {
+            window.update(cx, |_, window, cx| {
+                let app = view.read(cx);
+                let editor = app.note_content.read(cx);
+                save("wait-failure.json",json!({"description":description,"pid":std::process::id(),
+                    "editorPresent":app.note_editor.is_some(),"editorReady":editor.ready(),"editorError":editor.error(),
+                    "notice":app.notice,"startupBusy":app.startup_busy,"draftLoading":app.draft_loading,
+                    "temp":std::env::temp_dir(),
+                    "native":editor.native_state().map_err(|e|e.to_string())}));
+                #[cfg(any(windows,target_os="macos"))]
+                pointer::capture_diagnostic(window,&directory().unwrap().join("wait-failure.png"));
+                #[cfg(target_os="linux")]
+                crate::smoke::capture(window,directory().unwrap().join("wait-failure.png")).unwrap();
+            }).unwrap();
+            panic!("Acceptance timeout: {description}");
+        }
         cx.background_executor()
             .timer(Duration::from_millis(100))
             .await;
