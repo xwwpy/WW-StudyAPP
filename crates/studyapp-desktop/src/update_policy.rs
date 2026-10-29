@@ -11,7 +11,7 @@ pub struct UpdateCheckPolicy {
     startup_claimed: bool,
     in_flight: bool,
     next_due: Option<u64>,
-    dismissed: Option<String>,
+    dismissed: std::collections::HashSet<String>,
 }
 
 impl UpdateCheckPolicy {
@@ -25,11 +25,11 @@ impl UpdateCheckPolicy {
     }
 
     pub fn dismiss(&mut self, version: &str) {
-        self.dismissed = Some(version.to_owned());
+        self.dismissed.insert(version.to_owned());
     }
 
     pub fn should_prompt(&self, origin: CheckOrigin, version: &str) -> bool {
-        origin == CheckOrigin::Manual || self.dismissed.as_deref() != Some(version)
+        origin == CheckOrigin::Manual || !self.dismissed.contains(version)
     }
     pub fn start(&mut self, origin: CheckOrigin) -> bool {
         if origin == CheckOrigin::Startup {
@@ -122,6 +122,16 @@ mod tests {
 #[cfg(test)]
 mod periodic_tests {
     use super::*;
+    #[test]
+    fn all_dismissed_versions_remain_quiet_during_session() {
+        let mut policy = UpdateCheckPolicy::default();
+        policy.dismiss("0.9.0");
+        policy.dismiss("0.9.1");
+        assert!(!policy.should_prompt(CheckOrigin::Periodic, "0.9.0"));
+        assert!(!policy.should_prompt(CheckOrigin::Periodic, "0.9.1"));
+        assert!(policy.should_prompt(CheckOrigin::Manual, "0.9.0"));
+        assert!(policy.should_prompt(CheckOrigin::Periodic, "0.9.2"));
+    }
     #[test]
     fn startup_completion_allows_hourly_retry_without_startup_repetition() {
         let mut policy = UpdateCheckPolicy::default();

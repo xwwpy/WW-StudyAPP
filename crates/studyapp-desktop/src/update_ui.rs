@@ -92,6 +92,12 @@ impl UpdatePanel {
             .or(self.nsis_version.as_deref())
     }
 
+    fn settings_notes(&self) -> Option<&str> {
+        self.nsis
+            .as_ref()
+            .map(|manifest| manifest.notes.as_str())
+            .or_else(|| self.release.as_ref().map(|release| release.notes.as_str()))
+    }
     pub fn nsis_setup(&self) -> Option<PathBuf> {
         self.nsis_setup.clone()
     }
@@ -692,9 +698,9 @@ impl Render for UpdatePanel {
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(UpdateEvent::InstallRequested)))))
                 .child(Button::new("open-releases").ghost().label("发布页面")
                     .on_click(move |_, _, cx| cx.open_url(&release_url))))
-            .children(self.release.as_ref().map(|release|
+            .children(self.settings_notes().map(|notes|
                 scroll_body("update-release-notes", &self.notes_scroll).max_h(px(180.)).pr_3()
-                    .child(gpui_kit::component::text::TextView::markdown("update-settings-markdown", studyapp_ui::markdown_content::release_notes(&release.notes)))))
+                    .child(gpui_kit::component::text::TextView::markdown("update-settings-markdown", studyapp_ui::markdown_content::release_notes(notes)))))
             .children(self.prepared.as_ref().map(|(_, update)| {
                 let status = update.status_path.clone();
                 column().gap_1().child(muted(format!("安装位置：{}", studyapp_desktop::presentation::display_path(&update.installation_directory.to_string_lossy()))))
@@ -865,6 +871,7 @@ mod tests {
             signature: "c2lnbmF0dXJl".into(),
         };
         panel.finish_nsis_check(CheckOrigin::Startup, Ok(Some(manifest)));
+        assert_eq!(panel.settings_notes(), Some("- 新版本"));
         assert!(!panel.busy);
         assert!(panel.dialog_visible());
         assert_eq!(panel.available_version(), Some("0.9.0"));
