@@ -131,7 +131,8 @@ def system_approval(output):
                         submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
                                              json.dumps(selection, separators=(",", ":")), str(credential)], 20)
                         actions.append({"command": ["runner-authentication"], "exit_code": submitted["exit_code"],
-                                        "stdout": "submitted" if submitted["exit_code"] == 0 else "", "stderr": ""})
+                                        "stdout": json.dumps(json.loads(submitted["stdout"])) if submitted["exit_code"] == 0 else "",
+                                        "stderr": "System event permission unavailable" if "System event permission unavailable" in submitted["stderr"] else ""})
                 except RuntimeError as error:
                     actions.append({"command": ["runner-authentication"], "exit_code": 1, "stdout": "", "stderr": str(error)})
                 time.sleep(2)

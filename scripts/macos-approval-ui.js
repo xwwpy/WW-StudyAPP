@@ -33,6 +33,9 @@ function run(argv) {
     ObjC.import("CoreGraphics");
     ObjC.import("ApplicationServices");
     ObjC.import("AppKit");
+    if (typeof $.CGPreflightPostEventAccess !== "function") {
+        ObjC.bindFunction("CGPreflightPostEventAccess", ["bool", []]);
+    }
     function permissions() {
         return {accessibilityTrusted: Boolean($.AXIsProcessTrusted()),
             postEventAllowed: optionalBoolean(() => $.CGPreflightPostEventAccess())};
@@ -150,6 +153,7 @@ function run(argv) {
     if (JSON.stringify(container) !== JSON.stringify(expected.container)) throw new Error("Approval warning changed; no click");
     const button = at(expected.button_path);
     if (argv[0] === "authenticate") {
+        if (!$.CGPreflightPostEventAccess()) throw new Error("System event permission unavailable");
         const owner = $.NSRunningApplication.runningApplicationWithProcessIdentifier(processId);
         if (!owner || !owner.executableURL || !ObjC.unwrap(owner.executableURL.path).startsWith("/System/") ||
             button.name !== "OK" || !button.visible || !button.enabled) throw new Error("Unexpected system authentication control");
@@ -181,7 +185,9 @@ function run(argv) {
         $.CGEventPost(0, down);
         $.NSThread.sleepForTimeInterval(0.1);
         $.CGEventPost(0, up);
-        return JSON.stringify({authenticationSubmitted: true});
+        const cursor = $.CGEventGetLocation($.CGEventCreate(null));
+        return JSON.stringify({authenticationSubmitted: true, postEventAllowed: true,
+            requestedPoint: point, cursor: [cursor.x, cursor.y]});
     }
     if (argv[0] === "scroll") {
         if (button.role !== "AXButton" || button.name !== expected.label || !button.enabled) throw new Error("Approval scroll target is unavailable");
