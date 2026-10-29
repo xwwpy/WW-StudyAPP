@@ -1,6 +1,8 @@
 //! LaunchServices policy approval and ordinary-user process receipts.
 use super::*;
-use crate::update_install::launch_receipt::LaunchReceipt;
+use crate::update_install::launch_receipt::{
+    LaunchReceipt, claims_implicit_probe, probe_request_is_fresh,
+};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,10 +48,7 @@ fn receipt(dir: &Path, request: &Request) -> Result<LaunchReceipt> {
     Ok(receipt)
 }
 fn publish(dir: &Path, request: &Request) -> Result<()> {
-    if now()?
-        .checked_sub(request.created)
-        .is_none_or(|age| age > 3600)
-    {
+    if !probe_request_is_fresh(now()?, request.created) {
         return Err("Approval attempt expired; retry from the update card".into());
     }
     let current = io(std::env::current_exe())?;
@@ -90,7 +89,7 @@ pub(crate) fn dispatch_probe(args: &[std::ffi::OsString]) -> Option<i32> {
         }
         PathBuf::from(&args[1])
     } else {
-        // The system's Open Anyway action can reopen without the original arguments.
+        // Only this private candidate may be reclaimed without explicit probe arguments.
         if !args.is_empty() {
             return None;
         }
@@ -98,15 +97,19 @@ pub(crate) fn dispatch_probe(args: &[std::ffi::OsString]) -> Option<i32> {
         let value = bounded(&path, uid().ok()?, 4096).ok()?;
         let dir = PathBuf::from(String::from_utf8(value).ok()?);
         let req = request(&dir).ok()?;
-        let current = std::env::current_exe().ok()?;
+        let current = fs::canonicalize(std::env::current_exe().ok()?).ok()?;
+        let expected = fs::canonicalize(&dir)
+            .ok()?
+            .join(APP)
+            .join("Contents/MacOS/studyapp");
+        if !claims_implicit_probe(now().ok()?, req.created, &current, &expected) {
+            return None;
+        }
         let digest = format!(
             "{:x}",
             Sha256::digest(read_bounded(&current, 512 * 1024 * 1024).ok()?)
         );
         if req.sha256 != digest {
-            return None;
-        }
-        if !current.starts_with(&dir) && !current.to_string_lossy().contains("/AppTranslocation/") {
             return None;
         }
         if dir.join("approved").exists() {
@@ -471,6 +474,44 @@ pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_install_macos_explicit_probe_expiry_still_rejects_before_publish() {
+        for created in [0, u64::MAX] {
+            let req = Request {
+                nonce: uuid::Uuid::new_v4().to_string(),
+                version: env!("CARGO_PKG_VERSION").into(),
+                sha256: "unused because expiry rejects first".into(),
+                health: None,
+                created,
+                quarantine: String::new(),
+                #[cfg(feature = "update-acceptance")]
+                acceptance_directory: None,
+            };
+            assert!(
+                publish(Path::new("/nonexistent-probe"), &req)
+                    .unwrap_err()
+                    .contains("expired")
+            );
+        }
+    }
+    #[test]
+    fn update_install_macos_private_probe_accepts_canonical_var_alias() {
+        let name = format!("studyapp-probe-alias-{}", uuid::Uuid::new_v4());
+        let root = Path::new("/private/var/tmp").join(&name);
+        let executable = root.join(APP).join("Contents/MacOS/studyapp");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"probe").unwrap();
+        let alias = Path::new("/var/tmp")
+            .join(name)
+            .join(APP)
+            .join("Contents/MacOS/studyapp");
+        let current = fs::canonicalize(alias).unwrap();
+        let expected = fs::canonicalize(root)
+            .unwrap()
+            .join(APP)
+            .join("Contents/MacOS/studyapp");
+        assert!(claims_implicit_probe(1001, 1000, &current, &expected));
+    }
     #[test]
     fn update_install_macos_incomplete_approval_can_retry_without_deleting_evidence() {
         let root =
