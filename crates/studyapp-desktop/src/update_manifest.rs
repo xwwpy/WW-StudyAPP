@@ -34,6 +34,8 @@ pub struct UpdateManifest {
     pub pub_date: Option<String>,
     pub setup_url: String,
     pub signature: String,
+    pub size: u64,
+    pub sha256: String,
 }
 
 impl UpdateManifest {
@@ -129,6 +131,8 @@ fn parse_with_key(
         pub_date,
         setup_url: setup_url.to_owned(),
         signature,
+        size,
+        sha256: hash.to_ascii_lowercase(),
     })
 }
 
@@ -184,6 +188,13 @@ mod tests {
     #[::core::prelude::v1::test]
     fn rejects_unsigned_metadata_even_when_package_has_signature() {
         assert!(parse_latest_json(VALID).is_err());
+    }
+
+    #[::core::prelude::v1::test]
+    fn authenticated_package_constraints_are_retained() {
+        let manifest = signed_parse(VALID, "windows-x86_64").unwrap();
+        assert_eq!(manifest.size, 10);
+        assert_eq!(manifest.sha256, "a".repeat(64));
     }
 
     #[::core::prelude::v1::test]

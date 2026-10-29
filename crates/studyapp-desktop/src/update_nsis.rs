@@ -35,11 +35,25 @@ pub fn download(
 ) -> UpdateResult<PathBuf> {
     std::fs::create_dir_all(directory).map_err(|_| failure(UpdateErrorKind::Preparation))?;
     let setup = directory.join("WW-StudyApp-Setup.exe");
-    download_setup_to(&manifest.setup_url, &setup, SETUP_LIMIT, progress)?;
+    download_setup_to(
+        &manifest.setup_url,
+        &setup,
+        manifest.size.min(SETUP_LIMIT),
+        progress,
+    )?;
     let payload = std::fs::read(&setup).map_err(|_| failure(UpdateErrorKind::Preparation))?;
+    verify_constraints(&payload, manifest.size, &manifest.sha256)?;
     verify_manifest_signature(&payload, &manifest.signature)
         .map_err(|_| failure(UpdateErrorKind::Verification))?;
     Ok(setup)
+}
+
+fn verify_constraints(payload: &[u8], size: u64, sha256: &str) -> UpdateResult<()> {
+    use sha2::{Digest, Sha256};
+    if payload.len() as u64 != size || format!("{:x}", Sha256::digest(payload)) != sha256 {
+        return Err(failure(UpdateErrorKind::Verification));
+    }
+    Ok(())
 }
 
 /// Starts the installer in silent mode. The caller exits the application after
@@ -56,6 +70,16 @@ pub fn launch(setup: &Path) -> UpdateResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[::core::prelude::v1::test]
+    fn package_constraints_reject_truncation_and_corruption() {
+        use sha2::{Digest, Sha256};
+        let digest = format!("{:x}", Sha256::digest(b"package"));
+        assert!(verify_constraints(b"package", 7, &digest).is_ok());
+        assert!(verify_constraints(b"packag", 7, &digest).is_err());
+        assert!(verify_constraints(b"packagE", 7, &digest).is_err());
+        assert!(verify_constraints(b"package!", 7, &digest).is_err());
+    }
 
     #[::core::prelude::v1::test]
     fn missing_installer_is_reported_as_a_launch_failure() {

@@ -1,6 +1,6 @@
 name: Release
 
-# Tag-triggered cargo-sweep style release: build the NSIS setup, sign it, build
+# Tag-triggered release: build the NSIS setup, sign it, build
 # the installer/portable wrappers and SHA256SUMS, then publish latest.json and
 # the checksummed assets in one GitHub Release. A tag must only be pushed after
 # the CI run for main is green; this workflow builds from that immutable tag.

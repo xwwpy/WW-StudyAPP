@@ -82,6 +82,13 @@ struct CheckFixture {
     downloads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
+fn signed_check_reply(
+    origin: CheckOrigin,
+    result: UpdateResult<Option<crate::update_manifest::UpdateManifest>>,
+) -> UpdateReply {
+    UpdateReply::NsisChecked(origin, result)
+}
+
 impl EventEmitter<UpdateEvent> for UpdatePanel {}
 
 impl UpdatePanel {
@@ -363,14 +370,7 @@ impl UpdatePanel {
                 return;
             }
             let current = env!("CARGO_PKG_VERSION");
-            let reply = match crate::update_nsis::check(current) {
-                Ok(Some(manifest)) => UpdateReply::NsisChecked(origin, Ok(Some(manifest))),
-                Ok(None) => UpdateReply::NsisChecked(origin, Ok(None)),
-                Err(error) => match check_for_update(current) {
-                    Ok(check) => UpdateReply::Checked(origin, Ok(check)),
-                    Err(_) => UpdateReply::NsisChecked(origin, Err(error)),
-                },
-            };
+            let reply = signed_check_reply(origin, crate::update_nsis::check(current));
             let _ = sender.send(reply);
         });
         cx.notify();
@@ -826,6 +826,21 @@ mod tests {
     use super::*;
     use studyapp_desktop::update_policy::CheckOrigin;
 
+    #[::core::prelude::v1::test]
+    fn signed_check_failure_remains_a_failure() {
+        let reply = signed_check_reply(
+            CheckOrigin::Manual,
+            Err(UpdateError {
+                kind: UpdateErrorKind::InvalidRelease,
+                message: "invalid manifest",
+            }),
+        );
+        assert!(matches!(
+            reply,
+            UpdateReply::NsisChecked(CheckOrigin::Manual, Err(_))
+        ));
+    }
+
     fn panel() -> UpdatePanel {
         let (sender, receiver) = mpsc::channel();
         UpdatePanel {
@@ -869,6 +884,8 @@ mod tests {
             pub_date: Some("2026-10-28T00:00:00Z".into()),
             setup_url: "https://github.com/xwwpy/WW-StudyAPP/releases/download/v0.9.0/WW-StudyApp-0.9.0-windows-x86_64-Setup.exe".into(),
             signature: "c2lnbmF0dXJl".into(),
+            size: 10,
+            sha256: "a".repeat(64),
         };
         panel.finish_nsis_check(CheckOrigin::Startup, Ok(Some(manifest)));
         assert_eq!(panel.settings_notes(), Some("- 新版本"));
@@ -894,6 +911,8 @@ mod tests {
             pub_date: None,
             setup_url: "https://example.com/setup.exe".into(),
             signature: "fixture".into(),
+            size: 10,
+            sha256: "a".repeat(64),
         };
         panel.check_policy.dismiss("0.9.0");
         panel.finish_nsis_check(CheckOrigin::Periodic, Ok(Some(manifest.clone())));
