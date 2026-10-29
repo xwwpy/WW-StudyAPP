@@ -30,7 +30,8 @@ def authentication_log_summary(records, since):
         names = re.findall(r"\berr(?:Authorization|Sec)[A-Za-z]+\b", message)
         signals = [word for word in ("authentication succeeded", "authentication failed", "authorization denied", "policy denied", "credential rejected") if word in message.lower()]
         if codes or names or signals:
-            summary.append({"process": process, "timestamp": record["timestamp"], "codes": codes, "names": names, "signals": signals})
+            summary.append({"process": process, "timestamp": record["timestamp"], "codes": codes, "names": names, "signals": signals,
+                            "subsystem": record.get("subsystem"), "category": record.get("category")})
     return summary
 
 

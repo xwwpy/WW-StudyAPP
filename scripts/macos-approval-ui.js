@@ -167,8 +167,33 @@ function run(argv) {
         if (ObjC.unwrap(environment.objectForKey("GITHUB_ACTIONS")) !== "true" || !argv[3].startsWith(root + "/approval-credential-")) throw new Error("Authentication is restricted to the disposable runner");
         const password = $.NSString.stringWithContentsOfFileEncodingError(argv[3], $.NSUTF8StringEncoding, Ref());
         if (!password || password.length < 24 || password.length > 128) throw new Error("Invalid runner credential file");
-        if ($.AXUIElementSetAttributeValue(references[expected.username_path.join("/")], $("AXValue"), $(expected.test_username)) !== 0) throw new Error("Cannot enter disposable administrator name");
-        if ($.AXUIElementSetAttributeValue(references[expected.password_path.join("/")], $("AXValue"), password) !== 0) throw new Error("Cannot enter runner credential");
+        function key(code, flags) {
+            for (const down of [true, false]) {
+                const event = $.CGEventCreateKeyboardEvent(null, code, down);
+                $.CGEventSetFlags(event, flags);
+                $.CGEventPost(0, event);
+            }
+        }
+        function typeInto(control, text) {
+            if ($.AXUIElementSetAttributeValue(control, $("AXFocused"), $(true)) !== 0) throw new Error("Cannot focus system credential field");
+            $.NSThread.sleepForTimeInterval(0.1);
+            if (scalar(control, "AXFocused", false) !== true) throw new Error("System credential field did not gain focus");
+            key(0, 1048576); // Select all through the normal Command-A shortcut.
+            key(51, 0);
+            for (const char of text) {
+                if (scalar(control, "AXFocused", false) !== true) throw new Error("System credential focus changed");
+                const bytes = $(char).dataUsingEncoding($.NSUTF16LittleEndianStringEncoding);
+                for (const down of [true, false]) {
+                    const event = $.CGEventCreateKeyboardEvent(null, 0, down);
+                    $.CGEventKeyboardSetUnicodeString(event, 1, bytes.bytes);
+                    $.CGEventPost(0, event);
+                }
+                $.NSThread.sleepForTimeInterval(0.01);
+            }
+        }
+        typeInto(references[expected.username_path.join("/")], expected.test_username);
+        if (scalar(references[expected.username_path.join("/")], "AXValue", "") !== expected.test_username) throw new Error("System username keyboard input was not delivered");
+        typeInto(references[expected.password_path.join("/")], ObjC.unwrap(password));
         $.NSThread.sleepForTimeInterval(0.4);
         const control = references[expected.button_path.join("/")];
         const position = geometry(control, "AXPosition", 1), size = geometry(control, "AXSize", 2);
