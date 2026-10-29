@@ -27,11 +27,11 @@ def authentication_candidates(tree):
         if "Privacy & Security" not in texts or "attempting to open an app" not in texts or "administrator" not in texts:
             continue
         passwords = [path for path, node in flat if node.get("subrole") == "AXSecureTextField" and node.get("visible") is True and node.get("enabled") is True]
-        users = [node for _, node in flat if node.get("role") == "AXTextField" and node.get("subrole") != "AXSecureTextField" and node.get("value") == "runner" and node.get("visible") is True and node.get("enabled") is True]
+        users = [path for path, node in flat if node.get("role") == "AXTextField" and node.get("subrole") != "AXSecureTextField" and node.get("value") == "runner" and node.get("visible") is True and node.get("enabled") is True]
         buttons = [path for path, node in flat if node.get("role") == "AXButton" and node.get("name") == "OK" and node.get("visible") is True and node.get("enabled") is True]
         if len(passwords) == len(users) == len(buttons) == 1:
             candidates.append({"container_path": [index], "container": window, "button_path": buttons[0],
-                               "password_path": passwords[0], "label": "OK"})
+                               "password_path": passwords[0], "username_path": users[0], "label": "OK"})
     return candidates
 
 
@@ -59,15 +59,28 @@ def runner_credential():
     import signal
     import termios
     password = secrets.token_urlsafe(36)
+    username = "studyapp_" + uuid.uuid4().hex[:12]
     path = Path(os.environ["RUNNER_TEMP"]) / ("approval-credential-" + str(uuid.uuid4()))
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     child = None
     try:
         with os.fdopen(fd, "w") as output:
             output.write(password)
+        existing = subprocess.check_output(["/usr/bin/dscl", ".", "-list", "/Users", "UniqueID"], text=True)
+        used = {int(line.split()[-1]) for line in existing.splitlines() if line.split()[-1].isdigit()}
+        uid = next(value for value in range(5500, 6500) if value not in used)
+        record = "/Users/" + username
+        commands = [["/usr/bin/dscl", ".", "-create", record]]
+        commands += [["/usr/bin/dscl", ".", "-create", record, key, value] for key, value in (
+            ("UniqueID", str(uid)), ("PrimaryGroupID", "20"), ("UserShell", "/usr/bin/false"),
+            ("NFSHomeDirectory", "/var/empty"), ("RealName", "Update acceptance administrator"), ("IsHidden", "1"))]
+        commands.append(["/usr/sbin/dseditgroup", "-o", "edit", "-a", username, "-t", "user", "admin"])
+        for command in commands:
+            if subprocess.run(["/usr/bin/sudo", "-n", *command], capture_output=True, timeout=15).returncode != 0:
+                raise RuntimeError("Cannot create disposable authentication account")
         child, terminal = pty.fork()
         if child == 0:
-            os.execve("/usr/bin/sudo", ["sudo", "-n", "/usr/bin/dscl", ".", "-passwd", "/Users/runner"],
+            os.execve("/usr/bin/sudo", ["sudo", "-n", "/usr/bin/dscl", ".", "-passwd", record],
                       {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(Path.home()), "USER": "runner"})
         deadline = time.monotonic() + 15
         pending = b""
@@ -110,6 +123,6 @@ def runner_credential():
             if not completed:
                 os.kill(child, signal.SIGTERM)
                 os.waitpid(child, 0)
-        yield path
+        yield path, username
     finally:
         path.unlink(missing_ok=True)

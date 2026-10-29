@@ -125,7 +125,8 @@ def system_approval(output):
             if candidate is not None:
                 process, selection = candidate
                 try:
-                    with runner_credential() as credential:
+                    with runner_credential() as (credential, username):
+                        selection["test_username"] = username
                         submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
                                              json.dumps(selection, separators=(",", ":")), str(credential)], 20)
                         actions.append({"command": ["runner-authentication"], "exit_code": submitted["exit_code"],

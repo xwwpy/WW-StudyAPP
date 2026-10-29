@@ -155,11 +155,15 @@ function run(argv) {
             button.name !== "OK" || !button.visible || !button.enabled) throw new Error("Unexpected system authentication control");
         const field = at(expected.password_path);
         if (field.subrole !== "AXSecureTextField" || !field.visible || !field.enabled) throw new Error("System password field unavailable");
+        const username = at(expected.username_path);
+        if (username.role !== "AXTextField" || username.subrole === "AXSecureTextField" || username.value !== "runner" ||
+            !username.visible || !username.enabled || !/^studyapp_[0-9a-f]{12}$/.test(expected.test_username)) throw new Error("Unexpected disposable administrator identity");
         const environment = $.NSProcessInfo.processInfo.environment;
         const root = ObjC.unwrap(environment.objectForKey("RUNNER_TEMP"));
         if (ObjC.unwrap(environment.objectForKey("GITHUB_ACTIONS")) !== "true" || !argv[3].startsWith(root + "/approval-credential-")) throw new Error("Authentication is restricted to the disposable runner");
         const password = $.NSString.stringWithContentsOfFileEncodingError(argv[3], $.NSUTF8StringEncoding, Ref());
         if (!password || password.length < 24 || password.length > 128) throw new Error("Invalid runner credential file");
+        if ($.AXUIElementSetAttributeValue(references[expected.username_path.join("/")], $("AXValue"), $(expected.test_username)) !== 0) throw new Error("Cannot enter disposable administrator name");
         if ($.AXUIElementSetAttributeValue(references[expected.password_path.join("/")], $("AXValue"), password) !== 0) throw new Error("Cannot enter runner credential");
         if ($.AXUIElementPerformAction(references[expected.button_path.join("/")], $("AXPress")) !== 0) throw new Error("Cannot confirm runner authentication");
         return JSON.stringify({authenticationSubmitted: true});
