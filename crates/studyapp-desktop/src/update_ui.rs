@@ -1148,7 +1148,7 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test"))]
 mod modal_visibility_tests {
     use gpui_kit::{AppContext, Context, IntoElement, Render, TestAppContext, Window, div};
     use studyapp_desktop::update_policy::CheckOrigin;
