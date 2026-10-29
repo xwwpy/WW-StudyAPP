@@ -89,6 +89,36 @@ async fn wait(
             .await;
     }
 }
+async fn presented(window: AnyWindowHandle, cx: &mut AsyncApp) {
+    // Submit outside the capture/click transaction, then allow compositor presentation.
+    for _ in 0..2 {
+        window
+            .update(cx, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        cx.background_executor()
+            .timer(Duration::from_millis(200))
+            .await;
+    }
+}
+async fn click_visible(window: AnyWindowHandle, id: SharedString, cx: &mut AsyncApp) {
+    let started = Instant::now();
+    loop {
+        presented(window, cx).await;
+        if window
+            .update(cx, |_, window, _| window.try_find(id.clone()).is_some())
+            .unwrap()
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "Visible control missing: {id}"
+        );
+    }
+    window
+        .update(cx, |_, window, cx| window.click(id, cx))
+        .unwrap();
+}
 fn committed(app: &StudyApp) -> Value {
     json!(
         app.snapshot
@@ -108,15 +138,17 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         if config["target_version"].as_str()==Some(env!("CARGO_PKG_VERSION")){
             let previous:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("old-observation.json")).unwrap()).unwrap();
             let id=previous["draft_id"].as_str().unwrap();
-            window.update(cx,|_,window,cx|{
+            window.update(cx,|_,_,cx|{
                 assert_eq!(committed(view.read(cx)),previous["committed"]);
-                view.update(cx,|a,cx|{a.page=Page::Notes;a.clear_notices(cx);cx.notify();});window.render_frame(cx);
-                window.click(SharedString::from(format!("draft-row-{id}")),cx);
+                view.update(cx,|a,cx|{a.page=Page::Notes;a.clear_notices(cx);cx.notify();});
             }).unwrap();
+            click_visible(window, "folders-drafts".into(), cx).await;
+            click_visible(window, SharedString::from(format!("draft-row-{id}")), cx).await;
             wait(window,&view,cx,"restored editor",|a,cx|a.note_editor.is_some()&&a.note_content.read(cx).ready()).await;
             let editor=window.update(cx,|_,_,cx|view.read(cx).note_content.clone()).unwrap();
             let live=crate::smoke_editor::bridge(window,&editor,json!({"type":"snapshot"}),cx).await;
             assert_eq!(live["text"],marker);
+            presented(window, cx).await;
             window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("restored.png")).unwrap()).unwrap();
             save("new-observation.json",json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":id,"live_text":live["text"],"database":database,"source_sha":config["source_sha"],"transaction":std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)}));
             return;
@@ -138,13 +170,12 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         CHECKS_READY.store(true,Ordering::Relaxed);
         window.update(cx,|_,_,cx|{let panel=view.read(cx).update_panel.clone();panel.update(cx,|p,cx|p.acceptance_check(cx));}).unwrap();
         wait(window,&view,cx,"signed update card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
-        window.update(cx,|_,window,cx|{
-            window.render_frame(cx);
-            window.click("update-dialog-later",cx);
-        }).unwrap();
-        window.update(cx,|_,window,cx|{window.render_frame(cx);window.click("sidebar-update",cx);}).unwrap();
+        click_visible(window, "update-dialog-later".into(), cx).await;
+        click_visible(window, "sidebar-update".into(), cx).await;
         wait(window,&view,cx,"reopened card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
-        window.update(cx,|_,window,cx|{window.render_frame(cx);crate::smoke::capture(window,directory().unwrap().join("update-card.png")).unwrap();window.click("update-dialog-install",cx);}).unwrap();
+        presented(window, cx).await;
+        window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("update-card.png")).unwrap()).unwrap();
+        click_visible(window, "update-dialog-install".into(), cx).await;
         // The application and its supervisor own all remaining install/restart work.
     }).detach();
 }
