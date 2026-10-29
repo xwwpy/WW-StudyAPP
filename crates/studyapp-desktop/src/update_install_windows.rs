@@ -229,13 +229,25 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
         &dir.join("transaction.json"),
         &serde_json::to_vec(&tx).map_err(|e| e.to_string())?,
     )?;
-    io(fs::copy(executable, dir.join("supervisor.exe")))?;
+    stage_supervisor(&executable, &dir)?;
     let location = pointer()?;
     io(fs::create_dir_all(
         location.parent().ok_or("Missing status parent")?,
     ))?;
     io(fs::write(location, dir.to_string_lossy().as_bytes()))?;
     Ok(dir)
+}
+fn stage_supervisor(executable: &Path, dir: &Path) -> Result<()> {
+    let source = executable
+        .parent()
+        .ok_or("Missing installed executable parent")?;
+    for name in ["vcruntime140.dll", "vcruntime140_1.dll"] {
+        let runtime = source.join(name);
+        safe_path(&runtime)?;
+        write_new(&dir.join(name), &read_bounded(&runtime, 4 * 1024 * 1024)?)?;
+    }
+    io(fs::copy(executable, dir.join("supervisor.exe")))?;
+    Ok(())
 }
 pub fn spawn(dir: &Path) -> Result<()> {
     ordinary_user()?;
@@ -412,6 +424,27 @@ pub fn previous_failure() -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_install_windows_supervisor_keeps_bundled_runtime() {
+        let root =
+            std::env::temp_dir().join(format!("studyapp-win-runtime-{}", uuid::Uuid::new_v4()));
+        let source = root.join("installed");
+        let stage = root.join("stage");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(source.join("WW-StudyApp.exe"), b"executable").unwrap();
+        for name in ["vcruntime140.dll", "vcruntime140_1.dll"] {
+            fs::write(source.join(name), name.as_bytes()).unwrap();
+        }
+        stage_supervisor(&source.join("WW-StudyApp.exe"), &stage).unwrap();
+        for name in ["vcruntime140.dll", "vcruntime140_1.dll"] {
+            assert_eq!(fs::read(stage.join(name)).unwrap(), name.as_bytes());
+        }
+        let missing = root.join("missing");
+        fs::create_dir(&missing).unwrap();
+        fs::remove_file(source.join("vcruntime140_1.dll")).unwrap();
+        assert!(stage_supervisor(&source.join("WW-StudyApp.exe"), &missing).is_err());
+    }
     #[test]
     fn update_install_windows_process_identity_is_stable() {
         let (_, first) = process(std::process::id()).unwrap();

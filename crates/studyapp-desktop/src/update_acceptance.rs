@@ -227,4 +227,11 @@ pub fn install_failure_hook() {
     }));
 }
 
-pub fn startup_failure(error:&str){if active(){save(&format!("startup-error-{}.json",std::process::id()),json!({"pid":std::process::id(),"error":error,"version":env!("CARGO_PKG_VERSION")}));}}
+pub fn startup_failure(error: &str) {
+    if active() {
+        save(
+            &format!("startup-error-{}.json", std::process::id()),
+            json!({"pid":std::process::id(),"error":error,"version":env!("CARGO_PKG_VERSION")}),
+        );
+    }
+}
