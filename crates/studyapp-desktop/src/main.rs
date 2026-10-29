@@ -76,6 +76,7 @@ mod sync_runtime;
 mod sync_ui;
 mod theme;
 mod update_backend;
+mod update_install;
 mod update_manifest;
 mod update_nsis;
 mod update_signature;
@@ -133,6 +134,9 @@ fn startup_error_argument_is_headless(argument: &str, ui_test: bool) -> bool {
         ))
 }
 fn main() {
+    if let Some(code) = update_install::dispatch() {
+        std::process::exit(code);
+    }
     if let Err(error) = run() {
         eprintln!("WW-StudyApp: {error:#}");
         if std::env::args()

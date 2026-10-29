@@ -1,0 +1,361 @@
+//! Linux deb update supervisor and privileged installed worker.
+use super::*;
+use std::{
+    fs::{self, OpenOptions},
+    io::{Read, Write},
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
+const EXE: &str = "/usr/bin/studyapp";
+type Result<T> = std::result::Result<T, String>;
+fn io<T>(r: std::io::Result<T>) -> Result<T> {
+    r.map_err(|e| e.to_string())
+}
+fn output(program: &str, args: &[&str]) -> Result<String> {
+    let out = io(Command::new(program).args(args).env("LC_ALL", "C").output())?;
+    if !out.status.success() {
+        return Err(format!(
+            "{program} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+fn uid() -> Result<u32> {
+    output("/usr/bin/id", &["-u"])?
+        .parse()
+        .map_err(|_| "Invalid uid".into())
+}
+fn safe_dir(path: &Path, owner: u32) -> Result<()> {
+    let meta = io(fs::symlink_metadata(path))?;
+    if !meta.is_dir() || meta.uid() != owner || meta.mode() & 0o022 != 0 {
+        return Err("Unsafe staging directory".into());
+    }
+    Ok(())
+}
+fn bounded(path: &Path, owner: u32, limit: u64) -> Result<Vec<u8>> {
+    let f = io(OpenOptions::new()
+        .read(true)
+        .custom_flags(0x20000)
+        .open(path))?; // O_NOFOLLOW
+    let meta = io(f.metadata())?;
+    if !meta.is_file() || meta.uid() != owner || meta.nlink() != 1 || meta.len() > limit {
+        return Err("Unsafe update file".into());
+    }
+    let mut bytes = Vec::new();
+    io(f.take(limit + 1).read_to_end(&mut bytes))?;
+    if bytes.len() as u64 > limit {
+        return Err("Update file too large".into());
+    }
+    Ok(bytes)
+}
+fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut f = io(OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path))?;
+    io(f.write_all(bytes))?;
+    io(f.sync_all())
+}
+fn record(dir: &Path, state: &str, message: &str) -> Result<()> {
+    // Immutable unique records preserve failures across repeated attempts.
+    let bytes = serde_json::to_vec(&serde_json::json!({"state":state,"message":message}))
+        .map_err(|e| e.to_string())?;
+    write_new(
+        &dir.join(format!("status-{}-{}.json", state, uuid::Uuid::new_v4())),
+        &bytes,
+    )
+}
+fn identity(pid: u32) -> Result<Option<u64>> {
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(s) => process_start(&s)
+            .map(Some)
+            .ok_or("Invalid process identity".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+fn wait_old(tx: &InstallTransaction) -> Result<()> {
+    let start = Instant::now();
+    while identity(tx.old_pid)? == Some(tx.old_start) {
+        if start.elapsed() > Duration::from_secs(120) {
+            return Err("Application did not close; installation not started".into());
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+fn installed() -> Result<String> {
+    let meta = io(fs::symlink_metadata(EXE))?;
+    if !meta.is_file() || meta.uid() != 0 || meta.mode() & 0o022 != 0 {
+        return Err("Not a protected installed executable".into());
+    }
+    if output("/usr/bin/dpkg-query", &["-S", EXE])? != "studyapp: /usr/bin/studyapp" {
+        return Err("Executable is not owned by studyapp deb".into());
+    }
+    let value = output(
+        "/usr/bin/dpkg-query",
+        &["-W", "-f=${Status}|${Architecture}|${Version}", "studyapp"],
+    )?;
+    value
+        .strip_prefix("install ok installed|amd64|")
+        .map(str::to_owned)
+        .ok_or("Unsupported package state or architecture".into())
+}
+fn transaction(dir: &Path, owner: u32) -> Result<InstallTransaction> {
+    safe_dir(dir, owner)?;
+    let tx: InstallTransaction =
+        serde_json::from_slice(&bounded(&dir.join("transaction.json"), owner, 16384)?)
+            .map_err(|e| e.to_string())?;
+    if tx.schema != 1
+        || tx.uid != owner
+        || owner == 0
+        || !valid_id(&tx.id)
+        || tx.old_pid < 2
+        || tx.old_start == 0
+    {
+        return Err("Invalid installation transaction".into());
+    }
+    Ok(tx)
+}
+
+/// Called before close; only installed deb deployments are accepted.
+pub fn prepare(package: &VerifiedPackage, data_directory: Option<PathBuf>) -> Result<PathBuf> {
+    if io(std::env::current_exe())? != Path::new(EXE) {
+        return Err("Automatic updates require the installed deb application".into());
+    }
+    installed()?;
+    if !Path::new("/usr/bin/pkexec").is_file() {
+        return Err("Install polkit/pkexec before updating".into());
+    }
+    let owner = uid()?;
+    safe_dir(&package.directory, owner)?;
+    VerifiedPackage::verify(&package.directory)?;
+    let tx = InstallTransaction {
+        schema: 1,
+        id: uuid::Uuid::new_v4().to_string(),
+        old_pid: std::process::id(),
+        old_start: identity(std::process::id())?.ok_or("Missing process")?,
+        uid: owner,
+        data_directory,
+    };
+    write_new(
+        &package.directory.join("transaction.json"),
+        &serde_json::to_vec(&tx).map_err(|e| e.to_string())?,
+    )?;
+    io(fs::copy(EXE, package.directory.join("supervisor")))?;
+    io(fs::set_permissions(
+        package.directory.join("supervisor"),
+        fs::Permissions::from_mode(0o700),
+    ))?;
+    Ok(package.directory.clone())
+}
+/// Readiness must succeed before the caller closes its window.
+pub fn spawn(dir: &Path) -> Result<()> {
+    let mut child = io(Command::new(dir.join("supervisor"))
+        .arg("--update-supervisor")
+        .arg(dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn())?;
+    let start = Instant::now();
+    while !dir.join("ready").is_file() {
+        if io(child.try_wait())?.is_some() {
+            return Err("Update supervisor exited before readiness".into());
+        }
+        if start.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            return Err("Update supervisor readiness timeout".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+pub fn supervise(dir: &Path) -> Result<()> {
+    let owner = uid()?;
+    let tx = transaction(dir, owner)?;
+    let package = VerifiedPackage::verify(dir)?;
+    let previous_version = installed()?;
+    write_new(&dir.join("ready"), tx.id.as_bytes())?;
+    record(dir, "waiting", "Waiting for saved application to exit")?;
+    wait_old(&tx)?;
+    record(dir, "installing", "Waiting for system authorization")?;
+    let result = io(Command::new("/usr/bin/pkexec")
+        .arg(EXE)
+        .arg("--update-worker")
+        .arg(dir)
+        .status());
+    match result {
+        Ok(status) if status.success() => {
+            if installed()? != package.version {
+                record(
+                    dir,
+                    "failed",
+                    "Installed version mismatch; repair package installation",
+                )?;
+                return Err("Installed version mismatch".into());
+            }
+            record(dir, "installed", &package.version)?;
+            restart(&tx)?;
+            record(
+                dir,
+                "relaunching",
+                "Installation succeeded; application launched (health not yet confirmed)",
+            )
+        }
+        Ok(status) if matches!(status.code(), Some(126 | 127)) => {
+            record(
+                dir,
+                "cancelled",
+                "System authorization cancelled or denied; installation was not started",
+            )?;
+            if installed()? == previous_version {
+                restart(&tx)?;
+            }
+            Err("System authorization cancelled or denied".into())
+        }
+        other => {
+            record(
+                dir,
+                "failed",
+                &format!(
+                    "Authorization or package installation failed: {other:?}. Package manager may require repair; no rollback claimed."
+                ),
+            )?;
+            // A failed apt transaction may leave a partially configured package: never launch it blindly.
+            Err("Update failed; inspect the retained transaction records".into())
+        }
+    }
+}
+fn restart(tx: &InstallTransaction) -> Result<()> {
+    if uid()? != tx.uid || tx.uid == 0 {
+        return Err("Refusing elevated GUI restart".into());
+    }
+    let mut command = Command::new(EXE);
+    if let Some(path) = &tx.data_directory {
+        command.arg("--data-dir").arg(path);
+    }
+    io(command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn())?;
+    Ok(())
+}
+
+/// Invoked by pkexec using /usr/bin/studyapp, never a user-writable helper.
+pub fn worker(dir: &Path) -> Result<()> {
+    if uid()? != 0 || io(std::env::current_exe())? != Path::new(EXE) {
+        return Err(
+            "Worker requires the installed root-owned executable and system authorization".into(),
+        );
+    }
+    installed()?;
+    let owner: u32 = std::env::var("PKEXEC_UID")
+        .map_err(|_| "Missing initiating uid")?
+        .parse()
+        .map_err(|_| "Invalid initiating uid")?;
+    let tx = transaction(dir, owner)?;
+    // Read all untrusted inputs into bounded memory; create root-owned snapshots before verification.
+    let manifest = bounded(&dir.join("manifest.json"), owner, 2 * 1024 * 1024)?;
+    let payload = bounded(&dir.join("package"), owner, 256 * 1024 * 1024)?;
+    let root = Path::new("/var/lib/studyapp-updates");
+    if !root.exists() {
+        io(fs::DirBuilder::new().mode(0o700).create(root))?;
+    }
+    safe_dir(root, 0)?;
+    let stage = root.join(uuid::Uuid::new_v4().to_string());
+    io(fs::DirBuilder::new().mode(0o700).create(&stage))?;
+    write_new(&stage.join("manifest.json"), &manifest)?;
+    write_new(&stage.join("package"), &payload)?;
+    let package = VerifiedPackage::verify(&stage)?;
+    let current = semver::Version::parse(&installed()?).map_err(|e| e.to_string())?;
+    let offered = semver::Version::parse(&package.version).map_err(|e| e.to_string())?;
+    if offered <= current {
+        return Err("Refusing non-newer package".into());
+    }
+    let deb = stage.join("candidate.deb");
+    io(fs::rename(stage.join("package"), &deb))?;
+    let deb_text = deb.to_str().ok_or("Invalid root staging path")?;
+    for (field, expected) in [
+        ("Package", "studyapp"),
+        ("Architecture", "amd64"),
+        ("Version", package.version.as_str()),
+    ] {
+        if output("/usr/bin/dpkg-deb", &["-f", deb_text, field])? != expected {
+            return Err(format!("Unexpected deb {field}"));
+        }
+    }
+    wait_old(&tx)?;
+    // No sudo fallback and no GUI is launched in this elevated process.
+    let status = io(Command::new("/usr/bin/apt-get")
+        .args(["install", "-y", "--", deb_text])
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("DEBIAN_FRONTEND", "noninteractive")
+        .status())?;
+    if !status.success() {
+        record(
+            &stage,
+            "failed",
+            "apt failed; package manager repair may be required",
+        )?;
+        return Err("apt installation failed; no rollback performed".into());
+    }
+    if installed()? != package.version {
+        return Err("Installed version mismatch".into());
+    }
+    record(&stage, "installed", &package.version)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn directory() -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("studyapp-updater-test-{}", uuid::Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        path
+    }
+    #[test]
+    fn update_install_private_inputs_reject_symlinks_hardlinks_and_oversize() {
+        let dir = directory();
+        let original = dir.join("original");
+        write_new(&original, b"test").unwrap();
+        assert_eq!(bounded(&original, uid().unwrap(), 4).unwrap(), b"test");
+        assert!(bounded(&original, uid().unwrap(), 3).is_err());
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&original, &link).unwrap();
+        assert!(bounded(&link, uid().unwrap(), 4).is_err());
+        fs::hard_link(&original, dir.join("hard")).unwrap();
+        assert!(bounded(&original, uid().unwrap(), 4).is_err());
+    }
+    #[test]
+    fn update_install_world_writable_stage_is_rejected() {
+        let dir = directory();
+        safe_dir(&dir, uid().unwrap()).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(safe_dir(&dir, uid().unwrap()).is_err());
+    }
+    #[test]
+    fn update_install_pid_reuse_does_not_wait_for_unrelated_process() {
+        let pid = std::process::id();
+        let start = identity(pid).unwrap().unwrap();
+        let tx = InstallTransaction {
+            schema: 1,
+            id: uuid::Uuid::new_v4().to_string(),
+            old_pid: pid,
+            old_start: start + 1,
+            uid: uid().unwrap(),
+            data_directory: None,
+        };
+        wait_old(&tx).unwrap();
+    }
+    #[test]
+    fn update_install_source_binary_cannot_run_privileged_worker() {
+        assert!(worker(&directory()).is_err());
+    }
+}
