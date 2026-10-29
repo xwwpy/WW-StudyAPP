@@ -181,7 +181,8 @@ function run(argv) {
             key(0, 1048576); // Select all through the normal Command-A shortcut.
             key(51, 0);
             for (const char of text) {
-                if (scalar(control, "AXFocused", false) !== true) throw new Error("System credential focus changed");
+                const focused = attribute($.AXUIElementCreateSystemWide(), "AXFocusedUIElement");
+                if (scalar(control, "AXFocused", false) !== true || focused === null || !$.CFEqual(focused, control)) throw new Error("System credential focus changed");
                 const bytes = $(char).dataUsingEncoding($.NSUTF16LittleEndianStringEncoding);
                 for (const down of [true, false]) {
                     const event = $.CGEventCreateKeyboardEvent(null, 0, down);
