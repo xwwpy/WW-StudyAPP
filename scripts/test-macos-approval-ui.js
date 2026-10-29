@@ -1,5 +1,8 @@
 const assert = require("node:assert/strict");
-const { clipElement, optionalBoolean, doublePair } = require("./macos-approval-ui.js");
+const { clipElement, optionalBoolean, doublePair, asciiKey } = require("./macos-approval-ui.js");
+assert.deepEqual(asciiKey("a"), [0, 0]);
+assert.deepEqual(asciiKey("_"), [27, 131072]);
+assert.throws(() => asciiKey("中"));
 const geometry = Buffer.alloc(16);
 geometry.writeDoubleLE(-12.5, 0);
 geometry.writeDoubleLE(768, 8);

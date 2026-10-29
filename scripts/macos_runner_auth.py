@@ -143,7 +143,7 @@ def runner_credential():
         raise RuntimeError("Test authentication requires the disposable GitHub macOS runner")
     if "admin" not in subprocess.check_output(["/usr/bin/id", "-Gn"], text=True).split():
         raise RuntimeError("Runner is not an administrator")
-    password = secrets.token_urlsafe(36)
+    password = secrets.token_hex(24)
     username = "studyapp_" + uuid.uuid4().hex[:12]
     path = Path(os.environ["RUNNER_TEMP"]) / ("approval-credential-" + str(uuid.uuid4()))
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

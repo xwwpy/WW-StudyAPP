@@ -28,7 +28,14 @@ function doublePair(encoded) {
     if (!pair.every(Number.isFinite)) throw new Error("Invalid AX geometry numbers");
     return pair;
 }
-if (typeof module !== "undefined") module.exports = {clipElement, optionalBoolean, doublePair};
+function asciiKey(char) {
+    const codes = {a: 0, b: 11, c: 8, d: 2, e: 14, f: 3, s: 1, t: 17, u: 32, y: 16, p: 35,
+        "0": 29, "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26, "8": 28, "9": 25};
+    if (char === "_") return [27, 131072];
+    if (Object.prototype.hasOwnProperty.call(codes, char)) return [codes[char], 0];
+    throw new Error("Unsupported disposable credential character");
+}
+if (typeof module !== "undefined") module.exports = {clipElement, optionalBoolean, doublePair, asciiKey};
 function run(argv) {
     ObjC.import("CoreGraphics");
     ObjC.import("ApplicationServices");
@@ -194,12 +201,8 @@ function run(argv) {
             for (const char of text) {
                 requireFocus();
                 phase = fieldName + "-keypost";
-                const bytes = $(char).dataUsingEncoding($.NSUTF16LittleEndianStringEncoding);
-                for (const down of [true, false]) {
-                    const event = $.CGEventCreateKeyboardEvent(null, 0, down);
-                    $.CGEventKeyboardSetUnicodeString(event, 1, bytes.bytes);
-                    $.CGEventPost(0, event);
-                }
+                const stroke = asciiKey(char);
+                key(stroke[0], stroke[1]);
                 $.NSThread.sleepForTimeInterval(0.01);
             }
         }
