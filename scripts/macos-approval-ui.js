@@ -112,9 +112,10 @@ function run(argv) {
             visible = visible && clipped.visible;
             clip = clipped.clip;
         } else if (role === "AXButton") visible = false;
-        const value = scalar(element, "AXValue", null);
+        const subrole = scalar(element, "AXSubrole", "");
+        const value = subrole === "AXSecureTextField" ? null : scalar(element, "AXValue", null);
         return {
-            role: role, subrole: scalar(element, "AXSubrole", ""),
+            role: role, subrole: subrole,
             name: scalar(element, "AXTitle", null) || scalar(element, "AXDescription", null), value: typeof value === "string" ? value : null,
             enabled: scalar(element, "AXEnabled", false) === true, visible: visible,
             position: position, size: size,
@@ -125,12 +126,25 @@ function run(argv) {
     if (argv[1] === "System Settings" && windows.length === 0) throw new Error("System Settings AX windows unavailable");
     const tree = {role: "AXApplication", children: windows.map((win, index) => model(win, [index], true, null, true))};
     if (argv[0] === "snapshot") return JSON.stringify(tree);
-    if (argv[0] !== "click" && argv[0] !== "scroll") throw new Error("Unknown approval UI action");
+    if (!["click", "scroll", "authenticate"].includes(argv[0])) throw new Error("Unknown approval UI action");
     const expected = JSON.parse(argv[2]);
     function at(path) { let node = tree; for (const index of path) node = node.children[index]; return node; }
     const container = at(expected.container_path);
     if (JSON.stringify(container) !== JSON.stringify(expected.container)) throw new Error("Approval warning changed; no click");
     const button = at(expected.button_path);
+    if (argv[0] === "authenticate") {
+        if (argv[1] !== "SecurityAgent" || button.name !== "OK" || !button.visible || !button.enabled) throw new Error("Unexpected system authentication control");
+        const field = at(expected.password_path);
+        if (field.subrole !== "AXSecureTextField" || !field.visible || !field.enabled) throw new Error("System password field unavailable");
+        const environment = $.NSProcessInfo.processInfo.environment;
+        const root = ObjC.unwrap(environment.objectForKey("RUNNER_TEMP"));
+        if (ObjC.unwrap(environment.objectForKey("GITHUB_ACTIONS")) !== "true" || !argv[3].startsWith(root + "/approval-credential-")) throw new Error("Authentication is restricted to the disposable runner");
+        const password = $.NSString.stringWithContentsOfFileEncodingError(argv[3], $.NSUTF8StringEncoding, Ref());
+        if (!password || password.length < 24 || password.length > 128) throw new Error("Invalid runner credential file");
+        if ($.AXUIElementSetAttributeValue(references[expected.password_path.join("/")], $("AXValue"), password) !== 0) throw new Error("Cannot enter runner credential");
+        if ($.AXUIElementPerformAction(references[expected.button_path.join("/")], $("AXPress")) !== 0) throw new Error("Cannot confirm runner authentication");
+        return JSON.stringify({authenticationSubmitted: true});
+    }
     if (argv[0] === "scroll") {
         if (button.role !== "AXButton" || button.name !== expected.label || !button.enabled) throw new Error("Approval scroll target is unavailable");
         for (let length = expected.button_path.length - 1; length > 0; length--) {

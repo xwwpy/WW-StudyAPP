@@ -1,10 +1,22 @@
 import importlib.util
 from pathlib import Path
 import unittest
+from macos_runner_auth import select_authentication
 spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_name("assess-macos-update.py"))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_runner_authentication_requires_unique_visible_exact_prompt(self):
+        window = {"role": "AXWindow", "visible": True, "name": "Privacy & Security", "children": [
+            {"role": "AXStaticText", "value": "You are attempting to open an app. Enter an administrator password."},
+            {"role": "AXTextField", "value": "runner", "visible": True, "enabled": True},
+            {"role": "AXTextField", "subrole": "AXSecureTextField", "visible": True, "enabled": True},
+            {"role": "AXButton", "name": "OK", "visible": True, "enabled": True},
+        ]}
+        self.assertIsNotNone(select_authentication({"children": [window]}))
+        self.assertIsNone(select_authentication({"children": [window, window]}))
+        window["children"][1]["value"] = "another-user"
+        self.assertIsNone(select_authentication({"children": [window]}))
     def test_final_open_anyway_confirmation_is_bound_to_the_app(self):
         tree = {"role": "AXWindow", "subrole": "AXSystemDialog", "children": [
             {"role": "AXStaticText", "value": 'Open “WW-StudyApp”?'},

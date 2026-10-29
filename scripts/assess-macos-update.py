@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
+from macos_runner_auth import runner_credential, select_authentication
 
 
 def capture(argv, timeout=120):
@@ -85,9 +86,10 @@ def system_approval(output):
         for label in buttons:
             selection = select_approval(tree, label)
             if selection is not None:
-                actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "click", process,
-                                        json.dumps(selection, separators=(",", ":"))], 20))
-                return
+                pressed = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "click", process,
+                                   json.dumps(selection, separators=(",", ":"))], 20)
+                actions.append(pressed)
+                return pressed["exit_code"] == 0 and json.loads(pressed["stdout"]).get("clicked") == label
         if can_scroll and process == "System Settings":
             for label in buttons:
                 selection = select_approval(tree, label, for_scroll=True)
@@ -96,8 +98,7 @@ def system_approval(output):
                                             json.dumps(selection, separators=(",", ":"))], 20))
                     time.sleep(1)
                     screenshot("scrolled-warning")
-                    click(process, buttons, can_scroll=False)
-                    return
+                    return click(process, buttons, can_scroll=False)
     screenshot("blocked")
     click("CoreServicesUIAgent", ["Open", "Done", "Cancel", "OK"])
     actions.append(capture(["/usr/bin/open", "x-apple.systempreferences:com.apple.preference.security?Privacy"], 15))
@@ -106,7 +107,23 @@ def system_approval(output):
     click("System Settings", ["Open Anyway"])
     time.sleep(2)
     screenshot("allow-confirmation")
-    click("CoreServicesUIAgent", ["Open Anyway", "Open"])
+    confirmed = click("CoreServicesUIAgent", ["Open Anyway", "Open"])
+    if confirmed:
+        time.sleep(1)
+        authentication = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", "SecurityAgent"], 20)
+        actions.append(authentication)
+        if authentication["exit_code"] == 0:
+            selection = select_authentication(json.loads(authentication["stdout"]))
+            if selection is not None:
+                try:
+                    with runner_credential() as credential:
+                        submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", "SecurityAgent",
+                                             json.dumps(selection, separators=(",", ":")), str(credential)], 20)
+                        actions.append({"command": ["runner-authentication"], "exit_code": submitted["exit_code"],
+                                        "stdout": "submitted" if submitted["exit_code"] == 0 else "", "stderr": ""})
+                except RuntimeError as error:
+                    actions.append({"command": ["runner-authentication"], "exit_code": 1, "stdout": "", "stderr": str(error)})
+                time.sleep(2)
     click("System Settings", ["Open"])
     screenshot("allow-result")
     actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", "universalAccessAuthWarn"], 10))
