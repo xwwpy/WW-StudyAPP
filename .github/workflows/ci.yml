@@ -400,7 +400,7 @@ jobs:
           cache-on-failure: true
       - name: Reuse this run's compiled validation binary for private MSI fixtures
         if: needs.plan.outputs['maintenance-native'] == 'true' && needs.windows.outputs.native_binary != ''
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.windows.outputs.native_binary }}
           path: target/native-validation
@@ -498,18 +498,18 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.package.outputs.release_artifact }}
           path: dist
           merge-multiple: true
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.package.outputs.fixture_artifact }}
           path: installer-fixtures
           merge-multiple: true
       - name: Reuse this run's compiled validation binary
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           artifact-ids: ${{ needs.package.outputs.native_binary }}
           path: target/debug
