@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import subprocess
 
+LAST_LAUNCH = {}
+
 
 class STARTUPINFO(c.Structure):
     _fields_ = [("cb", w.DWORD), ("reserved", w.LPWSTR), ("desktop", w.LPWSTR),
@@ -118,6 +120,7 @@ def allow_same_user_desktop(kernel, security, sid_text):
     user.GetProcessWindowStation.restype = w.HANDLE
     user.GetThreadDesktop.argtypes = [w.DWORD]
     user.GetThreadDesktop.restype = w.HANDLE
+    user.GetUserObjectInformationW.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)]
     class Trustee(c.Structure):
         _fields_ = [("multiple", c.c_void_p), ("operation", c.c_int), ("form", c.c_int), ("kind", c.c_int), ("name", c.c_void_p)]
     class Access(c.Structure):
@@ -130,6 +133,9 @@ def allow_same_user_desktop(kernel, security, sid_text):
     try:
         for handle, rights in [(user.GetProcessWindowStation(), 0x000F037F), (user.GetThreadDesktop(kernel.GetCurrentThreadId()), 0x000F01FF)]:
             require(handle)
+            name, length = c.create_unicode_buffer(256), w.DWORD()
+            require(user.GetUserObjectInformationW(handle, 2, name, c.sizeof(name), c.byref(length)))
+            LAST_LAUNCH.setdefault("desktop_objects", []).append(name.value)
             old, descriptor, new = c.c_void_p(), c.c_void_p(), c.c_void_p()
             try:
                 error = security.GetSecurityInfo(handle, 7, 4, None, None, c.byref(old), None, c.byref(descriptor))
@@ -155,6 +161,7 @@ def launch(executable, arguments, environment, headless=False):
     if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Ordinary-user acceptance launch is restricted to Windows CI")
     kernel, security = apis()
+    LAST_LAUNCH.clear()
     current, limited = w.HANDLE(), w.HANDLE()
     require(security.OpenProcessToken(kernel.GetCurrentProcess(), 0x008B, c.byref(current)))
     try:
@@ -194,6 +201,10 @@ def launch(executable, arguments, environment, headless=False):
             raise RuntimeError(f"Acceptance token integrity is above ordinary user: {integrity}")
         if restricted:
             allow_same_user_desktop(kernel, security, token_sid(kernel, security, selected))
+        session, length = w.DWORD(), w.DWORD()
+        require(security.GetTokenInformation(selected, 12, c.byref(session), c.sizeof(session), c.byref(length)))
+        LAST_LAUNCH.update({"user_sid": token_sid(kernel, security, selected), "integrity_sid": integrity,
+                           "restricted": restricted, "session_id": session.value, "api": "CreateProcessWithTokenW", "profile_flags": 0})
         executable = str(Path(executable).resolve(strict=True))
         command = c.create_unicode_buffer(subprocess.list2cmdline([executable, *map(str, arguments)]))
         block = c.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(environment.items())) + "\0\0")
@@ -202,13 +213,9 @@ def launch(executable, arguments, environment, headless=False):
         startup.desktop = "winsta0\\default"
         info = PROCESSINFO()
         flags = 0x400 | (0x08000000 if headless else 0)
-        if restricted:
-            created = security.CreateProcessAsUserW(selected, executable, command, None, None, False,
-                                                     flags, block, str(Path(executable).parent), c.byref(startup), c.byref(info))
-        else:
-            # This user's profile is already loaded; do not request another profile logon.
-            created = security.CreateProcessWithTokenW(selected, 0, executable, command, flags,
-                                                        block, str(Path(executable).parent), c.byref(startup), c.byref(info))
+        # This user's profile is already loaded; do not request another profile logon.
+        created = security.CreateProcessWithTokenW(selected, 0, executable, command, flags,
+                                                    block, str(Path(executable).parent), c.byref(startup), c.byref(info))
         if not created:
             error = c.WinError(c.get_last_error())
             raise RuntimeError(f"Ordinary launch failed ({'restricted/current-user' if restricted else 'linked-user'}; integrity={integrity}): {error}")

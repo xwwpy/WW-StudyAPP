@@ -47,6 +47,7 @@ def main():
         preflight["error"] = str(error)
         raise
     finally:
+        preflight["selected_launch"] = windows.LAST_LAUNCH
         preflight["acl"] = subprocess.run(["icacls", str(root)], capture_output=True, text=True).stdout
         (root / "token-preflight.json").write_text(json.dumps(preflight, indent=2), encoding="utf-8")
     if args.preflight_only:
