@@ -331,7 +331,7 @@ fn restored_run(target: &str, current: &str, scenario: &str, observed: bool) -> 
     target == current || (matches!(scenario, "authorization-denied" | "health-failure") && observed)
 }
 #[cfg(target_os = "macos")]
-async fn observe_relaunch(window: AnyWindowHandle, cx: &mut AsyncApp) {
+async fn observe_relaunch(window: AnyWindowHandle, phase: &str, cx: &mut AsyncApp) {
     let directory = directory().unwrap();
     let pid = std::process::id();
     let started = Instant::now();
@@ -353,12 +353,12 @@ async fn observe_relaunch(window: AnyWindowHandle, cx: &mut AsyncApp) {
             .await;
     };
     save(
-        &format!("relaunch-observe-{pid}.json"),
+        &format!("relaunch-observe-{pid}-{phase}.json"),
         json!({"pid":pid,"native":state}),
     );
     let started = Instant::now();
     while !directory
-        .join(format!("relaunch-observed-{pid}.json"))
+        .join(format!("relaunch-observed-{pid}-{phase}.json"))
         .exists()
     {
         assert!(
@@ -381,16 +381,18 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         let config=configuration().unwrap();let marker=config["draft_marker"].as_str().unwrap();
         if restored_run(config["target_version"].as_str().unwrap(),env!("CARGO_PKG_VERSION"),config["scenario"].as_str().unwrap_or(""),directory().unwrap().join("old-observation.json").exists()){
             #[cfg(target_os = "macos")]
-            observe_relaunch(window, cx).await;
+            observe_relaunch(window, "initial", cx).await;
             let previous:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("old-observation.json")).unwrap()).unwrap();
             let id=previous["draft_id"].as_str().unwrap();
             if config["scenario"] == "authorization-denied" || (config["scenario"] == "health-failure" && config["target_version"] != env!("CARGO_PKG_VERSION")) {
                 wait(window,&view,cx,"visible recovery notification",|a,cx|a.notifications.read(cx).visible_count()>0).await;
                 let notice=window.update(cx,|_,_,cx|view.read(cx).notice.clone()).unwrap();
                 assert!(matches!(notice, Some(Err(_))), "Recovery must show the installation failure");
-                presented(window,cx).await;
                 let bounds=window.update(cx,|_,window,_|window.find("floating-notice").bounds()).unwrap();
                 assert!(bounds.size.width>px(0.)&&bounds.size.height>px(0.));
+                #[cfg(target_os = "macos")]
+                observe_relaunch(window, "notification", cx).await;
+                presented(window,cx).await;
                 save("recovery-notice.json",json!({"notice":notice,"pid":std::process::id(),"visible_queue":true,
                     "bounds":{"x":f64::from(bounds.origin.x),"y":f64::from(bounds.origin.y),"width":f64::from(bounds.size.width),"height":f64::from(bounds.size.height)}}));
                 window.update(cx,|_,window,_|capture(window,"recovery-notice.png")).unwrap();

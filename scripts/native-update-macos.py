@@ -35,14 +35,15 @@ def observe_relaunch(fixture):
     for request in fixture.glob("relaunch-observe-*.json"):
         requested = json.loads(request.read_text())
         pid = requested["pid"]
-        acknowledgement = fixture / f"relaunch-observed-{pid}.json"
+        identity = request.stem.removeprefix("relaunch-observe-")
+        acknowledgement = fixture / f"relaunch-observed-{identity}.json"
         if acknowledgement.exists():
             continue
         result = policy.capture(["/usr/bin/osascript", "-l", "JavaScript",
             str(Path(__file__).with_name("macos-approval-ui.js")), "observe-window", str(pid)], 10)
-        (fixture / f"relaunch-window-{pid}.json").write_text(json.dumps(result))
+        (fixture / f"relaunch-window-{identity}.json").write_text(json.dumps(result))
         assert result["exit_code"] == 0, "Cannot independently observe relaunched window"
-        common.run(["/usr/sbin/screencapture", "-x", fixture / f"relaunch-screen-{pid}.png"])
+        common.run(["/usr/sbin/screencapture", "-x", fixture / f"relaunch-screen-{identity}.png"])
         observed = json.loads(result["stdout"])
         assert requested["native"]["ready"] is True, "App did not naturally present its window"
         assert observed["pid"] == observed["frontmostPid"] == pid, "Relaunched app is not foreground"
