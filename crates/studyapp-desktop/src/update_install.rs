@@ -292,6 +292,8 @@ pub mod windows;
 #[cfg(any(target_os = "macos", test))]
 #[path = "update_launch_receipt.rs"]
 mod launch_receipt;
+#[path = "update_install_status.rs"]
+mod status;
 
 #[cfg(test)]
 mod tests {

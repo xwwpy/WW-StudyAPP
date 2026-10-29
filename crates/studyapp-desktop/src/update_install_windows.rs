@@ -159,11 +159,7 @@ fn atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
     io(fs::rename(temp, dir.join(name)))
 }
 fn record(dir: &Path, state: &str, message: &str) -> Result<()> {
-    write_new(
-        &dir.join(format!("status-{state}-{}.json", uuid::Uuid::new_v4())),
-        &serde_json::to_vec(&serde_json::json!({"state":state,"message":message}))
-            .map_err(|e| e.to_string())?,
-    )
+    status::publish(dir, state, message, write_new)
 }
 fn pointer() -> Result<PathBuf> {
     directories::ProjectDirs::from("io", "StudyApp", "StudyApp")
@@ -335,14 +331,13 @@ fn supervise_inner(dir: &Path) -> Result<()> {
         .stderr(Stdio::null())
         .status())?;
     if !status.success() {
+        let message = format!("NSIS installation failed ({status}); no rollback is claimed");
         if read_bounded(&tx.executable, 512 * 1024 * 1024)
             .is_ok_and(|bytes| format!("{:x}", Sha256::digest(bytes)) == tx.old_hash)
         {
-            let _ = restart(&tx, None);
+            status::recover(dir, &message, write_new, || restart(&tx, None))?;
         }
-        return Err(format!(
-            "NSIS installation failed ({status}); no rollback is claimed"
-        ));
+        return Err(message);
     }
     if installed()? != tx.executable || version()? != tx.transaction.target_version {
         return Err("Installed destination/version mismatch".into());
@@ -400,26 +395,7 @@ pub fn previous_failure() -> Result<Option<String>> {
     let dir =
         PathBuf::from(String::from_utf8(read_bounded(&path, 4096)?).map_err(|e| e.to_string())?);
     safe_path(&dir)?;
-    let mut records = Vec::new();
-    for entry in io(fs::read_dir(&dir))? {
-        let entry = io(entry)?;
-        if entry.file_name().to_string_lossy().starts_with("status-") {
-            records.push((io(io(entry.metadata())?.modified())?, entry.path()));
-        }
-    }
-    records.sort_by_key(|v| v.0);
-    if let Some((_, path)) = records.last() {
-        let value: serde_json::Value =
-            serde_json::from_slice(&read_bounded(path, 16384)?).map_err(|e| e.to_string())?;
-        if value["state"] == "failed" {
-            return Ok(Some(format!(
-                "上次更新未完成：{}。记录：{}",
-                value["message"].as_str().unwrap_or("未知错误"),
-                dir.display()
-            )));
-        }
-    }
-    Ok(None)
+    status::failure(&dir, |path| read_bounded(path, 16384))
 }
 #[cfg(test)]
 mod tests {

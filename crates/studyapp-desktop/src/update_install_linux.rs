@@ -60,13 +60,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
     io(f.sync_all())
 }
 fn record(dir: &Path, state: &str, message: &str) -> Result<()> {
-    // Immutable unique records preserve failures across repeated attempts.
-    let bytes = serde_json::to_vec(&serde_json::json!({"state":state,"message":message}))
-        .map_err(|e| e.to_string())?;
-    write_new(
-        &dir.join(format!("status-{}-{}.json", state, uuid::Uuid::new_v4())),
-        &bytes,
-    )
+    status::publish(dir, state, message, write_new)
 }
 fn identity(pid: u32) -> Result<Option<u64>> {
     match fs::read_to_string(format!("/proc/{pid}/stat")) {
@@ -292,9 +286,17 @@ fn supervise_inner(dir: &Path) -> Result<()> {
                 "cancelled",
                 "System authorization cancelled or denied; installation was not started",
             )?;
-            if installed()? == previous_version {
-                restart(&tx, None)?;
-            }
+            status::recover(
+                dir,
+                "System authorization cancelled or denied",
+                write_new,
+                || {
+                    if installed()? == previous_version {
+                        restart(&tx, None)?;
+                    }
+                    Ok(())
+                },
+            )?;
             Err("System authorization cancelled or denied".into())
         }
         other => {
@@ -522,27 +524,7 @@ pub fn previous_failure() -> Result<Option<String>> {
     let path = String::from_utf8(bounded(&pointer, owner, 4096)?).map_err(|e| e.to_string())?;
     let dir = PathBuf::from(path);
     safe_dir(&dir, owner)?;
-    let mut records = Vec::new();
-    for entry in io(fs::read_dir(&dir))? {
-        let entry = io(entry)?;
-        if entry.file_name().to_string_lossy().starts_with("status-") {
-            let meta = io(entry.metadata())?;
-            records.push((io(meta.modified())?, entry.path()));
-        }
-    }
-    records.sort_by_key(|entry| entry.0);
-    if let Some((_, path)) = records.last() {
-        let value: serde_json::Value =
-            serde_json::from_slice(&bounded(path, owner, 16384)?).map_err(|e| e.to_string())?;
-        if value["state"] == "failed" {
-            return Ok(Some(format!(
-                "上次更新未完成：{}。更新记录：{}",
-                value["message"].as_str().unwrap_or("未知错误"),
-                dir.display()
-            )));
-        }
-    }
-    Ok(None)
+    status::failure(&dir, |path| bounded(path, owner, 16384))
 }
 
 fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
