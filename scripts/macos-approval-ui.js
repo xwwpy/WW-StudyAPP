@@ -9,9 +9,26 @@ function clipElement(position, size, viewport, button) {
 }
 if (typeof module !== "undefined") module.exports = {clipElement};
 function run(argv) {
+    ObjC.import("CoreGraphics");
+    ObjC.import("ApplicationServices");
+    if (argv[0] === "permissions") {
+        return JSON.stringify({accessibilityTrusted: Boolean($.AXIsProcessTrusted()),
+            postEventAllowed: Boolean($.CGPreflightPostEventAccess())});
+    }
     const system = Application("System Events");
     const process = system.processes.byName(argv[1]);
     if (!process.exists()) throw new Error("Approval process absent");
+    const processId = process.unixId();
+    const onScreen = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0));
+    function windowOnScreen(position, size) {
+        if (!position || !size) return false;
+        return onScreen.some(info => {
+            const rect = info.kCGWindowBounds;
+            return info.kCGWindowOwnerPID === processId && rect &&
+                Math.abs(rect.X-position[0]) <= 2 && Math.abs(rect.Y-position[1]) <= 2 &&
+                Math.abs(rect.Width-size[0]) <= 2 && Math.abs(rect.Height-size[1]) <= 2;
+        });
+    }
     const references = {};
     let count = 0;
     function read(getter, fallback) { try { return getter(); } catch (_) { return fallback; } }
@@ -22,7 +39,7 @@ function run(argv) {
         const size = read(() => element.size(), null);
         const hidden = read(() => element.attributes.byName("AXHidden").value(), false);
         let visible = parentVisible && hidden !== true;
-        if (isWindow) visible = read(() => element.visible(), false) === true;
+        if (isWindow) visible = hidden !== true && windowOnScreen(position, size);
         let clip = viewport;
         if (position && size && size[0] > 0 && size[1] > 0) {
             const geometry = clipElement(position, size, viewport, read(() => element.role(), "") === "AXButton");

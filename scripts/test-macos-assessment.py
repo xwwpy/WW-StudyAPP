@@ -5,6 +5,14 @@ spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_system_dialog_is_a_related_warning_container(self):
+        tree = {"role": "AXWindow", "subrole": "AXSystemDialog", "children": [
+            {"role": "AXStaticText", "name": '“WW-StudyApp” Not Opened'},
+            {"role": "AXButton", "name": "Done", "visible": True, "enabled": True},
+        ]}
+        self.assertEqual(module.select_approval(tree, "Done")["button_path"], [1])
+        tree["children"][0]["name"] = '“AnotherApp” Not Opened'
+        self.assertIsNone(module.select_approval(tree, "Done"))
     def test_approval_is_bound_to_own_warning_not_another_container(self):
         def warning(name, enabled=True):
             return {"role": "AXGroup", "children": [

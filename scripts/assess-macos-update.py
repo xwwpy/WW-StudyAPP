@@ -53,7 +53,7 @@ def select_approval(tree, label):
                 values = texts(parent)
                 if not values:
                     continue
-                related = parent.get("role") in ("AXGroup", "AXSheet", "AXDialog") or parent.get("subrole") == "AXDialog"
+                related = parent.get("role") in ("AXGroup", "AXSheet", "AXDialog") or parent.get("subrole") in ("AXDialog", "AXSystemDialog")
                 if related and own_warning(values):
                     candidates.append({"button_path": path, "container_path": parent_path, "container": parent,
                                        "label": label})
@@ -68,6 +68,8 @@ def select_approval(tree, label):
 def system_approval(output):
     """Use only visible per-app system controls on the disposable runner."""
     actions = []
+    script = Path(__file__).with_name("macos-approval-ui.js")
+    actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "permissions"], 10))
     def screenshot(stage):
         actions.append(capture(["/usr/sbin/screencapture", "-x", str(output.with_name(output.stem + "-" + stage + ".png"))], 10))
     def click(process, buttons):
@@ -97,6 +99,7 @@ def system_approval(output):
     click("CoreServicesUIAgent", ["Open"])
     click("System Settings", ["Open"])
     screenshot("allow-result")
+    actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", "universalAccessAuthWarn"], 10))
     return actions
 
 
