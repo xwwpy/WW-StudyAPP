@@ -278,7 +278,7 @@ pub mod windows;
 mod launch_receipt;
 #[cfg(any(target_os = "macos", test))]
 #[path = "update_install_quarantine.rs"]
-mod quarantine;
+pub(crate) mod quarantine;
 #[path = "update_install_status.rs"]
 mod status;
 

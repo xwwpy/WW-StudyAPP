@@ -189,12 +189,24 @@ fn quarantine_fingerprint(
     Ok(format!("{:x}", hash.finalize()))
 }
 
-pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
+fn prepare_approval_candidate(package: &VerifiedPackage, source: &Path) -> Result<Request> {
     let dir = package.directory.join("approval");
     let candidate = dir.join(APP);
+    if dir.exists() {
+        safe_dir(&dir, uid()?)?;
+        let previous = request(&dir)?;
+        if previous.quarantine != quarantine_fingerprint(package, source, &candidate)? {
+            // Keep every old attribute and receipt intact, but never reuse this attempt.
+            let archived = package
+                .directory
+                .join(format!("approval-superseded-{}", uuid::Uuid::new_v4()));
+            io(fs::rename(&dir, archived))?;
+        }
+    }
     if !dir.exists() {
         io(fs::DirBuilder::new().mode(0o700).create(&dir))?;
         output("/usr/bin/ditto", &[text(source)?, text(&candidate)?])?;
+        quarantine::preserve_tree(source, &candidate)?;
         quarantine::propagate(&package.directory.join("package"), &candidate)?;
         let req = Request {
             nonce: uuid::Uuid::new_v4().to_string(),
@@ -212,25 +224,29 @@ pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
         )?;
     }
     safe_dir(&dir, uid()?)?;
-    validate_bundle(&candidate, &package.version)?;
     if tree_digest(source)? != tree_digest(&candidate)? {
         return Err("Approval candidate differs from signed package".into());
     }
+    quarantine::preserve_tree(source, &candidate)?;
     let mut req = request(&dir)?;
-    let provenance = quarantine_fingerprint(package, source, &candidate)?;
     if req.version != package.version || req.sha256 != binary_hash(source)? {
         return Err("Approval request identity mismatch".into());
     }
-    if req.quarantine != provenance || now()?.checked_sub(req.created).is_none_or(|age| age > 3600)
-    {
-        quarantine::propagate(&package.directory.join("package"), &candidate)?;
-        req.quarantine = quarantine_fingerprint(package, source, &candidate)?;
+    if now()?.checked_sub(req.created).is_none_or(|age| age > 3600) {
         req.nonce = uuid::Uuid::new_v4().to_string();
         req.created = now()?;
         let temp = dir.join(format!("request-{}.tmp", uuid::Uuid::new_v4()));
         write_new(&temp, &serde_json::to_vec(&req).map_err(|e| e.to_string())?)?;
         io(fs::rename(temp, dir.join("request.json")))?;
     }
+    Ok(req)
+}
+
+pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
+    let req = prepare_approval_candidate(package, source)?;
+    let dir = package.directory.join("approval");
+    let candidate = dir.join(APP);
+    validate_bundle(&candidate, &package.version)?;
     if receipt(&dir, &req).is_ok()
         && quarantine_fingerprint(package, source, &candidate)? == req.quarantine
     {
@@ -271,10 +287,7 @@ pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
-    Err(format!(
-        "macOS 尚未允许打开新版本。请在系统设置 → 隐私与安全性中确认此应用并选择“仍要打开”，然后重试安装。当前应用保持打开。候选位置：{}",
-        candidate.display()
-    ))
+    Err("macOS 阻止了新版本启动，当前应用和未保存内容已保留。请确认下载来源后退出应用，手动安装新版，并按系统提示完成首次打开。".into())
 }
 
 pub(super) fn finish_approval(package: &VerifiedPackage) -> Result<()> {
@@ -452,6 +465,71 @@ pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candi
 mod tests {
     use super::*;
     #[test]
+    fn update_install_macos_refresh_rebuilds_and_retains_superseded_quarantine() {
+        let root = std::env::temp_dir().join(format!("studyapp-refresh-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(source.join("Contents/MacOS")).unwrap();
+        fs::write(source.join("Contents/MacOS/studyapp"), b"signed executable").unwrap();
+        fs::write(source.join("Contents/resource"), b"signed resource").unwrap();
+        fs::write(root.join("package"), b"signed package").unwrap();
+        let package = VerifiedPackage {
+            directory: root.clone(),
+            version: "0.1.4".into(),
+            digest: "unchanged".into(),
+        };
+        let first = prepare_approval_candidate(&package, &source).unwrap();
+        write_new(
+            &root.join("approval/receipt.json"),
+            &serde_json::to_vec(&LaunchReceipt {
+                nonce: first.nonce.clone(),
+                version: first.version.clone(),
+                sha256: first.sha256.clone(),
+                pid: 42,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let provenance = b"0083;1234;Source;existing";
+        quarantine::write(&source.join("Contents/resource"), provenance).unwrap();
+        let second = prepare_approval_candidate(&package, &source).unwrap();
+        assert_ne!(first.nonce, second.nonce);
+        assert!(receipt(&root.join("approval"), &second).is_err());
+        assert_eq!(
+            quarantine::read(&root.join("approval").join(APP).join("Contents/resource"))
+                .unwrap()
+                .as_deref(),
+            Some(provenance.as_slice())
+        );
+        let changed = b"0081;1234;ChangedCandidate;existing";
+        quarantine::write(&root.join("approval").join(APP), changed).unwrap();
+        let third = prepare_approval_candidate(&package, &source).unwrap();
+        assert_ne!(second.nonce, third.nonce);
+        assert_eq!(
+            quarantine::read(&root.join("approval").join(APP)).unwrap(),
+            None
+        );
+        let archives: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("approval-superseded-")
+            })
+            .collect();
+        assert_eq!(archives.len(), 2);
+        assert!(archives.iter().any(
+            |e| quarantine::read(&e.path().join(APP)).unwrap().as_deref()
+                == Some(changed.as_slice())
+        ));
+        assert!(
+            archives
+                .iter()
+                .any(|e| e.path().join("receipt.json").exists())
+        );
+    }
+    #[test]
     fn update_install_macos_approval_cache_detects_quarantine_without_byte_changes() {
         let root =
             std::env::temp_dir().join(format!("studyapp-provenance-{}", uuid::Uuid::new_v4()));
@@ -484,6 +562,23 @@ mod tests {
         assert_eq!(
             tree_digest(&source).unwrap(),
             tree_digest(&candidate).unwrap()
+        );
+        quarantine::preserve_tree(&source, &candidate).unwrap();
+        assert_eq!(
+            quarantine::read(&source.join("resource")).unwrap(),
+            quarantine::read(&candidate.join("resource")).unwrap()
+        );
+        quarantine::write(
+            &source.join("resource"),
+            b"0083;1234;ChangedSource;existing",
+        )
+        .unwrap();
+        assert!(quarantine::preserve_tree(&source, &candidate).is_err());
+        assert_eq!(
+            quarantine::read(&candidate.join("resource"))
+                .unwrap()
+                .as_deref(),
+            Some(b"0083;1234;Source;existing".as_slice())
         );
     }
     #[test]

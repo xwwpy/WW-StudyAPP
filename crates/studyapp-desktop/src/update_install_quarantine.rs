@@ -25,7 +25,7 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
+pub(crate) fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
     let mut bytes = vec![0u8; 65536];
     // XATTR_NOFOLLOW: do not follow a substituted staging symlink.
@@ -47,7 +47,7 @@ pub(super) fn read(path: &Path) -> Result<Option<Vec<u8>>, String> {
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let native = CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
     if unsafe {
         setxattr(
@@ -89,6 +89,23 @@ fn absent_or_error(error: io::Error) -> Result<Option<Vec<u8>>, String> {
     } else {
         Err(format!("Cannot read update quarantine: {error}"))
     }
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn preserve_tree(source: &Path, target: &Path) -> Result<(), String> {
+    let source_meta = std::fs::symlink_metadata(source).map_err(|e| e.to_string())?;
+    let target_meta = std::fs::symlink_metadata(target).map_err(|e| e.to_string())?;
+    if source_meta.file_type() != target_meta.file_type() {
+        return Err("Quarantine propagation target type changed".into());
+    }
+    propagate(source, target)?;
+    if source_meta.is_dir() {
+        for entry in std::fs::read_dir(source).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            preserve_tree(&entry.path(), &target.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
