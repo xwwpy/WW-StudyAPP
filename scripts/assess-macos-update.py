@@ -126,6 +126,7 @@ def system_approval(output):
                 process, selection = candidate
                 try:
                     with runner_credential() as (credential, username):
+                        actions.append({"command": ["runner-credential-preflight"], "exit_code": 0, "stdout": "authonly and administrator membership verified", "stderr": ""})
                         selection["test_username"] = username
                         submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
                                              json.dumps(selection, separators=(",", ":")), str(credential)], 20)

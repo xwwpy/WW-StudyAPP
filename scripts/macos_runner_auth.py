@@ -48,21 +48,68 @@ def unique_authentication(snapshots):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def password_command(command, password):
+    import pty
+    import select
+    import signal
+    import termios
+    child, terminal = pty.fork()
+    if child == 0:
+        os.execve(command[0], command,
+                  {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(Path.home()), "USER": "runner"})
+    deadline = time.monotonic() + 15
+    pending = b""
+    supplied = 0
+    stages = []
+    directory_errors = set()
+    completed = False
+    try:
+        while time.monotonic() < deadline:
+            pid, status = os.waitpid(child, os.WNOHANG)
+            if pid:
+                completed = True
+                if os.waitstatus_to_exitcode(status) != 0 or supplied == 0:
+                    raise RuntimeError(f"Cannot prepare disposable runner authentication (exit={os.waitstatus_to_exitcode(status)}, prompts={stages}, codes={sorted(directory_errors)})")
+                break
+            if select.select([terminal], [], [], 0.1)[0]:
+                try:
+                    pending += os.read(terminal, 4096)
+                    directory_errors.update(code.decode("ascii") for code in re.findall(rb"\beDS[A-Za-z]+\b", pending))
+                except OSError:
+                    continue
+                if b"password:" in pending.lower():
+                    prompt = pending.lower()
+                    stage = "old" if b"old password" in prompt else "repeat" if b"retype" in prompt or b"verify" in prompt else "new" if b"new password" in prompt else "unspecified"
+                    stages.append(stage)
+                    if stage == "old":
+                        raise RuntimeError("Runner password reset requires its existing password; no credential guessed")
+                    supplied += 1
+                    if supplied > 2:
+                        raise RuntimeError("Unexpected runner password prompts")
+                    attributes = termios.tcgetattr(terminal)
+                    attributes[3] &= ~termios.ECHO
+                    termios.tcsetattr(terminal, termios.TCSANOW, attributes)
+                    os.write(terminal, password.encode() + b"\n")
+                    pending = b""
+        if not completed:
+            raise RuntimeError("Runner authentication preparation timed out")
+    finally:
+        os.close(terminal)
+        if not completed:
+            os.kill(child, signal.SIGTERM)
+            os.waitpid(child, 0)
+
+
 @contextlib.contextmanager
 def runner_credential():
     if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true" or getpass.getuser() != "runner":
         raise RuntimeError("Test authentication requires the disposable GitHub macOS runner")
     if "admin" not in subprocess.check_output(["/usr/bin/id", "-Gn"], text=True).split():
         raise RuntimeError("Runner is not an administrator")
-    import pty
-    import select
-    import signal
-    import termios
     password = secrets.token_urlsafe(36)
     username = "studyapp_" + uuid.uuid4().hex[:12]
     path = Path(os.environ["RUNNER_TEMP"]) / ("approval-credential-" + str(uuid.uuid4()))
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    child = None
     try:
         with os.fdopen(fd, "w") as output:
             output.write(password)
@@ -78,51 +125,10 @@ def runner_credential():
         for command in commands:
             if subprocess.run(["/usr/bin/sudo", "-n", *command], capture_output=True, timeout=15).returncode != 0:
                 raise RuntimeError("Cannot create disposable authentication account")
-        child, terminal = pty.fork()
-        if child == 0:
-            os.execve("/usr/bin/sudo", ["sudo", "-n", "/usr/bin/dscl", ".", "-passwd", record],
-                      {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(Path.home()), "USER": "runner"})
-        deadline = time.monotonic() + 15
-        pending = b""
-        supplied = 0
-        stages = []
-        directory_errors = set()
-        completed = False
-        try:
-            while time.monotonic() < deadline:
-                pid, status = os.waitpid(child, os.WNOHANG)
-                if pid:
-                    completed = True
-                    if os.waitstatus_to_exitcode(status) != 0 or supplied == 0:
-                        raise RuntimeError(f"Cannot prepare disposable runner authentication (exit={os.waitstatus_to_exitcode(status)}, prompts={stages}, codes={sorted(directory_errors)})")
-                    break
-                if select.select([terminal], [], [], 0.1)[0]:
-                    try:
-                        pending += os.read(terminal, 4096)
-                        directory_errors.update(code.decode("ascii") for code in re.findall(rb"\beDS[A-Za-z]+\b", pending))
-                    except OSError:
-                        continue
-                    if b"password:" in pending.lower():
-                        prompt = pending.lower()
-                        stage = "old" if b"old password" in prompt else "repeat" if b"retype" in prompt or b"verify" in prompt else "new" if b"new password" in prompt else "unspecified"
-                        stages.append(stage)
-                        if stage == "old":
-                            raise RuntimeError("Runner password reset requires its existing password; no credential guessed")
-                        supplied += 1
-                        if supplied > 2:
-                            raise RuntimeError("Unexpected runner password prompts")
-                        attributes = termios.tcgetattr(terminal)
-                        attributes[3] &= ~termios.ECHO
-                        termios.tcsetattr(terminal, termios.TCSANOW, attributes)
-                        os.write(terminal, password.encode() + b"\n")
-                        pending = b""
-            if not completed:
-                raise RuntimeError("Runner authentication preparation timed out")
-        finally:
-            os.close(terminal)
-            if not completed:
-                os.kill(child, signal.SIGTERM)
-                os.waitpid(child, 0)
+        password_command(["/usr/bin/sudo", "-n", "/usr/bin/dscl", ".", "-passwd", record], password)
+        password_command(["/usr/bin/dscl", ".", "-authonly", username], password)
+        if "admin" not in subprocess.check_output(["/usr/bin/id", "-Gn", username], text=True).split():
+            raise RuntimeError("Disposable account is not an administrator")
         yield path, username
     finally:
         path.unlink(missing_ok=True)
