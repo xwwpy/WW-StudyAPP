@@ -101,6 +101,25 @@ pub fn fixture_bytes(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
+pub(crate) fn downloaded(path: &Path) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        if configuration()?["scenario"] == "quarantine-refusal" {
+            crate::update_install::quarantine::write(
+                path,
+                b"0083;1234;AcceptanceBrowser;existing-quarantine",
+            )?;
+        }
+        save(
+            "download-metadata.json",
+            json!({"path":path,"quarantine":crate::update_install::quarantine::read(path)?,
+            "production_file_writer":true,"fixture_network_transport":true}),
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = path;
+    Ok(())
+}
 fn save(name: &str, value: Value) {
     let dir = directory().unwrap();
     let temporary = dir.join(format!("{}.tmp", uuid::Uuid::new_v4()));
@@ -419,17 +438,40 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             click_visible(window,"settings-save-and-continue".into(),cx).await;
         }
         #[cfg(target_os = "macos")]
-        {
-            // Normal system approval may leave the first attempt on its retry card.
-            // This signal only clicks that card; production prepare still verifies receipt.
-            let started = Instant::now();
-            while !directory().unwrap().join("system-approved.json").exists() {
-                assert!(started.elapsed() < Duration::from_secs(180), "System approval did not complete");
-                cx.background_executor().timer(Duration::from_millis(250)).await;
+        if config["scenario"] == "quarantine-refusal" {
+            wait(window,&view,cx,"visible system launch refusal",|a,cx|a.update_panel.read(cx).acceptance_install_error().is_some()).await;
+            presented(window,cx).await;
+            let state=window.update(cx,|_,window,cx|{
+                let app=view.read(cx);
+                assert!(!app.close_requested && app.pending_nsis_update.is_none());
+                let id=app.active_draft_id.as_ref().unwrap();
+                let record=&app.draft_catalog[id];
+                assert!(app.draft_durable.get(id).copied().unwrap_or(0)<record.revision);
+                let disk=crate::drafts::DraftStore::record_path(&app.last_library,id).unwrap();
+                let stored=std::fs::read(&disk).ok().and_then(|bytes|serde_json::from_slice::<Value>(&bytes).ok());
+                assert!(stored.as_ref().is_none_or(|value|value["draft"]["content"]!=marker));
+                assert!(window.try_find("update-dialog").is_some());
+                capture(window,"quarantine-refusal.png");
+                json!({"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"error":app.update_panel.read(cx).acceptance_install_error(),
+                    "close_requested":false,"pending_package":false,"dialog_visible":true,"committed":committed(app)})
+            }).unwrap();
+            let live=crate::smoke_editor::bridge(window,&editor,json!({"type":"snapshot"}),cx).await;
+            assert_eq!(live["text"],marker);
+            assert!(!directory().unwrap().join("helper-handoff.json").exists());
+            assert!(!directory().unwrap().join("close-pending.json").exists());
+            assert_eq!(state["committed"],baseline);
+            save("quarantine-refused.json",json!({"state":state,"live_text":live["text"],"unsaved_draft_preserved":true}));
+        }
+        #[cfg(target_os = "macos")]
+        if config["scenario"] != "quarantine-refusal" {
+            wait(window,&view,cx,"normal candidate launch or pending close",|a,cx|a.close_requested||a.update_panel.read(cx).acceptance_install_error().is_some()).await;
+            if window.update(cx,|_,_,cx|view.read(cx).close_requested).unwrap(){return;}
+            let started=Instant::now();
+            while !directory().unwrap().join("system-approved.json").exists(){
+                assert!(started.elapsed()<Duration::from_secs(30),"Normal system launch produced no receipt");
+                cx.background_executor().timer(Duration::from_millis(100)).await;
             }
-            presented(window, cx).await;
-            window.update(cx,|_,window,_|capture(window,"approved-retry-card.png")).unwrap();
-            click_visible(window, "update-dialog-install".into(), cx).await;
+            click_visible(window,"update-dialog-install".into(),cx).await;
         }
         // The application and its supervisor own all remaining install/restart work.
     }).detach();

@@ -20,6 +20,27 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[test]
+    fn update_download_writer_bounds_fixture_and_network_streams_identically() {
+        let path = std::env::temp_dir().join(format!("studyapp-download-{}", uuid::Uuid::new_v4()));
+        let mut progress = Vec::new();
+        write_setup_stream(
+            Cursor::new(b"signed bytes"),
+            &path,
+            12,
+            12,
+            |done, total| progress.push((done, total)),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"signed bytes");
+        assert_eq!(progress.last(), Some(&(12, 12)));
+        assert!(
+            write_setup_stream(Cursor::new(b"too many bytes"), &path, 3, 0, |_, _| {}).is_err()
+        );
+        assert!(fs::metadata(&path).unwrap().len() <= 3);
+        fs::remove_file(path).unwrap();
+    }
+
     fn release(version: &str) -> Value {
         let name = format!("WW-StudyApp-{version}-windows-x86_64.zip");
         let url =
@@ -831,20 +852,32 @@ pub(crate) fn download_setup_to(
     url: &str,
     path: &Path,
     limit: u64,
-    mut progress: impl FnMut(u64, u64),
+    progress: impl FnMut(u64, u64),
 ) -> UpdateResult<()> {
     #[cfg(feature = "update-acceptance")]
     if crate::update_acceptance::active() {
         let bytes = crate::update_acceptance::fixture_bytes(url, limit)
             .map_err(|_| failure(UpdateErrorKind::Network))?;
-        std::fs::write(path, &bytes).map_err(|_| failure(UpdateErrorKind::Preparation))?;
-        progress(bytes.len() as u64, bytes.len() as u64);
+        let total = bytes.len() as u64;
+        write_setup_stream(std::io::Cursor::new(bytes), path, limit, total, progress)?;
+        crate::update_acceptance::downloaded(path)
+            .map_err(|_| failure(UpdateErrorKind::Preparation))?;
         return Ok(());
     }
     let transport = RepairTransport::Live;
     let client = client(Duration::from_secs(600), &transport)?;
-    let mut response = download_response(&client, url, &transport)?;
+    let response = download_response(&client, url, &transport)?;
     let total = response.content_length().unwrap_or(0);
+    write_setup_stream(response, path, limit, total, progress)
+}
+
+fn write_setup_stream(
+    mut response: impl Read,
+    path: &Path,
+    limit: u64,
+    total: u64,
+    mut progress: impl FnMut(u64, u64),
+) -> UpdateResult<()> {
     let mut file = File::create(path).map_err(|_| failure(UpdateErrorKind::Preparation))?;
     let mut buffer = [0u8; 65_536];
     let mut written = 0u64;

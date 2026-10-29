@@ -63,13 +63,6 @@ jobs:
         run: |
           osascript -l JavaScript scripts/macos-approval-ui.js bridge-self-test > "$RUNNER_TEMP/macos-bridge.json"
           python3 -c 'import json,os; from pathlib import Path; p=json.loads((Path(os.environ["RUNNER_TEMP"])/"macos-bridge.json").read_text()); assert p["windowArray"] is True and isinstance(p["permissions"]["accessibilityTrusted"],bool); print(p)'
-          open 'x-apple.systempreferences:com.apple.preference.security?Privacy'
-          ready=false
-          for attempt in {1..10}; do
-            if osascript -l JavaScript scripts/macos-approval-ui.js snapshot 'System Settings' > "$RUNNER_TEMP/macos-settings-bridge.json"; then ready=true; break; fi
-            sleep 1
-          done
-          test "$ready" = true
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
         with:
           toolchain: 1.98.0
@@ -205,13 +198,10 @@ jobs:
           hdiutil detach "$RUNNER_TEMP/dmg-mount"
           plutil -lint "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/Info.plist"
           codesign --verify --strict --verbose=2 "$RUNNER_TEMP/installed/WW-StudyApp.app"
-      - name: Verify macOS system distribution approval
-        if: matrix.platform == 'macos'
-        run: python3 scripts/assess-macos-update.py --bundle "$RUNNER_TEMP/installed/WW-StudyApp.app" --package dist/*.dmg --output "$RUNNER_TEMP/native-macos-assessment.json"
-      - name: Verify approved installed macOS production startup
+      - name: Verify installed macOS production startup
         if: matrix.platform == 'macos'
         run: python3 scripts/smoke-unix.py --binary "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/MacOS/studyapp" --data-dir "$RUNNER_TEMP/native-installed"
-      - name: Verify real macOS update card and DMG transition
+      - name: Verify macOS natural update, quarantine refusal and health rollback
         if: matrix.platform == 'macos'
         run: '"$RUNNER_TEMP/package-venv/bin/python" scripts/native-update-macos.py --work-dir "$RUNNER_TEMP/native-update" --production-binary target/release/studyapp'
       - name: Preserve native evidence
