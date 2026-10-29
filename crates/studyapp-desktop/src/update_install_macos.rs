@@ -474,13 +474,34 @@ impl Drop for Mount {
     }
 }
 fn with_image(dir: &Path, action: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    with_image_mode(dir, false, action)
+}
+fn with_image_mode(
+    dir: &Path,
+    installed_on_success: bool,
+    action: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     let (mount, point) = mount(dir)?;
     let result = action(&point);
     let cleanup = mount.finish(dir);
+    if installed_on_success {
+        return finish_install_cleanup(dir, result, cleanup);
+    }
     match (result, cleanup) {
         (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
         (Err(error), _) => Err(error),
         (Ok(()), cleanup) => cleanup,
+    }
+}
+fn finish_install_cleanup(dir: &Path, installation: Result<()>, cleanup: Result<()>) -> Result<()> {
+    match (installation, cleanup) {
+        (Ok(()), Err(warning)) => {
+            record(dir, "cleanup_warning", &warning)?;
+            Ok(())
+        }
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+        (Err(error), _) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
 }
 fn mount(dir: &Path) -> Result<(Mount, PathBuf)> {
@@ -556,7 +577,7 @@ fn install(dir: &Path, tx: &MacTransaction) -> Result<()> {
     if start_identity(tx.transaction.old_pid).ok() == Some(tx.transaction.old_start) {
         return Err("Original application is still running".into());
     }
-    with_image(dir, |point| {
+    with_image_mode(dir, true, |point| {
         let apps: Vec<_> = io(fs::read_dir(&point))?
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".app"))
@@ -890,6 +911,23 @@ mod tests {
         fs::rename(&fixed, root.join("moved-root-owned")).unwrap();
         fs::create_dir(&fixed).unwrap();
         assert!(fs::metadata(&fixed).unwrap().uid() != 0);
+    }
+    #[test]
+    fn update_install_macos_successful_replacement_continues_despite_detach_warning() {
+        let root = dir();
+        assert!(
+            finish_install_cleanup(&root, Ok(()), Err("/dev/disk987 device busy".into())).is_ok()
+        );
+        let record = fs::read_dir(root).unwrap().next().unwrap().unwrap().path();
+        assert!(
+            fs::read_to_string(record)
+                .unwrap()
+                .contains("cleanup_warning")
+        );
+        assert!(
+            finish_install_cleanup(&dir(), Err("rename failed".into()), Err("busy".into()))
+                .is_err()
+        );
     }
     #[test]
     fn update_install_macos_detach_failure_records_device_and_recovery() {

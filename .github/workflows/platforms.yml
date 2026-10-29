@@ -10,6 +10,10 @@ on:
   push:
     branches: [main, 'codex/**']
 
+concurrency:
+  group: native-${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ inputs.ref == '' && !startsWith(github.ref, 'refs/tags/') }}
+
 permissions:
   contents: read
 
@@ -161,10 +165,12 @@ jobs:
           hdiutil detach "$RUNNER_TEMP/dmg-mount"
           plutil -lint "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/Info.plist"
           codesign --verify --strict --verbose=2 "$RUNNER_TEMP/installed/WW-StudyApp.app"
-          python3 scripts/smoke-unix.py --binary "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/MacOS/studyapp" --data-dir "$RUNNER_TEMP/native-installed"
       - name: Verify macOS system distribution approval
         if: matrix.platform == 'macos'
         run: python3 scripts/assess-macos-update.py --bundle "$RUNNER_TEMP/installed/WW-StudyApp.app" --package dist/*.dmg --output "$RUNNER_TEMP/native-macos-assessment.json"
+      - name: Verify approved installed macOS production startup
+        if: matrix.platform == 'macos'
+        run: python3 scripts/smoke-unix.py --binary "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/MacOS/studyapp" --data-dir "$RUNNER_TEMP/native-installed"
       - name: Preserve native evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
