@@ -1,5 +1,10 @@
 const assert = require("node:assert/strict");
-const { clipElement, optionalBoolean } = require("./macos-approval-ui.js");
+const { clipElement, optionalBoolean, doublePair } = require("./macos-approval-ui.js");
+const geometry = Buffer.alloc(16);
+geometry.writeDoubleLE(-12.5, 0);
+geometry.writeDoubleLE(768, 8);
+assert.deepEqual(doublePair(geometry.toString("base64")), [-12.5, 768]);
+assert.throws(() => doublePair("AAAA"));
 assert.equal(optionalBoolean(() => { throw new Error("Native symbol unavailable"); }), null);
 assert.equal(optionalBoolean(() => false), false);
 assert.equal(optionalBoolean(() => true), true);

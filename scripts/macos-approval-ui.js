@@ -10,7 +10,25 @@ function clipElement(position, size, viewport, button) {
 function optionalBoolean(getter) {
     try { return Boolean(getter()); } catch (_) { return null; }
 }
-if (typeof module !== "undefined") module.exports = {clipElement, optionalBoolean};
+function doublePair(encoded) {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const bytes = [];
+    let bits = 0, value = 0;
+    for (const char of encoded) {
+        if (char === "=") break;
+        const digit = alphabet.indexOf(char);
+        if (digit < 0) throw new Error("Invalid AX geometry bytes");
+        value = (value << 6) | digit;
+        bits += 6;
+        if (bits >= 8) { bits -= 8; bytes.push((value >> bits) & 255); }
+    }
+    if (bytes.length !== 16) throw new Error("Unexpected AX geometry size");
+    const view = new DataView(new Uint8Array(bytes).buffer);
+    const pair = [view.getFloat64(0, true), view.getFloat64(8, true)];
+    if (!pair.every(Number.isFinite)) throw new Error("Invalid AX geometry numbers");
+    return pair;
+}
+if (typeof module !== "undefined") module.exports = {clipElement, optionalBoolean, doublePair};
 function run(argv) {
     ObjC.import("CoreGraphics");
     ObjC.import("ApplicationServices");
@@ -62,9 +80,11 @@ function run(argv) {
     function geometry(element, name, type) {
         const value = attribute(element, name);
         if (value === null) return null;
-        const result = Ref(type === 1 ? $.CGPointMake(0, 0) : $.CGSizeMake(0, 0));
-        if (!$.AXValueGetValue(value, type, result)) return null;
-        return type === 1 ? [result[0].x, result[0].y] : [result[0].width, result[0].height];
+        // Both supported macOS architectures represent CGPoint/CGSize as two
+        // little-endian CGFloat doubles. A void* output has no JXA Ref type metadata.
+        const storage = $.NSMutableData.dataWithLength(16);
+        if (!$.AXValueGetValue(value, type, storage.mutableBytes)) return null;
+        return doublePair(ObjC.unwrap(storage.base64EncodedStringWithOptions(0)));
     }
     function windowOnScreen(position, size) {
         if (!position || !size) return false;
