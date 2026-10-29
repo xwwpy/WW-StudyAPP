@@ -215,6 +215,7 @@ jobs:
             ${{ runner.temp }}/native-macos-assessment.json
             ${{ runner.temp }}/native-macos-assessment*.png
             ${{ runner.temp }}/native-update/transition-result.json
+            ${{ runner.temp }}/native-update/installation-context.json
             ${{ runner.temp }}/native-update/application.log
             ${{ runner.temp }}/native-update/approval-actions.json
             ${{ runner.temp }}/native-update/native-macos-*.png
@@ -226,7 +227,16 @@ jobs:
             ${{ runner.temp }}/native-update/authorization-denied/fixture/*.json
             ${{ runner.temp }}/native-update/authorization-denied/fixture/*.png
             ${{ runner.temp }}/native-update/authorization-denied/transaction-evidence/**
+            ${{ runner.temp }}/native-update/quarantine-refusal/transition-result.json
+            ${{ runner.temp }}/native-update/quarantine-refusal/installation-context.json
+            ${{ runner.temp }}/native-update/quarantine-refusal/application.log
+            ${{ runner.temp }}/native-update/quarantine-refusal/approval-actions.json
+            ${{ runner.temp }}/native-update/quarantine-refusal/system-refusal.png
+            ${{ runner.temp }}/native-update/quarantine-refusal/fixture/*.json
+            ${{ runner.temp }}/native-update/quarantine-refusal/fixture/*.png
+            ${{ runner.temp }}/native-update/quarantine-refusal/transaction-evidence/**
             ${{ runner.temp }}/native-update/health-failure/transition-result.json
+            ${{ runner.temp }}/native-update/health-failure/installation-context.json
             ${{ runner.temp }}/native-update/health-failure/unhealthy-process-alive.json
             ${{ runner.temp }}/native-update/health-failure/application.log
             ${{ runner.temp }}/native-update/health-failure/approval-actions.json
