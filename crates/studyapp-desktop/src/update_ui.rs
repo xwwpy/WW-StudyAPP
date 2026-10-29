@@ -759,6 +759,7 @@ impl crate::app::StudyApp {
             && let Err(error) = launch_prepared_update(&prepared)
         {
             self.close_requested = false;
+            self.clear_pending_updates();
             self.update_panel
                 .update(cx, |panel, cx| panel.install_failed(error.to_string(), cx));
             self.push_notice(Err(error.to_string()), cx);
@@ -768,6 +769,7 @@ impl crate::app::StudyApp {
             && let Err(error) = crate::update_install::launch(&setup)
         {
             self.close_requested = false;
+            self.clear_pending_updates();
             self.update_panel
                 .update(cx, |panel, cx| panel.install_failed(error.to_string(), cx));
             self.push_notice(Err(error.to_string()), cx);

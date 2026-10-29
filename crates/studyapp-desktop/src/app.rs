@@ -124,6 +124,7 @@ pub struct StudyApp {
     pub smoke_pointer_bubble: Option<AnyView>,
     pub update_panel: Entity<crate::update_ui::UpdatePanel>,
     pub pending_update: Option<crate::update_backend::PreparedUpdate>,
+    pub update_health: crate::update_install::StartupHealth,
     pub pending_nsis_update: Option<crate::update_install::PreparedPackage>,
     pub image_cloud_busy: bool,
     pub applied_appearance: Option<crate::theme::ResolvedTheme>,
@@ -136,6 +137,12 @@ pub struct StudyApp {
 }
 
 impl StudyApp {
+    pub fn clear_pending_updates(&mut self) {
+        crate::update_install::clear_pending(
+            &mut self.pending_update,
+            &mut self.pending_nsis_update,
+        );
+    }
     pub fn new(worker: Worker, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (picker_sender, picker_results) = std::sync::mpsc::channel();
         let input =
@@ -405,6 +412,7 @@ impl StudyApp {
             update_panel,
             pending_update: None,
             pending_nsis_update: None,
+            update_health: Default::default(),
             image_cloud_busy: false,
             drafts: DraftStore::new(),
             note_title,
@@ -473,10 +481,11 @@ impl StudyApp {
     }
 
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if crate::update_install::startup_ready(
+        if self.update_health.ready(
             self.startup_busy,
             self.draft_loading,
             self.snapshot.is_some(),
+            self.draft_failed || !self.draft_errors.is_empty(),
         ) {
             crate::update_install::acknowledge_health();
         }
@@ -686,12 +695,13 @@ impl StudyApp {
                 editor.set_overlay_regions("folder-menu", vec![], cx);
             });
             self.draft_loading = true;
+            self.update_health.reset_catalog();
             self.draft_failed = false;
             self.last_library = snapshot.data_path.clone();
             self.update_panel.update(cx, |panel, cx| {
                 panel.set_library(snapshot.data_path.clone(), cx)
             });
-            self.pending_update = None;
+            self.clear_pending_updates();
             self.drafts.load(&self.last_library);
             self.selected_note = None;
             self.selected_version = None;

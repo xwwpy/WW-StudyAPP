@@ -511,7 +511,7 @@ pub fn acknowledge_health() -> Result<()> {
     if tx.target_version != env!("CARGO_PKG_VERSION") {
         return Err("Health version mismatch".into());
     }
-    write_new(&dir.join("health.json"), &serde_json::to_vec(&serde_json::json!({"id":tx.id,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()})).map_err(|e|e.to_string())?)
+    write_atomic(&dir, "health.json", &serde_json::to_vec(&serde_json::json!({"id":tx.id,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()})).map_err(|e|e.to_string())?)
 }
 pub fn previous_failure() -> Result<Option<String>> {
     let pointer = pointer_path()?;
@@ -543,4 +543,39 @@ pub fn previous_failure() -> Result<Option<String>> {
         }
     }
     Ok(None)
+}
+
+fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<()> {
+    publish_receipt(dir, name, |temp| write_new(temp, bytes))
+}
+fn publish_receipt(dir: &Path, name: &str, write: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    let temp = dir.join(format!("receipt-{}.tmp", uuid::Uuid::new_v4()));
+    write(&temp)?;
+    io(fs::rename(temp, dir.join(name)))
+}
+#[cfg(test)]
+mod atomic_tests {
+    use super::*;
+    #[test]
+    fn update_install_health_not_visible_until_complete_publication() {
+        let dir = std::env::temp_dir().join(format!("studyapp-health-{}", uuid::Uuid::new_v4()));
+        fs::DirBuilder::new().mode(0o700).create(&dir).unwrap();
+        publish_receipt(&dir, "health.json", |temp| {
+            let mut writer = io(OpenOptions::new().create_new(true).write(true).open(temp))?;
+            io(writer.write_all(b"{\"id\":"))?;
+            // Observe the final path while the production publication primitive is paused mid-write.
+            assert!(!dir.join("health.json").exists());
+            io(writer.write_all(b"\"complete\"}"))?;
+            io(writer.sync_all())
+        })
+        .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("health.json")).unwrap()).unwrap();
+        assert_eq!(value["id"], "complete");
+        write_atomic(&dir, "second.json", br#"{"ready":true}"#).unwrap();
+        assert_eq!(
+            fs::read(dir.join("second.json")).unwrap(),
+            br#"{"ready":true}"#
+        );
+    }
 }

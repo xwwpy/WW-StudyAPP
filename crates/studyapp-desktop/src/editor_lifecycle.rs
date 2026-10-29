@@ -102,7 +102,7 @@ impl StudyApp {
             Err(error) => {
                 self.note_saving = false;
                 self.close_requested = false;
-                self.pending_update = None;
+                self.clear_pending_updates();
                 self.push_notice(Err(error.to_string()), cx);
             }
         }
@@ -165,7 +165,7 @@ impl StudyApp {
                 self.note_intent = None;
                 self.note_saving = self.pending_note_save.is_some();
                 self.close_requested = false;
-                self.pending_update = None;
+                self.clear_pending_updates();
                 self.cancel_draft_retention();
                 self.push_notice(Err(error), cx);
                 cx.notify();
@@ -253,7 +253,7 @@ impl StudyApp {
             && self.guard_settings(crate::settings_ui::SettingsContinuation::Close, cx)
         {
             self.close_requested = false;
-            self.pending_update = None;
+            self.clear_pending_updates();
             self.note_content
                 .update(cx, |editor, cx| editor.set_readonly(false, cx));
             return;
@@ -334,7 +334,7 @@ impl StudyApp {
                 }
                 if self.guard_settings(crate::settings_ui::SettingsContinuation::Close, cx) {
                     self.close_requested = false;
-                    self.pending_update = None;
+                    self.clear_pending_updates();
                 } else {
                     self.complete_close(window, cx);
                 }
@@ -453,6 +453,7 @@ impl StudyApp {
         } else {
             if self.guard_settings(crate::settings_ui::SettingsContinuation::Close, cx) {
                 self.close_requested = false;
+                self.clear_pending_updates();
                 return;
             }
             self.begin_draft_drain(NoteIntent::Close, cx);

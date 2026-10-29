@@ -268,3 +268,47 @@ mod health_tests {
         assert!(!health_matches(&health, "attempt", "0.9.0", 43));
     }
 }
+
+#[derive(Default)]
+pub struct StartupHealth {
+    catalog_restored: bool,
+}
+impl StartupHealth {
+    pub fn catalog_result(&mut self, errors: &[String]) {
+        self.catalog_restored = errors.is_empty();
+    }
+    pub fn reset_catalog(&mut self) {
+        self.catalog_restored = false;
+    }
+    pub fn ready(&self, busy: bool, loading: bool, snapshot: bool, draft_failed: bool) -> bool {
+        self.catalog_restored && !draft_failed && startup_ready(busy, loading, snapshot)
+    }
+}
+pub fn clear_pending<A, B>(legacy: &mut Option<A>, package: &mut Option<B>) {
+    *legacy = None;
+    *package = None;
+}
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    #[test]
+    fn failed_catalog_event_never_acknowledges_even_after_loading_clears() {
+        let mut state = StartupHealth::default();
+        state.catalog_result(&["draft record unreadable".into()]);
+        assert!(!state.ready(false, false, true, false));
+        state.catalog_result(&[]);
+        assert!(state.ready(false, false, true, false));
+        state.reset_catalog();
+        assert!(!state.ready(false, false, true, false));
+    }
+    #[test]
+    fn failed_close_disarms_package_before_subsequent_ordinary_close() {
+        let mut old = Some("legacy");
+        let mut package = Some("approved package");
+        clear_pending(&mut old, &mut package);
+        assert!(old.take().is_none());
+        assert!(package.take().is_none());
+        package = Some("fresh explicit retry");
+        assert_eq!(package.take(), Some("fresh explicit retry"));
+    }
+}

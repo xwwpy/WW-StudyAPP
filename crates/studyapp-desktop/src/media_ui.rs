@@ -535,7 +535,7 @@ impl StudyApp {
                 Err(error) => {
                     self.note_saving = false;
                     self.close_requested = false;
-                    self.pending_update = None;
+                    self.clear_pending_updates();
                     self.note_content
                         .update(cx, |editor, cx| editor.set_readonly(false, cx));
                     self.push_notice(Err(error.to_string()), cx);
@@ -568,7 +568,7 @@ impl StudyApp {
         } else {
             self.note_saving = false;
             self.close_requested = false;
-            self.pending_update = None;
+            self.clear_pending_updates();
             self.note_content
                 .update(cx, |editor, cx| editor.set_readonly(false, cx));
         }
@@ -760,7 +760,7 @@ impl StudyApp {
                 Err(error) => {
                     self.note_saving = false;
                     self.close_requested = false;
-                    self.pending_update = None;
+                    self.clear_pending_updates();
                     self.note_content
                         .update(cx, |editor, cx| editor.set_readonly(false, cx));
                     self.push_notice(

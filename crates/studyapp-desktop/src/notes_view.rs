@@ -1261,7 +1261,7 @@ impl StudyApp {
             .when(self.draft_failed, |c| c.child(card().child(heading("草稿文件暂时无法读取或保存"))
                 .child(muted("当前草稿尚未可靠保存；当前正文仍保留。其他草稿不会被覆盖，修复目录权限后可重试。"))
                 .child(Button::new("retry-note-draft").label("重试草稿读取").on_click(cx.listener(|this, _, _, cx| {
-                    if this.note_editor.is_none() { this.draft_failed = false; this.draft_loading = true; this.drafts.load(&this.last_library); }
+                    if this.note_editor.is_none() { this.draft_failed = false; this.draft_loading = true; this.update_health.reset_catalog(); this.drafts.load(&this.last_library); }
                     cx.notify();
                 })))))
             .child(row().items_stretch().gap_0().flex_1().min_h_0().min_w_0().w_full().overflow_hidden()

@@ -85,6 +85,7 @@ impl StudyApp {
                     records,
                     errors,
                 } if library == self.last_library => {
+                    self.update_health.catalog_result(&errors);
                     self.draft_loading = false;
                     for mut record in records {
                         // A persisted save attempt is also a restart receipt: a source write
@@ -187,7 +188,7 @@ impl StudyApp {
                     if let Some(id) = id.as_ref() {
                         self.draft_errors.insert(id.clone(), message.clone());
                     }
-                    self.pending_update = None;
+                    self.clear_pending_updates();
                     if self.draft_persist.as_ref().is_some_and(|p| {
                         p.library == library
                             && Some(&p.id) == id.as_ref()
@@ -211,7 +212,7 @@ impl StudyApp {
                         self.note_saving = false;
                         self.draft_failed = true;
                         self.close_requested = false;
-                        self.pending_update = None;
+                        self.clear_pending_updates();
                         if self.note_editor.is_some() {
                             self.note_content
                                 .update(cx, |editor, cx| editor.set_readonly(false, cx));
@@ -230,7 +231,7 @@ impl StudyApp {
                         self.drafts.save_record(&library, original.clone());
                         self.draft_catalog.insert(original.id.clone(), original);
                         self.close_requested = false;
-                        self.pending_update = None;
+                        self.clear_pending_updates();
                         if self.note_editor.is_some() {
                             self.note_content
                                 .update(cx, |editor, cx| editor.set_readonly(false, cx));
@@ -253,7 +254,7 @@ impl StudyApp {
                         }
                         Err(error) => {
                             self.close_requested = false;
-                            self.pending_update = None;
+                            self.clear_pending_updates();
                             self.push_notice(Err(error), cx);
                         }
                     }
@@ -322,7 +323,7 @@ impl StudyApp {
             }) {
                 self.note_saving = false;
                 self.close_requested = false;
-                self.pending_update = None;
+                self.clear_pending_updates();
                 self.push_notice(Err(error.to_string()), cx);
                 return false;
             }
