@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
-from macos_runner_auth import runner_credential, select_authentication
+from macos_runner_auth import runner_credential, authentication_candidates
 
 
 def capture(argv, timeout=120):
@@ -121,9 +121,7 @@ def system_approval(output):
                 authentication = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", process], 20)
                 actions.append(authentication)
                 if authentication["exit_code"] == 0:
-                    selection = select_authentication(json.loads(authentication["stdout"]))
-                    if selection is not None:
-                        candidates.append((process, selection))
+                    candidates.extend((process, selection) for selection in authentication_candidates(json.loads(authentication["stdout"])))
             if len(candidates) == 1:
                 process, selection = candidates[0]
                 try:

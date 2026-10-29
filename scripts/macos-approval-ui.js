@@ -43,13 +43,14 @@ function run(argv) {
     if (!Array.isArray(onScreen)) throw new Error("CoreGraphics window list did not bridge to an array");
     if (argv[0] === "inventory") {
         const seen = new Set();
-        const windows = onScreen.filter(info => info.kCGWindowLayer === 0 && !seen.has(info.kCGWindowOwnerPID) && seen.add(info.kCGWindowOwnerPID));
-        return JSON.stringify(windows.slice(0, 10).map(info => {
+        const windows = onScreen.filter(info => !seen.has(info.kCGWindowOwnerPID) && seen.add(info.kCGWindowOwnerPID));
+        if (windows.length > 10) throw new Error("Too many visible owners to establish unique authentication");
+        return JSON.stringify(windows.map(info => {
             const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(info.kCGWindowOwnerPID);
             let bundle = null, executable = null;
             try { bundle = ObjC.unwrap(app.bundleIdentifier); executable = ObjC.unwrap(app.executableURL.path); } catch (_) {}
             return {pid: info.kCGWindowOwnerPID, name: info.kCGWindowOwnerName,
-                bundle: bundle, executable: executable};
+                layer: info.kCGWindowLayer, bundle: bundle, executable: executable};
         }));
     }
     if (argv[0] === "bridge-self-test") {

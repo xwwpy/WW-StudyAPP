@@ -10,7 +10,7 @@ import time
 import uuid
 
 
-def select_authentication(tree):
+def authentication_candidates(tree):
     candidates = []
     for index, window in enumerate(tree.get("children", [])):
         if window.get("role") != "AXWindow" or window.get("visible") is not True:
@@ -30,6 +30,11 @@ def select_authentication(tree):
         if len(passwords) == len(users) == len(buttons) == 1:
             candidates.append({"container_path": [index], "container": window, "button_path": buttons[0],
                                "password_path": passwords[0], "label": "OK"})
+    return candidates
+
+
+def select_authentication(tree):
+    candidates = authentication_candidates(tree)
     return candidates[0] if len(candidates) == 1 else None
 
 
