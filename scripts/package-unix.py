@@ -62,7 +62,7 @@ def debian_dependencies(output):
     # is needed when the GTK WebKit child is embedded in a GPUI X11 window.
     runtime = ["libwebkit2gtk-4.1-0", "libvulkan1", "libasound2t64", "libfontconfig1",
                "libxkbcommon-x11-0", "libwayland-client0", "mesa-vulkan-drivers",
-               "xwayland", "fonts-noto-cjk", "dbus-user-session", "gnome-keyring"]
+               "xwayland", "fonts-noto-cjk", "dbus-user-session", "gnome-keyring", "pkexec"]
     return ", ".join(dict.fromkeys(match[1].split(", ") + runtime))
 
 

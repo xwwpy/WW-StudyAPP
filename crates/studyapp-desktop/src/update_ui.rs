@@ -113,10 +113,7 @@ impl UpdatePanel {
         let status_sender = sender.clone();
         std::thread::spawn(move || {
             let _ = status_sender.send(UpdateReply::Previous(read_last_update_status()));
-            if cfg!(any(windows, target_os = "linux"))
-                && !cfg!(test)
-                && startup_check_allowed(std::env::args_os())
-            {
+            if cfg!(windows) && !cfg!(test) && startup_check_allowed(std::env::args_os()) {
                 let _ = status_sender.send(UpdateReply::RepairState(portable_repair_needed()));
             }
         });
@@ -600,7 +597,7 @@ impl UpdatePanel {
         if self.fixture.is_some() {
             return true;
         }
-        cfg!(any(windows, target_os = "linux"))
+        cfg!(any(windows, target_os = "linux", target_os = "macos"))
             && !cfg!(test)
             && startup_check_allowed(std::env::args_os())
     }
@@ -666,7 +663,7 @@ fn progress_text(progress: &UpdateProgress) -> String {
 
 impl Render for UpdatePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !cfg!(any(windows, target_os = "linux")) {
+        if !cfg!(any(windows, target_os = "linux", target_os = "macos")) {
             return card()
                 .id("application-updates")
                 .child(heading("软件更新"))

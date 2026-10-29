@@ -24,7 +24,7 @@ class PackageTests(unittest.TestCase):
     def test_dependencies_keep_generated_versions_and_dynamic_runtime_libraries(self):
         deps = package.debian_dependencies("shlibs:Depends=libc6 (>= 2.38), libgtk-3-0t64 (>= 3.24)\n")
         self.assertIn("libc6 (>= 2.38)", deps)
-        for required in ("libwebkit2gtk-4.1-0", "xwayland", "mesa-vulkan-drivers", "fonts-noto-cjk"):
+        for required in ("libwebkit2gtk-4.1-0", "xwayland", "mesa-vulkan-drivers", "fonts-noto-cjk", "pkexec"):
             self.assertIn(required, deps)
         with self.assertRaises(ValueError):
             package.debian_dependencies("warning only")

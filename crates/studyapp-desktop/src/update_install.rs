@@ -42,6 +42,8 @@ impl VerifiedPackage {
             builder.mode(0o700);
         }
         builder.create(&directory).map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        let directory = std::fs::canonicalize(directory).map_err(|e| e.to_string())?;
         std::fs::write(directory.join("manifest.json"), envelope).map_err(|e| e.to_string())?;
         crate::update_backend::download_setup_to(
             &manifest.setup_url,
@@ -93,6 +95,7 @@ fn package_file() -> &'static str {
 pub enum PreparedPackage {
     Windows(VerifiedPackage),
     Linux(PathBuf),
+    Macos(PathBuf),
 }
 pub fn prepare(
     package: &VerifiedPackage,
@@ -108,7 +111,11 @@ pub fn prepare(
     {
         linux::prepare(package, data).map(PreparedPackage::Linux)
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::prepare(package, data).map(PreparedPackage::Macos)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         let _ = data;
         Err("Automatic installation is not available for this platform yet".into())
@@ -120,6 +127,17 @@ pub fn launch(package: &PreparedPackage) -> Result<(), String> {
             package.reverify()?;
             crate::update_nsis::launch(&package.directory.join(package_file()))
                 .map_err(|e| e.to_string())
+        }
+        PreparedPackage::Macos(directory) => {
+            #[cfg(target_os = "macos")]
+            {
+                macos::spawn(directory)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = directory;
+                Err("macOS helper unsupported".into())
+            }
         }
         PreparedPackage::Linux(directory) => {
             #[cfg(target_os = "linux")]
@@ -168,21 +186,35 @@ pub(crate) fn process_start(stat: &str) -> Option<u64> {
 pub fn dispatch() -> Option<i32> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let mode = args.first()?.to_str()?;
-    if !matches!(mode, "--update-supervisor" | "--update-worker") {
+    if !matches!(
+        mode,
+        "--update-supervisor" | "--update-worker" | "--update-restore"
+    ) {
         return None;
     }
     #[cfg(target_os = "linux")]
     let result = if args.len() == 2 {
         let directory = PathBuf::from(&args[1]);
-        if mode == "--update-worker" {
-            linux::worker(&directory)
-        } else {
-            linux::supervise(&directory)
+        match mode {
+            "--update-worker" => linux::worker(&directory),
+            "--update-supervisor" => linux::supervise(&directory),
+            _ => Err("Recovery mode is unsupported on Linux".into()),
         }
     } else {
         Err("Invalid updater arguments".into())
     };
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    let result = if args.len() == 2 {
+        let directory = PathBuf::from(&args[1]);
+        match mode {
+            "--update-supervisor" => macos::supervise(&directory),
+            "--update-worker" => macos::worker(&directory, false),
+            _ => macos::worker(&directory, true),
+        }
+    } else {
+        Err("Invalid updater arguments".into())
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     let result: Result<(), String> = Err("Updater helper unsupported on this platform".into());
     Some(match result {
         Ok(()) => 0,
@@ -196,6 +228,9 @@ pub fn dispatch() -> Option<i32> {
 #[cfg(target_os = "linux")]
 #[path = "update_install_linux.rs"]
 pub mod linux;
+#[cfg(target_os = "macos")]
+#[path = "update_install_macos.rs"]
+pub mod macos;
 
 #[cfg(test)]
 mod tests {
@@ -224,11 +259,14 @@ mod tests {
 }
 
 pub fn acknowledge_health() {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            #[cfg(target_os = "linux")]
             let _ = linux::acknowledge_health();
+            #[cfg(target_os = "macos")]
+            let _ = macos::acknowledge_health();
         }
     }
 }
@@ -237,7 +275,11 @@ pub fn previous_failure() -> Option<String> {
     {
         linux::previous_failure().ok().flatten()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::previous_failure().ok().flatten()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         None
     }
