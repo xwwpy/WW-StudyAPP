@@ -52,6 +52,22 @@ impl VerifiedPackage {
             progress,
         )
         .map_err(|e| e.to_string())?;
+        #[cfg(target_os = "macos")]
+        {
+            let quarantine = format!(
+                "0083;{:x};WW-StudyApp;{}",
+                chrono::Utc::now().timestamp(),
+                uuid::Uuid::new_v4()
+            );
+            let result = std::process::Command::new("/usr/bin/xattr")
+                .args(["-w", "com.apple.quarantine", &quarantine])
+                .arg(directory.join(package_file()))
+                .status()
+                .map_err(|e| e.to_string())?;
+            if !result.success() {
+                return Err("Cannot establish quarantine provenance for downloaded update".into());
+            }
+        }
         Self::verify(&directory)
     }
     pub fn reverify(&self) -> Result<(), String> {

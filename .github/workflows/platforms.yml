@@ -162,6 +162,9 @@ jobs:
           plutil -lint "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/Info.plist"
           codesign --verify --strict --verbose=2 "$RUNNER_TEMP/installed/WW-StudyApp.app"
           python3 scripts/smoke-unix.py --binary "$RUNNER_TEMP/installed/WW-StudyApp.app/Contents/MacOS/studyapp" --data-dir "$RUNNER_TEMP/native-installed"
+      - name: Verify macOS system distribution approval
+        if: matrix.platform == 'macos'
+        run: python3 scripts/assess-macos-update.py --bundle "$RUNNER_TEMP/installed/WW-StudyApp.app" --package dist/*.dmg --output "$RUNNER_TEMP/native-macos-assessment.json"
       - name: Preserve native evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -170,6 +173,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-interactive*
             ${{ runner.temp }}/native-installed*
+            ${{ runner.temp }}/native-macos-assessment.json
           if-no-files-found: warn
           retention-days: 14
       - name: Preserve verified release package

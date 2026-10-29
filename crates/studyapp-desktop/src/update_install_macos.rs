@@ -154,6 +154,16 @@ fn validate_bundle(app: &Path, version: &str) -> Result<()> {
     Ok(())
 }
 fn protected_bundle(app: &Path) -> Result<()> {
+    safe_ancestors(app)?;
+    for ancestor in app.ancestors().skip(1) {
+        let meta = io(fs::symlink_metadata(ancestor))?;
+        if meta.uid() != 0 || meta.mode() & 0o022 != 0 {
+            return Err(format!(
+                "Authorization path is replaceable at {}; move to a writable per-user Applications folder",
+                ancestor.display()
+            ));
+        }
+    }
     let mut stack = vec![app.to_owned()];
     while let Some(path) = stack.pop() {
         let meta = io(fs::symlink_metadata(&path))?;
@@ -245,6 +255,12 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
     if staged.digest != package.digest || staged.version != package.version {
         return Err("Approved package changed".into());
     }
+    // Assess the downloaded distribution before the current application closes.
+    with_image(&dir, |point| {
+        let candidate = point.join(APP);
+        validate_bundle(&candidate, &package.version)?;
+        assess(&candidate)
+    })?;
     let tx = MacTransaction {
         transaction: InstallTransaction {
             schema: 1,
@@ -419,20 +435,56 @@ fn replace_bundle(target: &Path, stage: &Path, old: &Path) -> Result<()> {
     }
     Ok(())
 }
+fn assess(app: &Path) -> Result<()> {
+    output("/usr/sbin/spctl", &["--assess","--type","execute","--verbose=4",text(app)?]).map_err(|error|format!("macOS distribution assessment rejected the update; the current app remains available. A system-approved distribution is required: {error}"))?;
+    Ok(())
+}
 struct Mount {
     detach: String,
+    armed: bool,
+}
+impl Mount {
+    fn finish(self, dir: &Path) -> Result<()> {
+        self.finish_with(dir, |device| {
+            output("/usr/bin/hdiutil", &["detach", device]).map(|_| ())
+        })
+    }
+    fn finish_with(mut self, dir: &Path, execute: impl FnOnce(&str) -> Result<()>) -> Result<()> {
+        self.armed = false;
+        if let Err(error) = execute(&self.detach) {
+            let message = format!(
+                "Disk image {} remains attached; eject this device in Disk Utility: {error}",
+                self.detach
+            );
+            record(dir, "cleanup_failed", &message)?;
+            return Err(message);
+        }
+        Ok(())
+    }
 }
 impl Drop for Mount {
     fn drop(&mut self) {
-        let _ = Command::new("/usr/bin/hdiutil")
-            .args(["detach", &self.detach])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        if self.armed {
+            let _ = Command::new("/usr/bin/hdiutil")
+                .args(["detach", &self.detach])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+    }
+}
+fn with_image(dir: &Path, action: impl FnOnce(&Path) -> Result<()>) -> Result<()> {
+    let (mount, point) = mount(dir)?;
+    let result = action(&point);
+    let cleanup = mount.finish(dir);
+    match (result, cleanup) {
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
+        (Err(error), _) => Err(error),
+        (Ok(()), cleanup) => cleanup,
     }
 }
 fn mount(dir: &Path) -> Result<(Mount, PathBuf)> {
-    let point = dir.join("mount");
+    let point = dir.join(format!("mount-{}", uuid::Uuid::new_v4()));
     io(fs::DirBuilder::new().mode(0o700).create(&point))?;
     let out = io(Command::new("/usr/bin/hdiutil")
         .args(["attach", "-readonly", "-nobrowse", "-plist", "-mountpoint"])
@@ -444,35 +496,49 @@ fn mount(dir: &Path) -> Result<(Mount, PathBuf)> {
     }
     let mut guard = Mount {
         detach: text(&point)?.to_owned(),
+        armed: true,
     };
-    let mut child = io(Command::new("/usr/bin/plutil")
-        .args(["-convert", "json", "-o", "-", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn())?;
-    io(child
-        .stdin
-        .take()
-        .ok_or("Cannot parse mount metadata")?
-        .write_all(&out.stdout))?;
-    let parsed = io(child.wait_with_output())?;
-    if !parsed.status.success() {
-        return Err("Invalid disk image mount metadata".into());
+    let parsed_device: Result<String> = (|| {
+        let mut child = io(Command::new("/usr/bin/plutil")
+            .args(["-convert", "json", "-o", "-", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn())?;
+        io(child
+            .stdin
+            .take()
+            .ok_or("Cannot parse mount metadata")?
+            .write_all(&out.stdout))?;
+        let parsed = io(child.wait_with_output())?;
+        if !parsed.status.success() {
+            return Err("Invalid disk image mount metadata".into());
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(&parsed.stdout).map_err(|e| e.to_string())?;
+        let entries = value["system-entities"]
+            .as_array()
+            .ok_or("Missing mount entities")?;
+        let entry = entries
+            .iter()
+            .find(|entry| entry["mount-point"].as_str() == point.to_str())
+            .ok_or("Unexpected mount destination")?;
+        let device = entry["dev-entry"].as_str().ok_or("Missing image device")?;
+        if !device.starts_with("/dev/disk")
+            || !device[9..].chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            return Err("Unexpected mount device".into());
+        }
+        Ok(device.to_owned())
+    })();
+    match parsed_device {
+        Ok(device) => guard.detach = device,
+        Err(error) => {
+            return match guard.finish(dir) {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(format!("{error}; {cleanup}")),
+            };
+        }
     }
-    let value: serde_json::Value =
-        serde_json::from_slice(&parsed.stdout).map_err(|e| e.to_string())?;
-    let entries = value["system-entities"]
-        .as_array()
-        .ok_or("Missing mount entities")?;
-    let entry = entries
-        .iter()
-        .find(|entry| entry["mount-point"].as_str() == point.to_str())
-        .ok_or("Unexpected mount destination")?;
-    let device = entry["dev-entry"].as_str().ok_or("Missing image device")?;
-    if !device.starts_with("/dev/disk") || !device[9..].chars().all(|c| c.is_ascii_alphanumeric()) {
-        return Err("Unexpected mount device".into());
-    }
-    guard.detach = device.to_owned();
     Ok((guard, point))
 }
 fn install(dir: &Path, tx: &MacTransaction) -> Result<()> {
@@ -490,45 +556,47 @@ fn install(dir: &Path, tx: &MacTransaction) -> Result<()> {
     if start_identity(tx.transaction.old_pid).ok() == Some(tx.transaction.old_start) {
         return Err("Original application is still running".into());
     }
-    let (_mount, point) = mount(dir)?;
-    let apps: Vec<_> = io(fs::read_dir(&point))?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".app"))
-        .collect();
-    if apps.len() != 1 || apps[0].file_name() != APP {
-        return Err("Unexpected app inventory in disk image".into());
-    }
-    let source = point.join(APP);
-    validate_bundle(&source, &package.version)?;
-    let stage = tx
-        .target
-        .parent()
-        .ok_or("Missing parent")?
-        .join(format!(".WW-StudyApp-stage-{}.app", tx.transaction.id));
-    if fs::symlink_metadata(&stage).is_ok() || fs::symlink_metadata(backup(tx)?).is_ok() {
-        return Err("Update destination already exists".into());
-    }
-    output(
-        "/usr/bin/ditto",
-        &[
-            "--rsrc",
-            "--extattr",
-            "--acl",
-            text(&source)?,
-            text(&stage)?,
-        ],
-    )?;
-    if let Ok(quarantine) = output(
-        "/usr/bin/xattr",
-        &["-p", "com.apple.quarantine", text(&dir.join("package"))?],
-    ) {
+    with_image(dir, |point| {
+        let apps: Vec<_> = io(fs::read_dir(&point))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".app"))
+            .collect();
+        if apps.len() != 1 || apps[0].file_name() != APP {
+            return Err("Unexpected app inventory in disk image".into());
+        }
+        let source = point.join(APP);
+        validate_bundle(&source, &package.version)?;
+        let stage = tx
+            .target
+            .parent()
+            .ok_or("Missing parent")?
+            .join(format!(".WW-StudyApp-stage-{}.app", tx.transaction.id));
+        if fs::symlink_metadata(&stage).is_ok() || fs::symlink_metadata(backup(tx)?).is_ok() {
+            return Err("Update destination already exists".into());
+        }
         output(
-            "/usr/bin/xattr",
-            &["-w", "com.apple.quarantine", &quarantine, text(&stage)?],
+            "/usr/bin/ditto",
+            &[
+                "--rsrc",
+                "--extattr",
+                "--acl",
+                text(&source)?,
+                text(&stage)?,
+            ],
         )?;
-    }
-    validate_bundle(&stage, &package.version)?;
-    replace_bundle(&tx.target, &stage, &backup(tx)?)
+        if let Ok(quarantine) = output(
+            "/usr/bin/xattr",
+            &["-p", "com.apple.quarantine", text(&dir.join("package"))?],
+        ) {
+            output(
+                "/usr/bin/xattr",
+                &["-w", "com.apple.quarantine", &quarantine, text(&stage)?],
+            )?;
+        }
+        validate_bundle(&stage, &package.version)?;
+        assess(&stage)?;
+        replace_bundle(&tx.target, &stage, &backup(tx)?)
+    })
 }
 fn restore(tx: &MacTransaction) -> Result<()> {
     let old = backup(tx)?;
@@ -795,6 +863,51 @@ mod tests {
         let path = std::env::temp_dir().join(format!("studyapp-mac-test-{}", uuid::Uuid::new_v4()));
         fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
         fs::canonicalize(path).unwrap()
+    }
+    #[test]
+    fn update_install_macos_writable_ancestor_blocks_authorization_path() {
+        if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
+            return;
+        }
+        let root = dir();
+        let fixed = root.join("root-owned");
+        let app = fixed.join(APP);
+        fs::create_dir(&fixed).unwrap();
+        fs::create_dir(&app).unwrap();
+        fs::set_permissions(&fixed, fs::Permissions::from_mode(0o555)).unwrap();
+        fs::set_permissions(&app, fs::Permissions::from_mode(0o555)).unwrap();
+        assert!(
+            Command::new("/usr/bin/sudo")
+                .args(["-n", "/usr/sbin/chown", "root:wheel"])
+                .arg(&fixed)
+                .arg(&app)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(protected_bundle(&app).unwrap_err().contains("replaceable"));
+        // The caller can actually replace the path above both root-owned directories.
+        fs::rename(&fixed, root.join("moved-root-owned")).unwrap();
+        fs::create_dir(&fixed).unwrap();
+        assert!(fs::metadata(&fixed).unwrap().uid() != 0);
+    }
+    #[test]
+    fn update_install_macos_detach_failure_records_device_and_recovery() {
+        let root = dir();
+        let mount = Mount {
+            detach: "/dev/disk987".into(),
+            armed: true,
+        };
+        let error = mount
+            .finish_with(&root, |_| Err("device busy".into()))
+            .unwrap_err();
+        assert!(error.contains("/dev/disk987") && error.contains("Disk Utility"));
+        let record = fs::read_dir(root).unwrap().next().unwrap().unwrap().path();
+        assert!(
+            fs::read_to_string(record)
+                .unwrap()
+                .contains("cleanup_failed")
+        );
     }
     #[test]
     fn update_install_macos_quoted_paths_remain_single_argument() {
