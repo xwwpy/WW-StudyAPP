@@ -256,6 +256,7 @@ impl RenderOnce for UpdateDialog {
                     .overflow_hidden()
                     .child(
                         scroll_body("update-dialog-notes", &self.notes_scroll)
+                            .test_support()
                             .p_3()
                             .child(
                                 gpui_kit::div()

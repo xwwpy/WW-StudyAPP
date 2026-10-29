@@ -315,22 +315,31 @@ pub(super) struct Candidate {
     exited: std::cell::Cell<bool>,
 }
 impl Candidate {
-    pub fn alive(&self) -> bool {
-        if self.exited.get() || self.watch.has_exited().unwrap_or(true) {
+    pub fn alive(&self) -> Result<bool> {
+        if self.exited.get() || self.watch.has_exited()? {
             self.exited.set(true);
-            return false;
+            return Ok(false);
         }
-        start_identity(self.pid).ok() == Some(self.start)
-            && process_path(self.pid).ok().as_ref() == Some(&self.executable)
+        if start_identity(self.pid)? != self.start || process_path(self.pid)? != self.executable {
+            return Err(
+                "Candidate identity could not be confirmed; refusing recovery while it may run"
+                    .into(),
+            );
+        }
+        Ok(true)
     }
     pub fn stop(self) -> Result<()> {
-        if self.alive() {
-            if unsafe { kill(self.pid as i32, 9) } != 0 {
-                return Err(std::io::Error::last_os_error().to_string());
-            }
-            self.watch.wait()?;
-        }
-        Ok(())
+        let observed = self.alive();
+        crate::update_install::launch_receipt::confirm_stopped(
+            observed,
+            || {
+                if unsafe { kill(self.pid as i32, 9) } != 0 {
+                    return Err(std::io::Error::last_os_error().to_string());
+                }
+                Ok(())
+            },
+            || self.watch.wait(),
+        )
     }
 }
 pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candidate> {
@@ -381,7 +390,7 @@ pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candi
                 watch,
                 exited: std::cell::Cell::new(false),
             };
-            if !candidate.alive() {
+            if !candidate.alive()? {
                 return Err("LaunchServices candidate process/path mismatch".into());
             }
             write_new(&dir.join("continue"), req.nonce.as_bytes())?;

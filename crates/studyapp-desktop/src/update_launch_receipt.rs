@@ -32,3 +32,45 @@ mod tests {
         assert!(!invalid.matches("fresh nonce", "0.1.4", "exact candidate digest"));
     }
 }
+
+pub fn confirm_stopped(
+    observation: Result<bool, String>,
+    terminate: impl FnOnce() -> Result<(), String>,
+    wait: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if observation? {
+        terminate()?;
+        wait()?;
+    }
+    Ok(())
+}
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    #[test]
+    fn update_recovery_never_treats_unknown_process_state_as_confirmed_exit() {
+        for error in [
+            "kqueue failed",
+            "identity query failed",
+            "path query failed",
+        ] {
+            assert!(
+                confirm_stopped(
+                    Err(error.into()),
+                    || panic!("unknown identity must not be killed"),
+                    || panic!("not terminated")
+                )
+                .is_err()
+            );
+        }
+        assert!(confirm_stopped(Ok(true), || Ok(()), || Err("exit not observed".into())).is_err());
+        assert!(
+            confirm_stopped(
+                Ok(false),
+                || panic!("already exited"),
+                || panic!("already exited")
+            )
+            .is_ok()
+        );
+    }
+}

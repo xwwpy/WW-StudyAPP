@@ -39,6 +39,7 @@ enum UpdateReply {
     NsisDownloaded(Box<Result<crate::update_install::VerifiedPackage, String>>),
     NsisPrepared(
         u64,
+        String,
         Box<Result<crate::update_install::PreparedPackage, String>>,
     ),
     Progress(UpdateProgress),
@@ -68,7 +69,7 @@ pub struct UpdatePanel {
     nsis_progress: Option<(u64, u64)>,
     nsis_setup: Option<crate::update_install::VerifiedPackage>,
     install_preparation: crate::update_install::PreparationGate,
-    install_prepared: Option<crate::update_install::PreparedPackage>,
+    install_prepared: Option<(String, crate::update_install::PreparedPackage)>,
     nsis_error: Option<String>,
     notes_scroll: ScrollHandle,
     receiver: mpsc::Receiver<UpdateReply>,
@@ -111,6 +112,19 @@ impl UpdatePanel {
             .map(|manifest| manifest.notes.as_str())
             .or_else(|| self.release.as_ref().map(|release| release.notes.as_str()))
     }
+    pub(crate) fn cancel_install_preparation(&mut self) {
+        self.install_preparation.invalidate();
+        self.install_prepared = None;
+    }
+    fn take_install_prepared(
+        &mut self,
+        identity: &str,
+    ) -> Option<crate::update_install::PreparedPackage> {
+        self.install_prepared
+            .take()
+            .filter(|(saved, _)| saved == identity)
+            .map(|(_, prepared)| prepared)
+    }
     fn prepare_install(&mut self, data: Option<PathBuf>, cx: &mut Context<Self>) {
         if self.busy {
             return;
@@ -127,8 +141,9 @@ impl UpdatePanel {
         self.status = "正在验证安装环境；您可以继续编辑…".into();
         let sender = self.sender.clone();
         std::thread::spawn(move || {
+            let identity = package.identity();
             let result = crate::update_install::prepare(&package, data);
-            let _ = sender.send(UpdateReply::NsisPrepared(token, Box::new(result)));
+            let _ = sender.send(UpdateReply::NsisPrepared(token, identity, Box::new(result)));
         });
         cx.notify();
     }
@@ -295,6 +310,12 @@ impl UpdatePanel {
         self.check_policy.finish();
         match result {
             Ok(Some(manifest)) => {
+                if self.nsis.as_ref().is_none_or(|old| {
+                    old.version != manifest.version || old.sha256 != manifest.sha256
+                }) {
+                    self.cancel_install_preparation();
+                    self.nsis_setup = None;
+                }
                 self.error = None;
                 self.nsis_error = None;
                 self.nsis_progress = None;
@@ -308,6 +329,8 @@ impl UpdatePanel {
                 self.release = None;
             }
             Ok(None) => {
+                self.cancel_install_preparation();
+                self.nsis_setup = None;
                 self.error = None;
                 self.nsis = None;
                 self.nsis_version = None;
@@ -323,6 +346,8 @@ impl UpdatePanel {
     }
 
     fn start_nsis_download(&mut self, cx: &mut Context<Self>) {
+        self.cancel_install_preparation();
+        self.nsis_setup = None;
         let Some(manifest) = self.nsis.clone() else {
             return;
         };
@@ -494,15 +519,20 @@ impl UpdatePanel {
                         }
                     }
                 }
-                UpdateReply::NsisPrepared(token, result) => {
+                UpdateReply::NsisPrepared(token, identity, result) => {
                     self.busy = false;
-                    if !self.install_preparation.finish(token) {
+                    if !self.install_preparation.finish(token)
+                        || self
+                            .nsis_setup
+                            .as_ref()
+                            .is_none_or(|package| package.identity() != identity)
+                    {
                         self.status = "资料库已切换，请重新准备更新。".into();
                         continue;
                     }
                     match *result {
                         Ok(prepared) => {
-                            self.install_prepared = Some(prepared);
+                            self.install_prepared = Some((identity, prepared));
                             cx.emit(UpdateEvent::NsisReady);
                         }
                         Err(error) => self.install_failed(error, cx),
@@ -857,9 +887,9 @@ impl crate::app::StudyApp {
             self.update_panel.read(cx).isolated_launch,
         )
         .map(Path::to_owned);
-        let _ = setup;
+        let identity = setup.identity();
         let prepared = self.update_panel.update(cx, |panel, cx| {
-            if let Some(prepared) = panel.install_prepared.take() {
+            if let Some(prepared) = panel.take_install_prepared(&identity) {
                 return Some(prepared);
             }
             panel.prepare_install(data, cx);
@@ -957,6 +987,52 @@ mod tests {
         }
     }
 
+    #[::core::prelude::v1::test]
+    fn cancelled_preparation_cannot_install_under_a_new_offer() {
+        let mut panel = panel();
+        let token = panel.install_preparation.begin().unwrap();
+        panel.install_prepared = Some((
+            "A".into(),
+            crate::update_install::PreparedPackage::Windows(PathBuf::from("A")),
+        ));
+        panel.cancel_install_preparation();
+        assert!(panel.take_install_prepared("A").is_none());
+        assert!(!panel.install_preparation.finish(token));
+        panel.install_prepared = Some((
+            "A".into(),
+            crate::update_install::PreparedPackage::Windows(PathBuf::from("A")),
+        ));
+        let manifest = crate::update_manifest::UpdateManifest {
+            version: semver::Version::parse("0.9.1").unwrap(),
+            notes: String::new(),
+            pub_date: None,
+            setup_url: String::new(),
+            signature: String::new(),
+            signed_envelope: "B".into(),
+            size: 2,
+            sha256: "b".repeat(64),
+        };
+        panel.finish_nsis_check(CheckOrigin::Manual, Ok(Some(manifest)));
+        assert!(
+            panel.install_prepared.is_none(),
+            "A must not remain prepared under B's card"
+        );
+        panel.install_prepared = Some((
+            "A".into(),
+            crate::update_install::PreparedPackage::Windows(PathBuf::from("A")),
+        ));
+        assert!(
+            panel.take_install_prepared("B").is_none(),
+            "digest/version binding rejects stale cache even before invalidation"
+        );
+        panel.install_prepared = Some((
+            "B".into(),
+            crate::update_install::PreparedPackage::Windows(PathBuf::from("B")),
+        ));
+        assert!(
+            matches!(panel.take_install_prepared("B"), Some(crate::update_install::PreparedPackage::Windows(path)) if path == PathBuf::from("B"))
+        );
+    }
     #[::core::prelude::v1::test]
     fn nsis_manifest_opens_dialog_and_clears_when_up_to_date() {
         use crate::update_manifest::UpdateManifest;

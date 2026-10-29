@@ -799,7 +799,12 @@ fn supervise_inner(dir: &Path) -> Result<()> {
     }
     record(dir, "installed", &package.version)?;
     let health = wait_health(dir, &tx);
-    if let Err(error) = health {
+    if let Err((error, safe_to_restore)) = health {
+        if !safe_to_restore {
+            return Err(format!(
+                "{error}; recovery stopped because candidate exit is unconfirmed"
+            ));
+        }
         record(dir, "recovering", &error)?;
         if tx.elevated {
             authorize(dir, &tx, true)?;
@@ -816,11 +821,11 @@ fn supervise_inner(dir: &Path) -> Result<()> {
     }
     record(dir, "healthy", "Updated app and library startup confirmed")
 }
-fn wait_health(dir: &Path, tx: &MacTransaction) -> Result<()> {
-    let child = launch(tx, Some(dir))?;
+fn wait_health(dir: &Path, tx: &MacTransaction) -> std::result::Result<(), (String, bool)> {
+    let child = launch(tx, Some(dir)).map_err(|error| (error, false))?;
     let start = Instant::now();
     let result = (|| loop {
-        if !child.alive() {
+        if !child.alive()? {
             return Err("Updated application exited before startup confirmation".into());
         }
         if let Ok(bytes) = bounded(&dir.join("health.json"), tx.transaction.uid, 4096) {
@@ -842,10 +847,13 @@ fn wait_health(dir: &Path, tx: &MacTransaction) -> Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     })();
     // Never restore/relaunch the previous app while the failed candidate remains alive.
-    if result.is_err() {
-        child.stop()?;
+    if let Err(error) = result {
+        child
+            .stop()
+            .map_err(|stop| (format!("{error}; {stop}"), false))?;
+        return Err((error, true));
     }
-    result
+    Ok(())
 }
 pub fn acknowledge_health() -> Result<()> {
     let Some(dir) = launch::health_directory() else {

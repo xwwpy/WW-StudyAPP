@@ -27,6 +27,9 @@ pub struct VerifiedPackage {
     digest: String,
 }
 impl VerifiedPackage {
+    pub(crate) fn identity(&self) -> String {
+        format!("{}:{}", self.version, self.digest)
+    }
     pub fn download(
         envelope: &str,
         base: &Path,

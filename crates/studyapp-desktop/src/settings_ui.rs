@@ -1426,6 +1426,13 @@ impl StudyApp {
                             .label("继续编辑")
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| {
+                                if matches!(
+                                    this.preferences_ui.leave,
+                                    Some(SettingsContinuation::InstallPackage)
+                                ) {
+                                    this.update_panel
+                                        .update(cx, |panel, _| panel.cancel_install_preparation());
+                                }
                                 this.preferences_ui.leave = None;
                                 cx.notify();
                             })),
