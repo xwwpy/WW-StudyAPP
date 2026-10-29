@@ -6,6 +6,7 @@ on:
     paths:
       - scripts/macos-approval-ui.js
       - scripts/assess-macos-update.py
+      - scripts/macos_runner_auth.py
       - .github/workflows/macos-approval-diagnostic.yml
 permissions:
   contents: read
