@@ -1,4 +1,13 @@
 // Remote runner only: snapshot accessibility containers and click an unchanged selection.
+function clipElement(position, size, viewport, button) {
+    const rect = [position[0], position[1], position[0] + size[0], position[1] + size[1]];
+    if (!viewport) return {visible: true, clip: rect};
+    const clip = [Math.max(rect[0], viewport[0]), Math.max(rect[1], viewport[1]), Math.min(rect[2], viewport[2]), Math.min(rect[3], viewport[3])];
+    const center = [position[0] + size[0] / 2, position[1] + size[1] / 2];
+    return {clip: clip, visible: clip[0] < clip[2] && clip[1] < clip[3] && (!button ||
+        (center[0] >= viewport[0] && center[0] < viewport[2] && center[1] >= viewport[1] && center[1] < viewport[3]))};
+}
+if (typeof module !== "undefined") module.exports = {clipElement};
 function run(argv) {
     const system = Application("System Events");
     const process = system.processes.byName(argv[1]);
@@ -16,12 +25,9 @@ function run(argv) {
         if (isWindow) visible = read(() => element.visible(), false) === true;
         let clip = viewport;
         if (position && size && size[0] > 0 && size[1] > 0) {
-            const rect = [position[0], position[1], position[0] + size[0], position[1] + size[1]];
-            if (viewport) {
-                const center = [position[0] + size[0] / 2, position[1] + size[1] / 2];
-                visible = visible && center[0] >= viewport[0] && center[0] < viewport[2] && center[1] >= viewport[1] && center[1] < viewport[3];
-                clip = [Math.max(rect[0], viewport[0]), Math.max(rect[1], viewport[1]), Math.min(rect[2], viewport[2]), Math.min(rect[3], viewport[3])];
-            } else clip = rect;
+            const geometry = clipElement(position, size, viewport, read(() => element.role(), "") === "AXButton");
+            visible = visible && geometry.visible;
+            clip = geometry.clip;
         } else if (read(() => element.role(), "") === "AXButton") visible = false;
         const value = read(() => element.value(), null);
         return {
