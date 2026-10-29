@@ -127,6 +127,31 @@ async fn wait(
     }
 }
 async fn presented(window: AnyWindowHandle, cx: &mut AsyncApp) {
+    #[cfg(target_os = "macos")]
+    {
+        let started = Instant::now();
+        loop {
+            let state = window
+                .update(cx, |_, window, _| {
+                    let point = gpui_kit::point(
+                        window.viewport_size().width / 2.0,
+                        window.viewport_size().height / 2.0,
+                    );
+                    pointer::foreground(window, point)
+                })
+                .unwrap();
+            if state["ready"] == true {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "Window cannot become frontmost: {state}"
+            );
+            cx.background_executor()
+                .timer(Duration::from_millis(100))
+                .await;
+        }
+    }
     // Submit outside the capture/click transaction, then allow compositor presentation.
     for _ in 0..2 {
         window
@@ -157,6 +182,15 @@ async fn click_visible(window: AnyWindowHandle, id: SharedString, cx: &mut Async
         .update(cx, |_, window, _| {
             assert!(active());
             let center = window.find(id).bounds().center();
+            #[cfg(target_os = "macos")]
+            {
+                let state = pointer::foreground(window, center);
+                save(
+                    &format!("native-pointer-{}.json", uuid::Uuid::new_v4()),
+                    state.clone(),
+                );
+                assert_eq!(state["ready"], true, "Native control is covered: {state}");
+            }
             pointer::click(window, center);
         })
         .unwrap();

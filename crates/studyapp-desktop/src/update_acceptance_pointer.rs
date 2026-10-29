@@ -141,6 +141,20 @@ pub fn click(window: &mut Window, point: Point<Pixels>) {
 
 #[cfg(target_os = "macos")]
 pub fn click(window: &mut Window, point: Point<Pixels>) {
+    assert_eq!(
+        mac_event(window, point, true)["ready"],
+        true,
+        "Native control is not frontmost"
+    );
+}
+
+#[cfg(target_os = "macos")]
+pub fn foreground(window: &mut Window, point: Point<Pixels>) -> serde_json::Value {
+    mac_event(window, point, false)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_event(window: &mut Window, point: Point<Pixels>, post_click: bool) -> serde_json::Value {
     use std::ffi::{c_char, c_void};
     type Obj = *mut c_void;
     #[repr(C)]
@@ -222,6 +236,30 @@ pub fn click(window: &mut Window, point: Point<Pixels>) {
             std::ptr::null_mut(),
         );
         let window_number = number(native, sel_registerName(c"windowNumber".as_ptr()));
+        let screen: unsafe extern "C" fn(Obj, Obj, Position) -> Position =
+            std::mem::transmute(objc_msgSend as *const ());
+        let hit: unsafe extern "C" fn(Obj, Obj, Position, isize) -> isize =
+            std::mem::transmute(objc_msgSend as *const ());
+        let screen_point = screen(
+            native,
+            sel_registerName(c"convertPointToScreen:".as_ptr()),
+            position,
+        );
+        let front_window = hit(
+            objc_getClass(c"NSWindow".as_ptr()),
+            sel_registerName(c"windowNumberAtPoint:belowWindowWithWindowNumber:".as_ptr()),
+            screen_point,
+            0,
+        );
+        let active = send_bool(app, sel_registerName(c"isActive".as_ptr()));
+        let key = send_bool(native, sel_registerName(c"isKeyWindow".as_ptr()));
+        let visible = send_bool(native, sel_registerName(c"isVisible".as_ptr()));
+        let observation = serde_json::json!({"ready": active && key && visible && front_window == window_number,
+            "active":active,"key":key,"visible":visible,"window":window_number,"frontWindow":front_window,
+            "screenX":screen_point.x,"screenY":screen_point.y});
+        if !post_click || observation["ready"] != true {
+            return observation;
+        }
         for kind in [1, 2] {
             let value = event(objc_getClass(c"NSEvent".as_ptr()), sel_registerName(c"mouseEventWithType:location:modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:pressure:".as_ptr()),
                 kind, position, 0, 0.0, window_number, std::ptr::null_mut(), 1, 1, if kind == 1 { 1.0 } else { 0.0 });
@@ -233,5 +271,6 @@ pub fn click(window: &mut Window, point: Point<Pixels>) {
                 false,
             );
         }
+        observation
     }
 }
