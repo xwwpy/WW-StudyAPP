@@ -535,7 +535,13 @@ mod tests {
         .unwrap();
         let provenance = b"0083;1234;Source;existing";
         quarantine::write(&source.join("Contents/resource"), provenance).unwrap();
-        let second = prepare_approval_candidate(&package, &source).unwrap();
+        let second = prepare_approval_candidate(&package, &source).unwrap_or_else(|error| {
+            panic!(
+                "Fixture copy failed: {error}; source={:?}, copied={:?}",
+                quarantine::read(&source.join("Contents/resource")),
+                quarantine::read(&root.join("approval").join(APP).join("Contents/resource"))
+            )
+        });
         assert_ne!(first.nonce, second.nonce);
         assert!(receipt(&root.join("approval"), &second).is_err());
         assert_eq!(
