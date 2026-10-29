@@ -804,7 +804,7 @@ impl MarkdownEditor {
             .unwrap();
     }
 
-    #[cfg(all(any(windows, target_os = "linux"), feature = "ui-test"))]
+    #[cfg(feature = "ui-test")]
     pub(crate) fn native_state(&self) -> anyhow::Result<serde_json::Value> {
         self.host
             .as_ref()

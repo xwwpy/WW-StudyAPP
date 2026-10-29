@@ -544,6 +544,18 @@ impl HostedEditor {
         }))
     }
 
+    #[cfg(all(target_os = "macos", feature = "ui-test"))]
+    pub fn native_state(&self) -> Result<serde_json::Value> {
+        use wry::WebViewExtMacOS;
+        Ok(serde_json::json!({
+            "requestedVisible": self.requested_visible.get(),
+            "appliedVisible": self.applied_visible.get(),
+            "visible": !self.webview.webview().isHiddenOrHasHiddenAncestor(),
+            "parentVisible": self.webview.ns_window().isVisible(),
+            "parentKey": self.webview.ns_window().isKeyWindow(),
+        }))
+    }
+
     #[cfg(target_os = "linux")]
     pub fn restore_focus_for_parent_click(&self, position: gpui_kit::Point<Pixels>) {
         // XInput events from the child can also reach the GPUI parent. Never

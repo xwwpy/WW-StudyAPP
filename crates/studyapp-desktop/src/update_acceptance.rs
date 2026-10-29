@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 static HOLD_AUTOSAVE: AtomicBool = AtomicBool::new(false);
+#[cfg(any(windows, target_os = "macos"))]
+#[path = "update_acceptance_pointer.rs"]
+mod pointer;
 pub fn hold_autosave() -> bool {
     HOLD_AUTOSAVE.load(Ordering::Relaxed)
 }
@@ -92,6 +95,13 @@ fn save(name: &str, value: Value) {
     std::fs::write(&temporary, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     std::fs::rename(temporary, dir.join(name)).unwrap();
 }
+fn capture(window: &mut Window, name: &str) {
+    let path = directory().unwrap().join(name);
+    #[cfg(any(windows, target_os = "macos"))]
+    pointer::capture(window, &path);
+    #[cfg(target_os = "linux")]
+    crate::smoke::capture(window, path).unwrap();
+}
 async fn wait(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
@@ -142,9 +152,13 @@ async fn click_visible(window: AnyWindowHandle, id: SharedString, cx: &mut Async
             "Visible control missing: {id}"
         );
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(windows, target_os = "macos"))]
     window
-        .update(cx, |_, window, cx| window.click(id, cx))
+        .update(cx, |_, window, _| {
+            assert!(active());
+            let center = window.find(id).bounds().center();
+            pointer::click(window, center);
+        })
         .unwrap();
     #[cfg(target_os = "linux")]
     {
@@ -192,7 +206,6 @@ async fn click_visible(window: AnyWindowHandle, id: SharedString, cx: &mut Async
     }
 }
 
-#[cfg(target_os = "linux")]
 async fn native_visibility(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
@@ -208,10 +221,15 @@ async fn native_visibility(
                 view.read(cx).note_content.read(cx).native_state().unwrap()
             })
             .unwrap();
-        if state["viewable"] == visible
+        #[cfg(target_os = "linux")]
+        let matches = state["viewable"] == visible
             && state["mapped"] == visible
-            && state["appliedVisible"] == visible
-        {
+            && state["appliedVisible"] == visible;
+        #[cfg(windows)]
+        let matches = state["visible"] == visible && state["controllerVisible"] == visible;
+        #[cfg(target_os = "macos")]
+        let matches = state["visible"] == visible && state["appliedVisible"] == visible;
+        if matches {
             save(name, state);
             return;
         }
@@ -251,7 +269,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             let live=crate::smoke_editor::bridge(window,&editor,json!({"type":"snapshot"}),cx).await;
             assert_eq!(live["text"],marker);
             presented(window, cx).await;
-            window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("restored.png")).unwrap()).unwrap();
+            window.update(cx,|_,window,_|capture(window,"restored.png")).unwrap();
             save("new-observation.json",json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":id,"live_text":live["text"],"database":database,"source_sha":config["source_sha"],"transaction":transaction_directory()}));
             return;
         }
@@ -272,18 +290,15 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         CHECKS_READY.store(true,Ordering::Relaxed);
         window.update(cx,|_,_,cx|{let panel=view.read(cx).update_panel.clone();panel.update(cx,|p,cx|p.acceptance_check(cx));}).unwrap();
         wait(window,&view,cx,"signed update card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
-        #[cfg(target_os = "linux")]
         native_visibility(window, &view, false, "card-first-native-state.json", cx).await;
         click_visible(window, "update-dialog-later".into(), cx).await;
         wait(window,&view,cx,"native dismissal",|a,cx|!a.update_panel.read(cx).dialog_visible()).await;
-        #[cfg(target_os = "linux")]
         native_visibility(window, &view, true, "editor-restored-native-state.json", cx).await;
         click_visible(window, "sidebar-update".into(), cx).await;
         wait(window,&view,cx,"reopened card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
-        #[cfg(target_os = "linux")]
         native_visibility(window, &view, false, "card-native-state.json", cx).await;
         presented(window, cx).await;
-        window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("update-card.png")).unwrap()).unwrap();
+        window.update(cx,|_,window,_|capture(window,"update-card.png")).unwrap();
         click_visible(window, "update-dialog-install".into(), cx).await;
         #[cfg(target_os = "macos")]
         {
@@ -295,7 +310,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 cx.background_executor().timer(Duration::from_millis(250)).await;
             }
             presented(window, cx).await;
-            window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("approved-retry-card.png")).unwrap()).unwrap();
+            window.update(cx,|_,window,_|capture(window,"approved-retry-card.png")).unwrap();
             click_visible(window, "update-dialog-install".into(), cx).await;
         }
         // The application and its supervisor own all remaining install/restart work.
