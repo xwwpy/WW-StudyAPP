@@ -88,7 +88,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
     environment["STUDYAPP_UPDATE_ACCEPTANCE_DIR"] = str(fixture)
     actions = []
     try:
-        with (root / "application.log").open("w") as log:
+        with policy.verified_runner_credential(actions) as authentication_fixture, (root / "application.log").open("w") as log:
             old = subprocess.Popen([installed / "Contents/MacOS/studyapp", "--data-dir", data], env=environment, stdout=log, stderr=log)
             before = common.wait_file(fixture / "old-observation.json", 120, old)
             pointer = Path.home() / "Library/Application Support/io.StudyApp.StudyApp/update-policy-probe.txt"
@@ -102,7 +102,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
                     request = json.loads((probe / "request.json").read_text())
                     # Never operate on a previous assessment's unrelated probe.
                     if request["version"] == target_version and request["sha256"] == expected_hash and not approved:
-                        actions.extend(policy.system_approval(root / "native-macos-approval.json"))
+                        actions.extend(policy.system_approval(root / "native-macos-approval.json", authentication_fixture))
                         receipt = common.wait_file(probe / "receipt.json", 20)
                         status = policy.capture(["/usr/sbin/spctl", "--status"])
                         enabled = "assessments enabled" in status["stdout"] + status["stderr"]
@@ -135,7 +135,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
                     (root / "unhealthy-process-alive.json").write_text(json.dumps({"pid": pid, "uid": os.getuid(),
                         "time": time.time(), "installed_sha256": expected_hash, "harness_sent_signal": False}))
                 if observed_unhealthy is None and time.monotonic() >= next_approval:
-                    actions.extend(policy.system_approval(root / "native-macos-restart.json"))
+                    actions.extend(policy.system_approval(root / "native-macos-restart.json", authentication_fixture))
                     next_approval = time.monotonic() + 30
                 time.sleep(1)
             after = common.wait_file(fixture / "new-observation.json", 10)

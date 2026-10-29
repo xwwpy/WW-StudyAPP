@@ -1,5 +1,6 @@
 """Verify system distribution policy for the actual macOS release artifact."""
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -66,9 +67,35 @@ def select_approval(tree, label, *, for_scroll=False):
     return candidates[0] if len(candidates) == 1 else None
 
 
-def system_approval(output):
-    """Use only visible per-app system controls on the disposable runner."""
+@contextlib.contextmanager
+def verified_runner_credential(actions):
+    with runner_credential() as fixture:
+        credential, username = fixture
+        actions.append({"command": ["runner-credential-preflight"], "exit_code": 0, "stdout": "authonly and administrator membership verified before candidate launch", "stderr": ""})
+        script = Path(__file__).with_name("macos-credential-check.js")
+        checked = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), username, str(credential)], 10)
+        verification = json.loads(checked["stdout"]) if checked["exit_code"] == 0 else {"verified": False, "bridgePhase": "process"}
+        actions.append({"command": ["directory-record-verification"], "exit_code": 0 if verification.get("verified") is True else 1,
+                        "stdout": json.dumps(verification), "stderr": ""})
+        if verification.get("verified") is not True:
+            raise RuntimeError("Direct directory record verification did not succeed")
+        yield fixture
+
+
+def system_approval(output, fixture=None):
     actions = []
+    try:
+        if fixture is not None:
+            return system_approval_with_credential(output, *fixture, actions)
+        with verified_runner_credential(actions) as prepared:
+            return system_approval_with_credential(output, *prepared, actions)
+    except RuntimeError as error:
+        actions.append({"command": ["runner-authentication"], "exit_code": 1, "stdout": "", "stderr": str(error)})
+        return actions
+
+
+def system_approval_with_credential(output, credential, username, actions):
+    """Use only visible per-app system controls on the disposable runner."""
     script = Path(__file__).with_name("macos-approval-ui.js")
     actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "permissions"], 10))
     def screenshot(stage):
@@ -125,26 +152,18 @@ def system_approval(output):
             if candidate is not None:
                 process, selection = candidate
                 try:
-                    with runner_credential() as (credential, username):
-                        actions.append({"command": ["runner-credential-preflight"], "exit_code": 0, "stdout": "authonly and administrator membership verified", "stderr": ""})
-                        checked = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script.with_name("macos-credential-check.js")), username, str(credential)], 10)
-                        verification = json.loads(checked["stdout"]) if checked["exit_code"] == 0 else {"verified": False, "bridgePhase": "process"}
-                        actions.append({"command": ["directory-record-verification"], "exit_code": 0 if verification.get("verified") is True else 1,
-                                        "stdout": json.dumps(verification), "stderr": ""})
-                        if verification.get("verified") is not True:
-                            raise RuntimeError("Direct directory record verification did not succeed")
-                        selection["test_username"] = username
-                        submitted_at = time.time()
-                        submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
-                                             json.dumps(selection, separators=(",", ":")), str(credential)], 20)
-                        failure_stage = re.search(r"Authentication failed at (permission|identity|credential-file|username-focus|username-keypost|password-focus|password-keypost|username-delivery|button-owner|button-default|button-event|pointer-observation)\b", submitted["stderr"])
-                        outcome = json.loads(submitted["stdout"]) if submitted["exit_code"] == 0 else None
-                        actions.append({"command": ["runner-authentication"], "exit_code": 0 if outcome and outcome.get("authenticationSubmitted") is True else 1,
-                                        "stdout": json.dumps(outcome) if outcome is not None else "",
-                                        "stderr": failure_stage.group(1) if failure_stage else ""})
-                        time.sleep(2)
-                        actions.append({"command": ["authentication-status-codes"], "exit_code": 0,
-                                        "stdout": json.dumps(authentication_diagnostics(submitted_at, credential, username)), "stderr": ""})
+                    selection["test_username"] = username
+                    submitted_at = time.time()
+                    submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
+                                         json.dumps(selection, separators=(",", ":")), str(credential)], 20)
+                    failure_stage = re.search(r"Authentication failed at (permission|identity|credential-file|username-focus|username-keypost|password-focus|password-keypost|username-delivery|button-owner|button-default|button-event|pointer-observation)\b", submitted["stderr"])
+                    outcome = json.loads(submitted["stdout"]) if submitted["exit_code"] == 0 else None
+                    actions.append({"command": ["runner-authentication"], "exit_code": 0 if outcome and outcome.get("authenticationSubmitted") is True else 1,
+                                    "stdout": json.dumps(outcome) if outcome is not None else "",
+                                    "stderr": failure_stage.group(1) if failure_stage else ""})
+                    time.sleep(2)
+                    actions.append({"command": ["authentication-status-codes"], "exit_code": 0,
+                                    "stdout": json.dumps(authentication_diagnostics(submitted_at, credential, username)), "stderr": ""})
                 except RuntimeError as error:
                     actions.append({"command": ["runner-authentication"], "exit_code": 1, "stdout": "", "stderr": str(error)})
                 time.sleep(2)
@@ -188,11 +207,12 @@ def main():
     pointer.parent.mkdir(parents=True, exist_ok=True)
     pointer.write_text(str(probe), encoding="utf-8")
     command = ["/usr/bin/open", "-n", "-g", "-a", str(candidate), "--args", "--update-policy-probe", str(probe)]
-    opener = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    time.sleep(3)
     approval_actions = []
-    if not (probe / "receipt.json").exists():
-        approval_actions = system_approval(args.output)
+    with verified_runner_credential(approval_actions) as fixture:
+        opener = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(3)
+        if not (probe / "receipt.json").exists():
+            approval_actions.extend(system_approval(args.output, fixture))
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline and not (probe / "receipt.json").exists():
         time.sleep(0.1)

@@ -11,6 +11,24 @@ spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_account_is_verified_before_the_system_authentication_dialog_opens(self):
+        events = []
+        @contextlib.contextmanager
+        def credential():
+            events.append("created")
+            yield Path("private-credential"), "test-user"
+            events.append("removed")
+        def capture(*args):
+            events.append("verified")
+            return {"exit_code": 0, "stdout": '{"verified":true}'}
+        def approve(output, path, username, actions):
+            events.append("dialog")
+            self.assertEqual(username, "test-user")
+            return actions
+        with patch.object(module, "runner_credential", credential), patch.object(module, "capture", capture), \
+                patch.object(module, "system_approval_with_credential", approve, create=True):
+            module.system_approval(Path("assessment.json"))
+        self.assertEqual(events, ["created", "verified", "dialog", "removed"])
     def test_authentication_log_summary_retains_codes_without_message_contents(self):
         records = [{"processImagePath": "/system/authd", "timestamp": "2026-10-29T19:00:00+00:00",
                     "eventMessage": "private-credential-and-user error=-60005 errAuthorizationDenied"}]
