@@ -121,9 +121,9 @@ def password_command(command, password):
                     directory_errors.update(code.decode("ascii") for code in re.findall(rb"\beDS[A-Za-z]+\b", pending))
                 except OSError:
                     continue
-                if b"password:" in pending.lower():
+                    if re.search(rb"password[^\r\n]{0,80}:\s*$", pending.lower()):
                     prompt = pending.lower()
-                    stage = "old" if b"old password" in prompt else "repeat" if b"retype" in prompt or b"verify" in prompt else "new" if b"new password" in prompt else "unspecified"
+                        stage = "old" if b"old password" in prompt or b"current password" in prompt or b"admin password" in prompt else "repeat" if b"retype" in prompt or b"verify" in prompt else "new" if b"new" in prompt else "unspecified"
                     stages.append(stage)
                     if stage == "old":
                         raise RuntimeError("Runner password reset requires its existing password; no credential guessed")
@@ -157,19 +157,14 @@ def runner_credential():
     try:
         with os.fdopen(fd, "w") as output:
             output.write(password)
-        existing = subprocess.check_output(["/usr/bin/dscl", ".", "-list", "/Users", "UniqueID"], text=True)
-        used = {int(line.split()[-1]) for line in existing.splitlines() if line.split()[-1].isdigit()}
-        uid = next(value for value in range(5500, 6500) if value not in used)
         record = "/Users/" + username
-        commands = [["/usr/bin/dscl", ".", "-create", record]]
-        commands += [["/usr/bin/dscl", ".", "-create", record, key, value] for key, value in (
-            ("UniqueID", str(uid)), ("PrimaryGroupID", "20"), ("UserShell", "/usr/bin/false"),
-            ("NFSHomeDirectory", "/var/empty"), ("RealName", "Update acceptance administrator"), ("IsHidden", "1"))]
-        commands.append(["/usr/sbin/dseditgroup", "-o", "edit", "-a", username, "-t", "user", "admin"])
-        for command in commands:
-            if subprocess.run(["/usr/bin/sudo", "-n", *command], capture_output=True, timeout=15).returncode != 0:
-                raise RuntimeError("Cannot create disposable authentication account")
-        password_command(["/usr/bin/sudo", "-n", "/usr/bin/dscl", ".", "-passwd", record], password)
+        home = Path(os.environ["RUNNER_TEMP"]).resolve() / ("approval-user-" + str(uuid.uuid4()))
+        password_command(["/usr/bin/sudo", "-n", "/usr/sbin/sysadminctl", "-addUser", username,
+                          "-fullName", "Update acceptance administrator", "-home", str(home), "-password", "-", "-admin"], password)
+        identity = subprocess.run(["/usr/bin/dscl", ".", "-read", record, "GeneratedUID"], capture_output=True, text=True, timeout=10)
+        authority = subprocess.run(["/usr/bin/sudo", "-n", "/usr/bin/dscl", ".", "-read", record, "AuthenticationAuthority"], capture_output=True, text=True, timeout=10)
+        if identity.returncode != 0 or authority.returncode != 0 or "ShadowHash" not in authority.stdout:
+            raise RuntimeError("Disposable account lacks normal local authentication support")
         password_command(["/usr/bin/dscl", ".", "-authonly", username], password)
         if "admin" not in subprocess.check_output(["/usr/bin/id", "-Gn", username], text=True).split():
             raise RuntimeError("Disposable account is not an administrator")
