@@ -153,7 +153,10 @@ function run(argv) {
     if (JSON.stringify(container) !== JSON.stringify(expected.container)) throw new Error("Approval warning changed; no click");
     const button = at(expected.button_path);
     if (argv[0] === "authenticate") {
+        let phase = "permission";
+        try {
         if (!$.CGPreflightPostEventAccess()) throw new Error("System event permission unavailable");
+        phase = "identity";
         const owner = $.NSRunningApplication.runningApplicationWithProcessIdentifier(processId);
         if (!owner || !owner.executableURL || !ObjC.unwrap(owner.executableURL.path).startsWith("/System/") ||
             button.name !== "OK" || !button.visible || !button.enabled) throw new Error("Unexpected system authentication control");
@@ -165,6 +168,7 @@ function run(argv) {
         const environment = $.NSProcessInfo.processInfo.environment;
         const root = ObjC.unwrap(environment.objectForKey("RUNNER_TEMP"));
         if (ObjC.unwrap(environment.objectForKey("GITHUB_ACTIONS")) !== "true" || !argv[3].startsWith(root + "/approval-credential-")) throw new Error("Authentication is restricted to the disposable runner");
+        phase = "credential-file";
         const password = $.NSString.stringWithContentsOfFileEncodingError(argv[3], $.NSUTF8StringEncoding, Ref());
         if (!password || password.length < 24 || password.length > 128) throw new Error("Invalid runner credential file");
         function key(code, flags) {
@@ -174,15 +178,22 @@ function run(argv) {
                 $.CGEventPost(0, event);
             }
         }
-        function typeInto(control, text) {
+        function typeInto(control, text, fieldName) {
+            phase = fieldName + "-focus";
             if ($.AXUIElementSetAttributeValue(control, $("AXFocused"), $(true)) !== 0) throw new Error("Cannot focus system credential field");
             $.NSThread.sleepForTimeInterval(0.1);
-            if (scalar(control, "AXFocused", false) !== true) throw new Error("System credential field did not gain focus");
-            key(0, 1048576); // Select all through the normal Command-A shortcut.
-            key(51, 0);
-            for (const char of text) {
+            function requireFocus() {
+                phase = fieldName + "-focus";
                 const focused = attribute($.AXUIElementCreateSystemWide(), "AXFocusedUIElement");
                 if (scalar(control, "AXFocused", false) !== true || focused === null || !$.CFEqual(focused, control)) throw new Error("System credential focus changed");
+            }
+            requireFocus();
+            key(0, 1048576); // Select all through the normal Command-A shortcut.
+            requireFocus();
+            key(51, 0);
+            for (const char of text) {
+                requireFocus();
+                phase = fieldName + "-keypost";
                 const bytes = $(char).dataUsingEncoding($.NSUTF16LittleEndianStringEncoding);
                 for (const down of [true, false]) {
                     const event = $.CGEventCreateKeyboardEvent(null, 0, down);
@@ -192,10 +203,12 @@ function run(argv) {
                 $.NSThread.sleepForTimeInterval(0.01);
             }
         }
-        typeInto(references[expected.username_path.join("/")], expected.test_username);
+        typeInto(references[expected.username_path.join("/")], expected.test_username, "username");
+        phase = "username-delivery";
         if (scalar(references[expected.username_path.join("/")], "AXValue", "") !== expected.test_username) throw new Error("System username keyboard input was not delivered");
-        typeInto(references[expected.password_path.join("/")], ObjC.unwrap(password));
+        typeInto(references[expected.password_path.join("/")], ObjC.unwrap(password), "password");
         $.NSThread.sleepForTimeInterval(0.4);
+        phase = "button-owner";
         const control = references[expected.button_path.join("/")];
         const position = geometry(control, "AXPosition", 1), size = geometry(control, "AXSize", 2);
         if (!position || !size || scalar(control, "AXEnabled", false) !== true) throw new Error("Authentication control changed");
@@ -206,14 +219,19 @@ function run(argv) {
             return info.kCGWindowAlpha > 0 && r && point[0] >= r.X && point[0] < r.X + r.Width && point[1] >= r.Y && point[1] < r.Y + r.Height;
         });
         if (!front || front.kCGWindowOwnerPID !== processId) throw new Error("Authentication control is obscured");
+        phase = "button-event";
         const down = $.CGEventCreateMouseEvent(null, 1, $.CGPointMake(point[0], point[1]), 0);
         const up = $.CGEventCreateMouseEvent(null, 2, $.CGPointMake(point[0], point[1]), 0);
         $.CGEventPost(0, down);
         $.NSThread.sleepForTimeInterval(0.1);
         $.CGEventPost(0, up);
+        phase = "pointer-observation";
         const cursor = $.CGEventGetLocation($.CGEventCreate(null));
         return JSON.stringify({authenticationSubmitted: true, postEventAllowed: true,
             requestedPoint: point, cursor: [cursor.x, cursor.y]});
+        } catch (_) {
+            throw new Error("Authentication failed at " + phase);
+        }
     }
     if (argv[0] === "scroll") {
         if (button.role !== "AXButton" || button.name !== expected.label || !button.enabled) throw new Error("Approval scroll target is unavailable");
