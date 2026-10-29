@@ -101,6 +101,8 @@ jobs:
         run: cargo build --locked -p studyapp-desktop --bin studyapp --features ui-test
       - name: Verify headless updater transaction rules
         run: cargo test --locked -p studyapp-desktop --bin studyapp update_install
+      - name: Check native acceptance feature before system approval
+        run: cargo check --locked -p studyapp-desktop --bin studyapp --features update-acceptance
       - name: Verify shared native UI behavior
         run: cargo test --locked -p studyapp-ui --features ui-test --lib
       - name: Linux native editor regression

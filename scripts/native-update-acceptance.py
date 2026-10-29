@@ -122,6 +122,7 @@ def authorization_denied(root, packages, binaries, source_sha, old_version, cand
     fixture.mkdir()
     config = sign_fixture(fixture, packages["candidate"], source_sha, candidate_version)
     config["scenario"] = "authorization-denied"
+    config["settings_continuation"] = True
     (fixture / "fixture.json").write_text(json.dumps(config), encoding="utf-8")
     run(["sudo", "apt-get", "install", "--reinstall", "--allow-downgrades", "-y", str(packages["old"])])
     rule = root / "deny.rules"
@@ -149,10 +150,17 @@ def authorization_denied(root, packages, binaries, source_sha, old_version, cand
             assert all(int(value) == os.getuid() for value in uid_line.split()[1:])
             draft = json.loads((data / "drafts" / f'{before["draft_id"]}.json').read_text())
             assert draft["draft"]["content"] == after["live_text"] == config["draft_marker"]
+            cancelled = json.loads((fixture / "settings-cancelled.json").read_text())
+            settings = json.loads((fixture / "settings-guard.json").read_text())
+            restored = json.loads((fixture / "settings-restored.json").read_text())
+            assert cancelled["pid"] == old.pid and cancelled["dirty"] and not cancelled["pending_package"]
+            assert cancelled["persisted_interval"] == settings["original_interval"]
+            assert restored["interval"] == settings["expected_interval"] and restored["pid"] == after["pid"]
             (root / "transition-result.json").write_text(json.dumps({"source_sha": source_sha, "scenario": "authorization-denied",
                 "real_pkexec": True, "real_polkit_denial": True, "system_cancel_button_exercised": False,
                 "supervisor_reopened_old_version": installed, "old_pid": old.pid, "reopened_pid": after["pid"],
-                "uid": os.getuid(), "draft_preserved": True, "installer_not_started": True}, indent=2))
+                "uid": os.getuid(), "draft_preserved": True, "installer_not_started": True,
+                "settings_cancel_then_save_continue": True}, indent=2))
             os.kill(after["pid"], 15)
     finally:
         collect_diagnostics(root)

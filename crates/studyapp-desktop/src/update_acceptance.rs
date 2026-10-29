@@ -174,7 +174,7 @@ async fn presented(window: AnyWindowHandle, cx: &mut AsyncApp) {
             .await;
     }
 }
-async fn click_visible(window: AnyWindowHandle, id: SharedString, cx: &mut AsyncApp) {
+async fn click_visible(window: AnyWindowHandle, id: ElementId, cx: &mut AsyncApp) {
     let started = Instant::now();
     loop {
         presented(window, cx).await;
@@ -186,7 +186,7 @@ async fn click_visible(window: AnyWindowHandle, id: SharedString, cx: &mut Async
         }
         assert!(
             started.elapsed() < Duration::from_secs(30),
-            "Visible control missing: {id}"
+            "Visible control missing: {id:?}"
         );
     }
     #[cfg(any(windows, target_os = "macos"))]
@@ -314,12 +314,18 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 presented(window,cx).await;
                 window.update(cx,|_,window,_|capture(window,"recovery-notice.png")).unwrap();
             }
+            if config["settings_continuation"] == true {
+                let saved:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("settings-guard.json")).unwrap()).unwrap();
+                let interval=window.update(cx,|_,_,cx|view.read(cx).preferences_ui.saved.as_ref().unwrap().settings.interval_minutes).unwrap();
+                assert_eq!(u64::from(interval),saved["expected_interval"].as_u64().unwrap());
+                save("settings-restored.json",json!({"interval":interval,"pid":std::process::id()}));
+            }
             window.update(cx,|_,_,cx|{
                 assert_eq!(committed(view.read(cx)),previous["committed"]);
                 view.update(cx,|a,cx|{a.page=Page::Notes;a.clear_notices(cx);cx.notify();});
             }).unwrap();
             click_visible(window, "folders-drafts".into(), cx).await;
-            click_visible(window, SharedString::from(format!("draft-row-{id}")), cx).await;
+            click_visible(window, SharedString::from(format!("draft-row-{id}")).into(), cx).await;
             wait(window,&view,cx,"restored editor",|a,cx|a.note_editor.is_some()&&a.note_content.read(cx).ready()).await;
             let editor=window.update(cx,|_,_,cx|view.read(cx).note_content.clone()).unwrap();
             let live=crate::smoke_editor::bridge(window,&editor,json!({"type":"snapshot"}),cx).await;
@@ -343,9 +349,28 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         assert_eq!(live["text"],marker);
         let before=window.update(cx,|_,_,cx|{let app=view.read(cx);json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":app.active_draft_id,"committed":baseline,"database":database,"source_sha":config["source_sha"],"transaction":transaction_directory()})}).unwrap();
         save("old-observation.json",before);
+        if config["settings_continuation"] == true {
+            // Navigate normally: this saves the draft before editing settings.
+            // The positive scenario separately proves an unsaved close barrier.
+            HOLD_AUTOSAVE.store(false,Ordering::Relaxed);
+            click_visible(window,("nav",4_usize).into(),cx).await;
+            wait(window,&view,cx,"settings navigation saved editor",|a,_|a.page==Page::Settings&&a.note_editor.is_none()&&a.preferences_ui.saved.is_some()).await;
+            click_visible(window,"settings-section-learning".into(),cx).await;
+            let values=window.update(cx,|_,window,cx|{
+                let app=view.read(cx);
+                let original=app.preferences_ui.saved.as_ref().unwrap().settings.interval_minutes;
+                let next=if original==35 {36} else {35};
+                let input=app.interval.clone();
+                input.update(cx,|input,cx|input.set_value(next.to_string(),window,cx));
+                assert!(view.read(cx).settings_dirty(cx));
+                json!({"original_interval":original,"expected_interval":next})
+            }).unwrap();
+            save("settings-guard.json",values);
+        }
         CHECKS_READY.store(true,Ordering::Relaxed);
         window.update(cx,|_,_,cx|{let panel=view.read(cx).update_panel.clone();panel.update(cx,|p,cx|p.acceptance_check(cx));}).unwrap();
         wait(window,&view,cx,"signed update card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
+        if config["settings_continuation"] != true {
         native_visibility(window, &view, false, "card-first-native-state.json", cx).await;
         click_visible(window, "update-dialog-later".into(), cx).await;
         wait(window,&view,cx,"native dismissal",|a,cx|!a.update_panel.read(cx).dialog_visible()).await;
@@ -353,9 +378,29 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         click_visible(window, "sidebar-update".into(), cx).await;
         wait(window,&view,cx,"reopened card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
         native_visibility(window, &view, false, "card-native-state.json", cx).await;
+        }
         presented(window, cx).await;
         window.update(cx,|_,window,_|capture(window,"update-card.png")).unwrap();
         click_visible(window, "update-dialog-install".into(), cx).await;
+        if config["settings_continuation"] == true {
+            wait(window,&view,cx,"update settings guard",|a,_|a.preferences_ui.leave.is_some()).await;
+            presented(window,cx).await;
+            window.update(cx,|_,window,_|capture(window,"settings-update-guard.png")).unwrap();
+            click_visible(window,"settings-continue-editing".into(),cx).await;
+            wait(window,&view,cx,"cancel installation to edit settings",|a,_|a.preferences_ui.leave.is_none()).await;
+            let state=window.update(cx,|_,_,cx|{let app=view.read(cx);
+                assert!(app.settings_dirty(cx));assert!(!app.close_requested);assert!(app.pending_nsis_update.is_none());
+                json!({"pid":std::process::id(),"dirty":true,"close_requested":false,"pending_package":false,
+                    "persisted_interval":app.preferences_ui.saved.as_ref().unwrap().settings.interval_minutes})
+            }).unwrap();
+            let values:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("settings-guard.json")).unwrap()).unwrap();
+            assert_eq!(state["persisted_interval"],values["original_interval"]);
+            assert!(!directory().unwrap().join("attempt.json").exists());
+            save("settings-cancelled.json",state);
+            click_visible(window,"update-dialog-install".into(),cx).await;
+            wait(window,&view,cx,"retry settings guard",|a,_|a.preferences_ui.leave.is_some()).await;
+            click_visible(window,"settings-save-and-continue".into(),cx).await;
+        }
         #[cfg(target_os = "macos")]
         {
             // Normal system approval may leave the first attempt on its retry card.
@@ -386,6 +431,24 @@ pub fn before_close(app: &StudyApp, prepared: &crate::update_install::PreparedPa
         "attempt.json",
         json!({"directory":dir,"pid":std::process::id()}),
     );
+    if configuration().unwrap()["settings_continuation"] == true {
+        let previous: Value = serde_json::from_slice(
+            &std::fs::read(directory().unwrap().join("old-observation.json")).unwrap(),
+        )
+        .unwrap();
+        let id = previous["draft_id"].as_str().unwrap();
+        let disk = crate::drafts::DraftStore::record_path(&app.last_library, id).unwrap();
+        let stored: Value = serde_json::from_slice(&std::fs::read(&disk).unwrap()).unwrap();
+        let marker = configuration().unwrap()["draft_marker"].clone();
+        assert_eq!(stored["draft"]["content"], marker);
+        assert!(!app.settings_dirty(cx));
+        save(
+            "close-pending.json",
+            json!({"id":id,"revision":stored["revision"],"marker":marker,"disk":disk,
+            "already_durable_after_settings_navigation":true,"pid":std::process::id(),"timestamp":chrono::Utc::now().timestamp_millis()}),
+        );
+        return;
+    }
     let marker = configuration().unwrap()["draft_marker"]
         .as_str()
         .unwrap()
