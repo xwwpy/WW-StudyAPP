@@ -35,6 +35,10 @@ def apis():
     security.OpenProcessToken.argtypes = [w.HANDLE, w.DWORD, c.POINTER(w.HANDLE)]
     security.GetTokenInformation.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.POINTER(w.DWORD)]
     security.ConvertSidToStringSidW.argtypes = [c.c_void_p, c.POINTER(w.LPWSTR)]
+    security.ConvertStringSidToSidW.argtypes = [w.LPCWSTR, c.POINTER(c.c_void_p)]
+    security.GetLengthSid.argtypes = [c.c_void_p]
+    security.GetLengthSid.restype = w.DWORD
+    security.SetTokenInformation.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD]
     security.CreateRestrictedToken.argtypes = [w.HANDLE, w.DWORD, w.DWORD, c.c_void_p,
                                               w.DWORD, c.c_void_p, w.DWORD, c.c_void_p, c.POINTER(w.HANDLE)]
     security.CreateProcessWithTokenW.argtypes = [w.HANDLE, w.DWORD, w.LPCWSTR, w.LPWSTR,
@@ -113,7 +117,7 @@ def launch(executable, arguments, environment, headless=False):
         raise RuntimeError("Ordinary-user acceptance launch is restricted to Windows CI")
     kernel, security = apis()
     current, limited = w.HANDLE(), w.HANDLE()
-    require(security.OpenProcessToken(kernel.GetCurrentProcess(), 0x000B, c.byref(current)))
+    require(security.OpenProcessToken(kernel.GetCurrentProcess(), 0x008B, c.byref(current)))
     try:
         selected = current
         restricted = False
@@ -134,6 +138,19 @@ def launch(executable, arguments, environment, headless=False):
         if token_sid(kernel, security, selected) != token_sid(kernel, security, current):
             raise RuntimeError("Acceptance launch token changed the user identity")
         integrity = token_sid(kernel, security, selected, 25)
+        if restricted and int(integrity.rsplit("-", 1)[1]) > 8192:
+            # The runner's built-in Administrator has no linked medium token.
+            # Lower only our newly derived restricted token, never the caller token.
+            class Label(c.Structure):
+                _fields_ = [("sid", c.c_void_p), ("attributes", w.DWORD)]
+            sid = c.c_void_p()
+            require(security.ConvertStringSidToSidW("S-1-16-8192", c.byref(sid)))
+            try:
+                label = Label(sid, 0x20)
+                require(security.SetTokenInformation(selected, 25, c.byref(label), c.sizeof(label) + security.GetLengthSid(sid)))
+            finally:
+                kernel.LocalFree(sid)
+            integrity = token_sid(kernel, security, selected, 25)
         if int(integrity.rsplit("-", 1)[1]) > 8192:
             raise RuntimeError(f"Acceptance token integrity is above ordinary user: {integrity}")
         executable = str(Path(executable).resolve(strict=True))
