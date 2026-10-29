@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tarfile
 import time
+import tomllib
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,20 +24,37 @@ def run(argv, **kwargs):
 def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
+def workspace_version(root):
+    return tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["package"]["version"]
+
+
+def next_patch(version):
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+    if not match:
+        raise ValueError("Acceptance requires a stable three-part workspace version")
+    return f"{match[1]}.{match[2]}.{int(match[3]) + 1}"
+
+
 def snapshot(destination, archive, version):
     destination.mkdir()
     with tarfile.open(fileobj=io.BytesIO(archive)) as source:
         source.extractall(destination, filter="data")
-    for path in [destination / "Cargo.toml", *destination.glob("crates/studyapp-*/Cargo.toml")]:
+    workspace = destination / "Cargo.toml"
+    value = workspace.read_text(encoding="utf-8")
+    value = re.sub(r'(\[workspace.package\]\s*version\s*=\s*")[^"]+(")', lambda match: match[1] + version + match[2], value)
+    workspace.write_text(value, encoding="utf-8")
+    names = set()
+    for path in destination.glob("crates/studyapp-*/Cargo.toml"):
         value = path.read_text(encoding="utf-8")
-        value = value.replace('version = "0.1.3"', f'version = "{version}"')
+        names.add(tomllib.loads(value)["package"]["name"])
+        value = re.sub(r'(?m)^(studyapp-[\w-]+\s*=\s*\{[^\n]*?version\s*=\s*")[^"]+("[^\n]*path\s*=[^\n]*)$', lambda match: match[1] + version + match[2], value)
         path.write_text(value, encoding="utf-8")
     lock = destination / "Cargo.lock"
     value = lock.read_text(encoding="utf-8")
-    value = re.sub(r'(name = "studyapp-[^"\n]+"\nversion = ")[^"]+("\n)', lambda match: match[1] + version + match[2], value)
+    value = re.sub(r'(name = "([^"\n]+)"\nversion = ")[^"]+("\n)', lambda match: match[1] + version + match[3] if match[2] in names else match[0], value)
     lock.write_text(value, encoding="utf-8")
 
-def sign_fixture(directory, package, source_sha, target):
+def sign_fixture(directory, package, source_sha, target, platform="linux-x86_64"):
     spec = importlib.util.spec_from_file_location("fixture_signing", ROOT / "scripts/update-signature.py")
     signing = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(signing)
@@ -44,7 +62,7 @@ def sign_fixture(directory, package, source_sha, target):
     payload = package.read_bytes()
     url = f"https://github.com/xwwpy/WW-StudyAPP/releases/download/v{target}/{package.name}"
     metadata = {"schema": 1, "version": target, "notes": "# Native update acceptance\n\n- Real package transition", "pub_date": "2026-10-29T00:00:00Z", "platforms": {
-        "linux-x86_64": {"url": url, "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(), "signature": base64.b64encode(signing.sign(seed, payload)).decode()}}}
+        platform: {"url": url, "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest(), "signature": base64.b64encode(signing.sign(seed, payload)).decode()}}}
     exact = json.dumps(metadata, separators=(",", ":"), ensure_ascii=False).encode()
     envelope = {"signed_payload": base64.b64encode(exact).decode(), "manifest_signature": base64.b64encode(signing.sign(seed, b"WW-StudyApp update manifest v1\0" + exact)).decode()}
     (directory / "latest.json").write_text(json.dumps(envelope), encoding="utf-8")
@@ -111,7 +129,9 @@ def main():
     packages = {}
     binaries = {}
     environment = dict(os.environ, CARGO_TARGET_DIR=str(root / "target"))
-    for label, version in [("old", "0.1.3"), ("candidate", "0.1.4")]:
+    old_version = workspace_version(ROOT)
+    candidate_version = next_patch(old_version)
+    for label, version in [("old", old_version), ("candidate", candidate_version)]:
         source = root / label
         snapshot(source, archive, version)
         run(["cargo", "build", "--locked", "-p", "studyapp-desktop", "--bin", "studyapp", "--features", "update-acceptance"], cwd=source, env=environment)
@@ -123,7 +143,7 @@ def main():
         binaries[label] = binary
     fixture = root / "fixture"
     fixture.mkdir()
-    config = sign_fixture(fixture, packages["candidate"], source_sha, "0.1.4")
+    config = sign_fixture(fixture, packages["candidate"], source_sha, candidate_version)
     verify = root / "verify-production"
     verify.mkdir()
     shutil.copy2(fixture / "latest.json", verify / "manifest.json")
@@ -161,10 +181,10 @@ def main():
             assert ack["revision"] >= pending["revision"] and handoff["ack"] == ack
             assert pending["timestamp"] <= ack["timestamp"] <= handoff["timestamp"]
             installed = subprocess.check_output(["dpkg-query", "-W", "-f=${Version}", "studyapp"], text=True).strip()
-            assert installed == after["version"] == "0.1.4"
+            assert installed == after["version"] == candidate_version
             assert before["pid"] == old.pid != after["pid"]
             assert tx["old_pid"] == old.pid and tx["uid"] == os.getuid()
-            assert receipt == {"id": tx["id"], "version": "0.1.4", "pid": after["pid"]}
+            assert receipt == {"id": tx["id"], "version": candidate_version, "pid": after["pid"]}
             assert sha("/usr/bin/studyapp") == sha(binaries["candidate"])
             status = Path(f'/proc/{after["pid"]}/status').read_text()
             uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))

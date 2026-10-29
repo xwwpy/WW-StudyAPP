@@ -1,0 +1,71 @@
+name: Windows installed update
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact revision to validate independently
+        type: string
+        default: ''
+  push:
+    branches: [main, 'codex/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installed-update-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ inputs.ref == '' && !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  transition:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_BUILD_JOBS: '2'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.0
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          shared-key: desktop-windows-windows
+          key: installed-update-windows
+          cache-on-failure: true
+      - name: Test acceptance fixture boundaries
+        run: |
+          python scripts/test-native-update-acceptance.py
+          if ($LASTEXITCODE -ne 0) { throw 'Acceptance fixture tests failed' }
+      - name: Build feature-off trust verifier
+        run: |
+          cargo build --locked -p studyapp-desktop --bin studyapp
+          if ($LASTEXITCODE -ne 0) { throw 'Production verifier build failed' }
+      - name: Verify actual NSIS update and ordinary-user restart
+        run: |
+          python scripts/native-update-windows.py --work-dir "$env:RUNNER_TEMP/native-update-windows" --production-binary target/debug/studyapp.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Installed Windows transition failed' }
+      - name: Preserve native transition evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-update-windows-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-update-windows/transition-result.json
+            ${{ runner.temp }}/native-update-windows/fixture/*.json
+            ${{ runner.temp }}/native-update-windows/fixture/*.png
+            ${{ runner.temp }}/native-update-windows/transaction-evidence/**
+          if-no-files-found: warn
+          retention-days: 30

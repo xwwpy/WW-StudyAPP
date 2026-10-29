@@ -12,7 +12,13 @@ import uuid
 
 
 def capture(argv):
-    result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired as error:
+        def text(value):
+            return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else (value or "")
+        return {"command": argv, "exit_code": 124, "timed_out": True,
+                "stdout": text(error.stdout), "stderr": text(error.stderr)}
     return {"command": argv, "exit_code": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
 
 
