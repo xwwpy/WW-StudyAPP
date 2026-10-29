@@ -269,18 +269,17 @@ function run(argv) {
             return info.kCGWindowAlpha > 0 && r && point[0] >= r.X && point[0] < r.X + r.Width && point[1] >= r.Y && point[1] < r.Y + r.Height;
         });
         if (!front || front.kCGWindowOwnerPID !== processId) throw new Error("Authentication control is obscured");
+        phase = "button-default";
+        const defaultButton = attribute(references[expected.container_path.join("/")], "AXDefaultButton");
+        if (defaultButton === null || !$.CFEqual(defaultButton, control)) throw new Error("System default action is not the matched OK button");
+        let secure = children(application, "AXWindows")[expected.password_path[0]];
+        for (const index of expected.password_path.slice(1)) secure = children(secure, "AXChildren")[index];
+        const focused = attribute($.AXUIElementCreateSystemWide(), "AXFocusedUIElement");
+        if (focused === null || !$.CFEqual(focused, secure) || scalar(secure, "AXSubrole", "") !== "AXSecureTextField") throw new Error("Secure focus changed before Return");
         phase = "button-event";
-        const down = $.CGEventCreateMouseEvent(null, 1, $.CGPointMake(point[0], point[1]), 0);
-        const up = $.CGEventCreateMouseEvent(null, 2, $.CGPointMake(point[0], point[1]), 0);
-        $.CGEventSetIntegerValueField(down, 1, 1);
-        $.CGEventSetIntegerValueField(up, 1, 1);
-        $.CGEventPost(0, down);
-        $.NSThread.sleepForTimeInterval(0.1);
-        $.CGEventPost(0, up);
-        phase = "pointer-observation";
-        const cursor = $.CGEventGetLocation($.CGEventCreate(null));
+        key(36, 0);
         return JSON.stringify({authenticationSubmitted: true, postEventAllowed: true,
-            requestedPoint: point, cursor: [cursor.x, cursor.y], clickCount: 1, focusObservations: focusObservations});
+            submission: "default-return", defaultButtonMatched: true, buttonPoint: point, focusObservations: focusObservations});
         } catch (_) {
             return JSON.stringify({authenticationSubmitted: false, phase: phase, focusObservations: focusObservations});
         }

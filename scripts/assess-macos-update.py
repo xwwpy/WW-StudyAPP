@@ -131,7 +131,7 @@ def system_approval(output):
                         submitted_at = time.time()
                         submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
                                              json.dumps(selection, separators=(",", ":")), str(credential)], 20)
-                        failure_stage = re.search(r"Authentication failed at (permission|identity|credential-file|username-focus|username-keypost|password-focus|password-keypost|username-delivery|button-owner|button-event|pointer-observation)\b", submitted["stderr"])
+                        failure_stage = re.search(r"Authentication failed at (permission|identity|credential-file|username-focus|username-keypost|password-focus|password-keypost|username-delivery|button-owner|button-default|button-event|pointer-observation)\b", submitted["stderr"])
                         outcome = json.loads(submitted["stdout"]) if submitted["exit_code"] == 0 else None
                         actions.append({"command": ["runner-authentication"], "exit_code": 0 if outcome and outcome.get("authenticationSubmitted") is True else 1,
                                         "stdout": json.dumps(outcome) if outcome is not None else "",
