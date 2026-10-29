@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import re
 import subprocess
 import sys
 import time
@@ -71,6 +72,8 @@ def runner_credential():
         deadline = time.monotonic() + 15
         pending = b""
         supplied = 0
+        stages = []
+        directory_errors = set()
         completed = False
         try:
             while time.monotonic() < deadline:
@@ -78,14 +81,20 @@ def runner_credential():
                 if pid:
                     completed = True
                     if os.waitstatus_to_exitcode(status) != 0 or supplied == 0:
-                        raise RuntimeError(f"Cannot prepare disposable runner authentication (exit={os.waitstatus_to_exitcode(status)}, prompts={supplied})")
+                        raise RuntimeError(f"Cannot prepare disposable runner authentication (exit={os.waitstatus_to_exitcode(status)}, prompts={stages}, codes={sorted(directory_errors)})")
                     break
                 if select.select([terminal], [], [], 0.1)[0]:
                     try:
                         pending += os.read(terminal, 4096)
+                        directory_errors.update(code.decode("ascii") for code in re.findall(rb"\beDS[A-Za-z]+\b", pending))
                     except OSError:
                         continue
                     if b"password:" in pending.lower():
+                        prompt = pending.lower()
+                        stage = "old" if b"old password" in prompt else "repeat" if b"retype" in prompt or b"verify" in prompt else "new" if b"new password" in prompt else "unspecified"
+                        stages.append(stage)
+                        if stage == "old":
+                            raise RuntimeError("Runner password reset requires its existing password; no credential guessed")
                         supplied += 1
                         if supplied > 2:
                             raise RuntimeError("Unexpected runner password prompts")
