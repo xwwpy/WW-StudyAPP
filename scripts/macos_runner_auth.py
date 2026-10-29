@@ -46,10 +46,10 @@ def runner_credential():
     password = secrets.token_urlsafe(36)
     path = Path(os.environ["RUNNER_TEMP"]) / ("approval-credential-" + str(uuid.uuid4()))
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as output:
-        output.write(password)
     child = None
     try:
+        with os.fdopen(fd, "w") as output:
+            output.write(password)
         child, terminal = pty.fork()
         if child == 0:
             os.execve("/usr/bin/sudo", ["sudo", "-n", "/usr/bin/dscl", ".", "-passwd", "/Users/runner"],

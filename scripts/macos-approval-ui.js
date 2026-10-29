@@ -41,6 +41,17 @@ function run(argv) {
     const windowInfo = $.CGWindowListCopyWindowInfo(1, 0);
     const onScreen = ObjC.deepUnwrap(ObjC.castRefToObject(windowInfo));
     if (!Array.isArray(onScreen)) throw new Error("CoreGraphics window list did not bridge to an array");
+    if (argv[0] === "inventory") {
+        const seen = new Set();
+        const windows = onScreen.filter(info => info.kCGWindowLayer === 0 && !seen.has(info.kCGWindowOwnerPID) && seen.add(info.kCGWindowOwnerPID));
+        return JSON.stringify(windows.slice(0, 10).map(info => {
+            const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(info.kCGWindowOwnerPID);
+            let bundle = null, executable = null;
+            try { bundle = ObjC.unwrap(app.bundleIdentifier); executable = ObjC.unwrap(app.executableURL.path); } catch (_) {}
+            return {pid: info.kCGWindowOwnerPID, name: info.kCGWindowOwnerName,
+                bundle: bundle, executable: executable};
+        }));
+    }
     if (argv[0] === "bridge-self-test") {
         if (!onScreen.every(info => info && typeof info.kCGWindowOwnerPID === "number" &&
             info.kCGWindowBounds && typeof info.kCGWindowBounds.X === "number")) {
@@ -50,6 +61,11 @@ function run(argv) {
     }
     const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
     let processId = null;
+    if (/^pid:[0-9]+$/.test(argv[1])) {
+        const requested = Number(argv[1].slice(4));
+        if (!onScreen.some(info => info.kCGWindowOwnerPID === requested)) throw new Error("Requested approval process is not on screen");
+        processId = requested;
+    }
     for (let index = 0; index < apps.count; index++) {
         const app = apps.objectAtIndex(index);
         if (ObjC.unwrap(app.localizedName) === argv[1]) {
@@ -133,7 +149,9 @@ function run(argv) {
     if (JSON.stringify(container) !== JSON.stringify(expected.container)) throw new Error("Approval warning changed; no click");
     const button = at(expected.button_path);
     if (argv[0] === "authenticate") {
-        if (argv[1] !== "SecurityAgent" || button.name !== "OK" || !button.visible || !button.enabled) throw new Error("Unexpected system authentication control");
+        const owner = $.NSRunningApplication.runningApplicationWithProcessIdentifier(processId);
+        if (!owner || !owner.executableURL || !ObjC.unwrap(owner.executableURL.path).startsWith("/System/") ||
+            button.name !== "OK" || !button.visible || !button.enabled) throw new Error("Unexpected system authentication control");
         const field = at(expected.password_path);
         if (field.subrole !== "AXSecureTextField" || !field.visible || !field.enabled) throw new Error("System password field unavailable");
         const environment = $.NSProcessInfo.processInfo.environment;

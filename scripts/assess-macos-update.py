@@ -110,14 +110,25 @@ def system_approval(output):
     confirmed = click("CoreServicesUIAgent", ["Open Anyway", "Open"])
     if confirmed:
         time.sleep(1)
-        authentication = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", "SecurityAgent"], 20)
-        actions.append(authentication)
-        if authentication["exit_code"] == 0:
-            selection = select_authentication(json.loads(authentication["stdout"]))
-            if selection is not None:
+        inventory = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "inventory"], 10)
+        actions.append(inventory)
+        candidates = []
+        if inventory["exit_code"] == 0:
+            for owner in json.loads(inventory["stdout"]):
+                if not str(owner.get("executable") or "").startswith("/System/"):
+                    continue
+                process = "pid:" + str(owner["pid"])
+                authentication = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", process], 20)
+                actions.append(authentication)
+                if authentication["exit_code"] == 0:
+                    selection = select_authentication(json.loads(authentication["stdout"]))
+                    if selection is not None:
+                        candidates.append((process, selection))
+            if len(candidates) == 1:
+                process, selection = candidates[0]
                 try:
                     with runner_credential() as credential:
-                        submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", "SecurityAgent",
+                        submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
                                              json.dumps(selection, separators=(",", ":")), str(credential)], 20)
                         actions.append({"command": ["runner-authentication"], "exit_code": submitted["exit_code"],
                                         "stdout": "submitted" if submitted["exit_code"] == 0 else "", "stderr": ""})

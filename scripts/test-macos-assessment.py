@@ -1,11 +1,33 @@
 import importlib.util
 from pathlib import Path
 import unittest
-from macos_runner_auth import select_authentication
+from unittest.mock import patch, MagicMock
+import contextlib
+import tempfile
+import os
+from macos_runner_auth import select_authentication, runner_credential
 spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_name("assess-macos-update.py"))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_runner_credential_write_failure_removes_the_single_file(self):
+        original = os.fdopen
+        @contextlib.contextmanager
+        def fail_write(fd, mode):
+            with original(fd, mode):
+                writer = MagicMock()
+                writer.write.side_effect = OSError("simulated write failure")
+                yield writer
+        with tempfile.TemporaryDirectory() as root:
+            with patch("macos_runner_auth.sys.platform", "darwin"), patch("macos_runner_auth.getpass.getuser", return_value="runner"), \
+                    patch("macos_runner_auth.subprocess.check_output", return_value="staff admin"), \
+                    patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_TEMP": root}), \
+                    patch.dict("sys.modules", {"pty": MagicMock(), "termios": MagicMock()}), \
+                    patch("macos_runner_auth.os.fdopen", side_effect=fail_write):
+                with self.assertRaises(OSError):
+                    with runner_credential():
+                        self.fail("Cannot yield an incomplete credential")
+            self.assertEqual(list(Path(root).iterdir()), [])
     def test_runner_authentication_requires_unique_visible_exact_prompt(self):
         window = {"role": "AXWindow", "visible": True, "name": "Privacy & Security", "children": [
             {"role": "AXStaticText", "value": "You are attempting to open an app. Enter an administrator password."},
