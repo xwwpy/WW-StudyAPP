@@ -194,8 +194,15 @@ fn prepare_approval_candidate(package: &VerifiedPackage, source: &Path) -> Resul
     let candidate = dir.join(APP);
     if dir.exists() {
         safe_dir(&dir, uid()?)?;
-        let previous = request(&dir)?;
-        if previous.quarantine != quarantine_fingerprint(package, source, &candidate)? {
+        let reusable = match request(&dir) {
+            Ok(previous) => {
+                previous.quarantine == quarantine_fingerprint(package, source, &candidate)?
+            }
+            // A failed copy/attribute/request write can leave an incomplete attempt.
+            // Keep it for diagnostics, but reconstruct from the verified source.
+            Err(_) => false,
+        };
+        if !reusable {
             // Keep every old attribute and receipt intact, but never reuse this attempt.
             let archived = package
                 .directory
@@ -464,6 +471,42 @@ pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_install_macos_incomplete_approval_can_retry_without_deleting_evidence() {
+        let root =
+            std::env::temp_dir().join(format!("studyapp-incomplete-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(root.join("package"), b"image").unwrap();
+        let package = VerifiedPackage {
+            directory: root.clone(),
+            version: "0.1.4".into(),
+            digest: "unchanged".into(),
+        };
+        assert!(prepare_approval_candidate(&package, &source).is_err());
+        assert!(root.join("approval").is_dir());
+        assert!(!root.join("approval/request.json").exists());
+        fs::create_dir_all(source.join("Contents/MacOS")).unwrap();
+        fs::write(
+            source.join("Contents/MacOS/studyapp"),
+            b"complete executable",
+        )
+        .unwrap();
+        prepare_approval_candidate(&package, &source).unwrap();
+        assert!(root.join("approval/request.json").exists());
+        assert_eq!(
+            fs::read_dir(&root)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("approval-superseded-"))
+                .count(),
+            1
+        );
+    }
     #[test]
     fn update_install_macos_refresh_rebuilds_and_retains_superseded_quarantine() {
         let root = std::env::temp_dir().join(format!("studyapp-refresh-{}", uuid::Uuid::new_v4()));
