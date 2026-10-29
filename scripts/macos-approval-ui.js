@@ -165,7 +165,22 @@ function run(argv) {
         if (!password || password.length < 24 || password.length > 128) throw new Error("Invalid runner credential file");
         if ($.AXUIElementSetAttributeValue(references[expected.username_path.join("/")], $("AXValue"), $(expected.test_username)) !== 0) throw new Error("Cannot enter disposable administrator name");
         if ($.AXUIElementSetAttributeValue(references[expected.password_path.join("/")], $("AXValue"), password) !== 0) throw new Error("Cannot enter runner credential");
-        if ($.AXUIElementPerformAction(references[expected.button_path.join("/")], $("AXPress")) !== 0) throw new Error("Cannot confirm runner authentication");
+        $.NSThread.sleepForTimeInterval(0.4);
+        const control = references[expected.button_path.join("/")];
+        const position = geometry(control, "AXPosition", 1), size = geometry(control, "AXSize", 2);
+        if (!position || !size || scalar(control, "AXEnabled", false) !== true) throw new Error("Authentication control changed");
+        const point = [position[0] + size[0] / 2, position[1] + size[1] / 2];
+        const currentWindows = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo(1, 0)));
+        const front = currentWindows.find(info => {
+            const r = info.kCGWindowBounds;
+            return info.kCGWindowAlpha > 0 && r && point[0] >= r.X && point[0] < r.X + r.Width && point[1] >= r.Y && point[1] < r.Y + r.Height;
+        });
+        if (!front || front.kCGWindowOwnerPID !== processId) throw new Error("Authentication control is obscured");
+        const down = $.CGEventCreateMouseEvent(null, 1, $.CGPointMake(point[0], point[1]), 0);
+        const up = $.CGEventCreateMouseEvent(null, 2, $.CGPointMake(point[0], point[1]), 0);
+        $.CGEventPost(0, down);
+        $.NSThread.sleepForTimeInterval(0.1);
+        $.CGEventPost(0, up);
         return JSON.stringify({authenticationSubmitted: true});
     }
     if (argv[0] === "scroll") {
