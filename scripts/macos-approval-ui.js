@@ -14,6 +14,7 @@ if (typeof module !== "undefined") module.exports = {clipElement, optionalBoolea
 function run(argv) {
     ObjC.import("CoreGraphics");
     ObjC.import("ApplicationServices");
+    ObjC.import("AppKit");
     function permissions() {
         return {accessibilityTrusted: Boolean($.AXIsProcessTrusted()),
             postEventAllowed: optionalBoolean(() => $.CGPreflightPostEventAccess())};
@@ -29,10 +30,42 @@ function run(argv) {
         }
         return JSON.stringify({permissions: permissions(), windowArray: true, windowCount: onScreen.length});
     }
-    const system = Application("System Events");
-    const process = system.processes.byName(argv[1]);
-    if (!process.exists()) throw new Error("Approval process absent");
-    const processId = process.unixId();
+    const apps = $.NSWorkspace.sharedWorkspace.runningApplications;
+    let processId = null;
+    for (let index = 0; index < apps.count; index++) {
+        const app = apps.objectAtIndex(index);
+        if (ObjC.unwrap(app.localizedName) === argv[1]) {
+            if (processId !== null) throw new Error("Ambiguous approval process");
+            processId = Number(app.processIdentifier);
+        }
+    }
+    if (processId === null) throw new Error("Approval process absent");
+    const application = $.AXUIElementCreateApplication(processId);
+    $.AXUIElementSetMessagingTimeout(application, 2);
+    function attribute(element, name) {
+        const output = Ref();
+        const error = $.AXUIElementCopyAttributeValue(element, $(name), output);
+        if (error !== 0) return null;
+        return ObjC.castRefToObject(output[0]);
+    }
+    function scalar(element, name, fallback) {
+        const value = attribute(element, name);
+        return value === null ? fallback : ObjC.unwrap(value);
+    }
+    function children(element, name) {
+        const values = attribute(element, name);
+        if (values === null) return [];
+        const result = [];
+        for (let index = 0; index < values.count; index++) result.push(values.objectAtIndex(index));
+        return result;
+    }
+    function geometry(element, name, type) {
+        const value = attribute(element, name);
+        if (value === null) return null;
+        const result = Ref(type === 1 ? $.CGPointMake(0, 0) : $.CGSizeMake(0, 0));
+        if (!$.AXValueGetValue(value, type, result)) return null;
+        return type === 1 ? [result[0].x, result[0].y] : [result[0].width, result[0].height];
+    }
     function windowOnScreen(position, size) {
         if (!position || !size) return false;
         return onScreen.some(info => {
@@ -44,39 +77,48 @@ function run(argv) {
     }
     const references = {};
     let count = 0;
-    function read(getter, fallback) { try { return getter(); } catch (_) { return fallback; } }
     function model(element, path, parentVisible, viewport, isWindow) {
         if (++count > 1600 || path.length > 16) throw new Error("Approval UI tree exceeds bound");
         references[path.join("/")] = element;
-        const position = read(() => element.position(), null);
-        const size = read(() => element.size(), null);
-        const hidden = read(() => element.attributes.byName("AXHidden").value(), false);
+        const position = geometry(element, "AXPosition", 1);
+        const size = geometry(element, "AXSize", 2);
+        const role = scalar(element, "AXRole", "");
+        const hidden = scalar(element, "AXHidden", false);
         let visible = parentVisible && hidden !== true;
         if (isWindow) visible = hidden !== true && windowOnScreen(position, size);
         let clip = viewport;
         if (position && size && size[0] > 0 && size[1] > 0) {
-            const geometry = clipElement(position, size, viewport, read(() => element.role(), "") === "AXButton");
-            visible = visible && geometry.visible;
-            clip = geometry.clip;
-        } else if (read(() => element.role(), "") === "AXButton") visible = false;
-        const value = read(() => element.value(), null);
+            const clipped = clipElement(position, size, viewport, role === "AXButton");
+            visible = visible && clipped.visible;
+            clip = clipped.clip;
+        } else if (role === "AXButton") visible = false;
+        const value = scalar(element, "AXValue", null);
         return {
-            role: read(() => element.role(), ""), subrole: read(() => element.subrole(), ""),
-            name: read(() => element.name(), ""), value: typeof value === "string" ? value : null,
-            enabled: read(() => element.enabled(), false) === true, visible: visible,
+            role: role, subrole: scalar(element, "AXSubrole", ""),
+            name: scalar(element, "AXTitle", null) || scalar(element, "AXDescription", null), value: typeof value === "string" ? value : null,
+            enabled: scalar(element, "AXEnabled", false) === true, visible: visible,
             position: position, size: size,
-            children: read(() => element.uiElements(), []).map((child, index) => model(child, path.concat(index), visible, clip, false))
+            children: children(element, "AXChildren").map((child, index) => model(child, path.concat(index), visible, clip, false))
         };
     }
-    const tree = {role: "AXApplication", children: process.windows().map((win, index) => model(win, [index], true, null, true))};
+    const windows = children(application, "AXWindows");
+    if (argv[1] === "System Settings" && windows.length === 0) throw new Error("System Settings AX windows unavailable");
+    const tree = {role: "AXApplication", children: windows.map((win, index) => model(win, [index], true, null, true))};
     if (argv[0] === "snapshot") return JSON.stringify(tree);
-    if (argv[0] !== "click") throw new Error("Unknown approval UI action");
+    if (argv[0] !== "click" && argv[0] !== "scroll") throw new Error("Unknown approval UI action");
     const expected = JSON.parse(argv[2]);
     function at(path) { let node = tree; for (const index of path) node = node.children[index]; return node; }
     const container = at(expected.container_path);
     if (JSON.stringify(container) !== JSON.stringify(expected.container)) throw new Error("Approval warning changed; no click");
     const button = at(expected.button_path);
+    if (argv[0] === "scroll") {
+        if (button.role !== "AXButton" || button.name !== expected.label || !button.enabled) throw new Error("Approval scroll target is unavailable");
+        const result = $.AXUIElementPerformAction(references[expected.button_path.join("/")], $("AXScrollToVisible"));
+        if (result !== 0) throw new Error("Approval scroll failed: " + result);
+        return JSON.stringify({scrolled: expected.label});
+    }
     if (button.role !== "AXButton" || button.name !== expected.label || !button.visible || !button.enabled) throw new Error("Approval button is unavailable");
-    references[expected.button_path.join("/")].click();
+    const result = $.AXUIElementPerformAction(references[expected.button_path.join("/")], $("AXPress"));
+    if (result !== 0) throw new Error("Approval press failed: " + result);
     return JSON.stringify({clicked: expected.label, button_path: expected.button_path, container_path: expected.container_path});
 }

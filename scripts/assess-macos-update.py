@@ -29,7 +29,7 @@ def launch_accepted(enabled, intact, request, receipt):
             and all(receipt.get(field) == request[field] for field in ("nonce", "version", "sha256")))
 
 
-def select_approval(tree, label):
+def select_approval(tree, label, *, for_scroll=False):
     def texts(node):
         result = []
         if node.get("role") == "AXStaticText":
@@ -48,7 +48,7 @@ def select_approval(tree, label):
         return any(value in ("WW-StudyApp", "WW-StudyApp.app") for value in values) or bool(quoted)
     candidates = []
     def visit(node, path, ancestors):
-        if node.get("role") == "AXButton" and node.get("name") == label and node.get("enabled") is True and node.get("visible") is True:
+        if node.get("role") == "AXButton" and node.get("name") == label and node.get("enabled") is True and (node.get("visible") is True or for_scroll):
             for parent, parent_path in reversed(ancestors):
                 values = texts(parent)
                 if not values:
@@ -72,7 +72,7 @@ def system_approval(output):
     actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "permissions"], 10))
     def screenshot(stage):
         actions.append(capture(["/usr/sbin/screencapture", "-x", str(output.with_name(output.stem + "-" + stage + ".png"))], 10))
-    def click(process, buttons):
+    def click(process, buttons, can_scroll=True):
         script = Path(__file__).with_name("macos-approval-ui.js")
         snapshot = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", process], 20)
         actions.append(snapshot)
@@ -88,6 +88,16 @@ def system_approval(output):
                 actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "click", process,
                                         json.dumps(selection, separators=(",", ":"))], 20))
                 return
+        if can_scroll and process == "System Settings":
+            for label in buttons:
+                selection = select_approval(tree, label, for_scroll=True)
+                if selection is not None:
+                    actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "scroll", process,
+                                            json.dumps(selection, separators=(",", ":"))], 20))
+                    time.sleep(1)
+                    screenshot("scrolled-warning")
+                    click(process, buttons, can_scroll=False)
+                    return
     screenshot("blocked")
     click("CoreServicesUIAgent", ["Open", "Done", "Cancel", "OK"])
     actions.append(capture(["/usr/bin/open", "x-apple.systempreferences:com.apple.preference.security?Privacy"], 15))

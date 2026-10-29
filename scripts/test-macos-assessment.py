@@ -5,6 +5,15 @@ spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_scroll_selection_cannot_authorize_hidden_button(self):
+        tree = {"role": "AXGroup", "children": [
+            {"role": "AXStaticText", "name": '“WW-StudyApp” was blocked'},
+            {"role": "AXButton", "name": "Open Anyway", "visible": False, "enabled": True},
+        ]}
+        self.assertIsNone(module.select_approval(tree, "Open Anyway"))
+        self.assertIsNotNone(module.select_approval(tree, "Open Anyway", for_scroll=True))
+        tree["children"][0]["name"] = '“AnotherApp” was blocked'
+        self.assertIsNone(module.select_approval(tree, "Open Anyway", for_scroll=True))
     def test_system_dialog_is_a_related_warning_container(self):
         tree = {"role": "AXWindow", "subrole": "AXSystemDialog", "children": [
             {"role": "AXStaticText", "name": '“WW-StudyApp” Not Opened'},
