@@ -9,6 +9,19 @@ acceptance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(acceptance)
 
 class FixtureTests(unittest.TestCase):
+    def test_failed_attempt_is_collected_without_any_success_observation(self):
+        root = Path(tempfile.mkdtemp(prefix="native-update-failed-test-"))
+        fixture = root / "fixture"
+        fixture.mkdir()
+        attempt = root / "attempt"
+        attempt.mkdir()
+        (attempt / "status-failed.json").write_text('{"state":"failed","message":"installer failure"}')
+        (fixture / "attempt.json").write_text(json.dumps({"directory": str(attempt)}))
+        acceptance.collect_diagnostics(root)
+        retained = root / "transaction-evidence" / "attempt" / "status-failed.json"
+        self.assertEqual(json.loads(retained.read_text())["message"], "installer failure")
+        self.assertFalse((fixture / "new-observation.json").exists())
+
     def test_fixture_binds_exact_package_digest_size_and_version(self):
         root = Path(tempfile.mkdtemp(prefix="native-update-signing-test-"))
         packages = root / "packages"

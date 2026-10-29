@@ -248,6 +248,10 @@ impl StudyApp {
                     let intent = self.draft_drain_intent.take();
                     match result {
                         Ok(()) => {
+                            #[cfg(feature = "update-acceptance")]
+                            if self.close_requested {
+                                crate::update_acceptance::close_ack(self);
+                            }
                             if let Some(intent) = intent {
                                 self.finish_draft_drain(intent, window, cx);
                             }

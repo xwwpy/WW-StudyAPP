@@ -908,7 +908,9 @@ mod tests {
         );
         assert!(protected_bundle(&app).unwrap_err().contains("replaceable"));
         // The caller can actually replace the path above both root-owned directories.
-        fs::rename(&fixed, root.join("moved-root-owned")).unwrap();
+        let moved = root.with_file_name(format!("moved-mac-ancestor-{}", uuid::Uuid::new_v4()));
+        fs::rename(&root, &moved).unwrap();
+        fs::create_dir(&root).unwrap();
         fs::create_dir(&fixed).unwrap();
         assert!(fs::metadata(&fixed).unwrap().uid() != 0);
     }

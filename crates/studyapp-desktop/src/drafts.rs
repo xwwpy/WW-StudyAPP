@@ -393,12 +393,19 @@ impl DraftStore {
             let mut pending: BTreeMap<Key, Pending> = BTreeMap::new();
             let mut failed = BTreeMap::new();
             loop {
-                flush(None, &mut pending, &mut failed, &updates, true);
+                #[cfg(feature = "update-acceptance")]
+                let held = crate::update_acceptance::hold_autosave();
+                #[cfg(not(feature = "update-acceptance"))]
+                let held = false;
+                if !held {
+                    flush(None, &mut pending, &mut failed, &updates, true);
+                }
                 let delay = pending
                     .values()
                     .map(|p| p.due.saturating_duration_since(Instant::now()))
                     .min()
                     .unwrap_or(Duration::from_secs(60));
+                let delay = if held { Duration::from_secs(60) } else { delay };
                 match requests.recv_timeout(delay) {
                     Ok(Request::Save(library, record, token)) => {
                         let key = (library.clone(), record.id.clone());

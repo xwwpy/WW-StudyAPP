@@ -760,6 +760,10 @@ impl crate::app::StudyApp {
 
     /// Called only after settings and the active editor's durable-close barrier.
     pub fn complete_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        #[cfg(feature = "update-acceptance")]
+        if self.pending_nsis_update.is_some() {
+            crate::update_acceptance::before_helper();
+        }
         if let Some(prepared) = self.pending_update.take()
             && let Err(error) = launch_prepared_update(&prepared)
         {
@@ -817,6 +821,8 @@ impl crate::app::StudyApp {
                 return;
             }
         };
+        #[cfg(feature = "update-acceptance")]
+        crate::update_acceptance::before_close(self, &prepared, cx);
         self.pending_nsis_update = Some(prepared);
         self.close_requested = true;
         self.continue_close(window, cx);

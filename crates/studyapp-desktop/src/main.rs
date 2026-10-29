@@ -139,7 +139,10 @@ fn main() {
     if let Some(code) = update_install::dispatch() {
         std::process::exit(code);
     }
+    #[cfg(feature = "update-acceptance")]
+    update_acceptance::install_failure_hook();
     if let Err(error) = run() {
+        #[cfg(feature="update-acceptance")] update_acceptance::startup_failure(&format!("{error:#}"));
         eprintln!("WW-StudyApp: {error:#}");
         if std::env::args()
             .any(|arg| startup_error_argument_is_headless(&arg, cfg!(feature = "ui-test")))

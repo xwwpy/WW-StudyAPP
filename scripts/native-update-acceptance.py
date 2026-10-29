@@ -56,12 +56,46 @@ def sign_fixture(directory, package, source_sha, target):
 def wait_file(path, timeout, process=None):
     deadline = time.monotonic() + timeout
     while not path.is_file():
+        failures = [*path.parent.glob("panic-*.json"), *path.parent.glob("startup-error-*.json"), *path.parent.glob("restart-failure.json")]
+        if failures:
+            raise RuntimeError("Native application failure: " + failures[0].read_text(encoding="utf-8"))
         if process is not None and process.poll() is not None:
             raise RuntimeError(f"Application exited before evidence {path.name}: {process.returncode}")
         if time.monotonic() > deadline:
             raise TimeoutError(f"Missing native evidence {path}")
         time.sleep(.2)
     return json.loads(path.read_text(encoding="utf-8"))
+
+def collect_diagnostics(root):
+    fixture = root / "fixture"
+    attempts = []
+    try:
+        attempts.append(Path(json.loads((fixture / "attempt.json").read_text())["directory"]))
+    except (OSError, ValueError, KeyError):
+        pass
+    try:
+        old_pid = json.loads((fixture / "old-observation.json").read_text())["pid"]
+        import tempfile
+        for directory in Path(tempfile.gettempdir()).glob("studyapp-install-*"):
+            try:
+                value = json.loads((directory / "transaction.json").read_text())
+                if value.get("old_pid", value.get("transaction", {}).get("old_pid")) == old_pid:
+                    attempts.append(directory)
+            except (OSError, ValueError):
+                pass
+    except (OSError, ValueError, KeyError):
+        pass
+    destination = root / "transaction-evidence"
+    destination.mkdir(exist_ok=True)
+    for directory in set(attempts):
+        target = destination / directory.name
+        target.mkdir(exist_ok=True)
+        for path in directory.glob("*.json"):
+            try:
+                shutil.copy2(path, target / path.name)
+            except OSError as error:
+                (target / "copy-error.txt").write_text(str(error), encoding="utf-8")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -104,40 +138,48 @@ def main():
     run(["sudo", "install", "-m", "0644", rule, "/etc/polkit-1/rules.d/49-studyapp-update-acceptance.rules"])
     run(["sudo", "systemctl", "restart", "polkit"])
     data = root / "library"
-    with (root / "application.log").open("wb") as log:
-        old = subprocess.Popen(["/usr/bin/studyapp", "--data-dir", str(data)], env=dict(os.environ, STUDYAPP_UPDATE_ACCEPTANCE_DIR=str(fixture)), stdout=log, stderr=subprocess.STDOUT)
-        before = wait_file(fixture / "old-observation.json", 120, old)
-        old.wait(timeout=120)
-        if old.returncode != 0:
-            raise RuntimeError(f"Original application did not exit cleanly: {old.returncode}")
-        after = wait_file(fixture / "new-observation.json", 180)
-        transaction = Path(after["transaction"])
-        tx = json.loads((transaction / "transaction.json").read_text())
-        receipt = wait_file(transaction / "health.json", 30)
-        deadline = time.monotonic() + 30
-        while not list(transaction.glob("status-healthy-*.json")):
-            if time.monotonic() > deadline:
-                raise TimeoutError("Supervisor did not confirm real restart health")
-            time.sleep(.2)
-        installed = subprocess.check_output(["dpkg-query", "-W", "-f=${Version}", "studyapp"], text=True).strip()
-        assert installed == after["version"] == "0.1.4"
-        assert before["pid"] == old.pid != after["pid"]
-        assert tx["old_pid"] == old.pid and tx["uid"] == os.getuid()
-        assert receipt == {"id": tx["id"], "version": "0.1.4", "pid": after["pid"]}
-        assert sha("/usr/bin/studyapp") == sha(binaries["candidate"])
-        status = Path(f'/proc/{after["pid"]}/status').read_text()
-        uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
-        assert all(int(value) == os.getuid() for value in uid_line.split()[1:])
-        assert os.readlink(f'/proc/{after["pid"]}/exe') == "/usr/bin/studyapp"
-        draft = json.loads((data / "drafts" / f'{before["draft_id"]}.json').read_text())
-        assert draft["draft"]["content"] == config["draft_marker"] == after["live_text"]
-        for name in ("update-card.png", "restored.png"):
-            assert (fixture / name).stat().st_size > 1000
-        shutil.copytree(transaction, root / "transaction-evidence")
-        result = {"source_sha": source_sha, "installed_version": installed, "installed_sha256": sha("/usr/bin/studyapp"), "candidate_sha256": sha(binaries["candidate"]), "old_pid": old.pid, "new_pid": after["pid"], "uid": os.getuid(), "real_pkexec": True, "system_dialog_exercised": False, "production_rejected_fixture_key": True, "health": receipt, "draft_preserved": True}
-        (root / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
-        # End only the exact observed fixture process after evidence is complete.
-        os.kill(after["pid"], 15)
+    try:
+        with (root / "application.log").open("wb") as log:
+            old = subprocess.Popen(["/usr/bin/studyapp", "--data-dir", str(data)], env=dict(os.environ, STUDYAPP_UPDATE_ACCEPTANCE_DIR=str(fixture)), stdout=log, stderr=subprocess.STDOUT)
+            before = wait_file(fixture / "old-observation.json", 120, old)
+            old.wait(timeout=120)
+            if old.returncode != 0:
+                raise RuntimeError(f"Original application did not exit cleanly: {old.returncode}")
+            after = wait_file(fixture / "new-observation.json", 180)
+            transaction = Path(after["transaction"])
+            tx = json.loads((transaction / "transaction.json").read_text())
+            receipt = wait_file(transaction / "health.json", 30)
+            deadline = time.monotonic() + 30
+            while not list(transaction.glob("status-healthy-*.json")):
+                if time.monotonic() > deadline:
+                    raise TimeoutError("Supervisor did not confirm real restart health")
+                time.sleep(.2)
+            pending = json.loads((fixture / "close-pending.json").read_text())
+            ack = json.loads((fixture / "close-ack.json").read_text())
+            handoff = json.loads((fixture / "helper-handoff.json").read_text())
+            assert ack["id"] == pending["id"] == before["draft_id"]
+            assert ack["revision"] >= pending["revision"] and handoff["ack"] == ack
+            assert pending["timestamp"] <= ack["timestamp"] <= handoff["timestamp"]
+            installed = subprocess.check_output(["dpkg-query", "-W", "-f=${Version}", "studyapp"], text=True).strip()
+            assert installed == after["version"] == "0.1.4"
+            assert before["pid"] == old.pid != after["pid"]
+            assert tx["old_pid"] == old.pid and tx["uid"] == os.getuid()
+            assert receipt == {"id": tx["id"], "version": "0.1.4", "pid": after["pid"]}
+            assert sha("/usr/bin/studyapp") == sha(binaries["candidate"])
+            status = Path(f'/proc/{after["pid"]}/status').read_text()
+            uid_line = next(line for line in status.splitlines() if line.startswith("Uid:"))
+            assert all(int(value) == os.getuid() for value in uid_line.split()[1:])
+            assert os.readlink(f'/proc/{after["pid"]}/exe') == "/usr/bin/studyapp"
+            draft = json.loads((data / "drafts" / f'{before["draft_id"]}.json').read_text())
+            assert draft["draft"]["content"] == config["draft_marker"] == after["live_text"]
+            for name in ("update-card.png", "restored.png"):
+                assert (fixture / name).stat().st_size > 1000
+            result = {"source_sha": source_sha, "installed_version": installed, "installed_sha256": sha("/usr/bin/studyapp"), "candidate_sha256": sha(binaries["candidate"]), "old_pid": old.pid, "new_pid": after["pid"], "uid": os.getuid(), "real_pkexec": True, "system_dialog_exercised": False, "production_rejected_fixture_key": True, "health": receipt, "draft_preserved": True}
+            (root / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+            # End only the exact observed fixture process after evidence is complete.
+            os.kill(after["pid"], 15)
+    finally:
+        collect_diagnostics(root)
 
 if __name__ == "__main__":
     main()

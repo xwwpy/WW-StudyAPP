@@ -8,6 +8,10 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
+static HOLD_AUTOSAVE: AtomicBool = AtomicBool::new(false);
+pub fn hold_autosave() -> bool {
+    HOLD_AUTOSAVE.load(Ordering::Relaxed)
+}
 static CHECKS_READY: AtomicBool = AtomicBool::new(false);
 pub fn active() -> bool {
     std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
@@ -117,11 +121,19 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             save("new-observation.json",json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":id,"live_text":live["text"],"database":database,"source_sha":config["source_sha"],"transaction":std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)}));
             return;
         }
+        if directory().unwrap().join("old-observation.json").exists(){
+            let notice=window.update(cx,|_,_,cx|format!("{:?}",view.read(cx).notice)).unwrap();
+            save("restart-failure.json",json!({"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"notice":notice}));return;
+        }
+        HOLD_AUTOSAVE.store(true,Ordering::Relaxed);
+        let baseline=window.update(cx,|_,_,cx|committed(view.read(cx))).unwrap();
         window.update(cx,|_,window,cx|{view.update(cx,|a,cx|{a.page=Page::Notes;a.clear_notices(cx);cx.notify();});window.render_frame(cx);crate::smoke_library::library_add(window,false,&view,cx);}).unwrap();
         wait(window,&view,cx,"editable native draft",|a,cx|a.note_editor.is_some()&&a.note_content.read(cx).ready()).await;
         let editor=window.update(cx,|_,_,cx|view.read(cx).note_content.clone()).unwrap();
         crate::smoke_editor::bridge(window,&editor,json!({"type":"replace","from":0,"to":0,"text":marker}),cx).await;
-        let before=window.update(cx,|_,_,cx|{let app=view.read(cx);json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":app.active_draft_id,"committed":committed(app),"database":database,"source_sha":config["source_sha"],"transaction":std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)})}).unwrap();
+        let live=crate::smoke_editor::bridge(window,&editor,json!({"type":"snapshot"}),cx).await;
+        assert_eq!(live["text"],marker);
+        let before=window.update(cx,|_,_,cx|{let app=view.read(cx);json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":app.active_draft_id,"committed":baseline,"database":database,"source_sha":config["source_sha"],"transaction":std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)})}).unwrap();
         save("old-observation.json",before);
         CHECKS_READY.store(true,Ordering::Relaxed);
         window.update(cx,|_,_,cx|{let panel=view.read(cx).update_panel.clone();panel.update(cx,|p,cx|p.acceptance_check(cx));}).unwrap();
@@ -136,3 +148,83 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         // The application and its supervisor own all remaining install/restart work.
     }).detach();
 }
+
+pub fn before_close(app: &StudyApp, prepared: &crate::update_install::PreparedPackage, cx: &App) {
+    if !active() {
+        return;
+    }
+    let dir = match prepared {
+        crate::update_install::PreparedPackage::Windows(p)
+        | crate::update_install::PreparedPackage::Linux(p)
+        | crate::update_install::PreparedPackage::Macos(p) => p,
+    };
+    save(
+        "attempt.json",
+        json!({"directory":dir,"pid":std::process::id()}),
+    );
+    let marker = configuration().unwrap()["draft_marker"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(app.note_content.read(cx).value().to_string(), marker);
+    let id = app.active_draft_id.as_ref().expect("active pending draft");
+    let record = &app.draft_catalog[id];
+    let disk = crate::drafts::DraftStore::record_path(&app.last_library, id).unwrap();
+    let stored = std::fs::read(&disk)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+    assert!(
+        stored
+            .as_ref()
+            .is_none_or(|value| value["draft"]["content"] != marker),
+        "ordinary autosave unexpectedly persisted final marker"
+    );
+    assert!(app.draft_durable.get(id).copied().unwrap_or(0) < record.revision);
+    save(
+        "close-pending.json",
+        json!({"id":id,"revision":record.revision,"marker":marker,"disk":disk,"pid":std::process::id(),"timestamp":chrono::Utc::now().timestamp_millis()}),
+    );
+}
+pub fn close_ack(app: &StudyApp) {
+    if !active() || app.pending_nsis_update.is_none() {
+        return;
+    }
+    let pending: Value = serde_json::from_slice(
+        &std::fs::read(directory().unwrap().join("close-pending.json")).unwrap(),
+    )
+    .unwrap();
+    let disk: Value =
+        serde_json::from_slice(&std::fs::read(pending["disk"].as_str().unwrap()).unwrap()).unwrap();
+    assert_eq!(disk["draft"]["content"], pending["marker"]);
+    assert!(disk["revision"].as_u64().unwrap() >= pending["revision"].as_u64().unwrap());
+    save(
+        "close-ack.json",
+        json!({"id":pending["id"],"revision":disk["revision"],"pid":std::process::id(),"timestamp":chrono::Utc::now().timestamp_millis()}),
+    );
+}
+pub fn before_helper() {
+    if !active() {
+        return;
+    }
+    let ack: Value = serde_json::from_slice(
+        &std::fs::read(directory().unwrap().join("close-ack.json")).unwrap(),
+    )
+    .unwrap();
+    save(
+        "helper-handoff.json",
+        json!({"ack":ack,"pid":std::process::id(),"timestamp":chrono::Utc::now().timestamp_millis()}),
+    );
+}
+pub fn install_failure_hook() {
+    if !active() {
+        return;
+    }
+    std::panic::set_hook(Box::new(|info| {
+        save(
+            &format!("panic-{}.json", std::process::id()),
+            json!({"pid":std::process::id(),"version":env!("CARGO_PKG_VERSION"),"error":info.to_string()}),
+        );
+    }));
+}
+
+pub fn startup_failure(error:&str){if active(){save(&format!("startup-error-{}.json",std::process::id()),json!({"pid":std::process::id(),"error":error,"version":env!("CARGO_PKG_VERSION")}));}}
