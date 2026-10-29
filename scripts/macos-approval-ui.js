@@ -204,7 +204,18 @@ function run(argv) {
                     sameProcess: pidKnown && pid[0] === processId,
                     matchesOriginal: focused !== null && Boolean($.CFEqual(focused, control)),
                     matchesFresh: focused !== null && Boolean($.CFEqual(focused, fresh))};
-                if (!observation.local || !observation.matchesOriginal) focusObservations.push(observation);
+                if (!observation.local || !observation.matchesOriginal) {
+                    observation.ancestors = [];
+                    let ancestor = focused;
+                    for (let depth = 0; ancestor !== null && depth < 6; depth++) {
+                        observation.ancestors.push({role: scalar(ancestor, "AXRole", null), subrole: scalar(ancestor, "AXSubrole", null),
+                            position: geometry(ancestor, "AXPosition", 1), size: geometry(ancestor, "AXSize", 2),
+                            isField: Boolean($.CFEqual(ancestor, fresh)), isWindow: Boolean($.CFEqual(ancestor, references[expected.container_path.join("/")]))});
+                        ancestor = attribute(ancestor, "AXParent");
+                    }
+                    observation.children = focused === null ? [] : children(focused, "AXChildren").slice(0, 8).map(child => ({role: scalar(child, "AXRole", null), subrole: scalar(child, "AXSubrole", null)}));
+                    focusObservations.push(observation);
+                }
                 if (scalar(control, "AXFocused", false) !== true || focused === null || !$.CFEqual(focused, control)) throw new Error("System credential focus changed");
             }
             requireFocus();
