@@ -1,6 +1,8 @@
 # 安装、更新与卸载
 
-WW-StudyApp 提供 Windows 10/11 x64 的安装版与便携版，均为当前用户安装，不需要管理员权限。Markdown 编辑器需要 Microsoft Edge WebView2 Runtime。
+WW-StudyApp 支持 Windows、Linux 和 macOS。Linux 的 deb 与 macOS 的 dmg 安装命令见 [README](https://github.com/xwwpy/WW-StudyAPP/blob/main/README.md)。
+
+Windows 10/11 x64 提供安装版与便携版，均使用当前用户权限。Markdown 编辑器需要 Microsoft Edge WebView2 Runtime。
 
 ## 选择安装包
 
@@ -12,7 +14,7 @@ WW-StudyApp 提供 Windows 10/11 x64 的安装版与便携版，均为当前用�
 | `WW-StudyApp-<版本>-windows-x86_64-Setup.exe` | 直接双击安装。如果提示无法写入临时文件，请改用上面的 ZIP。 |
 | `WW-StudyApp-<版本>-portable-x64.zip` | 完整解压后双击 `START-WW-STUDYAPP.cmd`。临时目录与 WebView2 数据留在包内，便于搬移整个文件夹；也可以直接运行 `WW-StudyApp.exe`。 |
 
-发布页同时提供 `SHA256SUMS.txt`，列出安装包与两个 ZIP 的 SHA-256 校验值。
+发布页同时提供 `SHA256SUMS.txt`，列出发布文件的 SHA-256 校验值；deb 和 dmg 另有同名 `.sha256` 文件。
 
 安装时可在「选择安装位置」页面输入路径或浏览文件夹，支持中文和空格。默认位置为 `%LOCALAPPDATA%\Programs\WW-StudyApp`，请选择当前用户有写入权限的目录。
 
@@ -24,13 +26,15 @@ WW-StudyApp 提供 Windows 10/11 x64 的安装版与便携版，均为当前用�
 
 ## 检查与安装更新
 
-- 每次正常启动后，应用会在后台读取 GitHub Releases 上的 `latest.json` 检查一次新版本；也可以在「设置 → 关于 / 账户」中点击「检查更新」。
-- 发现新版本时会弹出更新窗口，显示当前版本、最新版本、发布日期和更新说明。
-- 点「立即更新」后，应用会下载安装包并校验发布签名，保存草稿与设置后自动退出；安装程序沿用上次选择的安装目录，静默完成覆盖安装，然后重新启动应用。
+- 每次正常启动后检查一次新版本，运行期间每小时检查；也可以在「设置 → 关于 / 账户」中点击「检查更新」。
+- 发现新版本时弹出更新卡片，显示版本与 Markdown 更新日志。点击「稍后再说」后，同一版本在本次运行中不再主动弹出；可以从侧边栏的更新入口重新打开。
+- 点「立即更新」后，应用会下载安装包并校验发布签名，处理尚未保存的设置并保存草稿，再退出安装，完成后重新打开原资料库。需要系统授权时请按提示操作。
 - 更新包只从本仓库的 Releases 下载，签名校验失败时不会运行安装程序，并会显示失败原因。
 - 更新不会清空学习资料。仍建议在更新前[导出备份](storage.md)。
 
 应用不会在未确认的情况下自行安装更新。如果网络不可用或下载失败，可以稍后重试，并继续使用当前版本。
+
+应用内自动安装适用于 Windows 安装版、通过 deb 安装的 Linux，以及安装到本机文件夹中的 macOS 应用。Windows 便携版请退出后解压新版，或先安装安装版；macOS 请勿从磁盘映像中运行更新。Linux/macOS 的 0.1.2 用户需先手动安装 0.1.3，再使用后续版本的应用内更新。
 
 ## 卸载
 
