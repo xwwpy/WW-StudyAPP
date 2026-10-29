@@ -7,6 +7,7 @@ on:
       - scripts/macos-approval-ui.js
       - scripts/assess-macos-update.py
       - scripts/macos_runner_auth.py
+      - scripts/macos-credential-check.js
       - .github/workflows/macos-approval-diagnostic.yml
 permissions:
   contents: read

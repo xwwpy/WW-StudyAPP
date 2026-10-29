@@ -127,6 +127,12 @@ def system_approval(output):
                 try:
                     with runner_credential() as (credential, username):
                         actions.append({"command": ["runner-credential-preflight"], "exit_code": 0, "stdout": "authonly and administrator membership verified", "stderr": ""})
+                        checked = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script.with_name("macos-credential-check.js")), username, str(credential)], 10)
+                        verification = json.loads(checked["stdout"]) if checked["exit_code"] == 0 else {"verified": False, "bridgePhase": "process"}
+                        actions.append({"command": ["directory-record-verification"], "exit_code": 0 if verification.get("verified") is True else 1,
+                                        "stdout": json.dumps(verification), "stderr": ""})
+                        if verification.get("verified") is not True:
+                            raise RuntimeError("Direct directory record verification did not succeed")
                         selection["test_username"] = username
                         submitted_at = time.time()
                         submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
