@@ -189,7 +189,15 @@ function run(argv) {
         function typeInto(control, text, fieldName) {
             let dismissedAutocomplete = false;
             phase = fieldName + "-focus";
-            if ($.AXUIElementSetAttributeValue(control, $("AXFocused"), $(true)) !== 0) throw new Error("Cannot focus system credential field");
+            if (fieldName === "username") {
+                if ($.AXUIElementSetAttributeValue(control, $("AXFocused"), $(true)) !== 0) throw new Error("Cannot focus system credential field");
+            } else {
+                control = children(application, "AXWindows")[expected.password_path[0]];
+                for (const index of expected.password_path.slice(1)) control = children(control, "AXChildren")[index];
+                if (scalar(control, "AXSubrole", "") !== "AXSecureTextField" ||
+                    JSON.stringify(geometry(control, "AXPosition", 1)) !== JSON.stringify(field.position) ||
+                    JSON.stringify(geometry(control, "AXSize", 2)) !== JSON.stringify(field.size)) throw new Error("Secure field changed after username commit");
+            }
             $.NSThread.sleepForTimeInterval(0.1);
             function requireFocus() {
                 phase = fieldName + "-focus";
@@ -256,6 +264,10 @@ function run(argv) {
         typeInto(references[expected.username_path.join("/")], expected.test_username, "username");
         phase = "username-delivery";
         if (scalar(references[expected.username_path.join("/")], "AXValue", "") !== expected.test_username) throw new Error("System username keyboard input was not delivered");
+        const usernameFocus = attribute($.AXUIElementCreateSystemWide(), "AXFocusedUIElement");
+        if (usernameFocus === null || !$.CFEqual(usernameFocus, references[expected.username_path.join("/")])) throw new Error("Username focus changed before Tab");
+        key(48, 0);
+        $.NSThread.sleepForTimeInterval(0.2);
         typeInto(references[expected.password_path.join("/")], ObjC.unwrap(password), "password");
         $.NSThread.sleepForTimeInterval(0.4);
         phase = "button-owner";
@@ -279,7 +291,7 @@ function run(argv) {
         phase = "button-event";
         key(36, 0);
         return JSON.stringify({authenticationSubmitted: true, postEventAllowed: true,
-            submission: "default-return", defaultButtonMatched: true, buttonPoint: point, focusObservations: focusObservations});
+            submission: "default-return", usernameCommit: "normal-tab", defaultButtonMatched: true, buttonPoint: point, focusObservations: focusObservations});
         } catch (_) {
             return JSON.stringify({authenticationSubmitted: false, phase: phase, focusObservations: focusObservations});
         }
