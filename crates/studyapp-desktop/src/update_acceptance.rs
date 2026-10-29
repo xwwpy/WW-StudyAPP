@@ -391,10 +391,10 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             let state=window.update(cx,|_,_,cx|{let app=view.read(cx);
                 assert!(app.settings_dirty(cx));assert!(!app.close_requested);assert!(app.pending_nsis_update.is_none());
                 json!({"pid":std::process::id(),"dirty":true,"close_requested":false,"pending_package":false,
-                    "persisted_interval":app.preferences_ui.saved.as_ref().unwrap().settings.interval_minutes})
+                    "saved_snapshot_interval":app.preferences_ui.saved.as_ref().unwrap().settings.interval_minutes})
             }).unwrap();
             let values:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("settings-guard.json")).unwrap()).unwrap();
-            assert_eq!(state["persisted_interval"],values["original_interval"]);
+            assert_eq!(state["saved_snapshot_interval"],values["original_interval"]);
             assert!(!directory().unwrap().join("attempt.json").exists());
             save("settings-cancelled.json",state);
             click_visible(window,"update-dialog-install".into(),cx).await;

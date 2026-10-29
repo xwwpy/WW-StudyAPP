@@ -154,7 +154,7 @@ def authorization_denied(root, packages, binaries, source_sha, old_version, cand
             settings = json.loads((fixture / "settings-guard.json").read_text())
             restored = json.loads((fixture / "settings-restored.json").read_text())
             assert cancelled["pid"] == old.pid and cancelled["dirty"] and not cancelled["pending_package"]
-            assert cancelled["persisted_interval"] == settings["original_interval"]
+            assert cancelled["saved_snapshot_interval"] == settings["original_interval"]
             assert restored["interval"] == settings["expected_interval"] and restored["pid"] == after["pid"]
             (root / "transition-result.json").write_text(json.dumps({"source_sha": source_sha, "scenario": "authorization-denied",
                 "real_pkexec": True, "real_polkit_denial": True, "system_cancel_button_exercised": False,
