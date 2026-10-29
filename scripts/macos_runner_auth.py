@@ -41,6 +41,36 @@ def authentication_log_summary(records, since, secret=None, username=None):
     return summary
 
 
+def authentication_identity_summary(records, since, username, uid):
+    observations = []
+    for record in records:
+        if (str(record.get("processImagePath", "")).rsplit("/", 1)[-1] != "coreautha"
+                or record.get("subsystem") != "com.apple.LocalAuthentication"):
+            continue
+        try:
+            if datetime.fromisoformat(record["timestamp"]).timestamp() < since:
+                continue
+        except (KeyError, ValueError):
+            continue
+        message = str(record.get("eventMessage", ""))
+        entry = {"timestamp": record["timestamp"]}
+        patterns = {
+            "target_uid_matches": r"\btarget\s+uid\s*[:=]\s*(\d+|<private>)",
+            "unspecified_uid_matches": r"(?<!target )\buid\s*[:=]\s*(\d+|<private>)",
+            "username_matches": r"\b(?:username|user name)\s*[:=]\s*([A-Za-z0-9_]+|<private>)",
+        }
+        for key, pattern in patterns.items():
+            match = re.search(pattern, message, re.IGNORECASE)
+            if match:
+                entry[key] = None if match[1] == "<private>" else match[1] == (username if key == "username_matches" else uid)
+        methods = [method for method in ("verifyPassword", "verifyExtended", "kODAuthenticationTypeClearText", "kODAuthenticationTypeNativeClearTextOK") if method in message]
+        if methods:
+            entry["known_methods"] = methods
+        if len(entry) > 1:
+            observations.append(entry)
+    return observations
+
+
 def authentication_diagnostics(since, credential, username):
     result = subprocess.run(["/usr/bin/log", "show", "--last", "1m", "--style", "json", "--predicate",
                              'process == "coreautha" OR process == "authd"'], capture_output=True, text=True, timeout=20)
@@ -51,7 +81,10 @@ def authentication_diagnostics(since, credential, username):
         if not isinstance(records, list) or len(records) > 5000:
             return {"available": False, "reason": "bounded log query exceeded"}
         secret = credential.read_text(encoding="utf-8")
-        return {"available": True, "records": authentication_log_summary(records, since, secret, username)}
+        uid = subprocess.check_output(["/usr/bin/id", "-u", username], text=True, timeout=5).strip()
+        identities = authentication_identity_summary(records, since, username, uid)
+        return {"available": True, "records": authentication_log_summary(records, since, secret, username),
+                "identity_observations": identities, "target_identity_known": any("target_uid_matches" in item and item["target_uid_matches"] is not None for item in identities)}
     except ValueError:
         return {"available": False, "reason": "log format unavailable"}
 

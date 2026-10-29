@@ -5,12 +5,24 @@ from unittest.mock import patch, MagicMock
 import contextlib
 import tempfile
 import os
-from macos_runner_auth import select_authentication, authentication_candidates, unique_authentication, runner_credential, authentication_log_summary
+from macos_runner_auth import select_authentication, authentication_candidates, unique_authentication, runner_credential, authentication_log_summary, authentication_identity_summary
 import json
 spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_name("assess-macos-update.py"))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_authentication_identity_diagnostics_never_publish_identity_values(self):
+        base = {"processImagePath": "/system/coreautha", "timestamp": "2026-10-29T19:00:00+00:00",
+                "subsystem": "com.apple.LocalAuthentication", "category": "Passcode"}
+        records = [{**base, "eventMessage": "target uid=5501 username=studyapp_example method=verifyPassword"},
+                   {**base, "eventMessage": "uid=501 username=<private>"}]
+        result = authentication_identity_summary(records, 0, "studyapp_example", "5501")
+        self.assertEqual(result[0]["target_uid_matches"], True)
+        self.assertEqual(result[0]["username_matches"], True)
+        self.assertEqual(result[1]["unspecified_uid_matches"], False)
+        self.assertIsNone(result[1]["username_matches"])
+        for private in ("5501", "501", "studyapp_example"):
+            self.assertNotIn(private, json.dumps(result))
     def test_account_is_verified_before_the_system_authentication_dialog_opens(self):
         events = []
         @contextlib.contextmanager
