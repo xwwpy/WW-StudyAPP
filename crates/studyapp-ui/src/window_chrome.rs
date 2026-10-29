@@ -154,6 +154,9 @@ pub fn title_bar(
         .border_b_1()
         .border_color(crate::theme::color(BORDER))
         .bg(crate::theme::color(0xFFFFFF))
+        // Transparent macOS title bars retain the native traffic-light buttons.
+        // Keep app navigation and title text clear of their left-hand hit areas.
+        .when(cfg!(target_os = "macos"), |bar| bar.pl(px(78.)))
         .child(
             div()
                 .id("window-title-leading")
