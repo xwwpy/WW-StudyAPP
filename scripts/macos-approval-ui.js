@@ -7,19 +7,32 @@ function clipElement(position, size, viewport, button) {
     return {clip: clip, visible: clip[0] < clip[2] && clip[1] < clip[3] && (!button ||
         (center[0] >= viewport[0] && center[0] < viewport[2] && center[1] >= viewport[1] && center[1] < viewport[3]))};
 }
-if (typeof module !== "undefined") module.exports = {clipElement};
+function optionalBoolean(getter) {
+    try { return Boolean(getter()); } catch (_) { return null; }
+}
+if (typeof module !== "undefined") module.exports = {clipElement, optionalBoolean};
 function run(argv) {
     ObjC.import("CoreGraphics");
     ObjC.import("ApplicationServices");
-    if (argv[0] === "permissions") {
-        return JSON.stringify({accessibilityTrusted: Boolean($.AXIsProcessTrusted()),
-            postEventAllowed: Boolean($.CGPreflightPostEventAccess())});
+    function permissions() {
+        return {accessibilityTrusted: Boolean($.AXIsProcessTrusted()),
+            postEventAllowed: optionalBoolean(() => $.CGPreflightPostEventAccess())};
+    }
+    if (argv[0] === "permissions") return JSON.stringify(permissions());
+    const windowInfo = $.CGWindowListCopyWindowInfo(1, 0);
+    const onScreen = ObjC.deepUnwrap(ObjC.castRefToObject(windowInfo));
+    if (!Array.isArray(onScreen)) throw new Error("CoreGraphics window list did not bridge to an array");
+    if (argv[0] === "bridge-self-test") {
+        if (!onScreen.every(info => info && typeof info.kCGWindowOwnerPID === "number" &&
+            info.kCGWindowBounds && typeof info.kCGWindowBounds.X === "number")) {
+            throw new Error("CoreGraphics window dictionaries did not bridge correctly");
+        }
+        return JSON.stringify({permissions: permissions(), windowArray: true, windowCount: onScreen.length});
     }
     const system = Application("System Events");
     const process = system.processes.byName(argv[1]);
     if (!process.exists()) throw new Error("Approval process absent");
     const processId = process.unixId();
-    const onScreen = ObjC.deepUnwrap($.CGWindowListCopyWindowInfo(1, 0));
     function windowOnScreen(position, size) {
         if (!position || !size) return false;
         return onScreen.some(info => {

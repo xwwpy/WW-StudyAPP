@@ -1,5 +1,8 @@
 const assert = require("node:assert/strict");
-const { clipElement } = require("./macos-approval-ui.js");
+const { clipElement, optionalBoolean } = require("./macos-approval-ui.js");
+assert.equal(optionalBoolean(() => { throw new Error("Native symbol unavailable"); }), null);
+assert.equal(optionalBoolean(() => false), false);
+assert.equal(optionalBoolean(() => true), true);
 const group = clipElement([0, 0], [400, 1800], [0, 0, 400, 500], false);
 assert.equal(group.visible, true);
 assert.deepEqual(group.clip, [0, 0, 400, 500]);
