@@ -156,6 +156,25 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: release
+      - name: Sign complete platform metadata
+        env:
+          STUDYAPP_SIGNING_KEY: ${{ secrets.STUDYAPP_SIGNING_KEY }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import importlib.util, os, pathlib, datetime
+          spec = importlib.util.spec_from_file_location("manifest", "scripts/update-manifest.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          seed = bytes.fromhex(os.environ["STUDYAPP_SIGNING_KEY"].strip())
+          if len(seed) != 32:
+              raise ValueError("Invalid signing seed")
+          tag = os.environ["RELEASE_TAG"]
+          version = tag.removeprefix("v")
+          root = pathlib.Path("release")
+          body = module.signed_manifest(version, tag, root / module.setup_asset_name(version), seed, pathlib.Path("docs/release-notes.md").read_text(encoding="utf-8").strip(), datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), packages_directory=root)
+          module.write_manifest(body, root / "latest.json")
+          PY
       - name: Verify complete release publication logic
         run: python3 scripts/test-publish-release.py
       - name: Publish complete GitHub Release
