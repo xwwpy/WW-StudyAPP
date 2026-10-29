@@ -111,6 +111,15 @@ jobs:
       - name: macOS native editor regression
         if: matrix.platform == 'macos'
         run: python3 scripts/smoke-unix.py --binary target/debug/studyapp --data-dir "$RUNNER_TEMP/native-interactive" --interactive
+      - name: Preserve macOS native editor pixels immediately
+        if: always() && matrix.platform == 'macos'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: macos-editor-diagnostics-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/native-interactive/native-markdown-editor-root.png
+            ${{ runner.temp }}/native-interactive.stderr.log
+          if-no-files-found: warn
       - name: Build production executable
         run: cargo build --locked --release -p studyapp-desktop --bin studyapp
       - name: Prepare macOS icon conversion

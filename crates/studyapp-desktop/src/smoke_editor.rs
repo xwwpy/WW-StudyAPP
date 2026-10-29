@@ -172,6 +172,28 @@ pub async fn exercise(
     let rendered = bridge(window, &editor, json!({"type":"snapshot"}), cx).await;
     assert_eq!(rendered["text"], first);
     assert_eq!(rendered["source"], false);
+    #[cfg(target_os = "macos")]
+    {
+        // GPUI's Metal readback excludes WKWebView's native view. Capture the
+        // remote desktop compositor after the live document is ready instead.
+        assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+        window
+            .update(cx, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        for _ in 0..4 {
+            pause(cx).await;
+        }
+        let output = std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-m"])
+            .arg(database.with_file_name("native-markdown-editor-root.png"))
+            .output()
+            .expect("capture native macOS editor pixels");
+        assert!(
+            output.status.success(),
+            "native macOS screen capture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     #[cfg(target_os = "linux")]
     {
         // The initial navigation capture may precede WebKit readiness. Keep

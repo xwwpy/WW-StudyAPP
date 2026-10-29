@@ -27,6 +27,7 @@ class SmokeTests(unittest.TestCase):
         for index in range(5):
             (data / f"page-{index}.png").write_bytes(b"page-image" * 200)
         (data / "native-markdown-editor.png").write_bytes(b"initialized-editor" * 200)
+        (data / "native-markdown-editor-root.png").write_bytes(b"native-screen" * 200)
         draft_id = "00000000-0000-4000-8000-000000000001"
         (data / "native-close-draft-id.txt").write_text(draft_id)
         (data / "drafts").mkdir()

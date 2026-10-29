@@ -17,6 +17,8 @@ def verify(data, interactive):
         captures = [f"page-{index}.png" for index in range(5)]
         if sys.platform.startswith("linux"):
             captures.append("native-markdown-editor.png")
+        elif sys.platform == "darwin":
+            captures.append("native-markdown-editor-root.png")
         for name in captures:
             image = data / name
             if not image.is_file() or image.stat().st_size < 1000:
