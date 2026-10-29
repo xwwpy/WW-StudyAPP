@@ -39,10 +39,25 @@ def main():
     common.run(["icacls", root, "/grant:r", f'*{harness_context["user_sid"]}:(OI)(CI)M'])
     preflight = {"harness": harness_context, "fixture_directory": str(root)}
     try:
-        process = windows.launch(Path(os.environ["SYSTEMROOT"]) / "System32/cmd.exe", ["/d", "/c", "exit", "0"], child_env, headless=True)
-        preflight["exit_code"] = process.wait(20)
-        if preflight["exit_code"] != 0:
-            raise RuntimeError(f'Ordinary-user no-window preflight failed: 0x{preflight["exit_code"]:08X}')
+        preflight["matrix"] = []
+        selected = None
+        for inherit in (True, False):
+            for no_window in (False, True):
+                trial = {"inherit_desktop": inherit, "no_window": no_window}
+                try:
+                    process = windows.launch(Path(os.environ["SYSTEMROOT"]) / "System32/cmd.exe", ["/d", "/c", "exit", "0"], child_env,
+                                             headless=no_window, inherit_desktop=inherit)
+                    trial["exit_code"] = process.wait(20)
+                    if trial["exit_code"] == 0 and not no_window and selected is None:
+                        selected = inherit
+                except Exception as error:
+                    trial["error"] = str(error)
+                trial["selected_launch"] = dict(windows.LAST_LAUNCH)
+                preflight["matrix"].append(trial)
+        if selected is None:
+            raise RuntimeError("All ordinary-user desktop/console initialization variants failed; inspect matrix")
+        windows.INHERIT_DESKTOP = selected
+        preflight["selected_inherit_desktop"] = selected
     except Exception as error:
         preflight["error"] = str(error)
         raise

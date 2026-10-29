@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 
 LAST_LAUNCH = {}
+INHERIT_DESKTOP = False
 
 
 class STARTUPINFO(c.Structure):
@@ -77,6 +78,44 @@ def token_sid(kernel, security, token, information_class=1):
         return text.value
     finally:
         kernel.LocalFree(c.cast(text, c.c_void_p))
+
+
+def token_diagnostics(kernel, security, token):
+    class SidAttributes(c.Structure):
+        _fields_ = [("sid", c.c_void_p), ("attributes", w.DWORD)]
+    class Groups(c.Structure):
+        _fields_ = [("count", w.DWORD), ("groups", SidAttributes * 1)]
+    def information(kind):
+        size = w.DWORD()
+        security.GetTokenInformation(token, kind, None, 0, c.byref(size))
+        if not 0 < size.value < 65536:
+            raise RuntimeError("Token diagnostics exceed bounds")
+        buffer = c.create_string_buffer(size.value)
+        require(security.GetTokenInformation(token, kind, buffer, size, c.byref(size)))
+        return buffer
+    result = {"user_attributes": c.cast(information(1), c.POINTER(SidAttributes)).contents.attributes}
+    for label, kind in [("groups", 2), ("restricted_sids", 11)]:
+        buffer = information(kind)
+        count = c.cast(buffer, c.POINTER(w.DWORD)).contents.value
+        if Groups.groups.offset + count * c.sizeof(SidAttributes) > c.sizeof(buffer):
+            raise RuntimeError("Invalid token groups length")
+        entries = (SidAttributes * count).from_buffer(buffer, Groups.groups.offset)
+        result[label] = []
+        for entry in entries:
+            text = w.LPWSTR()
+            require(security.ConvertSidToStringSidW(entry.sid, c.byref(text)))
+            try:
+                result[label].append({"sid": text.value, "attributes": entry.attributes})
+            finally:
+                kernel.LocalFree(c.cast(text, c.c_void_p))
+    buffer = information(6)
+    acl = c.cast(buffer, c.POINTER(c.c_void_p))[0]
+    if acl:
+        length = c.c_ushort.from_address(acl + 2).value
+        if not 8 <= length < 65536:
+            raise RuntimeError("Invalid token default ACL length")
+        result["default_dacl_hex"] = c.string_at(acl, length).hex()
+    return result
 
 
 def inspect_process(pid):
@@ -157,10 +196,12 @@ def allow_same_user_desktop(kernel, security, sid_text):
         kernel.LocalFree(sid)
 
 
-def launch(executable, arguments, environment, headless=False):
+def launch(executable, arguments, environment, headless=False, inherit_desktop=None):
     if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Ordinary-user acceptance launch is restricted to Windows CI")
     kernel, security = apis()
+    if inherit_desktop is None:
+        inherit_desktop = INHERIT_DESKTOP
     LAST_LAUNCH.clear()
     current, limited = w.HANDLE(), w.HANDLE()
     require(security.OpenProcessToken(kernel.GetCurrentProcess(), 0x008B, c.byref(current)))
@@ -204,18 +245,25 @@ def launch(executable, arguments, environment, headless=False):
         session, length = w.DWORD(), w.DWORD()
         require(security.GetTokenInformation(selected, 12, c.byref(session), c.sizeof(session), c.byref(length)))
         LAST_LAUNCH.update({"user_sid": token_sid(kernel, security, selected), "integrity_sid": integrity,
-                           "restricted": restricted, "session_id": session.value, "api": "CreateProcessWithTokenW", "profile_flags": 0})
+                           "restricted": restricted, "session_id": session.value,
+                           "api": "CreateProcessAsUserW" if restricted else "CreateProcessWithTokenW",
+                           "inherit_desktop": inherit_desktop, "no_window": headless})
+        LAST_LAUNCH["token"] = token_diagnostics(kernel, security, selected)
         executable = str(Path(executable).resolve(strict=True))
         command = c.create_unicode_buffer(subprocess.list2cmdline([executable, *map(str, arguments)]))
         block = c.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(environment.items())) + "\0\0")
         startup = STARTUPINFO()
         startup.cb = c.sizeof(startup)
-        startup.desktop = "winsta0\\default"
+        startup.desktop = None if inherit_desktop else "winsta0\\default"
         info = PROCESSINFO()
         flags = 0x400 | (0x08000000 if headless else 0)
         # This user's profile is already loaded; do not request another profile logon.
-        created = security.CreateProcessWithTokenW(selected, 0, executable, command, flags,
-                                                    block, str(Path(executable).parent), c.byref(startup), c.byref(info))
+        if restricted:
+            created = security.CreateProcessAsUserW(selected, executable, command, None, None, False,
+                                                     flags, block, str(Path(executable).parent), c.byref(startup), c.byref(info))
+        else:
+            created = security.CreateProcessWithTokenW(selected, 0, executable, command, flags,
+                                                        block, str(Path(executable).parent), c.byref(startup), c.byref(info))
         if not created:
             error = c.WinError(c.get_last_error())
             raise RuntimeError(f"Ordinary launch failed ({'restricted/current-user' if restricted else 'linked-user'}; integrity={integrity}): {error}")
