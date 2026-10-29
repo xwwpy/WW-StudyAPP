@@ -2,13 +2,21 @@ use crate::app::StudyApp;
 use gpui_kit::*;
 pub use studyapp_ui::feedback::{ModalFocus, modal_frame_shell};
 
+fn update_recovery_message(reason: &str) -> &'static str {
+    if reason.contains("System authorization cancelled or denied") {
+        "系统授权已取消或被拒绝，本次更新未安装。可在设置中重试更新。"
+    } else {
+        "上次更新未完成，应用已重新打开。请在设置中重试更新。"
+    }
+}
+
 impl StudyApp {
     pub(crate) fn deliver_update_notice(&mut self, cx: &mut Context<Self>) {
         if !self.startup_busy
             && !self.draft_loading
             && let Some(message) = self.pending_update_notice.take()
         {
-            self.push_notice(Err(message), cx);
+            self.push_notice(Err(update_recovery_message(&message).into()), cx);
         }
     }
     pub fn push_notice(&mut self, message: Result<String, String>, cx: &mut Context<Self>) {
@@ -29,6 +37,18 @@ impl StudyApp {
 #[cfg(all(test, feature = "ui-test"))]
 mod tests {
     use gpui_kit::{AppContext, Context, IntoElement, Render, TestAppContext, Window, div};
+    #[test]
+    fn recovery_messages_keep_internal_errors_and_paths_out_of_the_notice() {
+        let cancelled = super::update_recovery_message(
+            "System authorization cancelled or denied; /tmp/studyapp-install-private",
+        );
+        assert!(cancelled.contains("系统授权已取消或被拒绝"));
+        assert!(!cancelled.contains("/tmp"));
+        let failed = super::update_recovery_message("NSIS failed: C:\\private\\transaction");
+        assert!(failed.contains("设置中重试更新"));
+        assert!(!failed.contains("NSIS"));
+        assert!(!failed.contains("private"));
+    }
     #[gpui_kit::test]
     fn recovered_update_enqueues_a_visible_notification_once_after_loading(
         cx: &mut TestAppContext,
