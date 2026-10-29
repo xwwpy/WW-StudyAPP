@@ -21,7 +21,7 @@ jobs:
   native:
     name: ${{ matrix.platform }} ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -153,6 +153,15 @@ jobs:
           cmp target/release/studyapp /usr/bin/studyapp
           desktop-file-validate /usr/share/applications/studyapp.desktop
           dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1000x24' python3 scripts/smoke-unix.py --binary /usr/bin/studyapp --data-dir "$RUNNER_TEMP/native-installed"
+      - name: Verify real Linux update card and installed package transition
+        if: matrix.platform == 'linux'
+        env:
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          GDK_BACKEND: x11
+          GPUI_BACKEND: x11
+        run: |
+          dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1000x24' python3 scripts/native-update-acceptance.py --work-dir "$RUNNER_TEMP/native-update" --production-binary target/release/studyapp
       - name: Verify DMG installation and production startup
         if: matrix.platform == 'macos'
         run: |
@@ -180,6 +189,11 @@ jobs:
             ${{ runner.temp }}/native-interactive*
             ${{ runner.temp }}/native-installed*
             ${{ runner.temp }}/native-macos-assessment.json
+            ${{ runner.temp }}/native-update/transition-result.json
+            ${{ runner.temp }}/native-update/application.log
+            ${{ runner.temp }}/native-update/fixture/*.json
+            ${{ runner.temp }}/native-update/fixture/*.png
+            ${{ runner.temp }}/native-update/transaction-evidence/**
           if-no-files-found: warn
           retention-days: 14
       - name: Preserve verified release package

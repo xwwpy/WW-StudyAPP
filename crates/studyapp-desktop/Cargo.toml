@@ -10,6 +10,7 @@ name = "studyapp"
 path = "src/main.rs"
 
 [features]
+update-acceptance = ["ui-test"]
 ui-test = [
     "gpui-kit/test-support",
     "studyapp-ui/ui-test",

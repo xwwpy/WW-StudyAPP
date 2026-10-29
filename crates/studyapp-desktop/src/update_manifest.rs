@@ -49,7 +49,7 @@ pub fn parse_latest_json(text: &str) -> Result<UpdateManifest, String> {
     parse_with_key(
         text,
         current_platform()?,
-        &crate::update_signature::UPDATE_SIGNING_KEY,
+        crate::update_signature::verification_key(),
     )
 }
 

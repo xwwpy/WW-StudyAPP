@@ -1,0 +1,138 @@
+//! Explicitly non-production real package transition acceptance driver.
+use crate::app::{Page, StudyApp};
+use gpui_kit::{test::TestWindowExt, *};
+use serde_json::{Value, json};
+use std::{
+    io::Read,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
+};
+static CHECKS_READY: AtomicBool = AtomicBool::new(false);
+pub fn active() -> bool {
+    std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true")
+        && std::env::var_os("STUDYAPP_UPDATE_ACCEPTANCE_DIR").is_some()
+}
+pub fn checks_allowed() -> bool {
+    CHECKS_READY.load(Ordering::Relaxed)
+}
+fn directory() -> Result<PathBuf, String> {
+    if !active() {
+        return Err("Acceptance fixture is not active".into());
+    }
+    std::env::var_os("STUDYAPP_UPDATE_ACCEPTANCE_DIR")
+        .map(PathBuf::from)
+        .ok_or("Missing fixture directory".into())
+}
+fn configuration() -> Result<Value, String> {
+    serde_json::from_slice(
+        &std::fs::read(directory()?.join("fixture.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+pub fn fixture_bytes(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+    let config = configuration()?;
+    let filename = if url == crate::update_backend::LATEST_MANIFEST_URL {
+        "latest.json"
+    } else if config["package_url"].as_str() == Some(url) {
+        config["package_name"]
+            .as_str()
+            .ok_or("Missing fixture package")?
+    } else {
+        return Err("Unmapped fixture URL".into());
+    };
+    if Path::new(filename).file_name().and_then(|v| v.to_str()) != Some(filename) {
+        return Err("Invalid fixture filename".into());
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(directory()?.join(filename))
+        .map_err(|e| e.to_string())?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > limit {
+        return Err("Fixture exceeds transport limit".into());
+    }
+    Ok(bytes)
+}
+fn save(name: &str, value: Value) {
+    let dir = directory().unwrap();
+    let temporary = dir.join(format!("{}.tmp", uuid::Uuid::new_v4()));
+    std::fs::write(&temporary, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    std::fs::rename(temporary, dir.join(name)).unwrap();
+}
+async fn wait(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    cx: &mut AsyncApp,
+    description: &str,
+    condition: impl Fn(&StudyApp, &App) -> bool,
+) {
+    let started = Instant::now();
+    loop {
+        if window
+            .update(cx, |_, _, cx| condition(view.read(cx), cx))
+            .unwrap()
+        {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "Acceptance timeout: {description}"
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+}
+fn committed(app: &StudyApp) -> Value {
+    json!(
+        app.snapshot
+            .as_ref()
+            .unwrap()
+            .versions
+            .iter()
+            .map(|v| (&v.id, &v.content))
+            .collect::<Vec<_>>()
+    )
+}
+pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathBuf, cx: &mut App) {
+    cx.spawn(async move|cx|{
+        cx.background_executor().timer(Duration::from_millis(500)).await;
+        wait(window,&view,cx,"library and drafts",|a,_|a.snapshot.is_some()&&!a.startup_busy&&!a.draft_loading).await;
+        let config=configuration().unwrap();let marker=config["draft_marker"].as_str().unwrap();
+        if config["target_version"].as_str()==Some(env!("CARGO_PKG_VERSION")){
+            let previous:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("old-observation.json")).unwrap()).unwrap();
+            let id=previous["draft_id"].as_str().unwrap();
+            window.update(cx,|_,window,cx|{
+                assert_eq!(committed(view.read(cx)),previous["committed"]);
+                view.update(cx,|a,cx|{a.page=Page::Notes;a.clear_notices(cx);cx.notify();});window.render_frame(cx);
+                window.click(SharedString::from(format!("draft-row-{id}")),cx);
+            }).unwrap();
+            wait(window,&view,cx,"restored editor",|a,cx|a.note_editor.is_some()&&a.note_content.read(cx).ready()).await;
+            let editor=window.update(cx,|_,_,cx|view.read(cx).note_content.clone()).unwrap();
+            let live=crate::smoke_editor::bridge(window,&editor,json!({"type":"snapshot"}),cx).await;
+            assert_eq!(live["text"],marker);
+            window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("restored.png")).unwrap()).unwrap();
+            save("new-observation.json",json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":id,"live_text":live["text"],"database":database,"source_sha":config["source_sha"],"transaction":std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)}));
+            return;
+        }
+        window.update(cx,|_,window,cx|{view.update(cx,|a,cx|{a.page=Page::Notes;a.clear_notices(cx);cx.notify();});window.render_frame(cx);crate::smoke_library::library_add(window,false,&view,cx);}).unwrap();
+        wait(window,&view,cx,"editable native draft",|a,cx|a.note_editor.is_some()&&a.note_content.read(cx).ready()).await;
+        let editor=window.update(cx,|_,_,cx|view.read(cx).note_content.clone()).unwrap();
+        crate::smoke_editor::bridge(window,&editor,json!({"type":"replace","from":0,"to":0,"text":marker}),cx).await;
+        let before=window.update(cx,|_,_,cx|{let app=view.read(cx);json!({"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id(),"executable":std::env::current_exe().unwrap(),"draft_id":app.active_draft_id,"committed":committed(app),"database":database,"source_sha":config["source_sha"],"transaction":std::env::var_os("STUDYAPP_UPDATE_TRANSACTION").map(PathBuf::from)})}).unwrap();
+        save("old-observation.json",before);
+        CHECKS_READY.store(true,Ordering::Relaxed);
+        window.update(cx,|_,_,cx|{let panel=view.read(cx).update_panel.clone();panel.update(cx,|p,cx|p.acceptance_check(cx));}).unwrap();
+        wait(window,&view,cx,"signed update card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
+        window.update(cx,|_,window,cx|{
+            window.render_frame(cx);
+            window.click("update-dialog-later",cx);
+        }).unwrap();
+        window.update(cx,|_,window,cx|{window.render_frame(cx);window.click("sidebar-update",cx);}).unwrap();
+        wait(window,&view,cx,"reopened card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
+        window.update(cx,|_,window,cx|{window.render_frame(cx);crate::smoke::capture(window,directory().unwrap().join("update-card.png")).unwrap();window.click("update-dialog-install",cx);}).unwrap();
+        // The application and its supervisor own all remaining install/restart work.
+    }).detach();
+}

@@ -204,9 +204,18 @@ pub fn dispatch() -> Option<i32> {
     let mode = args.first()?.to_str()?;
     if !matches!(
         mode,
-        "--update-supervisor" | "--update-worker" | "--update-restore"
+        "--update-supervisor" | "--update-worker" | "--update-restore" | "--update-verify-package"
     ) {
         return None;
+    }
+    if mode == "--update-verify-package" {
+        return Some(
+            if args.len() == 2 && VerifiedPackage::verify(Path::new(&args[1])).is_ok() {
+                0
+            } else {
+                1
+            },
+        );
     }
     #[cfg(target_os = "linux")]
     let result = if args.len() == 2 {

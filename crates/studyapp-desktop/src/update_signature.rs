@@ -16,7 +16,7 @@ pub const UPDATE_SIGNING_KEY: [u8; 32] = [
 
 /// Verifies a manifest signature against the compiled-in release key.
 pub fn verify_manifest_signature(payload: &[u8], signature_base64: &str) -> Result<(), String> {
-    verify_with_key(payload, signature_base64, &UPDATE_SIGNING_KEY)
+    verify_with_key(payload, signature_base64, verification_key())
 }
 
 /// Verifies a signature against an explicit key; used by tests and rotation.
@@ -74,5 +74,37 @@ mod tests {
         assert!(VerifyingKey::from_bytes(&UPDATE_SIGNING_KEY).is_ok());
         // The release key must not be the RFC vector key.
         assert_ne!(UPDATE_SIGNING_KEY, VECTOR_KEY);
+    }
+}
+
+pub fn verification_key() -> &'static [u8; 32] {
+    #[cfg(feature = "update-acceptance")]
+    {
+        &[
+            208, 74, 178, 50, 116, 43, 180, 171, 58, 19, 104, 189, 70, 21, 228, 230, 208, 34, 74,
+            183, 26, 1, 107, 175, 133, 32, 163, 50, 201, 119, 135, 55,
+        ]
+    }
+    #[cfg(not(feature = "update-acceptance"))]
+    {
+        &UPDATE_SIGNING_KEY
+    }
+}
+
+#[cfg(test)]
+mod acceptance_key_tests {
+    use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
+    #[test]
+    fn fixture_key_requires_explicit_acceptance_build() {
+        let key = SigningKey::from_bytes(&[17; 32]);
+        let bytes = b"fixture-only payload";
+        let signature =
+            base64::engine::general_purpose::STANDARD.encode(key.sign(bytes).to_bytes());
+        assert!(verify_with_key(bytes, &signature, &UPDATE_SIGNING_KEY).is_err());
+        #[cfg(not(feature = "update-acceptance"))]
+        assert!(verify_manifest_signature(bytes, &signature).is_err());
+        #[cfg(feature = "update-acceptance")]
+        assert!(verify_manifest_signature(bytes, &signature).is_ok());
     }
 }

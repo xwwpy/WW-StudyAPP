@@ -812,6 +812,12 @@ pub(crate) const LATEST_MANIFEST_URL: &str =
     "https://github.com/xwwpy/WW-StudyAPP/releases/latest/download/latest.json";
 
 pub(crate) fn fetch_latest_manifest_text() -> UpdateResult<String> {
+    #[cfg(feature = "update-acceptance")]
+    if crate::update_acceptance::active() {
+        let bytes = crate::update_acceptance::fixture_bytes(LATEST_MANIFEST_URL, 262144)
+            .map_err(|_| failure(UpdateErrorKind::Network))?;
+        return String::from_utf8(bytes).map_err(|_| failure(UpdateErrorKind::InvalidRelease));
+    }
     let transport = RepairTransport::Live;
     let client = client(Duration::from_secs(30), &transport)?;
     let response = download_response(&client, LATEST_MANIFEST_URL, &transport)?;
@@ -827,6 +833,14 @@ pub(crate) fn download_setup_to(
     limit: u64,
     mut progress: impl FnMut(u64, u64),
 ) -> UpdateResult<()> {
+    #[cfg(feature = "update-acceptance")]
+    if crate::update_acceptance::active() {
+        let bytes = crate::update_acceptance::fixture_bytes(url, limit)
+            .map_err(|_| failure(UpdateErrorKind::Network))?;
+        std::fs::write(path, &bytes).map_err(|_| failure(UpdateErrorKind::Preparation))?;
+        progress(bytes.len() as u64, bytes.len() as u64);
+        return Ok(());
+    }
     let transport = RepairTransport::Live;
     let client = client(Duration::from_secs(600), &transport)?;
     let mut response = download_response(&client, url, &transport)?;

@@ -592,7 +592,15 @@ impl UpdatePanel {
         self.error = Some(error.to_string());
     }
 
+    #[cfg(feature = "update-acceptance")]
+    pub(crate) fn acceptance_check(&mut self, cx: &mut Context<Self>) {
+        self.check(CheckOrigin::Manual, cx);
+    }
     fn checks_allowed(&self) -> bool {
+        #[cfg(feature = "update-acceptance")]
+        if crate::update_acceptance::active() {
+            return crate::update_acceptance::checks_allowed();
+        }
         #[cfg(feature = "ui-test")]
         if self.fixture.is_some() {
             return true;

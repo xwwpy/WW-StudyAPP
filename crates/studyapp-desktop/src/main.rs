@@ -75,6 +75,8 @@ mod storage_ui;
 mod sync_runtime;
 mod sync_ui;
 mod theme;
+#[cfg(feature = "update-acceptance")]
+mod update_acceptance;
 mod update_backend;
 mod update_install;
 mod update_manifest;
@@ -193,6 +195,10 @@ fn run() -> anyhow::Result<()> {
     if smoke_test {
         smoke::prepare(&database)?;
     }
+    #[cfg(feature = "update-acceptance")]
+    if update_acceptance::active() && !database.exists() {
+        smoke::prepare(&database)?;
+    }
     let worker = worker::Worker::start(database.clone(), config);
     #[cfg(target_os = "linux")]
     let desktop = gpui_kit::platform::linux(WindowingModes::X11);
@@ -235,6 +241,10 @@ fn run() -> anyhow::Result<()> {
             }
         })
         .detach();
+        #[cfg(feature = "update-acceptance")]
+        if update_acceptance::active() {
+            update_acceptance::exercise(window, view.clone(), database.clone(), cx);
+        }
         if smoke_test {
             smoke::exercise(window, view, database, cx);
         }
