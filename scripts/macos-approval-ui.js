@@ -272,13 +272,15 @@ function run(argv) {
         phase = "button-event";
         const down = $.CGEventCreateMouseEvent(null, 1, $.CGPointMake(point[0], point[1]), 0);
         const up = $.CGEventCreateMouseEvent(null, 2, $.CGPointMake(point[0], point[1]), 0);
+        $.CGEventSetIntegerValueField(down, 1, 1);
+        $.CGEventSetIntegerValueField(up, 1, 1);
         $.CGEventPost(0, down);
         $.NSThread.sleepForTimeInterval(0.1);
         $.CGEventPost(0, up);
         phase = "pointer-observation";
         const cursor = $.CGEventGetLocation($.CGEventCreate(null));
         return JSON.stringify({authenticationSubmitted: true, postEventAllowed: true,
-            requestedPoint: point, cursor: [cursor.x, cursor.y], focusObservations: focusObservations});
+            requestedPoint: point, cursor: [cursor.x, cursor.y], clickCount: 1, focusObservations: focusObservations});
         } catch (_) {
             return JSON.stringify({authenticationSubmitted: false, phase: phase, focusObservations: focusObservations});
         }
