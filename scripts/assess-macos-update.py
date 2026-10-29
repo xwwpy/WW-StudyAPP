@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -28,44 +29,63 @@ def launch_accepted(enabled, intact, request, receipt):
             and all(receipt.get(field) == request[field] for field in ("nonce", "version", "sha256")))
 
 
+def select_approval(tree, label):
+    def texts(node):
+        result = []
+        if node.get("role") == "AXStaticText":
+            value = node.get("name") or node.get("value")
+            if isinstance(value, str) and value.strip():
+                result.append(value.strip())
+        for child in node.get("children", []):
+            result.extend(texts(child))
+        return result
+    def own_warning(values):
+        if not values or len(values) > 8:
+            return False
+        quoted = [name for value in values for name in re.findall(r'[“"]([^”"]+)[”"]', value)]
+        if any(name not in ("WW-StudyApp", "WW-StudyApp.app") for name in quoted):
+            return False
+        return any(value in ("WW-StudyApp", "WW-StudyApp.app") for value in values) or bool(quoted)
+    candidates = []
+    def visit(node, path, ancestors):
+        if node.get("role") == "AXButton" and node.get("name") == label and node.get("enabled") is True and node.get("visible") is True:
+            for parent, parent_path in reversed(ancestors):
+                values = texts(parent)
+                if not values:
+                    continue
+                related = parent.get("role") in ("AXGroup", "AXSheet", "AXDialog") or parent.get("subrole") == "AXDialog"
+                if related and own_warning(values):
+                    candidates.append({"button_path": path, "container_path": parent_path, "container": parent,
+                                       "label": label})
+                # Never climb out of one warning into a broader window containing another.
+                break
+        for index, child in enumerate(node.get("children", [])):
+            visit(child, [*path, index], [*ancestors, (node, path)])
+    visit(tree, [], [])
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def system_approval(output):
     """Use only visible per-app system controls on the disposable runner."""
     actions = []
     def screenshot(stage):
         actions.append(capture(["/usr/sbin/screencapture", "-x", str(output.with_name(output.stem + "-" + stage + ".png"))], 10))
     def click(process, buttons):
-        # Require this application's name in the actual window before clicking any button.
-        script = '''tell application "System Events"
-set report to ""
-if not (exists process "PROCESS") then return "process absent"
-tell process "PROCESS"
-repeat with win in windows
-set items to entire contents of win
-set matchesApp to false
-repeat with itemRef in items
-try
-set labelText to name of itemRef as text
-set report to report & labelText & linefeed
-if labelText contains "WW-StudyApp" then set matchesApp to true
-end try
-end repeat
-if matchesApp then
-repeat with wanted in {BUTTONS}
-repeat with itemRef in items
-try
-if role of itemRef is "AXButton" and name of itemRef is (wanted as text) then
-click itemRef
-return "clicked " & wanted & linefeed & report
-end if
-end try
-end repeat
-end repeat
-end if
-end repeat
-end tell
-return report
-end tell'''.replace("PROCESS", process).replace("BUTTONS", ", ".join(json.dumps(v) for v in buttons))
-        actions.append(capture(["/usr/bin/osascript", "-e", script], 15))
+        script = Path(__file__).with_name("macos-approval-ui.js")
+        snapshot = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", process], 20)
+        actions.append(snapshot)
+        if snapshot["exit_code"] != 0:
+            return
+        try:
+            tree = json.loads(snapshot["stdout"])
+        except ValueError:
+            return
+        for label in buttons:
+            selection = select_approval(tree, label)
+            if selection is not None:
+                actions.append(capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "click", process,
+                                        json.dumps(selection, separators=(",", ":"))], 20))
+                return
     screenshot("blocked")
     click("CoreServicesUIAgent", ["Open", "Done", "Cancel", "OK"])
     actions.append(capture(["/usr/bin/open", "x-apple.systempreferences:com.apple.preference.security?Privacy"], 15))

@@ -5,6 +5,25 @@ spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_approval_is_bound_to_own_warning_not_another_container(self):
+        def warning(name, enabled=True):
+            return {"role": "AXGroup", "children": [
+                {"role": "AXStaticText", "name": f'“{name}” was blocked'},
+                {"role": "AXButton", "name": "Open Anyway", "visible": True, "enabled": enabled},
+            ]}
+        own, other = warning("WW-StudyApp.app"), warning("Other.app")
+        tree = {"role": "AXWindow", "children": [own, other]}
+        choice = module.select_approval(tree, "Open Anyway")
+        self.assertEqual(choice["button_path"], [0, 1])
+        own["children"][1]["enabled"] = False
+        self.assertIsNone(module.select_approval(tree, "Open Anyway"))
+        own["children"][1]["enabled"] = True
+        own["children"][1]["visible"] = False
+        self.assertIsNone(module.select_approval(tree, "Open Anyway"))
+        own["children"][1]["visible"] = True
+        tree["children"].append(warning("WW-StudyApp.app"))
+        self.assertIsNone(module.select_approval(tree, "Open Anyway"))
+
     def test_system_dialog_timeout_still_produces_diagnostic_evidence(self):
         from unittest.mock import patch
         import subprocess
