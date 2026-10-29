@@ -51,6 +51,15 @@ function run(argv) {
     const windowInfo = $.CGWindowListCopyWindowInfo(1, 0);
     const onScreen = ObjC.deepUnwrap(ObjC.castRefToObject(windowInfo));
     if (!Array.isArray(onScreen)) throw new Error("CoreGraphics window list did not bridge to an array");
+    if (argv[0] === "observe-window") {
+        const pid = Number(argv[1]);
+        if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error("Invalid observation PID");
+        return JSON.stringify({pid: pid,
+            frontmostPid: Number($.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier),
+            windows: onScreen.filter(info => info.kCGWindowOwnerPID === pid),
+            screenWindows: onScreen.map(info => ({pid: info.kCGWindowOwnerPID,
+                bounds: info.kCGWindowBounds, layer: info.kCGWindowLayer, alpha: info.kCGWindowAlpha}))});
+    }
     if (argv[0] === "inventory") {
         const seen = new Set();
         const windows = onScreen.filter(info => !seen.has(info.kCGWindowOwnerPID) && seen.add(info.kCGWindowOwnerPID));

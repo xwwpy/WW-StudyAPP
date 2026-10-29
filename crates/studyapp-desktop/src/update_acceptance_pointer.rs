@@ -150,7 +150,7 @@ pub fn click(window: &mut Window, point: Point<Pixels>) {
 #[cfg(target_os = "macos")]
 pub fn click(window: &mut Window, point: Point<Pixels>) {
     assert_eq!(
-        mac_event(window, point, true)["ready"],
+        mac_event(window, point, true, true)["ready"],
         true,
         "Native control is not frontmost"
     );
@@ -158,11 +158,21 @@ pub fn click(window: &mut Window, point: Point<Pixels>) {
 
 #[cfg(target_os = "macos")]
 pub fn foreground(window: &mut Window, point: Point<Pixels>) -> serde_json::Value {
-    mac_event(window, point, false)
+    mac_event(window, point, false, true)
 }
 
 #[cfg(target_os = "macos")]
-fn mac_event(window: &mut Window, point: Point<Pixels>, post_click: bool) -> serde_json::Value {
+pub fn observe(window: &mut Window, point: Point<Pixels>) -> serde_json::Value {
+    mac_event(window, point, false, false)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_event(
+    window: &mut Window,
+    point: Point<Pixels>,
+    post_click: bool,
+    activate: bool,
+) -> serde_json::Value {
     use std::ffi::{c_char, c_void};
     type Obj = *mut c_void;
     #[repr(C)]
@@ -218,16 +228,18 @@ fn mac_event(window: &mut Window, point: Point<Pixels>, post_click: bool) -> ser
             objc_getClass(c"NSApplication".as_ptr()),
             sel_registerName(c"sharedApplication".as_ptr()),
         );
-        send_flag(
-            app,
-            sel_registerName(c"activateIgnoringOtherApps:".as_ptr()),
-            true,
-        );
-        send_arg(
-            native,
-            sel_registerName(c"makeKeyAndOrderFront:".as_ptr()),
-            std::ptr::null_mut(),
-        );
+        if activate {
+            send_flag(
+                app,
+                sel_registerName(c"activateIgnoringOtherApps:".as_ptr()),
+                true,
+            );
+            send_arg(
+                native,
+                sel_registerName(c"makeKeyAndOrderFront:".as_ptr()),
+                std::ptr::null_mut(),
+            );
+        }
         let flipped = send_bool(view, sel_registerName(c"isFlipped".as_ptr()));
         let local = Position {
             x: f64::from(point.x),

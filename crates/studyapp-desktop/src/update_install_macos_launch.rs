@@ -427,7 +427,7 @@ pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candi
     )?;
     let mut command = Command::new("/usr/bin/open");
     command
-        .args(["-n", "-g", "-a"])
+        .args(["-n", "-a"])
         .arg(&tx.target)
         .arg("--args")
         .arg("--update-launch")

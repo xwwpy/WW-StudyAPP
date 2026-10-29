@@ -12,6 +12,34 @@ spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_relaunch_observation_requires_natural_window_before_ack(self):
+        native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
+        native = importlib.util.module_from_spec(native_spec)
+        native_spec.loader.exec_module(native)
+        with tempfile.TemporaryDirectory() as folder:
+            fixture = Path(folder)
+            request = fixture / "relaunch-observe-123.json"
+            request.write_text(json.dumps({"pid":123,"native":{"ready":False,"window":9}}))
+            result = {"exit_code":0,"stdout":json.dumps({"pid":123,"frontmostPid":123,
+                "windows":[{"kCGWindowNumber":9,"kCGWindowLayer":0,"kCGWindowAlpha":1,
+                    "kCGWindowBounds":{"Width":800,"Height":600}}]})}
+            with patch.object(native.policy,"capture",return_value=result), patch.object(native.common,"run") as capture:
+                with self.assertRaisesRegex(AssertionError,"naturally"):
+                    native.observe_relaunch(fixture)
+                self.assertFalse((fixture / "relaunch-observed-123.json").exists())
+                self.assertEqual(capture.call_args.args[0][0],"/usr/sbin/screencapture")
+                request.write_text(json.dumps({"pid":123,"native":{"ready":True,"window":9}}))
+                original = result["stdout"]
+                observation = json.loads(original)
+                observation["frontmostPid"] = 456
+                result["stdout"] = json.dumps(observation)
+                with self.assertRaisesRegex(AssertionError,"foreground"):
+                    native.observe_relaunch(fixture)
+                self.assertFalse((fixture / "relaunch-observed-123.json").exists())
+                result["stdout"] = original
+                native.observe_relaunch(fixture)
+                self.assertTrue((fixture / "relaunch-observed-123.json").exists())
+
     def test_darwin_quarantine_reader_preserves_bytes_and_distinguishes_errors(self):
         import ctypes
         def native(path, name, output, size, position, flags):

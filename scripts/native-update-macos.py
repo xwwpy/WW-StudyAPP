@@ -30,6 +30,29 @@ def mount(package, destination):
     return destination / "WW-StudyApp.app"
 
 
+def observe_relaunch(fixture):
+    # Runner-owned capture, before the driver activates or interacts with this window.
+    for request in fixture.glob("relaunch-observe-*.json"):
+        requested = json.loads(request.read_text())
+        pid = requested["pid"]
+        acknowledgement = fixture / f"relaunch-observed-{pid}.json"
+        if acknowledgement.exists():
+            continue
+        result = policy.capture(["/usr/bin/osascript", "-l", "JavaScript",
+            str(Path(__file__).with_name("macos-approval-ui.js")), "observe-window", str(pid)], 10)
+        (fixture / f"relaunch-window-{pid}.json").write_text(json.dumps(result))
+        assert result["exit_code"] == 0, "Cannot independently observe relaunched window"
+        common.run(["/usr/sbin/screencapture", "-x", fixture / f"relaunch-screen-{pid}.png"])
+        observed = json.loads(result["stdout"])
+        assert requested["native"]["ready"] is True, "App did not naturally present its window"
+        assert observed["pid"] == observed["frontmostPid"] == pid, "Relaunched app is not foreground"
+        assert any(window["kCGWindowNumber"] == requested["native"]["window"]
+            and window["kCGWindowLayer"] == 0 and window["kCGWindowAlpha"] > 0
+            and window["kCGWindowBounds"]["Width"] > 100 and window["kCGWindowBounds"]["Height"] > 100
+            for window in observed["windows"]), "No matching visible native application window"
+        acknowledgement.write_text(json.dumps({"pid": pid, "observed_without_activation": True}))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -183,6 +206,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
             deadline = time.monotonic() + (180 if scenario == "health-failure" else 120)
             observed_unhealthy = None
             while not (fixture / "new-observation.json").exists():
+                observe_relaunch(fixture)
                 failures = [*fixture.glob("panic-*.json"), *fixture.glob("startup-error-*.json")]
                 if failures:
                     raise RuntimeError("Native candidate failure: " + failures[0].read_text(encoding="utf-8"))
@@ -200,6 +224,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
                         "time": time.time(), "installed_sha256": expected_hash, "harness_sent_signal": False}))
                 time.sleep(1)
             after = common.wait_file(fixture / "new-observation.json", 10)
+            common.run(["/usr/sbin/screencapture", "-x", fixture / "restored-runner.png"])
             transaction = Path(common.wait_file(fixture / "attempt.json", 5)["directory"])
             tx = json.loads((transaction / "transaction.json").read_text())["transaction"]
             health = None

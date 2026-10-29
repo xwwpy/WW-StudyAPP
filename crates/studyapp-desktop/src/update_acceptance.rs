@@ -330,12 +330,58 @@ fn committed(app: &StudyApp) -> Value {
 fn restored_run(target: &str, current: &str, scenario: &str, observed: bool) -> bool {
     target == current || (matches!(scenario, "authorization-denied" | "health-failure") && observed)
 }
+#[cfg(target_os = "macos")]
+async fn observe_relaunch(window: AnyWindowHandle, cx: &mut AsyncApp) {
+    let directory = directory().unwrap();
+    let pid = std::process::id();
+    let started = Instant::now();
+    let state = loop {
+        let state = window
+            .update(cx, |_, window, _| {
+                let point = gpui_kit::point(
+                    window.viewport_size().width / 2.0,
+                    window.viewport_size().height / 2.0,
+                );
+                pointer::observe(window, point)
+            })
+            .unwrap();
+        if state["ready"] == true || started.elapsed() > Duration::from_secs(10) {
+            break state;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    };
+    save(
+        &format!("relaunch-observe-{pid}.json"),
+        json!({"pid":pid,"native":state}),
+    );
+    let started = Instant::now();
+    while !directory
+        .join(format!("relaunch-observed-{pid}.json"))
+        .exists()
+    {
+        assert!(
+            started.elapsed() < Duration::from_secs(25),
+            "Runner did not observe natural relaunch"
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+    assert_eq!(
+        state["ready"], true,
+        "Relaunched window was not naturally visible and frontmost: {state}"
+    );
+}
 pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathBuf, cx: &mut App) {
     cx.spawn(async move|cx|{
         cx.background_executor().timer(Duration::from_millis(500)).await;
         wait(window,&view,cx,"library and drafts",|a,_|a.snapshot.is_some()&&!a.startup_busy&&!a.draft_loading).await;
         let config=configuration().unwrap();let marker=config["draft_marker"].as_str().unwrap();
         if restored_run(config["target_version"].as_str().unwrap(),env!("CARGO_PKG_VERSION"),config["scenario"].as_str().unwrap_or(""),directory().unwrap().join("old-observation.json").exists()){
+            #[cfg(target_os = "macos")]
+            observe_relaunch(window, cx).await;
             let previous:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("old-observation.json")).unwrap()).unwrap();
             let id=previous["draft_id"].as_str().unwrap();
             if config["scenario"] == "authorization-denied" || (config["scenario"] == "health-failure" && config["target_version"] != env!("CARGO_PKG_VERSION")) {
