@@ -23,6 +23,7 @@ struct MacTransaction {
     transaction: InstallTransaction,
     target: PathBuf,
     elevated: bool,
+    quarantine: Option<Vec<u8>>,
     #[cfg(feature = "update-acceptance")]
     #[serde(default)]
     acceptance_directory: Option<PathBuf>,
@@ -204,6 +205,9 @@ fn transaction(dir: &Path, owner: u32) -> Result<MacTransaction> {
     {
         return Err("Invalid update transaction".into());
     }
+    if quarantine::read(&dir.join("package"))? != tx.quarantine {
+        return Err("Prepared update quarantine changed; prepare the update again".into());
+    }
     let current = tx.target.join("Contents/MacOS/studyapp");
     if bundle(&current)? != tx.target {
         return Err("Invalid installed target".into());
@@ -255,6 +259,7 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
             text(&dir.join("package"))?,
         ],
     )?;
+    quarantine::propagate(&package.directory.join("package"), &dir.join("package"))?;
     let staged = VerifiedPackage::verify(&dir)?;
     if staged.digest != package.digest || staged.version != package.version {
         return Err("Approved package changed".into());
@@ -265,6 +270,11 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
         validate_bundle(&candidate, &package.version)?;
         launch::approve(package, &candidate)
     })?;
+    if quarantine::read(&package.directory.join("package"))?
+        != quarantine::read(&dir.join("package"))?
+    {
+        return Err("Package quarantine changed during approval".into());
+    }
     launch::finish_approval(package)?;
     let tx = MacTransaction {
         transaction: InstallTransaction {
@@ -278,6 +288,7 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
         },
         target,
         elevated,
+        quarantine: quarantine::read(&dir.join("package"))?,
         #[cfg(feature = "update-acceptance")]
         acceptance_directory: crate::update_acceptance::launch_directory(),
     };
@@ -600,6 +611,9 @@ fn mount(dir: &Path) -> Result<(Mount, PathBuf)> {
     Ok((guard, point))
 }
 fn install(dir: &Path, tx: &MacTransaction) -> Result<()> {
+    if quarantine::read(&dir.join("package"))? != tx.quarantine {
+        return Err("Install snapshot quarantine differs from approved package".into());
+    }
     let package = VerifiedPackage::verify(dir)?;
     if package.version != tx.transaction.target_version {
         return Err("Approved target changed".into());
@@ -642,15 +656,7 @@ fn install(dir: &Path, tx: &MacTransaction) -> Result<()> {
                 text(&stage)?,
             ],
         )?;
-        if let Ok(quarantine) = output(
-            "/usr/bin/xattr",
-            &["-p", "com.apple.quarantine", text(&dir.join("package"))?],
-        ) {
-            output(
-                "/usr/bin/xattr",
-                &["-w", "com.apple.quarantine", &quarantine, text(&stage)?],
-            )?;
-        }
+        quarantine::propagate(&dir.join("package"), &stage)?;
         validate_bundle(&stage, &package.version)?;
         // LaunchServices performs the system policy check on ordinary-user launch.
         // Integrity, identity and architecture are verified above before replacement.
@@ -750,20 +756,7 @@ pub fn worker(dir: &Path, recover: bool) -> Result<()> {
         &root.join("package"),
         &bounded(&dir.join("package"), owner, 256 * 1024 * 1024)?,
     )?;
-    if let Ok(q) = output(
-        "/usr/bin/xattr",
-        &["-p", "com.apple.quarantine", text(&dir.join("package"))?],
-    ) {
-        output(
-            "/usr/bin/xattr",
-            &[
-                "-w",
-                "com.apple.quarantine",
-                &q,
-                text(&root.join("package"))?,
-            ],
-        )?;
-    }
+    quarantine::propagate(&dir.join("package"), &root.join("package"))?;
     install(&root, &tx)
 }
 use launch::launch;

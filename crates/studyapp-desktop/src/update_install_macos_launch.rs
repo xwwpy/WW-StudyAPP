@@ -10,6 +10,8 @@ struct Request {
     sha256: String,
     health: Option<PathBuf>,
     created: u64,
+    #[serde(default)]
+    quarantine: String,
     #[cfg(feature = "update-acceptance")]
     #[serde(default)]
     acceptance_directory: Option<PathBuf>,
@@ -159,30 +161,48 @@ fn tree_digest(root: &Path) -> Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+fn quarantine_fingerprint(
+    package: &VerifiedPackage,
+    source: &Path,
+    candidate: &Path,
+) -> Result<String> {
+    fn walk(path: &Path, hash: &mut Sha256) -> Result<()> {
+        let value = serde_json::to_vec(&quarantine::read(path)?).map_err(|e| e.to_string())?;
+        hash.update((value.len() as u64).to_le_bytes());
+        hash.update(value);
+        if io(fs::symlink_metadata(path))?.is_dir() {
+            let mut entries = io(fs::read_dir(path))?
+                .collect::<std::io::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?;
+            entries.sort_by_key(|entry| entry.file_name());
+            for entry in entries {
+                walk(&entry.path(), hash)?;
+            }
+        }
+        Ok(())
+    }
+    let mut hash = Sha256::new();
+    for path in [&package.directory.join("package"), source, candidate] {
+        walk(path, &mut hash)?;
+        hash.update([0]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
     let dir = package.directory.join("approval");
     let candidate = dir.join(APP);
     if !dir.exists() {
         io(fs::DirBuilder::new().mode(0o700).create(&dir))?;
         output("/usr/bin/ditto", &[text(source)?, text(&candidate)?])?;
-        let q = output(
-            "/usr/bin/xattr",
-            &[
-                "-p",
-                "com.apple.quarantine",
-                text(&package.directory.join("package"))?,
-            ],
-        )?;
-        output(
-            "/usr/bin/xattr",
-            &["-w", "com.apple.quarantine", &q, text(&candidate)?],
-        )?;
+        quarantine::propagate(&package.directory.join("package"), &candidate)?;
         let req = Request {
             nonce: uuid::Uuid::new_v4().to_string(),
             version: package.version.clone(),
             sha256: binary_hash(&candidate)?,
             health: None,
             created: now()?,
+            quarantine: quarantine_fingerprint(package, source, &candidate)?,
             #[cfg(feature = "update-acceptance")]
             acceptance_directory: None,
         };
@@ -197,17 +217,23 @@ pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
         return Err("Approval candidate differs from signed package".into());
     }
     let mut req = request(&dir)?;
+    let provenance = quarantine_fingerprint(package, source, &candidate)?;
     if req.version != package.version || req.sha256 != binary_hash(source)? {
         return Err("Approval request identity mismatch".into());
     }
-    if now()?.checked_sub(req.created).is_none_or(|age| age > 3600) {
+    if req.quarantine != provenance || now()?.checked_sub(req.created).is_none_or(|age| age > 3600)
+    {
+        quarantine::propagate(&package.directory.join("package"), &candidate)?;
+        req.quarantine = quarantine_fingerprint(package, source, &candidate)?;
         req.nonce = uuid::Uuid::new_v4().to_string();
         req.created = now()?;
         let temp = dir.join(format!("request-{}.tmp", uuid::Uuid::new_v4()));
         write_new(&temp, &serde_json::to_vec(&req).map_err(|e| e.to_string())?)?;
         io(fs::rename(temp, dir.join("request.json")))?;
     }
-    if receipt(&dir, &req).is_ok() {
+    if receipt(&dir, &req).is_ok()
+        && quarantine_fingerprint(package, source, &candidate)? == req.quarantine
+    {
         return Ok(());
     }
     let pointer = probe_pointer()?;
@@ -235,7 +261,9 @@ pub(super) fn approve(package: &VerifiedPackage, source: &Path) -> Result<()> {
         .spawn())?;
     let started = Instant::now();
     while started.elapsed() < Duration::from_secs(3) {
-        if receipt(&dir, &req).is_ok() {
+        if receipt(&dir, &req).is_ok()
+            && quarantine_fingerprint(package, source, &candidate)? == req.quarantine
+        {
             return Ok(());
         }
         if io(child.try_wait())?.is_some_and(|status| !status.success()) {
@@ -366,6 +394,7 @@ pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candi
         sha256: binary_hash(&tx.target)?,
         health: health.map(Path::to_owned),
         created: now()?,
+        quarantine: String::new(),
         #[cfg(feature = "update-acceptance")]
         acceptance_directory: tx.acceptance_directory.clone(),
     };
@@ -422,6 +451,41 @@ pub(super) fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<Candi
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn update_install_macos_approval_cache_detects_quarantine_without_byte_changes() {
+        let root =
+            std::env::temp_dir().join(format!("studyapp-provenance-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let candidate = root.join("candidate");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&candidate).unwrap();
+        fs::write(root.join("package"), b"signed image bytes").unwrap();
+        fs::write(source.join("resource"), b"same").unwrap();
+        fs::write(candidate.join("resource"), b"same").unwrap();
+        let package = VerifiedPackage {
+            directory: root.clone(),
+            version: "0.1.4".into(),
+            digest: "unchanged".into(),
+        };
+        let before = quarantine_fingerprint(&package, &source, &candidate).unwrap();
+        quarantine::write(&root.join("package"), b"0083;1234;Browser;existing").unwrap();
+        let marked = quarantine_fingerprint(&package, &source, &candidate).unwrap();
+        assert_ne!(before, marked);
+        assert_eq!(
+            fs::read(root.join("package")).unwrap(),
+            b"signed image bytes"
+        );
+        quarantine::write(&source.join("resource"), b"0083;1234;Source;existing").unwrap();
+        assert_ne!(
+            marked,
+            quarantine_fingerprint(&package, &source, &candidate).unwrap()
+        );
+        assert_eq!(
+            tree_digest(&source).unwrap(),
+            tree_digest(&candidate).unwrap()
+        );
+    }
     #[test]
     fn update_install_macos_approval_tree_detects_resource_changes() {
         let root = std::env::temp_dir().join(format!("studyapp-tree-{}", uuid::Uuid::new_v4()));
