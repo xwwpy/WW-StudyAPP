@@ -24,12 +24,35 @@ windows = load("update_windows", "windows-update-launch.py")
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, required=True)
-    parser.add_argument("--production-binary", type=Path, required=True)
+    parser.add_argument("--production-binary", type=Path)
+    parser.add_argument("--preflight-only", action="store_true")
     args = parser.parse_args()
     if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Native NSIS transition requires a disposable Windows runner")
     root = args.work_dir.resolve()
     root.mkdir()
+    allowed = {"PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "COMSPEC", "USERNAME", "USERDOMAIN", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA"}
+    child_env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    child_env["GITHUB_ACTIONS"] = "true"
+    harness_context = windows.inspect_process(os.getpid())
+    # Only this fresh CI fixture directory receives access for the existing user SID.
+    common.run(["icacls", root, "/grant:r", f'*{harness_context["user_sid"]}:(OI)(CI)M'])
+    preflight = {"harness": harness_context, "fixture_directory": str(root)}
+    try:
+        process = windows.launch(Path(os.environ["SYSTEMROOT"]) / "System32/cmd.exe", ["/d", "/c", "exit", "0"], child_env, headless=True)
+        preflight["exit_code"] = process.wait(20)
+        if preflight["exit_code"] != 0:
+            raise RuntimeError("Ordinary-user no-window preflight failed")
+    except Exception as error:
+        preflight["error"] = str(error)
+        raise
+    finally:
+        preflight["acl"] = subprocess.run(["icacls", str(root)], capture_output=True, text=True).stdout
+        (root / "token-preflight.json").write_text(json.dumps(preflight, indent=2), encoding="utf-8")
+    if args.preflight_only:
+        return
+    if args.production_binary is None:
+        parser.error("--production-binary is required for the full transition")
     source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=common.ROOT, text=True).strip()
     archive = subprocess.check_output(["git", "archive", "--format=tar", "HEAD"], cwd=common.ROOT)
     old_version = common.workspace_version(common.ROOT)
@@ -64,9 +87,7 @@ def main():
     rejected = subprocess.run([str(args.production_binary.resolve()), "--update-verify-package", str(verify)], timeout=20)
     if rejected.returncode != 1:
         raise RuntimeError("Feature-off production binary did not reject fixture trust")
-    allowed = {"PATH", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "COMSPEC", "USERNAME", "USERDOMAIN", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMDATA"}
-    child_env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
-    child_env.update(GITHUB_ACTIONS="true", STUDYAPP_UPDATE_ACCEPTANCE_DIR=str(fixture))
+    child_env["STUDYAPP_UPDATE_ACCEPTANCE_DIR"] = str(fixture)
     installed_dir = root / "installed"
     installer = windows.launch(packages["old"], ["/S", f"/D={installed_dir}"], child_env)
     if installer.wait(120) != 0:
@@ -76,8 +97,8 @@ def main():
     try:
         old = windows.launch(installed, ["--data-dir", data], child_env)
         old_context = windows.inspect_process(old.pid)
-        harness_context = windows.inspect_process(os.getpid())
         assert not old_context["elevated"] and old_context["user_sid"] == harness_context["user_sid"]
+        assert int(old_context["integrity_sid"].rsplit("-", 1)[1]) <= 8192
         before = common.wait_file(fixture / "old-observation.json", 120, old)
         assert old.wait(180) == 0
         after = common.wait_file(fixture / "new-observation.json", 180)
@@ -101,6 +122,7 @@ def main():
         new_context = windows.inspect_process(after["pid"])
         assert not new_context["elevated"] and Path(new_context["executable"]).resolve() == installed.resolve()
         assert new_context["user_sid"] == old_context["user_sid"] == harness_context["user_sid"]
+        assert int(new_context["integrity_sid"].rsplit("-", 1)[1]) <= 8192
         pending = json.loads((fixture / "close-pending.json").read_text(encoding="utf-8"))
         ack = json.loads((fixture / "close-ack.json").read_text(encoding="utf-8"))
         handoff = json.loads((fixture / "helper-handoff.json").read_text(encoding="utf-8"))

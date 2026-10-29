@@ -49,6 +49,10 @@ jobs:
         run: |
           python scripts/test-native-update-acceptance.py
           if ($LASTEXITCODE -ne 0) { throw 'Acceptance fixture tests failed' }
+      - name: Verify ordinary-user launch before compiling fixtures
+        run: |
+          python scripts/native-update-windows.py --work-dir "$env:RUNNER_TEMP/update-token-preflight" --preflight-only
+          if ($LASTEXITCODE -ne 0) { throw 'Ordinary-user launch preflight failed' }
       - name: Build feature-off trust verifier
         run: |
           cargo build --locked -p studyapp-desktop --bin studyapp
@@ -64,6 +68,8 @@ jobs:
           name: native-update-windows-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/native-update-windows/transition-result.json
+            ${{ runner.temp }}/native-update-windows/token-preflight.json
+            ${{ runner.temp }}/update-token-preflight/token-preflight.json
             ${{ runner.temp }}/native-update-windows/fixture/*.json
             ${{ runner.temp }}/native-update-windows/fixture/*.png
             ${{ runner.temp }}/native-update-windows/transaction-evidence/**

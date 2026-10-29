@@ -40,6 +40,9 @@ def apis():
     security.CreateProcessWithTokenW.argtypes = [w.HANDLE, w.DWORD, w.LPCWSTR, w.LPWSTR,
                                                 w.DWORD, c.c_void_p, w.LPCWSTR,
                                                 c.POINTER(STARTUPINFO), c.POINTER(PROCESSINFO)]
+    security.CreateProcessAsUserW.argtypes = [w.HANDLE, w.LPCWSTR, w.LPWSTR, c.c_void_p, c.c_void_p,
+                                             w.BOOL, w.DWORD, c.c_void_p, w.LPCWSTR,
+                                             c.POINTER(STARTUPINFO), c.POINTER(PROCESSINFO)]
     return kernel, security
 
 
@@ -54,13 +57,13 @@ def elevated(security, token):
     return value.value != 0
 
 
-def token_sid(kernel, security, token):
+def token_sid(kernel, security, token, information_class=1):
     size = w.DWORD()
-    security.GetTokenInformation(token, 1, None, 0, c.byref(size))
+    security.GetTokenInformation(token, information_class, None, 0, c.byref(size))
     if not 0 < size.value < 65536:
         raise RuntimeError("Invalid TokenUser buffer size")
     buffer = c.create_string_buffer(size.value)
-    require(security.GetTokenInformation(token, 1, buffer, size, c.byref(size)))
+    require(security.GetTokenInformation(token, information_class, buffer, size, c.byref(size)))
     sid = c.cast(buffer, c.POINTER(c.c_void_p))[0]
     text = w.LPWSTR()
     require(security.ConvertSidToStringSidW(sid, c.byref(text)))
@@ -80,7 +83,7 @@ def inspect_process(pid):
         path, size = c.create_unicode_buffer(32768), w.DWORD(32768)
         require(kernel.QueryFullProcessImageNameW(process, 0, path, c.byref(size)))
         return {"pid": pid, "elevated": elevated(security, token), "executable": path.value,
-                "user_sid": token_sid(kernel, security, token)}
+                "user_sid": token_sid(kernel, security, token), "integrity_sid": token_sid(kernel, security, token, 25)}
     finally:
         if token.value:
             kernel.CloseHandle(token)
@@ -105,7 +108,7 @@ class Process:
         return self.poll()
 
 
-def launch(executable, arguments, environment):
+def launch(executable, arguments, environment, headless=False):
     if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Ordinary-user acceptance launch is restricted to Windows CI")
     kernel, security = apis()
@@ -113,27 +116,44 @@ def launch(executable, arguments, environment):
     require(security.OpenProcessToken(kernel.GetCurrentProcess(), 0x000B, c.byref(current)))
     try:
         selected = current
-        if elevated(security, current):
+        restricted = False
+        if not elevated(security, current):
+            return subprocess.Popen([str(executable), *map(str, arguments)], env=environment,
+                                    creationflags=0x08000000 if headless else 0)
+        else:
             size = w.DWORD()
             # Prefer this same user's existing UAC limited token.
             if not security.GetTokenInformation(current, 19, c.byref(limited), c.sizeof(limited), c.byref(size)):
                 # CI images without a linked token can derive a least-privilege token.
                 # This only removes authority; production updater authorization is unchanged.
                 require(security.CreateRestrictedToken(current, 4, 0, None, 0, None, 0, None, c.byref(limited)))
+                restricted = True
             selected = limited
         if elevated(security, selected):
             raise RuntimeError("Runner could not supply a non-elevated same-user token")
         if token_sid(kernel, security, selected) != token_sid(kernel, security, current):
             raise RuntimeError("Acceptance launch token changed the user identity")
+        integrity = token_sid(kernel, security, selected, 25)
+        if int(integrity.rsplit("-", 1)[1]) > 8192:
+            raise RuntimeError(f"Acceptance token integrity is above ordinary user: {integrity}")
         executable = str(Path(executable).resolve(strict=True))
         command = c.create_unicode_buffer(subprocess.list2cmdline([executable, *map(str, arguments)]))
         block = c.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(environment.items())) + "\0\0")
         startup = STARTUPINFO()
         startup.cb = c.sizeof(startup)
-        startup.desktop = "winsta0\\default"
+        startup.desktop = None if headless else "winsta0\\default"
         info = PROCESSINFO()
-        require(security.CreateProcessWithTokenW(selected, 1, executable, command, 0x400,
-                                                 block, str(Path(executable).parent), c.byref(startup), c.byref(info)))
+        flags = 0x400 | (0x08000000 if headless else 0)
+        if restricted:
+            created = security.CreateProcessAsUserW(selected, executable, command, None, None, False,
+                                                     flags, block, str(Path(executable).parent), c.byref(startup), c.byref(info))
+        else:
+            # This user's profile is already loaded; do not request another profile logon.
+            created = security.CreateProcessWithTokenW(selected, 0, executable, command, flags,
+                                                        block, str(Path(executable).parent), c.byref(startup), c.byref(info))
+        if not created:
+            error = c.WinError(c.get_last_error())
+            raise RuntimeError(f"Ordinary launch failed ({'restricted/current-user' if restricted else 'linked-user'}; integrity={integrity}): {error}")
         kernel.CloseHandle(info.thread)
         return Process(info.process, info.pid, kernel)
     finally:
