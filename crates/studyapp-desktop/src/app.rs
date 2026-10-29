@@ -43,6 +43,7 @@ pub struct StudyApp {
     pub read_models: Arc<studyapp_desktop::read_models::SnapshotReadModels>,
     pub page: Page,
     pub notice: Option<Result<String, String>>,
+    pub pending_update_notice: Option<String>,
     pub search: Entity<InputState>,
     pub summary: Entity<TextareaState>,
     pub summary_editor: Entity<studyapp_ui::compact_markdown::CompactMarkdown>,
@@ -448,7 +449,8 @@ impl StudyApp {
             startup_busy: true,
             read_models: Arc::new(Default::default()),
             page: Page::Today,
-            notice: crate::update_install::previous_failure().map(Err),
+            notice: None,
+            pending_update_notice: crate::update_install::previous_failure(),
             search,
             summary,
             summary_editor,
@@ -481,6 +483,7 @@ impl StudyApp {
     }
 
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.deliver_update_notice(cx);
         if self.update_health.ready(
             self.startup_busy,
             self.draft_loading,

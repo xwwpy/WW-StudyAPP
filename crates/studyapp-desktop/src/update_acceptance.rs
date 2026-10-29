@@ -320,10 +320,14 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             let previous:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("old-observation.json")).unwrap()).unwrap();
             let id=previous["draft_id"].as_str().unwrap();
             if config["scenario"] == "authorization-denied" || (config["scenario"] == "health-failure" && config["target_version"] != env!("CARGO_PKG_VERSION")) {
+                wait(window,&view,cx,"visible recovery notification",|a,cx|a.notifications.read(cx).visible_count()>0).await;
                 let notice=window.update(cx,|_,_,cx|view.read(cx).notice.clone()).unwrap();
                 assert!(matches!(notice, Some(Err(_))), "Recovery must show the installation failure");
-                save("recovery-notice.json",json!({"notice":notice,"pid":std::process::id()}));
                 presented(window,cx).await;
+                let bounds=window.update(cx,|_,window,_|window.find("floating-notice").bounds()).unwrap();
+                assert!(bounds.size.width>px(0.)&&bounds.size.height>px(0.));
+                save("recovery-notice.json",json!({"notice":notice,"pid":std::process::id(),"visible_queue":true,
+                    "bounds":{"x":f64::from(bounds.origin.x),"y":f64::from(bounds.origin.y),"width":f64::from(bounds.size.width),"height":f64::from(bounds.size.height)}}));
                 window.update(cx,|_,window,_|capture(window,"recovery-notice.png")).unwrap();
             }
             if config["settings_continuation"] == true {
