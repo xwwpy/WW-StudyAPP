@@ -109,7 +109,7 @@ fn package_file() -> &'static str {
 
 #[derive(Clone, Debug)]
 pub enum PreparedPackage {
-    Windows(VerifiedPackage),
+    Windows(PathBuf),
     Linux(PathBuf),
     Macos(PathBuf),
 }
@@ -120,8 +120,7 @@ pub fn prepare(
     package.reverify()?;
     #[cfg(windows)]
     {
-        let _ = data;
-        Ok(PreparedPackage::Windows(package.clone()))
+        windows::prepare(package, data).map(PreparedPackage::Windows)
     }
     #[cfg(target_os = "linux")]
     {
@@ -139,10 +138,16 @@ pub fn prepare(
 }
 pub fn launch(package: &PreparedPackage) -> Result<(), String> {
     match package {
-        PreparedPackage::Windows(package) => {
-            package.reverify()?;
-            crate::update_nsis::launch(&package.directory.join(package_file()))
-                .map_err(|e| e.to_string())
+        PreparedPackage::Windows(directory) => {
+            #[cfg(windows)]
+            {
+                windows::spawn(directory)
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = directory;
+                Err("Windows helper unsupported".into())
+            }
         }
         PreparedPackage::Macos(directory) => {
             #[cfg(target_os = "macos")]
@@ -239,7 +244,13 @@ pub fn dispatch() -> Option<i32> {
     } else {
         Err("Invalid updater arguments".into())
     };
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    let result = if args.len() == 2 && mode == "--update-supervisor" {
+        windows::supervise(Path::new(&args[1]))
+    } else {
+        Err("Unsupported Windows helper arguments".into())
+    };
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     let result: Result<(), String> = Err("Updater helper unsupported on this platform".into());
     Some(match result {
         Ok(()) => 0,
@@ -256,6 +267,9 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 #[path = "update_install_macos.rs"]
 pub mod macos;
+#[cfg(windows)]
+#[path = "update_install_windows.rs"]
+pub mod windows;
 
 #[cfg(test)]
 mod tests {
@@ -284,10 +298,12 @@ mod tests {
 }
 
 pub fn acknowledge_health() {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
     {
         static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            #[cfg(windows)]
+            let _ = windows::acknowledge_health();
             #[cfg(target_os = "linux")]
             let _ = linux::acknowledge_health();
             #[cfg(target_os = "macos")]
@@ -304,7 +320,11 @@ pub fn previous_failure() -> Option<String> {
     {
         macos::previous_failure().ok().flatten()
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        windows::previous_failure().ok().flatten()
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         None
     }
