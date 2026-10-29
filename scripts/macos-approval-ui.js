@@ -187,6 +187,7 @@ function run(argv) {
             }
         }
         function typeInto(control, text, fieldName) {
+            let dismissedAutocomplete = false;
             phase = fieldName + "-focus";
             if ($.AXUIElementSetAttributeValue(control, $("AXFocused"), $(true)) !== 0) throw new Error("Cannot focus system credential field");
             $.NSThread.sleepForTimeInterval(0.1);
@@ -204,6 +205,28 @@ function run(argv) {
                     sameProcess: pidKnown && pid[0] === processId,
                     matchesOriginal: focused !== null && Boolean($.CFEqual(focused, control)),
                     matchesFresh: focused !== null && Boolean($.CFEqual(focused, fresh))};
+                if (fieldName === "password" && !dismissedAutocomplete && observation.local && observation.sameProcess &&
+                    observation.globalRole === "AXTable" && !observation.matchesOriginal) {
+                    const label = scalar(focused, "AXTitle", null) || scalar(focused, "AXDescription", "");
+                    let ancestor = focused, popup = null;
+                    for (let depth = 0; ancestor !== null && depth < 6; depth++) {
+                        if (scalar(ancestor, "AXRole", "") === "AXWindow") { popup = ancestor; break; }
+                        ancestor = attribute(ancestor, "AXParent");
+                    }
+                    if (/^Auto-Complete [0-9]+ Results?$/.test(label) && popup !== null &&
+                        !$.CFEqual(popup, references[expected.container_path.join("/")])) {
+                        dismissedAutocomplete = true;
+                        key(53, 0);
+                        $.NSThread.sleepForTimeInterval(0.2);
+                        control = children(application, "AXWindows")[path[0]];
+                        for (const index of path.slice(1)) control = children(control, "AXChildren")[index];
+                        if (scalar(control, "AXRole", "") !== "AXTextField" || scalar(control, "AXSubrole", "") !== "AXSecureTextField" ||
+                            JSON.stringify(geometry(control, "AXPosition", 1)) !== JSON.stringify(field.position) ||
+                            JSON.stringify(geometry(control, "AXSize", 2)) !== JSON.stringify(field.size)) throw new Error("Secure field changed after popup dismissal");
+                        focusObservations.push({field: "password", action: "escape-autocomplete"});
+                        return requireFocus();
+                    }
+                }
                 if (!observation.local || !observation.matchesOriginal) {
                     observation.ancestors = [];
                     let ancestor = focused;
@@ -255,7 +278,7 @@ function run(argv) {
         phase = "pointer-observation";
         const cursor = $.CGEventGetLocation($.CGEventCreate(null));
         return JSON.stringify({authenticationSubmitted: true, postEventAllowed: true,
-            requestedPoint: point, cursor: [cursor.x, cursor.y]});
+            requestedPoint: point, cursor: [cursor.x, cursor.y], focusObservations: focusObservations});
         } catch (_) {
             return JSON.stringify({authenticationSubmitted: false, phase: phase, focusObservations: focusObservations});
         }
