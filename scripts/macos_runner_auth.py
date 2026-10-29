@@ -10,6 +10,42 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime
+
+
+def authentication_log_summary(records, since):
+    summary = []
+    for record in records:
+        process = str(record.get("processImagePath", "")).rsplit("/", 1)[-1]
+        if process not in ("coreautha", "authd"):
+            continue
+        try:
+            stamp = datetime.fromisoformat(record["timestamp"]).timestamp()
+        except (KeyError, ValueError):
+            continue
+        if stamp < since:
+            continue
+        message = str(record.get("eventMessage", ""))
+        codes = re.findall(r"\b(?:error|status|result|code)\s*[:=]\s*(-?\d+)\b", message, re.IGNORECASE)
+        names = re.findall(r"\berr(?:Authorization|Sec)[A-Za-z]+\b", message)
+        signals = [word for word in ("authentication succeeded", "authentication failed", "authorization denied", "policy denied", "credential rejected") if word in message.lower()]
+        if codes or names or signals:
+            summary.append({"process": process, "timestamp": record["timestamp"], "codes": codes, "names": names, "signals": signals})
+    return summary
+
+
+def authentication_diagnostics(since):
+    result = subprocess.run(["/usr/bin/log", "show", "--last", "1m", "--style", "json", "--predicate",
+                             'process == "coreautha" OR process == "authd"'], capture_output=True, text=True, timeout=20)
+    if result.returncode != 0:
+        return {"available": False, "exit_code": result.returncode}
+    try:
+        records = json.loads(result.stdout)
+        if not isinstance(records, list) or len(records) > 5000:
+            return {"available": False, "reason": "bounded log query exceeded"}
+        return {"available": True, "records": authentication_log_summary(records, since)}
+    except ValueError:
+        return {"available": False, "reason": "log format unavailable"}
 
 
 def authentication_candidates(tree):

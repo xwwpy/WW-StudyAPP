@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
-from macos_runner_auth import runner_credential, unique_authentication
+from macos_runner_auth import runner_credential, unique_authentication, authentication_diagnostics
 
 
 def capture(argv, timeout=120):
@@ -128,11 +128,15 @@ def system_approval(output):
                     with runner_credential() as (credential, username):
                         actions.append({"command": ["runner-credential-preflight"], "exit_code": 0, "stdout": "authonly and administrator membership verified", "stderr": ""})
                         selection["test_username"] = username
+                        submitted_at = time.time()
                         submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
                                              json.dumps(selection, separators=(",", ":")), str(credential)], 20)
                         actions.append({"command": ["runner-authentication"], "exit_code": submitted["exit_code"],
                                         "stdout": json.dumps(json.loads(submitted["stdout"])) if submitted["exit_code"] == 0 else "",
                                         "stderr": "System event permission unavailable" if "System event permission unavailable" in submitted["stderr"] else ""})
+                        time.sleep(2)
+                        actions.append({"command": ["authentication-status-codes"], "exit_code": 0,
+                                        "stdout": json.dumps(authentication_diagnostics(submitted_at)), "stderr": ""})
                 except RuntimeError as error:
                     actions.append({"command": ["runner-authentication"], "exit_code": 1, "stdout": "", "stderr": str(error)})
                 time.sleep(2)

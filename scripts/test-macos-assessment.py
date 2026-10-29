@@ -5,12 +5,19 @@ from unittest.mock import patch, MagicMock
 import contextlib
 import tempfile
 import os
-from macos_runner_auth import select_authentication, authentication_candidates, unique_authentication, runner_credential
+from macos_runner_auth import select_authentication, authentication_candidates, unique_authentication, runner_credential, authentication_log_summary
 import json
 spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_name("assess-macos-update.py"))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_authentication_log_summary_retains_codes_without_message_contents(self):
+        records = [{"processImagePath": "/system/authd", "timestamp": "2026-10-29T19:00:00+00:00",
+                    "eventMessage": "private-credential-and-user error=-60005 errAuthorizationDenied"}]
+        summary = authentication_log_summary(records, 0)
+        self.assertEqual(summary[0]["codes"], ["-60005"])
+        self.assertEqual(summary[0]["names"], ["errAuthorizationDenied"])
+        self.assertNotIn("private-credential", json.dumps(summary))
     def test_runner_credential_write_failure_removes_the_single_file(self):
         original = os.fdopen
         @contextlib.contextmanager
