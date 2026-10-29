@@ -107,7 +107,7 @@ pub(crate) fn downloaded(path: &Path) -> Result<(), String> {
         if configuration()?["scenario"] == "quarantine-refusal" {
             crate::update_install::quarantine::write(
                 path,
-                b"0083;1234;AcceptanceBrowser;existing-quarantine",
+                b"0083;00001234;AcceptanceBrowser;existing-quarantine",
             )?;
         }
         save(
