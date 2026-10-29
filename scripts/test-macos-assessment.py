@@ -5,7 +5,8 @@ from unittest.mock import patch, MagicMock
 import contextlib
 import tempfile
 import os
-from macos_runner_auth import select_authentication, authentication_candidates, runner_credential
+from macos_runner_auth import select_authentication, authentication_candidates, unique_authentication, runner_credential
+import json
 spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_name("assess-macos-update.py"))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -38,6 +39,9 @@ class LaunchEvidence(unittest.TestCase):
         self.assertIsNotNone(select_authentication({"children": [window]}))
         self.assertIsNone(select_authentication({"children": [window, window]}))
         self.assertEqual(len(authentication_candidates({"children": [window, window]})), 2)
+        valid = ("pid:1", {"exit_code": 0, "stdout": json.dumps({"children": [window]})})
+        self.assertIsNotNone(unique_authentication([valid]))
+        self.assertIsNone(unique_authentication([valid, ("pid:2", {"exit_code": 124, "stdout": ""})]))
         window["children"][1]["value"] = "another-user"
         self.assertIsNone(select_authentication({"children": [window]}))
     def test_final_open_anyway_confirmation_is_bound_to_the_app(self):

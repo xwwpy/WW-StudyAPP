@@ -1,6 +1,7 @@
 """Normal administrator authentication on disposable GitHub macOS runners only."""
 import contextlib
 import getpass
+import json
 import os
 from pathlib import Path
 import secrets
@@ -38,6 +39,14 @@ def select_authentication(tree):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def unique_authentication(snapshots):
+    if any(result["exit_code"] != 0 for _, result in snapshots):
+        return None
+    candidates = [(process, candidate) for process, result in snapshots
+                  for candidate in authentication_candidates(json.loads(result["stdout"]))]
+    return candidates[0] if len(candidates) == 1 else None
+
+
 @contextlib.contextmanager
 def runner_credential():
     if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true" or getpass.getuser() != "runner":
@@ -69,7 +78,7 @@ def runner_credential():
                 if pid:
                     completed = True
                     if os.waitstatus_to_exitcode(status) != 0 or supplied == 0:
-                        raise RuntimeError("Cannot prepare disposable runner authentication")
+                        raise RuntimeError(f"Cannot prepare disposable runner authentication (exit={os.waitstatus_to_exitcode(status)}, prompts={supplied})")
                     break
                 if select.select([terminal], [], [], 0.1)[0]:
                     try:

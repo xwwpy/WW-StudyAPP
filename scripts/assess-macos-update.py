@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 import uuid
-from macos_runner_auth import runner_credential, authentication_candidates
+from macos_runner_auth import runner_credential, unique_authentication
 
 
 def capture(argv, timeout=120):
@@ -112,7 +112,7 @@ def system_approval(output):
         time.sleep(1)
         inventory = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "inventory"], 10)
         actions.append(inventory)
-        candidates = []
+        snapshots = []
         if inventory["exit_code"] == 0:
             for owner in json.loads(inventory["stdout"]):
                 if not str(owner.get("executable") or "").startswith("/System/"):
@@ -120,10 +120,10 @@ def system_approval(output):
                 process = "pid:" + str(owner["pid"])
                 authentication = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "snapshot", process], 20)
                 actions.append(authentication)
-                if authentication["exit_code"] == 0:
-                    candidates.extend((process, selection) for selection in authentication_candidates(json.loads(authentication["stdout"])))
-            if len(candidates) == 1:
-                process, selection = candidates[0]
+                snapshots.append((process, authentication))
+            candidate = unique_authentication(snapshots)
+            if candidate is not None:
+                process, selection = candidate
                 try:
                     with runner_credential() as credential:
                         submitted = capture(["/usr/bin/osascript", "-l", "JavaScript", str(script), "authenticate", process,
