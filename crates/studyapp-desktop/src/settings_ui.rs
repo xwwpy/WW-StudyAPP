@@ -191,6 +191,7 @@ pub enum SettingsContinuation {
     Migrate,
     Close,
     InstallUpdate,
+    InstallPackage,
     ViewNote(String),
     ConfirmDeleteCopy(String),
     Record(crate::app::EditorMode),
@@ -1144,6 +1145,7 @@ impl StudyApp {
                 }
             }
             SettingsContinuation::InstallUpdate => self.request_install_update(window, cx),
+            SettingsContinuation::InstallPackage => self.install_nsis_update(window, cx),
             SettingsContinuation::ViewNote(id) => {
                 let version = self.snapshot.as_ref().and_then(|s| {
                     s.versions

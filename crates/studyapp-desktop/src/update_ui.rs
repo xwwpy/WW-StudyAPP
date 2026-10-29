@@ -36,7 +36,7 @@ enum UpdateReply {
         UpdateResult<Option<crate::update_manifest::UpdateManifest>>,
     ),
     NsisProgress(u64, u64),
-    NsisDownloaded(Box<UpdateResult<PathBuf>>),
+    NsisDownloaded(Box<Result<crate::update_install::VerifiedPackage, String>>),
     Progress(UpdateProgress),
     Prepared(String, Box<UpdateResult<PreparedUpdate>>),
     Previous(UpdateResult<Option<UpdateStatus>>),
@@ -62,7 +62,7 @@ pub struct UpdatePanel {
     nsis: Option<crate::update_manifest::UpdateManifest>,
     nsis_version: Option<String>,
     nsis_progress: Option<(u64, u64)>,
-    nsis_setup: Option<PathBuf>,
+    nsis_setup: Option<crate::update_install::VerifiedPackage>,
     nsis_error: Option<String>,
     notes_scroll: ScrollHandle,
     receiver: mpsc::Receiver<UpdateReply>,
@@ -105,7 +105,7 @@ impl UpdatePanel {
             .map(|manifest| manifest.notes.as_str())
             .or_else(|| self.release.as_ref().map(|release| release.notes.as_str()))
     }
-    pub fn nsis_setup(&self) -> Option<PathBuf> {
+    pub fn nsis_setup(&self) -> Option<crate::update_install::VerifiedPackage> {
         self.nsis_setup.clone()
     }
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -113,7 +113,10 @@ impl UpdatePanel {
         let status_sender = sender.clone();
         std::thread::spawn(move || {
             let _ = status_sender.send(UpdateReply::Previous(read_last_update_status()));
-            if cfg!(windows) && !cfg!(test) && startup_check_allowed(std::env::args_os()) {
+            if cfg!(any(windows, target_os = "linux"))
+                && !cfg!(test)
+                && startup_check_allowed(std::env::args_os())
+            {
                 let _ = status_sender.send(UpdateReply::RepairState(portable_repair_needed()));
             }
         });
@@ -303,12 +306,15 @@ impl UpdatePanel {
         self.nsis_progress = Some((0, 0));
         self.status = "正在下载更新…".into();
         let sender = self.sender.clone();
-        let directory = std::env::temp_dir().join("WW-StudyApp").join("update");
+        let directory = std::env::temp_dir();
         std::thread::spawn(move || {
-            let result =
-                crate::update_nsis::download(&manifest, &directory, |downloaded, total| {
+            let result = crate::update_install::VerifiedPackage::download(
+                &manifest.signed_envelope,
+                &directory,
+                |downloaded, total| {
                     let _ = sender.send(UpdateReply::NsisProgress(downloaded, total));
-                });
+                },
+            );
             let _ = sender.send(UpdateReply::NsisDownloaded(Box::new(result)));
         });
         cx.notify();
@@ -333,6 +339,7 @@ impl UpdatePanel {
     }
 
     pub fn install_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.nsis_error = Some(message.clone());
         self.error = Some(message);
         cx.notify();
     }
@@ -454,8 +461,8 @@ impl UpdatePanel {
                             cx.emit(UpdateEvent::NsisReady);
                         }
                         Err(error) => {
-                            self.nsis_error = Some(error.message.to_string());
-                            self.show_error(error);
+                            self.nsis_error = Some(error.clone());
+                            self.error = Some(error);
                         }
                     }
                 }
@@ -593,7 +600,9 @@ impl UpdatePanel {
         if self.fixture.is_some() {
             return true;
         }
-        cfg!(windows) && !cfg!(test) && startup_check_allowed(std::env::args_os())
+        cfg!(any(windows, target_os = "linux"))
+            && !cfg!(test)
+            && startup_check_allowed(std::env::args_os())
     }
 
     /// Remote smoke only: reuse strict release parsing while replacing all IO.
@@ -657,7 +666,7 @@ fn progress_text(progress: &UpdateProgress) -> String {
 
 impl Render for UpdatePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !cfg!(windows) {
+        if !cfg!(any(windows, target_os = "linux")) {
             return card()
                 .id("application-updates")
                 .child(heading("软件更新"))
@@ -756,13 +765,12 @@ impl crate::app::StudyApp {
             return;
         }
         if let Some(setup) = self.pending_nsis_update.take()
-            && let Err(error) = crate::update_nsis::launch(&setup)
+            && let Err(error) = crate::update_install::launch(&setup)
         {
             self.close_requested = false;
-            self.update_panel.update(cx, |panel, cx| {
-                panel.install_failed(error.message.to_string(), cx)
-            });
-            self.push_notice(Err(error.message.to_string()), cx);
+            self.update_panel
+                .update(cx, |panel, cx| panel.install_failed(error.to_string(), cx));
+            self.push_notice(Err(error.to_string()), cx);
             return;
         }
         // GPUI drops its platform window before its view entities. Tear down
@@ -781,14 +789,28 @@ impl crate::app::StudyApp {
 
     /// Hands the verified setup to the installer after settings are saved.
     pub fn install_nsis_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.guard_settings(crate::settings_ui::SettingsContinuation::InstallUpdate, cx) {
+        if self.guard_settings(crate::settings_ui::SettingsContinuation::InstallPackage, cx) {
             return;
         }
         let Some(setup) = self.update_panel.read(cx).nsis_setup() else {
             self.push_notice(Err("请先下载更新。".into()), cx);
             return;
         };
-        self.pending_nsis_update = Some(setup);
+        let data = restart_data_directory(
+            &self.last_library,
+            self.update_panel.read(cx).isolated_launch,
+        )
+        .map(Path::to_owned);
+        let prepared = match crate::update_install::prepare(&setup, data) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.update_panel
+                    .update(cx, |panel, cx| panel.install_failed(error.clone(), cx));
+                self.push_notice(Err(error), cx);
+                return;
+            }
+        };
+        self.pending_nsis_update = Some(prepared);
         self.close_requested = true;
         self.continue_close(window, cx);
     }
@@ -884,6 +906,7 @@ mod tests {
             pub_date: Some("2026-10-28T00:00:00Z".into()),
             setup_url: "https://github.com/xwwpy/WW-StudyAPP/releases/download/v0.9.0/WW-StudyApp-0.9.0-windows-x86_64-Setup.exe".into(),
             signature: "c2lnbmF0dXJl".into(),
+            signed_envelope: String::new(),
             size: 10,
             sha256: "a".repeat(64),
         };
@@ -911,6 +934,7 @@ mod tests {
             pub_date: None,
             setup_url: "https://example.com/setup.exe".into(),
             signature: "fixture".into(),
+            signed_envelope: String::new(),
             size: 10,
             sha256: "a".repeat(64),
         };

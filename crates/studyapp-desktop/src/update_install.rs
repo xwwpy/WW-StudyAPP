@@ -15,6 +15,7 @@ pub struct InstallTransaction {
     pub old_pid: u32,
     pub old_start: u64,
     pub uid: u32,
+    pub target_version: String,
     pub data_directory: Option<PathBuf>,
 }
 
@@ -23,6 +24,7 @@ pub struct InstallTransaction {
 pub struct VerifiedPackage {
     pub(crate) directory: PathBuf,
     pub(crate) version: String,
+    digest: String,
 }
 impl VerifiedPackage {
     pub fn download(
@@ -43,12 +45,19 @@ impl VerifiedPackage {
         std::fs::write(directory.join("manifest.json"), envelope).map_err(|e| e.to_string())?;
         crate::update_backend::download_setup_to(
             &manifest.setup_url,
-            &directory.join("package"),
+            &directory.join(package_file()),
             manifest.size,
             progress,
         )
         .map_err(|e| e.to_string())?;
         Self::verify(&directory)
+    }
+    pub fn reverify(&self) -> Result<(), String> {
+        let current = Self::verify(&self.directory)?;
+        if current.version != self.version || current.digest != self.digest {
+            return Err("Approved update package changed".into());
+        }
+        Ok(())
     }
     pub fn verify(directory: &Path) -> Result<Self, String> {
         let envelope = String::from_utf8(read_bounded(
@@ -57,7 +66,7 @@ impl VerifiedPackage {
         )?)
         .map_err(|e| e.to_string())?;
         let manifest = crate::update_manifest::parse_latest_json(&envelope)?;
-        let bytes = read_bounded(&directory.join("package"), manifest.size)?;
+        let bytes = read_bounded(&directory.join(package_file()), manifest.size)?;
         if bytes.len() as u64 != manifest.size
             || format!("{:x}", Sha256::digest(&bytes)) != manifest.sha256
         {
@@ -67,7 +76,62 @@ impl VerifiedPackage {
         Ok(Self {
             directory: directory.to_owned(),
             version: manifest.version.to_string(),
+            digest: manifest.sha256,
         })
+    }
+}
+
+fn package_file() -> &'static str {
+    if cfg!(windows) {
+        "package.exe"
+    } else {
+        "package"
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum PreparedPackage {
+    Windows(VerifiedPackage),
+    Linux(PathBuf),
+}
+pub fn prepare(
+    package: &VerifiedPackage,
+    data: Option<PathBuf>,
+) -> Result<PreparedPackage, String> {
+    package.reverify()?;
+    #[cfg(windows)]
+    {
+        let _ = data;
+        Ok(PreparedPackage::Windows(package.clone()))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::prepare(package, data).map(PreparedPackage::Linux)
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        let _ = data;
+        Err("Automatic installation is not available for this platform yet".into())
+    }
+}
+pub fn launch(package: &PreparedPackage) -> Result<(), String> {
+    match package {
+        PreparedPackage::Windows(package) => {
+            package.reverify()?;
+            crate::update_nsis::launch(&package.directory.join(package_file()))
+                .map_err(|e| e.to_string())
+        }
+        PreparedPackage::Linux(directory) => {
+            #[cfg(target_os = "linux")]
+            {
+                linux::spawn(directory)
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = directory;
+                Err("Linux helper unsupported".into())
+            }
+        }
     }
 }
 
@@ -156,5 +220,51 @@ mod tests {
         ] {
             assert!(!valid_id(value));
         }
+    }
+}
+
+pub fn acknowledge_health() {
+    #[cfg(target_os = "linux")]
+    {
+        static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !DONE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let _ = linux::acknowledge_health();
+        }
+    }
+}
+pub fn previous_failure() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::previous_failure().ok().flatten()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+pub fn startup_ready(startup_busy: bool, draft_loading: bool, has_snapshot: bool) -> bool {
+    !startup_busy && !draft_loading && has_snapshot
+}
+pub(crate) fn health_matches(value: &serde_json::Value, id: &str, version: &str, pid: u32) -> bool {
+    value["id"] == id && value["version"] == version && value["pid"] == pid
+}
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+    #[test]
+    fn startup_health_requires_loaded_library_and_restored_drafts() {
+        assert!(startup_ready(false, false, true));
+        assert!(!startup_ready(true, false, true));
+        assert!(!startup_ready(false, true, true));
+        assert!(!startup_ready(false, false, false));
+    }
+    #[test]
+    fn health_is_bound_to_attempt_build_and_child_process() {
+        let health = serde_json::json!({"id":"attempt", "version":"0.9.0", "pid":42});
+        assert!(health_matches(&health, "attempt", "0.9.0", 42));
+        assert!(!health_matches(&health, "old-attempt", "0.9.0", 42));
+        assert!(!health_matches(&health, "attempt", "0.8.0", 42));
+        assert!(!health_matches(&health, "attempt", "0.9.0", 43));
     }
 }

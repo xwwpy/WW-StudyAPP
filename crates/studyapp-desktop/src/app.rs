@@ -124,7 +124,7 @@ pub struct StudyApp {
     pub smoke_pointer_bubble: Option<AnyView>,
     pub update_panel: Entity<crate::update_ui::UpdatePanel>,
     pub pending_update: Option<crate::update_backend::PreparedUpdate>,
-    pub pending_nsis_update: Option<std::path::PathBuf>,
+    pub pending_nsis_update: Option<crate::update_install::PreparedPackage>,
     pub image_cloud_busy: bool,
     pub applied_appearance: Option<crate::theme::ResolvedTheme>,
     pub appearance_source: Option<(studyapp_core::AppearanceSettings, bool)>,
@@ -440,7 +440,7 @@ impl StudyApp {
             startup_busy: true,
             read_models: Arc::new(Default::default()),
             page: Page::Today,
-            notice: None,
+            notice: crate::update_install::previous_failure().map(Err),
             search,
             summary,
             summary_editor,
@@ -473,6 +473,13 @@ impl StudyApp {
     }
 
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::update_install::startup_ready(
+            self.startup_busy,
+            self.draft_loading,
+            self.snapshot.is_some(),
+        ) {
+            crate::update_install::acknowledge_health();
+        }
         self.poll_image_settings(window, cx);
         while !self.storage_busy
             && !self.media_jobs_active()

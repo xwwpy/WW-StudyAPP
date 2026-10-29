@@ -34,6 +34,7 @@ pub struct UpdateManifest {
     pub pub_date: Option<String>,
     pub setup_url: String,
     pub signature: String,
+    pub signed_envelope: String,
     pub size: u64,
     pub sha256: String,
 }
@@ -60,6 +61,7 @@ fn parse_with_key(
     if text.len() > 2 * 1024 * 1024 {
         return Err("Manifest too large".into());
     }
+    let signed_envelope = text.to_owned();
     let envelope: serde_json::Value = serde_json::from_str(text).map_err(|_| "Invalid JSON")?;
     let encoded = envelope["signed_payload"]
         .as_str()
@@ -131,6 +133,7 @@ fn parse_with_key(
         pub_date,
         setup_url: setup_url.to_owned(),
         signature,
+        signed_envelope,
         size,
         sha256: hash.to_ascii_lowercase(),
     })

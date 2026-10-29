@@ -132,13 +132,36 @@ pub fn prepare(package: &VerifiedPackage, data_directory: Option<PathBuf>) -> Re
     }
     let owner = uid()?;
     safe_dir(&package.directory, owner)?;
-    VerifiedPackage::verify(&package.directory)?;
+    package.reverify()?;
+    // Each user retry gets independent readiness and status records.
+    let attempt = package
+        .directory
+        .with_file_name(format!("studyapp-install-{}", uuid::Uuid::new_v4()));
+    io(fs::DirBuilder::new().mode(0o700).create(&attempt))?;
+    write_new(
+        &attempt.join("manifest.json"),
+        &bounded(
+            &package.directory.join("manifest.json"),
+            owner,
+            2 * 1024 * 1024,
+        )?,
+    )?;
+    write_new(
+        &attempt.join("package"),
+        &bounded(&package.directory.join("package"), owner, 256 * 1024 * 1024)?,
+    )?;
+    let staged = VerifiedPackage::verify(&attempt)?;
+    if staged.version != package.version || staged.digest != package.digest {
+        return Err("Approved package changed during preparation".into());
+    }
+    let package = &staged;
     let tx = InstallTransaction {
         schema: 1,
         id: uuid::Uuid::new_v4().to_string(),
         old_pid: std::process::id(),
         old_start: identity(std::process::id())?.ok_or("Missing process")?,
         uid: owner,
+        target_version: package.version.clone(),
         data_directory,
     };
     write_new(
@@ -149,6 +172,14 @@ pub fn prepare(package: &VerifiedPackage, data_directory: Option<PathBuf>) -> Re
     io(fs::set_permissions(
         package.directory.join("supervisor"),
         fs::Permissions::from_mode(0o700),
+    ))?;
+    let pointer = pointer_path()?;
+    io(fs::create_dir_all(
+        pointer.parent().ok_or("Invalid update record path")?,
+    ))?;
+    io(fs::write(
+        pointer,
+        package.directory.to_string_lossy().as_bytes(),
     ))?;
     Ok(package.directory.clone())
 }
@@ -202,6 +233,9 @@ fn supervise_inner(dir: &Path) -> Result<()> {
     let owner = uid()?;
     let tx = transaction(dir, owner)?;
     let package = VerifiedPackage::verify(dir)?;
+    if package.version != tx.target_version {
+        return Err("Approved target version changed".into());
+    }
     let previous_version = installed()?;
     write_new(&dir.join("ready"), tx.id.as_bytes())?;
     record(dir, "waiting", "Waiting for saved application to exit")?;
@@ -223,12 +257,34 @@ fn supervise_inner(dir: &Path) -> Result<()> {
                 return Err("Installed version mismatch".into());
             }
             record(dir, "installed", &package.version)?;
-            restart(&tx)?;
+            let mut child = restart(&tx, Some(dir))?;
             record(
                 dir,
                 "relaunching",
-                "Installation succeeded; application launched (health not yet confirmed)",
-            )
+                "Waiting for application and library startup",
+            )?;
+            let start = Instant::now();
+            loop {
+                if io(child.try_wait())?.is_some() {
+                    return Err("Updated application exited before health confirmation".into());
+                }
+                if let Ok(bytes) = bounded(&dir.join("health.json"), tx.uid, 4096) {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                    if health_matches(&value, &tx.id, &tx.target_version, child.id()) {
+                        return record(
+                            dir,
+                            "healthy",
+                            "Updated application and library startup confirmed",
+                        );
+                    }
+                    return Err("Updated application health identity mismatch".into());
+                }
+                if start.elapsed() > Duration::from_secs(60) {
+                    return Err("Updated application did not confirm startup; inspect the retained update records".into());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
         }
         Ok(status) if matches!(status.code(), Some(126 | 127)) => {
             record(
@@ -237,7 +293,7 @@ fn supervise_inner(dir: &Path) -> Result<()> {
                 "System authorization cancelled or denied; installation was not started",
             )?;
             if installed()? == previous_version {
-                restart(&tx)?;
+                restart(&tx, None)?;
             }
             Err("System authorization cancelled or denied".into())
         }
@@ -254,11 +310,15 @@ fn supervise_inner(dir: &Path) -> Result<()> {
         }
     }
 }
-fn restart(tx: &InstallTransaction) -> Result<()> {
+fn restart(tx: &InstallTransaction, health: Option<&Path>) -> Result<std::process::Child> {
     if uid()? != tx.uid || tx.uid == 0 {
         return Err("Refusing elevated GUI restart".into());
     }
     let mut command = Command::new(EXE);
+    command.env_remove("STUDYAPP_UPDATE_TRANSACTION");
+    if let Some(path) = health {
+        command.env("STUDYAPP_UPDATE_TRANSACTION", path);
+    }
     if let Some(path) = &tx.data_directory {
         command.arg("--data-dir").arg(path);
     }
@@ -266,8 +326,7 @@ fn restart(tx: &InstallTransaction) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn())?;
-    Ok(())
+        .spawn())
 }
 
 /// Invoked by pkexec using /usr/bin/studyapp, never a user-writable helper.
@@ -296,6 +355,9 @@ pub fn worker(dir: &Path) -> Result<()> {
     write_new(&stage.join("manifest.json"), &manifest)?;
     write_new(&stage.join("package"), &payload)?;
     let package = VerifiedPackage::verify(&stage)?;
+    if package.version != tx.target_version {
+        return Err("Approved target version changed".into());
+    }
     let current = semver::Version::parse(&installed()?).map_err(|e| e.to_string())?;
     let offered = semver::Version::parse(&package.version).map_err(|e| e.to_string())?;
     if offered <= current {
@@ -374,6 +436,7 @@ mod tests {
             old_pid: pid,
             old_start: start + 1,
             uid: uid().unwrap(),
+            target_version: "0.9.0".into(),
             data_directory: None,
         };
         wait_old(&tx).unwrap();
@@ -429,4 +492,55 @@ mod tests {
     fn update_install_source_binary_cannot_run_privileged_worker() {
         assert!(worker(&directory()).is_err());
     }
+}
+
+fn pointer_path() -> Result<PathBuf> {
+    directories::ProjectDirs::from("io", "StudyApp", "StudyApp")
+        .map(|p| p.data_local_dir().join("update-last.txt"))
+        .ok_or("Cannot locate update status".into())
+}
+pub fn acknowledge_health() -> Result<()> {
+    let Some(path) = std::env::var_os("STUDYAPP_UPDATE_TRANSACTION") else {
+        return Ok(());
+    };
+    if io(std::env::current_exe())? != Path::new(EXE) {
+        return Err("Health acknowledgement requires installed executable".into());
+    }
+    let dir = PathBuf::from(path);
+    let tx = transaction(&dir, uid()?)?;
+    if tx.target_version != env!("CARGO_PKG_VERSION") {
+        return Err("Health version mismatch".into());
+    }
+    write_new(&dir.join("health.json"), &serde_json::to_vec(&serde_json::json!({"id":tx.id,"version":env!("CARGO_PKG_VERSION"),"pid":std::process::id()})).map_err(|e|e.to_string())?)
+}
+pub fn previous_failure() -> Result<Option<String>> {
+    let pointer = pointer_path()?;
+    if !pointer.exists() {
+        return Ok(None);
+    }
+    let owner = uid()?;
+    let path = String::from_utf8(bounded(&pointer, owner, 4096)?).map_err(|e| e.to_string())?;
+    let dir = PathBuf::from(path);
+    safe_dir(&dir, owner)?;
+    let mut records = Vec::new();
+    for entry in io(fs::read_dir(&dir))? {
+        let entry = io(entry)?;
+        if entry.file_name().to_string_lossy().starts_with("status-") {
+            let meta = io(entry.metadata())?;
+            records.push((io(meta.modified())?, entry.path()));
+        }
+    }
+    records.sort_by_key(|entry| entry.0);
+    if let Some((_, path)) = records.last() {
+        let value: serde_json::Value =
+            serde_json::from_slice(&bounded(path, owner, 16384)?).map_err(|e| e.to_string())?;
+        if value["state"] == "failed" {
+            return Ok(Some(format!(
+                "上次更新未完成：{}。更新记录：{}",
+                value["message"].as_str().unwrap_or("未知错误"),
+                dir.display()
+            )));
+        }
+    }
+    Ok(None)
 }
