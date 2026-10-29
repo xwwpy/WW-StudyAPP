@@ -7,6 +7,11 @@ on:
         type: string
         default: ''
   workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact revision to validate independently
+        type: string
+        default: ''
   push:
     branches: [main, 'codex/**']
 
@@ -189,6 +194,7 @@ jobs:
             ${{ runner.temp }}/native-interactive*
             ${{ runner.temp }}/native-installed*
             ${{ runner.temp }}/native-macos-assessment.json
+            ${{ runner.temp }}/native-macos-assessment.png
             ${{ runner.temp }}/native-update/transition-result.json
             ${{ runner.temp }}/native-update/application.log
             ${{ runner.temp }}/native-update/fixture/*.json

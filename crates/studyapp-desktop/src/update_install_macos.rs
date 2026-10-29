@@ -10,6 +10,9 @@ use std::{
 type Result<T> = std::result::Result<T, String>;
 const APP: &str = "WW-StudyApp.app";
 const BUNDLE_ID: &str = "io.github.xwwpy.studyapp";
+#[path = "update_install_macos_launch.rs"]
+mod launch;
+pub(crate) use launch::{dispatch_probe, early_launch};
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MacTransaction {
@@ -259,8 +262,9 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
     with_image(&dir, |point| {
         let candidate = point.join(APP);
         validate_bundle(&candidate, &package.version)?;
-        assess(&candidate)
+        launch::approve(package, &candidate)
     })?;
+    launch::finish_approval(package)?;
     let tx = MacTransaction {
         transaction: InstallTransaction {
             schema: 1,
@@ -351,6 +355,36 @@ unsafe extern "C" {
 }
 struct ExitWatch(std::os::fd::OwnedFd);
 impl ExitWatch {
+    fn has_exited(&self) -> Result<bool> {
+        use std::os::fd::AsRawFd;
+        let mut event = Kevent {
+            ident: 0,
+            filter: 0,
+            flags: 0,
+            fflags: 0,
+            data: 0,
+            udata: std::ptr::null_mut(),
+        };
+        let timeout = Timespec {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+        let count = unsafe {
+            kevent(
+                self.0.as_raw_fd(),
+                std::ptr::null(),
+                0,
+                &mut event,
+                1,
+                &timeout,
+            )
+        };
+        match count {
+            0 => Ok(false),
+            1 if event.flags & 0x4000 == 0 && event.fflags & 0x80000000 != 0 => Ok(true),
+            _ => Err("Candidate process observation failed".into()),
+        }
+    }
     fn register(pid: u32) -> Result<Self> {
         use std::os::fd::{AsRawFd, FromRawFd};
         let fd = unsafe { kqueue() };
@@ -615,7 +649,8 @@ fn install(dir: &Path, tx: &MacTransaction) -> Result<()> {
             )?;
         }
         validate_bundle(&stage, &package.version)?;
-        assess(&stage)?;
+        // LaunchServices performs the system policy check on ordinary-user launch.
+        // Integrity, identity and architecture are verified above before replacement.
         replace_bundle(&tx.target, &stage, &backup(tx)?)
     })
 }
@@ -728,24 +763,7 @@ pub fn worker(dir: &Path, recover: bool) -> Result<()> {
     }
     install(&root, &tx)
 }
-fn launch(tx: &MacTransaction, health: Option<&Path>) -> Result<std::process::Child> {
-    if uid()? != tx.transaction.uid || uid()? == 0 {
-        return Err("Refusing elevated GUI launch".into());
-    }
-    let mut command = Command::new(tx.target.join("Contents/MacOS/studyapp"));
-    command.env_remove("STUDYAPP_UPDATE_TRANSACTION");
-    if let Some(dir) = health {
-        command.env("STUDYAPP_UPDATE_TRANSACTION", dir);
-    }
-    if let Some(data) = &tx.transaction.data_directory {
-        command.arg("--data-dir").arg(data);
-    }
-    io(command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn())
-}
+use launch::launch;
 pub fn supervise(dir: &Path) -> Result<()> {
     safe_dir(dir, uid()?)?;
     let result = supervise_inner(dir);
@@ -799,10 +817,10 @@ fn supervise_inner(dir: &Path) -> Result<()> {
     record(dir, "healthy", "Updated app and library startup confirmed")
 }
 fn wait_health(dir: &Path, tx: &MacTransaction) -> Result<()> {
-    let mut child = launch(tx, Some(dir))?;
+    let child = launch(tx, Some(dir))?;
     let start = Instant::now();
     let result = (|| loop {
-        if io(child.try_wait())?.is_some() {
+        if !child.alive() {
             return Err("Updated application exited before startup confirmation".into());
         }
         if let Ok(bytes) = bounded(&dir.join("health.json"), tx.transaction.uid, 4096) {
@@ -812,7 +830,7 @@ fn wait_health(dir: &Path, tx: &MacTransaction) -> Result<()> {
                 &value,
                 &tx.transaction.id,
                 &tx.transaction.target_version,
-                child.id(),
+                child.pid,
             ) {
                 return Ok(());
             }
@@ -824,17 +842,15 @@ fn wait_health(dir: &Path, tx: &MacTransaction) -> Result<()> {
         std::thread::sleep(Duration::from_millis(100));
     })();
     // Never restore/relaunch the previous app while the failed candidate remains alive.
-    if result.is_err() && io(child.try_wait())?.is_none() {
-        io(child.kill())?;
-        io(child.wait())?;
+    if result.is_err() {
+        child.stop()?;
     }
     result
 }
 pub fn acknowledge_health() -> Result<()> {
-    let Some(dir) = std::env::var_os("STUDYAPP_UPDATE_TRANSACTION") else {
+    let Some(dir) = launch::health_directory() else {
         return Ok(());
     };
-    let dir = PathBuf::from(dir);
     let tx = transaction(&dir, uid()?)?;
     if bundle(&io(std::env::current_exe())?)? != tx.target
         || tx.transaction.target_version != env!("CARGO_PKG_VERSION")

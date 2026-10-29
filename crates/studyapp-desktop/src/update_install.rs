@@ -206,6 +206,21 @@ pub(crate) fn process_start(stat: &str) -> Option<u64> {
 /// Always headless; no helper failure may reach a native error dialog.
 pub fn dispatch() -> Option<i32> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    #[cfg(target_os = "macos")]
+    {
+        if args.first().is_some_and(|a| a == "--update-launch") {
+            return match macos::early_launch(&args) {
+                Ok(()) => None,
+                Err(error) => {
+                    eprintln!("Update launch: {error}");
+                    Some(1)
+                }
+            };
+        }
+        if let Some(code) = macos::dispatch_probe(&args) {
+            return Some(code);
+        }
+    }
     let mode = args.first()?.to_str()?;
     if !matches!(
         mode,
@@ -270,6 +285,10 @@ pub mod macos;
 #[cfg(windows)]
 #[path = "update_install_windows.rs"]
 pub mod windows;
+
+#[cfg(any(target_os = "macos", test))]
+#[path = "update_launch_receipt.rs"]
+mod launch_receipt;
 
 #[cfg(test)]
 mod tests {
@@ -397,5 +416,46 @@ mod lifecycle_tests {
         assert!(package.take().is_none());
         package = Some("fresh explicit retry");
         assert_eq!(package.take(), Some("fresh explicit retry"));
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PreparationGate {
+    epoch: u64,
+    running: Option<u64>,
+}
+impl PreparationGate {
+    pub fn begin(&mut self) -> Option<u64> {
+        if self.running.is_some() {
+            return None;
+        }
+        self.epoch += 1;
+        self.running = Some(self.epoch);
+        Some(self.epoch)
+    }
+    pub fn invalidate(&mut self) {
+        self.epoch += 1;
+    }
+    pub fn finish(&mut self, token: u64) -> bool {
+        if self.running != Some(token) {
+            return false;
+        }
+        self.running = None;
+        token == self.epoch
+    }
+}
+#[cfg(test)]
+mod preparation_tests {
+    use super::*;
+    #[test]
+    fn update_preparation_deduplicates_and_rejects_switch_away_then_back() {
+        let mut gate = PreparationGate::default();
+        let first = gate.begin().unwrap();
+        assert!(gate.begin().is_none());
+        gate.invalidate();
+        gate.invalidate();
+        assert!(!gate.finish(first));
+        let next = gate.begin().unwrap();
+        assert!(gate.finish(next));
     }
 }

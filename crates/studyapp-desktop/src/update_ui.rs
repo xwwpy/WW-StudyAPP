@@ -37,6 +37,10 @@ enum UpdateReply {
     ),
     NsisProgress(u64, u64),
     NsisDownloaded(Box<Result<crate::update_install::VerifiedPackage, String>>),
+    NsisPrepared(
+        u64,
+        Box<Result<crate::update_install::PreparedPackage, String>>,
+    ),
     Progress(UpdateProgress),
     Prepared(String, Box<UpdateResult<PreparedUpdate>>),
     Previous(UpdateResult<Option<UpdateStatus>>),
@@ -63,6 +67,8 @@ pub struct UpdatePanel {
     nsis_version: Option<String>,
     nsis_progress: Option<(u64, u64)>,
     nsis_setup: Option<crate::update_install::VerifiedPackage>,
+    install_preparation: crate::update_install::PreparationGate,
+    install_prepared: Option<crate::update_install::PreparedPackage>,
     nsis_error: Option<String>,
     notes_scroll: ScrollHandle,
     receiver: mpsc::Receiver<UpdateReply>,
@@ -105,6 +111,27 @@ impl UpdatePanel {
             .map(|manifest| manifest.notes.as_str())
             .or_else(|| self.release.as_ref().map(|release| release.notes.as_str()))
     }
+    fn prepare_install(&mut self, data: Option<PathBuf>, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let Some(package) = self.nsis_setup.clone() else {
+            return;
+        };
+        let Some(token) = self.install_preparation.begin() else {
+            return;
+        };
+        self.busy = true;
+        self.error = None;
+        self.nsis_error = None;
+        self.status = "正在验证安装环境；您可以继续编辑…".into();
+        let sender = self.sender.clone();
+        std::thread::spawn(move || {
+            let result = crate::update_install::prepare(&package, data);
+            let _ = sender.send(UpdateReply::NsisPrepared(token, Box::new(result)));
+        });
+        cx.notify();
+    }
     pub fn nsis_setup(&self) -> Option<crate::update_install::VerifiedPackage> {
         self.nsis_setup.clone()
     }
@@ -145,6 +172,8 @@ impl UpdatePanel {
             nsis_version: None,
             nsis_progress: None,
             nsis_setup: None,
+            install_preparation: Default::default(),
+            install_prepared: None,
             nsis_error: None,
             notes_scroll: ScrollHandle::new(),
             receiver,
@@ -321,6 +350,8 @@ impl UpdatePanel {
         if self.library == library {
             return;
         }
+        self.install_preparation.invalidate();
+        self.install_prepared = None;
         self.library = library;
         if self.prepared.take().is_some() {
             self.status = "资料库已切换，请重新准备更新以保留当前打开位置。".into();
@@ -461,6 +492,20 @@ impl UpdatePanel {
                             self.nsis_error = Some(error.clone());
                             self.error = Some(error);
                         }
+                    }
+                }
+                UpdateReply::NsisPrepared(token, result) => {
+                    self.busy = false;
+                    if !self.install_preparation.finish(token) {
+                        self.status = "资料库已切换，请重新准备更新。".into();
+                        continue;
+                    }
+                    match *result {
+                        Ok(prepared) => {
+                            self.install_prepared = Some(prepared);
+                            cx.emit(UpdateEvent::NsisReady);
+                        }
+                        Err(error) => self.install_failed(error, cx),
                     }
                 }
                 UpdateReply::Prepared(library, result) => {
@@ -812,14 +857,16 @@ impl crate::app::StudyApp {
             self.update_panel.read(cx).isolated_launch,
         )
         .map(Path::to_owned);
-        let prepared = match crate::update_install::prepare(&setup, data) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.update_panel
-                    .update(cx, |panel, cx| panel.install_failed(error.clone(), cx));
-                self.push_notice(Err(error), cx);
-                return;
+        let _ = setup;
+        let prepared = self.update_panel.update(cx, |panel, cx| {
+            if let Some(prepared) = panel.install_prepared.take() {
+                return Some(prepared);
             }
+            panel.prepare_install(data, cx);
+            None
+        });
+        let Some(prepared) = prepared else {
+            return;
         };
         #[cfg(feature = "update-acceptance")]
         crate::update_acceptance::before_close(self, &prepared, cx);
@@ -894,6 +941,8 @@ mod tests {
             nsis_version: None,
             nsis_progress: None,
             nsis_setup: None,
+            install_preparation: Default::default(),
+            install_prepared: None,
             nsis_error: None,
             notes_scroll: ScrollHandle::new(),
             receiver,
