@@ -531,6 +531,19 @@ impl HostedEditor {
         self.update_visibility()
     }
 
+    #[cfg(all(target_os = "linux", feature = "ui-test"))]
+    pub fn native_state(&self) -> Result<serde_json::Value> {
+        use gtk::prelude::*;
+        Ok(serde_json::json!({
+            "parentXid": self.gtk_host.parent_id,
+            "requestedVisible": self.requested_visible.get(),
+            "appliedVisible": self.applied_visible.get(),
+            "visible": self.gtk_host.window.is_visible(),
+            "mapped": self.gtk_host.window.is_mapped(),
+            "viewable": self.gtk_host.native.is_viewable(),
+        }))
+    }
+
     #[cfg(target_os = "linux")]
     pub fn restore_focus_for_parent_click(&self, position: gpui_kit::Point<Pixels>) {
         // XInput events from the child can also reach the GPUI parent. Never

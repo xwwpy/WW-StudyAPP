@@ -464,6 +464,11 @@ impl MarkdownEditor {
         cx.notify();
     }
 
+    #[cfg(test)]
+    pub(crate) fn requested_visible_for_test(&self) -> bool {
+        self.visible
+    }
+
     /// The caller records its intent before this acknowledgement is dispatched.
     /// Saving, navigation and close must wait for MarkdownEvent::Flushed.
     pub fn request_flush(&mut self, cx: &mut Context<Self>) -> anyhow::Result<u64> {
@@ -799,7 +804,7 @@ impl MarkdownEditor {
             .unwrap();
     }
 
-    #[cfg(all(windows, feature = "ui-test"))]
+    #[cfg(all(any(windows, target_os = "linux"), feature = "ui-test"))]
     pub(crate) fn native_state(&self) -> anyhow::Result<serde_json::Value> {
         self.host
             .as_ref()

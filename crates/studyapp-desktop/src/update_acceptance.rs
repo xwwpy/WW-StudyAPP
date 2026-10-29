@@ -115,9 +115,84 @@ async fn click_visible(window: AnyWindowHandle, id: SharedString, cx: &mut Async
             "Visible control missing: {id}"
         );
     }
+    #[cfg(not(target_os = "linux"))]
     window
         .update(cx, |_, window, cx| window.click(id, cx))
         .unwrap();
+    #[cfg(target_os = "linux")]
+    {
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        assert!(
+            active(),
+            "native input is restricted to the remote acceptance fixture"
+        );
+        let (parent, x, y) = window
+            .update(cx, |_, window, _| {
+                let parent = match HasWindowHandle::window_handle(window).unwrap().as_raw() {
+                    RawWindowHandle::Xlib(raw) => raw.window,
+                    RawWindowHandle::Xcb(raw) => u64::from(raw.window.get()),
+                    _ => panic!("X11 acceptance parent required"),
+                };
+                let center = window.find(id).bounds().center();
+                let scale = f64::from(window.scale_factor());
+                (
+                    parent,
+                    (f64::from(center.x) * scale).round() as i32,
+                    (f64::from(center.y) * scale).round() as i32,
+                )
+            })
+            .unwrap();
+        let result = std::process::Command::new("xdotool")
+            .args([
+                "mousemove",
+                "--window",
+                &parent.to_string(),
+                &x.to_string(),
+                &y.to_string(),
+                "click",
+                "1",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "native card input failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(200))
+            .await;
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn native_visibility(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    visible: bool,
+    name: &str,
+    cx: &mut AsyncApp,
+) {
+    let started = Instant::now();
+    loop {
+        presented(window, cx).await;
+        let state = window
+            .update(cx, |_, _, cx| {
+                view.read(cx).note_content.read(cx).native_state().unwrap()
+            })
+            .unwrap();
+        if state["viewable"] == visible
+            && state["mapped"] == visible
+            && state["appliedVisible"] == visible
+        {
+            save(name, state);
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "native visibility did not follow modal: {state}"
+        );
+    }
 }
 fn committed(app: &StudyApp) -> Value {
     json!(
@@ -170,9 +245,16 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         CHECKS_READY.store(true,Ordering::Relaxed);
         window.update(cx,|_,_,cx|{let panel=view.read(cx).update_panel.clone();panel.update(cx,|p,cx|p.acceptance_check(cx));}).unwrap();
         wait(window,&view,cx,"signed update card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
+        #[cfg(target_os = "linux")]
+        native_visibility(window, &view, false, "card-first-native-state.json", cx).await;
         click_visible(window, "update-dialog-later".into(), cx).await;
+        wait(window,&view,cx,"native dismissal",|a,cx|!a.update_panel.read(cx).dialog_visible()).await;
+        #[cfg(target_os = "linux")]
+        native_visibility(window, &view, true, "editor-restored-native-state.json", cx).await;
         click_visible(window, "sidebar-update".into(), cx).await;
         wait(window,&view,cx,"reopened card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
+        #[cfg(target_os = "linux")]
+        native_visibility(window, &view, false, "card-native-state.json", cx).await;
         presented(window, cx).await;
         window.update(cx,|_,window,_|crate::smoke::capture(window,directory().unwrap().join("update-card.png")).unwrap()).unwrap();
         click_visible(window, "update-dialog-install".into(), cx).await;

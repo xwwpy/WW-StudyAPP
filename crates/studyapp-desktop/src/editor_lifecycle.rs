@@ -609,12 +609,7 @@ impl StudyApp {
             });
             return;
         }
-        let mut show = self.confirmation.is_none()
-            && self.storage_confirm.is_none()
-            && !self.folders.read(cx).dialog_open()
-            && self.preferences_ui.leave.is_none()
-            && !self.preferences_ui.reset_confirmation
-            && self.draft_discard.is_none();
+        let mut show = !self.has_modal(cx) && self.draft_discard.is_none();
         show &= !self.external_drop.active();
         if self.note_editor.is_none() {
             let version = self.selected_note.as_ref().and_then(|note_id| {

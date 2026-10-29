@@ -195,7 +195,10 @@ def main():
             assert draft["draft"]["content"] == config["draft_marker"] == after["live_text"]
             for name in ("update-card.png", "restored.png"):
                 assert (fixture / name).stat().st_size > 1000
-            result = {"source_sha": source_sha, "installed_version": installed, "installed_sha256": sha("/usr/bin/studyapp"), "candidate_sha256": sha(binaries["candidate"]), "old_pid": old.pid, "new_pid": after["pid"], "uid": os.getuid(), "real_pkexec": True, "system_dialog_exercised": False, "production_rejected_fixture_key": True, "health": receipt, "draft_preserved": True}
+            for filename, visible in [("card-first-native-state.json", False), ("editor-restored-native-state.json", True), ("card-native-state.json", False)]:
+                native = json.loads((fixture / filename).read_text(encoding="utf-8"))
+                assert all(native[field] is visible for field in ("viewable", "mapped", "appliedVisible"))
+            result = {"source_sha": source_sha, "installed_version": installed, "installed_sha256": sha("/usr/bin/studyapp"), "candidate_sha256": sha(binaries["candidate"]), "old_pid": old.pid, "new_pid": after["pid"], "uid": os.getuid(), "real_pkexec": True, "system_dialog_exercised": False, "production_rejected_fixture_key": True, "health": receipt, "draft_preserved": True, "native_pointer_card_input": True, "native_editor_hidden_under_card": True}
             (root / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
             # End only the exact observed fixture process after evidence is complete.
             os.kill(after["pid"], 15)

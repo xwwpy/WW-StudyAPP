@@ -1030,7 +1030,7 @@ mod tests {
             crate::update_install::PreparedPackage::Windows(PathBuf::from("B")),
         ));
         assert!(
-            matches!(panel.take_install_prepared("B"), Some(crate::update_install::PreparedPackage::Windows(path)) if path == PathBuf::from("B"))
+            matches!(panel.take_install_prepared("B"), Some(crate::update_install::PreparedPackage::Windows(path)) if path == Path::new("B"))
         );
     }
     #[::core::prelude::v1::test]
@@ -1145,5 +1145,72 @@ mod tests {
         assert!(panel.available_version().is_none());
         assert!(panel.prepared.is_none());
         assert!(panel.error.is_none());
+    }
+}
+
+#[cfg(test)]
+mod modal_visibility_tests {
+    use gpui_kit::{AppContext, Context, IntoElement, Render, TestAppContext, Window, div};
+    use studyapp_desktop::update_policy::CheckOrigin;
+    #[gpui_kit::test]
+    fn update_modal_hides_and_restores_persistent_editor(cx: &mut TestAppContext) {
+        struct Blank;
+        impl Render for Blank {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        let root = tempfile::tempdir().unwrap().keep();
+        let worker = crate::worker::Worker::start(root.join("studyapp.sqlite3"), None);
+        let mut entity = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            entity = Some(cx.new(|cx| crate::app::StudyApp::new(worker, window, cx)));
+            Blank
+        });
+        let entity = entity.unwrap();
+        visual.update(|window, cx| {
+            entity.update(cx, |app, cx| {
+                app.page = crate::app::Page::Notes;
+                app.note_editor = Some(crate::drafts::NoteDraft {
+                    note_id: None,
+                    expected_hash: None,
+                    folder_id: None,
+                    asset_group: String::new(),
+                    title: String::new(),
+                    content: String::new(),
+                });
+                app.prepare_document_view(window, cx);
+                assert!(app.note_content.read(cx).requested_visible_for_test());
+                app.update_panel.update(cx, |panel, _| {
+                    panel.finish_nsis_check(
+                        CheckOrigin::Manual,
+                        Ok(Some(crate::update_manifest::UpdateManifest {
+                            version: semver::Version::parse("9.0.0").unwrap(),
+                            notes: String::new(),
+                            pub_date: None,
+                            setup_url: String::new(),
+                            signature: String::new(),
+                            signed_envelope: String::new(),
+                            size: 1,
+                            sha256: "a".repeat(64),
+                        })),
+                    );
+                });
+                assert!(app.has_modal(cx));
+                app.prepare_document_view(window, cx);
+                assert!(
+                    !app.note_content.read(cx).requested_visible_for_test(),
+                    "native surface must not cover update card"
+                );
+                app.update_panel
+                    .update(cx, |panel, cx| panel.dismiss_dialog(cx));
+                app.prepare_document_view(window, cx);
+                assert!(app.note_content.read(cx).requested_visible_for_test());
+            })
+        });
     }
 }
