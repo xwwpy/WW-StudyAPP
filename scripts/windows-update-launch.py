@@ -112,6 +112,45 @@ class Process:
         return self.poll()
 
 
+def allow_same_user_desktop(kernel, security, sid_text):
+    """Grant only this runner user access to its existing interactive desktop."""
+    user = c.WinDLL("user32", use_last_error=True)
+    user.GetProcessWindowStation.restype = w.HANDLE
+    user.GetThreadDesktop.argtypes = [w.DWORD]
+    user.GetThreadDesktop.restype = w.HANDLE
+    class Trustee(c.Structure):
+        _fields_ = [("multiple", c.c_void_p), ("operation", c.c_int), ("form", c.c_int), ("kind", c.c_int), ("name", c.c_void_p)]
+    class Access(c.Structure):
+        _fields_ = [("permissions", w.DWORD), ("mode", c.c_int), ("inheritance", w.DWORD), ("trustee", Trustee)]
+    security.GetSecurityInfo.argtypes = [w.HANDLE, c.c_int, w.DWORD, c.c_void_p, c.c_void_p, c.POINTER(c.c_void_p), c.c_void_p, c.POINTER(c.c_void_p)]
+    security.SetEntriesInAclW.argtypes = [w.ULONG, c.POINTER(Access), c.c_void_p, c.POINTER(c.c_void_p)]
+    security.SetSecurityInfo.argtypes = [w.HANDLE, c.c_int, w.DWORD, c.c_void_p, c.c_void_p, c.c_void_p, c.c_void_p]
+    sid = c.c_void_p()
+    require(security.ConvertStringSidToSidW(sid_text, c.byref(sid)))
+    try:
+        for handle, rights in [(user.GetProcessWindowStation(), 0x000F037F), (user.GetThreadDesktop(kernel.GetCurrentThreadId()), 0x000F01FF)]:
+            require(handle)
+            old, descriptor, new = c.c_void_p(), c.c_void_p(), c.c_void_p()
+            try:
+                error = security.GetSecurityInfo(handle, 7, 4, None, None, c.byref(old), None, c.byref(descriptor))
+                if error:
+                    raise c.WinError(error)
+                entry = Access(rights, 1, 0, Trustee(None, 0, 0, 1, sid))
+                error = security.SetEntriesInAclW(1, c.byref(entry), old, c.byref(new))
+                if error:
+                    raise c.WinError(error)
+                error = security.SetSecurityInfo(handle, 7, 4, None, None, new, None)
+                if error:
+                    raise c.WinError(error)
+            finally:
+                if new.value:
+                    kernel.LocalFree(new)
+                if descriptor.value:
+                    kernel.LocalFree(descriptor)
+    finally:
+        kernel.LocalFree(sid)
+
+
 def launch(executable, arguments, environment, headless=False):
     if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise RuntimeError("Ordinary-user acceptance launch is restricted to Windows CI")
@@ -153,12 +192,14 @@ def launch(executable, arguments, environment, headless=False):
             integrity = token_sid(kernel, security, selected, 25)
         if int(integrity.rsplit("-", 1)[1]) > 8192:
             raise RuntimeError(f"Acceptance token integrity is above ordinary user: {integrity}")
+        if restricted:
+            allow_same_user_desktop(kernel, security, token_sid(kernel, security, selected))
         executable = str(Path(executable).resolve(strict=True))
         command = c.create_unicode_buffer(subprocess.list2cmdline([executable, *map(str, arguments)]))
         block = c.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in sorted(environment.items())) + "\0\0")
         startup = STARTUPINFO()
         startup.cb = c.sizeof(startup)
-        startup.desktop = None if headless else "winsta0\\default"
+        startup.desktop = "winsta0\\default"
         info = PROCESSINFO()
         flags = 0x400 | (0x08000000 if headless else 0)
         if restricted:

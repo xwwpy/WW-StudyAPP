@@ -42,7 +42,7 @@ def main():
         process = windows.launch(Path(os.environ["SYSTEMROOT"]) / "System32/cmd.exe", ["/d", "/c", "exit", "0"], child_env, headless=True)
         preflight["exit_code"] = process.wait(20)
         if preflight["exit_code"] != 0:
-            raise RuntimeError("Ordinary-user no-window preflight failed")
+            raise RuntimeError(f'Ordinary-user no-window preflight failed: 0x{preflight["exit_code"]:08X}')
     except Exception as error:
         preflight["error"] = str(error)
         raise
