@@ -738,7 +738,7 @@ impl crate::app::StudyApp {
             self.note_content
                 .update(cx, |editor, _| editor.close_native_host());
             if let Some(preview) = &self.preferences_ui.appearance_preview {
-                preview.update(cx, |editor, _| editor.close_native_host());
+                preview.update(cx, |preview, cx| preview.close_native_host(cx));
             }
         }
         self.close_allowed = true;

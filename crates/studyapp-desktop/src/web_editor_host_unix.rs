@@ -258,7 +258,7 @@ impl Drop for LinuxHost {
         unsafe { self.window.destroy() };
         // GPUI uses a separate XCB connection. Complete GTK's destruction requests
         // before the caller can destroy the GPUI parent on that connection.
-        self.display.sync();
+        self.display.upcast_ref::<gtk::gdk::Display>().sync();
     }
 }
 

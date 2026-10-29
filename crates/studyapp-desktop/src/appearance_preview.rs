@@ -117,6 +117,14 @@ impl AppearancePreview {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn close_native_host(&mut self, cx: &mut Context<Self>) {
+        self.visible = false;
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |editor, _| editor.close_native_host());
+        }
+    }
+
     pub fn set_occlusions(&mut self, bounds: Vec<Bounds<Pixels>>, cx: &mut Context<Self>) {
         self.set_overlay_regions("notices", bounds, cx);
     }
