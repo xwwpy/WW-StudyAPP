@@ -32,7 +32,7 @@ anyhow = "1"
 chrono = "0.4"
 config = { version = "=0.15.27", default-features = false, features = ["json"] }
 directories = "6"
-gpui-kit = "=0.7.3"
+gpui-kit = "=0.8.1"
 pulldown-cmark = "0.13"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 uuid = { version = "1", features = ["v4"] }
