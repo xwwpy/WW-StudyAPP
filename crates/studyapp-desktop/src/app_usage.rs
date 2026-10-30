@@ -292,10 +292,43 @@ fn discover_runtime(locations: &mut Vec<ApplicationLocation>, issues: &mut Vec<A
     }
 }
 
+fn read_stage_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let _guards = crate::storage_backend::guard_directories(
+        path.parent()
+            .ok_or_else(|| anyhow::anyhow!("暂存文件目录无效"))?,
+        false,
+    )?;
+    let file = crate::storage_backend::plain_handle(path, false, true)?;
+    ensure!(file.metadata()?.len() <= limit, "暂存文件超过大小限制");
+    let mut bytes = Vec::new();
+    file.take(limit + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() as u64 <= limit, "读取中的暂存文件超过大小限制");
+    Ok(bytes)
+}
 fn verified_package(path: &Path) -> Result<()> {
+    use sha2::{Digest, Sha256};
     let _guards = crate::storage_backend::guard_directories(path, false)?;
-    let _manifest = crate::storage_backend::plain_handle(&path.join("manifest.json"), false, true)?;
-    crate::update_install::VerifiedPackage::verify(path).map_err(anyhow::Error::msg)?;
+    let envelope = String::from_utf8(read_stage_file(
+        &path.join("manifest.json"),
+        2 * 1024 * 1024,
+    )?)?;
+    let manifest =
+        crate::update_manifest::parse_latest_json(&envelope).map_err(anyhow::Error::msg)?;
+    ensure!(manifest.size <= 256 * 1024 * 1024, "更新包超过大小限制");
+    let name = if cfg!(windows) {
+        "package.exe"
+    } else {
+        "package"
+    };
+    let bytes = read_stage_file(&path.join(name), manifest.size)?;
+    ensure!(
+        bytes.len() as u64 == manifest.size
+            && format!("{:x}", Sha256::digest(&bytes)) == manifest.sha256,
+        "更新包长度或摘要不匹配"
+    );
+    crate::update_signature::verify_manifest_signature(&bytes, &manifest.signature)
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 fn installation_locations(exe: &Path, locations: &mut Vec<ApplicationLocation>) -> Result<()> {
@@ -450,6 +483,7 @@ mod safety_tests {
         let report = scan(vec![location("root", root.clone(), true)], vec![]);
         assert_eq!(report.logical_bytes, 0);
         assert!(report.incomplete);
+        assert!(read_stage_file(&root.join("junction/secret"), 64).is_err());
         use std::os::windows::fs::OpenOptionsExt;
         let protected = root.join("locked");
         std::fs::write(&protected, b"locked").unwrap();
@@ -461,5 +495,18 @@ mod safety_tests {
         let report = scan(vec![location("locked", protected.clone(), true)], vec![]);
         assert!(report.incomplete);
         assert!(report.issues.iter().any(|i| i.path == protected));
+    }
+}
+
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+    #[test]
+    fn stage_file_reads_are_bounded_and_guarded() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let path = root.join("manifest.json");
+        std::fs::write(&path, b"12345").unwrap();
+        assert!(read_stage_file(&path, 4).is_err());
+        assert_eq!(read_stage_file(&path, 5).unwrap(), b"12345");
     }
 }
