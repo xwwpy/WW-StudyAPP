@@ -121,7 +121,7 @@ jobs:
         run: dbus-run-session -- xvfb-run -a -s '-screen 0 1600x1000x24' python3 scripts/smoke-unix.py --binary target/debug/studyapp --data-dir "$RUNNER_TEMP/native-interactive" --interactive
       - name: Preserve Linux paint diagnostics immediately
         if: always() && matrix.platform == 'linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: linux-paint-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -134,7 +134,7 @@ jobs:
         run: python3 scripts/smoke-unix.py --binary target/debug/studyapp --data-dir "$RUNNER_TEMP/native-interactive" --interactive
       - name: Preserve macOS native editor pixels immediately
         if: always() && matrix.platform == 'macos'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: macos-editor-diagnostics-${{ matrix.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -156,7 +156,7 @@ jobs:
         run: '"$RUNNER_TEMP/package-venv/bin/python" scripts/package-unix.py dmg'
       - name: Retain DMG for system-approval diagnostics
         if: matrix.platform == 'macos'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: diagnostic-dmg-${{ matrix.arch }}-${{ github.run_id }}
           path: |
@@ -207,7 +207,7 @@ jobs:
         run: '"$RUNNER_TEMP/package-venv/bin/python" scripts/native-update-macos.py --work-dir "$RUNNER_TEMP/native-update" --production-binary target/release/studyapp'
       - name: Preserve native evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: |
@@ -250,7 +250,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
       - name: Preserve verified release package
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: release-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
