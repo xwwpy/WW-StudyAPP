@@ -117,13 +117,19 @@ def main():
     target_version = common.next_patch(old_version)
     build_env = dict(os.environ, CARGO_TARGET_DIR=str(common.ROOT / "target/update-acceptance"))
     packages = {}
+    build_evidence = {"source_sha": source_sha, "profile": "release", "packages": {}}
+    binary = common.ROOT / "target/update-acceptance/release/studyapp"
     for label, version in [("old", old_version), ("candidate", target_version)]:
         source = root / label
         common.snapshot(source, archive, version)
-        common.run(["cargo", "build", "--locked", "-p", "studyapp-desktop", "--bin", "studyapp", "--features", "update-acceptance"], cwd=source, env=build_env)
+        started = time.monotonic()
+        common.run(["cargo", "build", "--release", "--locked", "-p", "studyapp-desktop", "--bin", "studyapp", "--features", "update-acceptance"], cwd=source, env=build_env)
         output = root / (label + "-packages")
-        common.run([sys.executable, source / "scripts/package-unix.py", "dmg", "--binary", common.ROOT / "target/update-acceptance/debug/studyapp", "--output", output], cwd=source)
+        common.run([sys.executable, source / "scripts/package-unix.py", "dmg", "--binary", binary, "--output", output], cwd=source)
         packages[label] = next(output.glob("*.dmg"))
+        build_evidence["packages"][label] = {"version":version,"binary_bytes":binary.stat().st_size,
+            "dmg_bytes":packages[label].stat().st_size,"build_and_package_seconds":round(time.monotonic()-started,3)}
+        (root / "fixture-build.json").write_text(json.dumps(build_evidence,indent=2))
     refusal = root / "quarantine-refusal"
     refusal.mkdir(mode=0o700)
     transition(refusal, packages, source_sha, old_version, target_version, args.production_binary, "quarantine-refusal")

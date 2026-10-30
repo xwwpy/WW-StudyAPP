@@ -216,6 +216,7 @@ jobs:
             ${{ runner.temp }}/native-macos-assessment.json
             ${{ runner.temp }}/native-macos-assessment*.png
             ${{ runner.temp }}/native-update/transition-result.json
+            ${{ runner.temp }}/native-update/fixture-build.json
             ${{ runner.temp }}/native-update/installation-context.json
             ${{ runner.temp }}/native-update/application.log
             ${{ runner.temp }}/native-update/approval-actions.json
