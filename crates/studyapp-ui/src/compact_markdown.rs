@@ -252,11 +252,19 @@ mod tests {
                 cx,
             );
             assert_eq!(input.read(cx).value().as_str(), "前 **中😀文** 后");
+        });
+        test_cx.run_until_parked();
+        test_cx.update(|window, cx| {
+            let input = editor.read(cx).input.clone();
             assert!(editor.read(cx).is_preview());
             assert!(editor.read(cx).preview_source.contains("**中😀文**"));
             window.click("summary-list", cx);
             assert!(input.read(cx).value().starts_with("- "));
             window.render_frame(cx);
+        });
+        test_cx.run_until_parked();
+        test_cx.update(|window, cx| {
+            let input = editor.read(cx).input.clone();
             assert!(editor.read(cx).preview_source.contains("- "));
             window.click("summary-preview", cx);
             assert!(input.read(cx).value().starts_with("- "));
