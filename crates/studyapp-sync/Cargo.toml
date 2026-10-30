@@ -10,7 +10,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 quick-xml = "0.41"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
-hmac = "0.12"
+hmac = "0.13"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 percent-encoding = "2"
