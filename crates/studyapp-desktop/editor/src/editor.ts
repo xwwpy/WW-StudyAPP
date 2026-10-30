@@ -1,4 +1,4 @@
-import { installOutline, outlineUpdates, refreshOutline } from "./outline";
+import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled } from "./outline";
 import { applyEditorTheme } from "./theme";
 import { ChangeSet, Compartment, EditorSelection, EditorState, Extension, Text, Transaction } from "@codemirror/state";
 import { drawSelection, EditorView, keymap, placeholder, ViewUpdate } from "@codemirror/view";
@@ -18,7 +18,7 @@ import { incompleteScalars, scalarText, splitsScalar } from "./unicode";
 import { eventBinding, resolveBindings, typingKeymap } from "./shortcuts";
 import { scanDocumentStatistics } from "./statistics";
 
-interface Load { generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
+interface Load { outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
 interface Rebase extends Load { previousGeneration: number; previousRevision: number; changes: { from: number; to: number; insert: string }[]; }
 interface TestAction { type: string; request?: string | number; from?: number; to?: number; text?: string; anchor?: number; head?: number; name?: string; edits?: number; width?: number; height?: number; }
 interface Bridge {
@@ -411,6 +411,7 @@ function load(value: Load): void {
   status.classList.remove("error", "warning");
   // CM's Text uses LF internally. Only host canonical text owns raw CRLF/mixed EOL.
   view.setState(EditorState.create({ doc: value.text.replace(/\r\n?/g, "\n"), extensions: extensions(Boolean(value.readonly), value.text) }));
+  setOutlineEnabled(value.outlineEnabled !== false);
   refreshOutline();
   view.scrollDOM.scrollTop = 0;
   loaded = true;

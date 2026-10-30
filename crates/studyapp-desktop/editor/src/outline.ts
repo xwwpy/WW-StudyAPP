@@ -1,6 +1,9 @@
 import { parser } from "@lezer/markdown";
 import { EditorView } from "@codemirror/view";
 
+let applyEnabled: (enabled: boolean) => void = () => {};
+export function setOutlineEnabled(enabled: boolean): void { applyEnabled(enabled); }
+
 let scheduleRefresh: () => void = () => {};
 export const outlineUpdates = EditorView.updateListener.of(update => {
   if (update.docChanged) scheduleRefresh();
@@ -61,6 +64,17 @@ export function installOutline(view: EditorView): void {
     }
     panel.replaceChildren(fragment);
   }
+
+  let outlineEnabled = true;
+  applyEnabled = enabled => {
+    if (enabled === outlineEnabled) return;
+    outlineEnabled = enabled;
+    clearTimeout(timer);
+    toggle.hidden = !enabled;
+    panel.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+    panel.replaceChildren();
+  };
 
   scheduleRefresh = () => {
     clearTimeout(timer);

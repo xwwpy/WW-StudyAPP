@@ -82,7 +82,7 @@ impl AppearancePreview {
         }
         let editor = self.editor.get_or_insert_with(|| {
             cx.new(|cx| {
-                let mut editor = MarkdownEditor::new(window, cx);
+                let mut editor = MarkdownEditor::new(window, cx).without_outline();
                 editor.set_value_with_readonly(PREVIEW_SAMPLE.into(), true, window, cx);
                 editor.set_can_request_edit(false, cx);
                 editor.set_overlay_shapes("preview-overlays", self.occlusions.all(), cx);
@@ -289,6 +289,7 @@ mod tests {
         let id = editor.entity_id();
         let generation = editor.read_with(cx, |editor, _| {
             assert_eq!(editor.value(), PREVIEW_SAMPLE);
+            assert!(!editor.outline_enabled());
             assert!(editor.readonly());
             assert!(!editor.creating());
             assert!(!editor.ready());

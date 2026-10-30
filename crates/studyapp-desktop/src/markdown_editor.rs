@@ -118,6 +118,7 @@ pub struct MarkdownEditor {
     readonly: bool,
     resume_readonly: bool,
     can_request_edit: bool,
+    outline_enabled: bool,
     theme: serde_json::Value,
     error: Option<String>,
     pending: Option<(u64, Instant)>,
@@ -169,6 +170,7 @@ impl MarkdownEditor {
             readonly: false,
             resume_readonly: false,
             can_request_edit: false,
+            outline_enabled: true,
             theme: serde_json::Value::Null,
             error: None,
             pending: None,
@@ -194,6 +196,16 @@ impl MarkdownEditor {
 
     pub fn value(&self) -> &str {
         self.document.text()
+    }
+
+    pub fn without_outline(mut self) -> Self {
+        self.outline_enabled = false;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn outline_enabled(&self) -> bool {
+        self.outline_enabled
     }
     pub fn generation(&self) -> u64 {
         self.document.generation()
@@ -368,7 +380,7 @@ impl MarkdownEditor {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit});
+        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled});
         let shortcuts = serde_json::to_string(&self.shortcuts).expect("string map serializes");
         let theme = &self.theme;
         if let Err(error) = self.evaluate(&format!("window.studyappEditor.setShortcuts({shortcuts}); window.studyappEditor.setTheme({theme}); window.studyappEditor.load({payload});")) {

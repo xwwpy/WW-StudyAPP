@@ -1873,3 +1873,16 @@ test("outline invalidates stale entries immediately and remains usable in readon
  assert.deepEqual(errors,[]);
  await page.close();
 });
+
+test("outline stays hidden in appearance preview and returns for notes", async () => {
+ const {page}=await setup("# Note");
+ await page.evaluate(()=>window.studyappEditor.load({generation:44,text:"# Theme",readonly:true,outlineEnabled:false}));
+ assert.equal(await page.locator("#outline-toggle").isVisible(),false);
+ assert.equal(await page.locator("#note-outline").isVisible(),false);
+ await page.evaluate(()=>window.studyappEditor.load({generation:45,text:"# Note",readonly:false,outlineEnabled:true}));
+ assert.equal(await page.locator("#outline-toggle").isVisible(),true);
+ assert.equal(await page.locator("#note-outline").isVisible(),false);
+ await page.locator("#outline-toggle").click();
+ assert.equal(await page.locator("#note-outline button").innerText(),"Note");
+ await page.close();
+});
