@@ -307,7 +307,23 @@ impl StudyApp {
                 .map(|category| category.byte_count)
                 .sum::<u64>();
             view = view
-                .child(heading(presentation.logical_label.clone()).text_xl())
+                .child(heading(presentation.application_label.clone()).text_xl())
+                .child(muted(
+                    "按文件长度统计；去重大小按文件身份去重，不等同于磁盘分配块。",
+                ))
+                .children(
+                    presentation
+                        .application_locations
+                        .iter()
+                        .map(|text| muted(text.clone())),
+                )
+                .children(
+                    presentation
+                        .application_issues
+                        .iter()
+                        .map(|text| muted(text.clone())),
+                )
+                .child(heading(format!("当前资料库 · {}", presentation.logical_label)).text_xl())
                 .child(muted(presentation.scanned_label.clone()));
             for (index, category) in presentation.categories.iter().enumerate() {
                 let fraction = if total == 0 {

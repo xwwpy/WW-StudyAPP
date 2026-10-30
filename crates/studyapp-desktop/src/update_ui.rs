@@ -357,8 +357,25 @@ impl UpdatePanel {
         self.nsis_progress = Some((0, 0));
         self.status = "正在下载更新…".into();
         let sender = self.sender.clone();
-        let directory = std::env::temp_dir();
         std::thread::spawn(move || {
+            let directory = match crate::app_usage::runtime_paths() {
+                Ok(paths) => paths.effective.updates,
+                Err(error) => {
+                    let _ = sender.send(UpdateReply::NsisDownloaded(Box::new(Err(
+                        error.to_string()
+                    ))));
+                    return;
+                }
+            };
+            let _guards = match crate::storage_backend::guard_directories(&directory, true) {
+                Ok(guards) => guards,
+                Err(error) => {
+                    let _ = sender.send(UpdateReply::NsisDownloaded(Box::new(Err(
+                        error.to_string()
+                    ))));
+                    return;
+                }
+            };
             let result = crate::update_install::VerifiedPackage::download(
                 &manifest.signed_envelope,
                 &directory,

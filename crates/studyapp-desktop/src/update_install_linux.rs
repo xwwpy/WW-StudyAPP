@@ -497,9 +497,9 @@ mod tests {
 }
 
 fn pointer_path() -> Result<PathBuf> {
-    directories::ProjectDirs::from("io", "StudyApp", "StudyApp")
-        .map(|p| p.data_local_dir().join("update-last.txt"))
-        .ok_or("Cannot locate update status".into())
+    crate::app_usage::runtime_paths()
+        .and_then(|paths| paths.update_pointer())
+        .map_err(|error| error.to_string())
 }
 pub fn acknowledge_health() -> Result<()> {
     let Some(path) = std::env::var_os("STUDYAPP_UPDATE_TRANSACTION") else {

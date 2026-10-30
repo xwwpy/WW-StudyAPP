@@ -53,6 +53,7 @@ pub(crate) fn run_if_requested(arguments: &[String]) -> Result<bool> {
             PathBuf::from(std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA required")?)
                 .join("Programs/WW-StudyApp");
         let context = runtime::DiscoveryContext {
+            app_paths: None,
             default_library: fixture_root.join("library"),
             location_file: None,
             explicit_library: Some(fixture_root.join("library")),
@@ -685,6 +686,7 @@ fn data_fixture(parent: &Path, name: &str) -> Result<DataFixture> {
     let unknown_settings = library.join("settings/user-owned.txt");
     create_new_file(&unknown_settings, b"user-owned settings neighbour")?;
     let context = runtime::DiscoveryContext {
+        app_paths: None,
         default_library: library.clone(),
         location_file: None,
         explicit_library: Some(library),
@@ -1505,6 +1507,7 @@ fn msi_owner_case(options: &Options, records: &mut Vec<Value>) -> Result<()> {
         let before = hashes(&portable, &portable_names)?;
         let library = directory(&options.fixture_root, "library")?;
         let context = runtime::DiscoveryContext {
+            app_paths: None,
             default_library: library.clone(),
             location_file: None,
             explicit_library: Some(library.clone()),
@@ -1589,6 +1592,7 @@ fn msi_cleanup_case(options: &Options, records: &mut Vec<Value>) -> Result<()> {
             "MSI cleanup is restricted to the fresh default fixture root"
         );
         let context = runtime::DiscoveryContext {
+            app_paths: None,
             default_library: options.fixture_root.join("unused-library"),
             location_file: None,
             explicit_library: Some(options.fixture_root.join("unused-library")),

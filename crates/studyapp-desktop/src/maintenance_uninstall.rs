@@ -929,6 +929,7 @@ mod tests {
         .unwrap();
         std::fs::write(data.join("backup.sqlite3"), b"unknown backup").unwrap();
         let context = runtime::DiscoveryContext {
+            app_paths: None,
             default_library: data.clone(),
             location_file: None,
             explicit_library: Some(data.clone()),

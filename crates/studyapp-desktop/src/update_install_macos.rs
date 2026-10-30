@@ -236,9 +236,9 @@ fn transaction(dir: &Path, owner: u32) -> Result<MacTransaction> {
     Ok(tx)
 }
 fn pointer_path() -> Result<PathBuf> {
-    directories::ProjectDirs::from("io", "StudyApp", "StudyApp")
-        .map(|p| p.data_local_dir().join("update-last.txt"))
-        .ok_or("No update record location".into())
+    crate::app_usage::runtime_paths()
+        .and_then(|paths| paths.update_pointer())
+        .map_err(|error| error.to_string())
 }
 pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathBuf> {
     #[cfg(feature = "update-acceptance")]

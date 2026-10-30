@@ -40,6 +40,9 @@ pub struct ManagedCopyView {
 #[derive(Clone, Debug, Default)]
 pub struct StoragePresentation {
     pub logical_label: String,
+    pub application_label: String,
+    pub application_locations: Vec<String>,
+    pub application_issues: Vec<String>,
     pub scanned_label: String,
     pub categories: Vec<StorageCategory>,
     pub image_summary: String,
@@ -139,6 +142,42 @@ impl StoragePresentation {
             .map(|(ix, copy)| (copy.note_id.clone(), ix))
             .collect();
         Self {
+            application_label: format!(
+                "应用文件大小 {} · 去重文件大小 {}{}",
+                size_label(report.application.logical_bytes),
+                size_label(report.application.distinct_file_bytes),
+                if report.application.incomplete {
+                    "（统计不完整）"
+                } else {
+                    ""
+                }
+            ),
+            application_locations: report
+                .application
+                .locations
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{} · {} · {} 个文件 · {} · {} · {}",
+                        r.label,
+                        size_label(r.bytes),
+                        r.files,
+                        display_path(&r.path.to_string_lossy()),
+                        if r.movable {
+                            "可移动类别"
+                        } else {
+                            "不可直接移动"
+                        },
+                        r.reason
+                    )
+                })
+                .collect(),
+            application_issues: report
+                .application
+                .issues
+                .iter()
+                .map(|i| format!("{}：{}", display_path(&i.path.to_string_lossy()), i.message))
+                .collect(),
             logical_label: format!(
                 "已统计逻辑大小 {}{}",
                 size_label(report.logical_bytes()),

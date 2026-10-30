@@ -2,6 +2,7 @@
 
 mod app;
 mod app_startup;
+mod app_usage;
 mod appearance_preview;
 mod appearance_ui;
 mod assets;
@@ -96,9 +97,7 @@ use std::path::PathBuf;
 fn paths() -> anyhow::Result<(PathBuf, Option<PathBuf>, bool)> {
     let args: Vec<_> = std::env::args().collect();
     let smoke = args.iter().any(|a| a == "--smoke-test");
-    let project = directories::ProjectDirs::from("io", "StudyApp", "StudyApp")
-        .ok_or_else(|| anyhow::anyhow!("无法定位用户数据目录"))?;
-    let config = project.config_dir().join("location.json");
+
     let explicit = args
         .iter()
         .position(|a| a == "--data-dir")
@@ -111,18 +110,14 @@ fn paths() -> anyhow::Result<(PathBuf, Option<PathBuf>, bool)> {
     if smoke && explicit.is_none() {
         anyhow::bail!("--smoke-test 必须配合 --data-dir 指定隔离的测试目录");
     }
-    let directory = if let Some(path) = &explicit {
-        PathBuf::from(path)
-    } else if config.exists() {
-        serde_json::from_slice::<PathBuf>(&std::fs::read(&config)?)?
+    // Explicit profiles bypass all per-user locator reads.
+    let (directory, config) = if let Some(path) = &explicit {
+        (PathBuf::from(path), None)
     } else {
-        project.data_dir().to_path_buf()
+        let paths = studyapp_desktop::app_paths::AppPaths::current()?;
+        (paths.resolve_library(None)?, Some(paths.legacy_location()))
     };
-    Ok((
-        directory.join("studyapp.sqlite3"),
-        explicit.is_none().then_some(config),
-        smoke,
-    ))
+    Ok((directory.join("studyapp.sqlite3"), config, smoke))
 }
 
 fn startup_error_argument_is_headless(argument: &str, ui_test: bool) -> bool {

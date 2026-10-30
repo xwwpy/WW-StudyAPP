@@ -18,6 +18,7 @@ use studyapp_core::{Command, Engine, Note, Snapshot};
 #[derive(Clone, Debug, Default)]
 pub struct StorageReport {
     pub data_path: String,
+    pub application: crate::app_usage::ApplicationReport,
     pub database_bytes: u64,
     pub managed_bytes: u64,
     pub retained_bytes: u64,
@@ -655,8 +656,8 @@ pub fn inspect(snapshot: &Snapshot) -> Result<StorageReport> {
             },
         );
         let mut locations = BTreeSet::new();
-        for path in image_paths {
-            let key = path_key(&path);
+        for path in &image_paths {
+            let key = path_key(path);
             if let Some((_, category)) = files.get_mut(&key) {
                 *category = Category::Image;
                 if let Some(location) = path.parent().and_then(Path::parent) {
@@ -666,7 +667,7 @@ pub fn inspect(snapshot: &Snapshot) -> Result<StorageReport> {
             }
             let inspected = (|| -> Result<u64> {
                 let _guards = guard_directories(path.parent().context("图片目录不存在")?, false)?;
-                Ok(plain_handle(&path, false, false)?.metadata()?.len())
+                Ok(plain_handle(path, false, false)?.metadata()?.len())
             })();
             match inspected {
                 Ok(bytes) => {
@@ -679,7 +680,7 @@ pub fn inspect(snapshot: &Snapshot) -> Result<StorageReport> {
                 Err(error)
                     if io_error(&error)
                         .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) => {}
-                Err(error) => issue(&mut issues, &path, error),
+                Err(error) => issue(&mut issues, path, error),
             }
         }
         for paths in image_records {
@@ -714,6 +715,42 @@ pub fn inspect(snapshot: &Snapshot) -> Result<StorageReport> {
             Category::Draft => &mut report.draft_bytes,
         };
         *total = total.saturating_add(bytes);
+    }
+    // Tests and native smoke profiles never consult real per-user paths.
+    let application_paths = if cfg!(test) || cfg!(feature = "ui-test") {
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: directory.into(),
+            config: directory.join("app-config"),
+            local_data: directory.join("app-local"),
+            cache: directory.join("app-cache"),
+            updates: directory.join("app-updates"),
+        };
+        studyapp_desktop::app_paths::AppPaths::from_defaults(
+            dirs,
+            directory.join("app-config/storage-location.json"),
+        )
+    } else {
+        studyapp_desktop::app_paths::AppPaths::current()
+    };
+    match application_paths {
+        Ok(paths) => {
+            report.application = crate::app_usage::inspect(
+                &paths,
+                directory,
+                image_paths,
+                !cfg!(test) && !cfg!(feature = "ui-test"),
+            )
+        }
+        Err(error) => {
+            report.application.incomplete = true;
+            report
+                .application
+                .issues
+                .push(crate::app_usage::ApplicationIssue {
+                    path: directory.into(),
+                    message: format!("无法解析应用路径：{error:#}"),
+                });
+        }
     }
     report.incomplete = !issues.is_empty();
     report.issues = issues;

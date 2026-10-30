@@ -58,6 +58,7 @@ pub(crate) fn run_if_requested(args: &[String]) -> Result<bool> {
         None
     };
     let context = DiscoveryContext {
+        app_paths: None,
         default_library: library.clone(),
         location_file: None,
         explicit_library: Some(library.clone()),

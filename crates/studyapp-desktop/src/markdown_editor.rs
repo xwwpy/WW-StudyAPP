@@ -736,9 +736,13 @@ impl MarkdownEditor {
         let profile = if cfg!(feature = "ui-test") {
             std::env::temp_dir().join(format!("studyapp-editor-test-{}", std::process::id()))
         } else {
-            directories::ProjectDirs::from("io", "StudyApp", "StudyApp")
-                .map(|p| p.cache_dir().join("editor"))
-                .unwrap_or_else(|| std::env::temp_dir().join("studyapp-editor"))
+            match studyapp_desktop::app_paths::AppPaths::current() {
+                Ok(paths) => paths.effective.cache.join("editor"),
+                Err(error) => {
+                    self.fail(format!("无法定位编辑器缓存：{error:#}"), cx);
+                    return;
+                }
+            }
         };
         let sender = self.sender.clone();
         self.creating = true;

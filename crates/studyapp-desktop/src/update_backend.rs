@@ -1006,7 +1006,10 @@ fn current_installation() -> UpdateResult<PathBuf> {
 }
 
 fn update_root() -> UpdateResult<PathBuf> {
-    let path = std::env::temp_dir().join("WW-StudyApp-updates");
+    let path = crate::app_usage::runtime_paths()
+        .map_err(|_| failure(UpdateErrorKind::Preparation))?
+        .effective
+        .updates;
     plain_path(&path)?;
     fs::create_dir_all(&path).map_err(|_| failure(UpdateErrorKind::Preparation))?;
     plain_path(&path)?;
@@ -1564,8 +1567,19 @@ pub fn read_last_update_status() -> UpdateResult<Option<UpdateStatus>> {
             target_exe: target.to_string_lossy().into_owned(),
         }));
     }
-    let root = std::env::temp_dir().join("WW-StudyApp-updates");
-    let path = status_path(&root, &target);
+    let paths =
+        crate::app_usage::runtime_paths().map_err(|_| failure(UpdateErrorKind::Preparation))?;
+    let current = status_path(&paths.effective.updates, &target);
+    let legacy = status_path(&paths.defaults.updates, &target);
+    // Recovery retains signed transaction paths; a missing new status never hides legacy evidence.
+    let path = if current
+        .try_exists()
+        .map_err(|_| failure(UpdateErrorKind::Preparation))?
+    {
+        current
+    } else {
+        legacy
+    };
     plain_path(&path)?;
     let file = match File::open(path) {
         Ok(file) => file,

@@ -8,4 +8,5 @@ pub mod presentation;
 pub mod read_models;
 pub mod update_policy;
 
+pub mod app_paths;
 pub mod library_tree;

@@ -162,9 +162,9 @@ fn record(dir: &Path, state: &str, message: &str) -> Result<()> {
     status::publish(dir, state, message, write_new)
 }
 fn pointer() -> Result<PathBuf> {
-    directories::ProjectDirs::from("io", "StudyApp", "StudyApp")
-        .map(|p| p.data_local_dir().join("update-last.txt"))
-        .ok_or("Missing update record location".into())
+    crate::app_usage::runtime_paths()
+        .and_then(|paths| paths.update_pointer())
+        .map_err(|error| error.to_string())
 }
 fn read_transaction(dir: &Path) -> Result<WindowsTransaction> {
     safe_path(dir)?;

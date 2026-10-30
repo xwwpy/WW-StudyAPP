@@ -12,17 +12,19 @@ use studyapp_desktop::maintenance::*;
 const MAX_JSON: u64 = 1024 * 1024;
 #[derive(Clone, Debug)]
 pub(crate) struct DiscoveryContext {
+    pub app_paths: Option<studyapp_desktop::app_paths::AppPaths>,
     pub default_library: PathBuf,
     pub location_file: Option<PathBuf>,
     pub explicit_library: Option<PathBuf>,
 }
 impl DiscoveryContext {
     pub fn current_user() -> Result<Self> {
-        let dirs = directories::ProjectDirs::from("io", "StudyApp", "StudyApp")
-            .context("无法定位用户数据目录")?;
+        let paths = studyapp_desktop::app_paths::AppPaths::current()?;
+        let library = paths.resolve_library(None)?;
         Ok(Self {
-            default_library: dirs.data_dir().to_owned(),
-            location_file: Some(dirs.config_dir().join("location.json")),
+            default_library: library,
+            app_paths: Some(paths.clone()),
+            location_file: Some(paths.legacy_location()),
             explicit_library: None,
         })
     }
@@ -50,6 +52,9 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
 pub(crate) fn discover_library(context: &DiscoveryContext) -> LibraryDiscovery {
     let mut report = LibraryDiscovery::default();
     let resolve = || -> Result<PathBuf> {
+        if let Some(paths) = &context.app_paths {
+            return paths.resolve_library(context.explicit_library.as_deref());
+        }
         let library = if let Some(explicit) = &context.explicit_library {
             explicit.clone()
         } else if let Some(location) = &context.location_file {
@@ -97,6 +102,25 @@ pub(crate) fn discover_library(context: &DiscoveryContext) -> LibraryDiscovery {
         Err(_) => report
             .issues
             .push("部分配置无法验证；配置清理暂不可用。".into()),
+    }
+    if context.explicit_library.is_none()
+        && let Some(paths) = &context.app_paths
+        && paths.storage_locator().exists()
+    {
+        // Keep the real anchor visible. Existing uninstall execution only supports
+        // the legacy anchor, so it must refuse data/config cleanup for this schema.
+        match push_existing(
+            &mut report.configuration_files,
+            paths.storage_locator().to_owned(),
+        ) {
+            Ok(()) => report.issues.push(
+                "应用位置配置已登记；此版本维护程序暂不支持清理其配置或数据库，已保留全部数据。"
+                    .into(),
+            ),
+            Err(_) => report
+                .issues
+                .push("应用位置配置无法验证；配置和数据库清理暂不可用。".into()),
+        }
     }
     report
 }
@@ -645,6 +669,7 @@ mod tests {
         let missing = root.join("missing");
         let config = root.join("location.json");
         let context = DiscoveryContext {
+            app_paths: None,
             default_library: missing.clone(),
             location_file: Some(config.clone()),
             explicit_library: None,
@@ -684,6 +709,7 @@ mod tests {
         std::fs::write(defaults.join("foreign.json"), b"keep").unwrap();
         std::fs::write(library.join("studyapp.sqlite3"), b"fixture database").unwrap();
         let context = DiscoveryContext {
+            app_paths: None,
             default_library: root.join("default"),
             location_file: Some(config.clone()),
             explicit_library: Some(library.clone()),
@@ -778,6 +804,7 @@ mod tests {
             version: "0.8.0".into(),
         };
         let context = DiscoveryContext {
+            app_paths: None,
             default_library: root.join("missing-library"),
             location_file: None,
             explicit_library: None,
@@ -807,6 +834,7 @@ mod tests {
             .is_none()
         );
         let overlapping = DiscoveryContext {
+            app_paths: None,
             default_library: installation.clone(),
             location_file: None,
             explicit_library: None,
@@ -834,5 +862,47 @@ mod tests {
         let lock = acquire_existing_library_lock(&root).unwrap();
         assert!(acquire_existing_library_lock(&root).is_err());
         drop(lock);
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    #[test]
+    fn application_locator_precedence_and_inventory_are_visible() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: root.join("default"),
+            config: root.join("config"),
+            local_data: root.join("local"),
+            cache: root.join("cache"),
+            updates: root.join("updates"),
+        };
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        let locator = dirs.config.join("storage-location.json");
+        let library = root.join("chosen");
+        std::fs::write(
+            &locator,
+            serde_json::to_vec(
+                &serde_json::json!({"schema":1,"root":root.join("custom"),"library":library}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let legacy = dirs.config.join("location.json");
+        std::fs::write(&legacy, serde_json::to_vec(&root.join("old")).unwrap()).unwrap();
+        let paths =
+            studyapp_desktop::app_paths::AppPaths::from_defaults(dirs, locator.clone()).unwrap();
+        let context = DiscoveryContext {
+            app_paths: Some(paths),
+            default_library: root.join("unused"),
+            location_file: Some(legacy.clone()),
+            explicit_library: None,
+        };
+        let report = discover_library(&context);
+        assert_eq!(report.database_path, Some(library.join("studyapp.sqlite3")));
+        assert!(report.configuration_files.contains(&locator));
+        assert!(report.configuration_files.contains(&legacy));
+        assert!(report.issues.iter().any(|i| i.contains("暂不支持清理")));
     }
 }
