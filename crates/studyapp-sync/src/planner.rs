@@ -16,7 +16,6 @@ pub fn plan_sync(
         return Err(SyncError::LimitExceeded);
     }
     let mut local = BTreeMap::new();
-    let mut bytes = 0usize;
     for note in notes {
         if excluded.contains(&note.id) {
             continue;
@@ -25,12 +24,6 @@ pub fn plan_sync(
         validate_content(&note.content)?;
         if content_hash(&note.content) != note.hash {
             return Err(SyncError::InvalidContent);
-        }
-        bytes = bytes
-            .checked_add(note.content.len())
-            .ok_or(SyncError::LimitExceeded)?;
-        if bytes > MAX_SYNC_BYTES {
-            return Err(SyncError::LimitExceeded);
         }
         if local.insert(note.id.as_str(), note).is_some() {
             return Err(SyncError::InvalidId);
@@ -58,12 +51,6 @@ pub fn plan_sync(
             validate_content(&remote.content)?;
             if content_hash(&remote.content) != remote.hash {
                 return Err(SyncError::InvalidContent);
-            }
-            bytes = bytes
-                .checked_add(remote.content.len())
-                .ok_or(SyncError::LimitExceeded)?;
-            if bytes > MAX_SYNC_BYTES {
-                return Err(SyncError::LimitExceeded);
             }
         }
         let (action, local_hash, remote_hash) = match (note, remote) {

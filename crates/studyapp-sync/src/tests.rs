@@ -414,10 +414,13 @@ fn folder_lock_busy_invalid_content_and_unknown_files_are_safe() {
         provider.write(ID, "bad\0text", None),
         Err(SyncError::InvalidContent)
     ));
-    assert!(matches!(
-        provider.write(ID, &"a".repeat(MAX_CONTENT_BYTES + 1), None),
-        Err(SyncError::LimitExceeded)
-    ));
+    let large = "\u{6c49}".repeat(MAX_CONTENT_BYTES / 3 + 1);
+    provider.write(ID, &large, None).unwrap();
+    let saved = provider.read(ID).unwrap().unwrap();
+    assert_eq!(saved.content, large);
+    provider
+        .write(ID, "updated", saved.revision.as_deref())
+        .unwrap();
     std::fs::write(root.join(format!("StudyApp/notes/{ID}.md")), [255, 254]).unwrap();
     assert!(matches!(provider.read(ID), Err(SyncError::InvalidContent)));
     assert_eq!(
@@ -464,7 +467,7 @@ fn webdav_empty_and_adversarial_listings_are_bounded() {
 }
 
 #[test]
-fn webdav_read_limits_and_weak_etag_are_safe() {
+fn webdav_large_notes_and_weak_etag_are_safe() {
     let (url, server) = fixture(vec![
         (200, vec![("ETag", "W/\"weak\"".into())], "text".into()),
         (404, vec![], String::new()),
@@ -473,7 +476,10 @@ fn webdav_read_limits_and_weak_etag_are_safe() {
     let provider = WebDavProvider::for_loopback_test(&url, "", "").unwrap();
     assert!(provider.read(ID).unwrap().unwrap().revision.is_none());
     assert!(provider.read(ID).unwrap().is_none());
-    assert!(matches!(provider.read(ID), Err(SyncError::LimitExceeded)));
+    assert_eq!(
+        provider.read(ID).unwrap().unwrap().content.len(),
+        MAX_CONTENT_BYTES + 1
+    );
     server.join().unwrap();
 }
 
@@ -639,4 +645,21 @@ fn webdav_asset_conflicts_redirects_and_lengths_never_overwrite_or_follow() {
         Err(SyncError::LimitExceeded)
     ));
     assert_eq!(server.join().unwrap().len(), 7);
+}
+
+#[test]
+fn planner_accepts_note_larger_than_former_batch_budget() {
+    let provider = LocalFolderProvider::new(folder()).unwrap();
+    let content = "x".repeat(MAX_SYNC_BYTES + 1);
+    let notes = [SyncNote {
+        id: ID.into(),
+        title: "large".into(),
+        hash: content_hash(&content),
+        content,
+        managed: true,
+    }];
+    let plans = plan_sync(&provider, &notes, &BTreeMap::new(), &Default::default()).unwrap();
+    assert!(
+        matches!(&plans[0].action, SyncAction::Push { content, .. } if content.len() == MAX_SYNC_BYTES + 1)
+    );
 }

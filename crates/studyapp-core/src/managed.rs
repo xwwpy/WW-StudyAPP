@@ -85,25 +85,9 @@ pub(crate) fn rebase(state: &mut State, database: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_content(content: &str) -> Result<()> {
-    ensure!(
-        content.len() as u64 <= notes::MAX_BYTES,
-        "笔记超过 10 MiB 限制"
-    );
-    Ok(())
-}
-
 fn read_handle(file: &mut File) -> Result<String> {
-    ensure!(
-        file.metadata()?.len() <= notes::MAX_BYTES,
-        "笔记超过 10 MiB 限制"
-    );
     let mut bytes = Vec::new();
-    file.take(notes::MAX_BYTES + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() as u64 <= notes::MAX_BYTES,
-        "笔记超过 10 MiB 限制"
-    );
+    file.read_to_end(&mut bytes)?;
     String::from_utf8(bytes).context("笔记不是有效的 UTF-8 文本")
 }
 
@@ -147,7 +131,6 @@ pub(crate) fn create(
     offline: bool,
 ) -> Result<Write> {
     validate_id(&id)?;
-    validate_content(&content)?;
     ensure!(title.chars().count() <= 200, "笔记标题不能超过 200 字符");
     ensure!(
         !state.notes.iter().any(|note| note.id == id),
@@ -204,7 +187,6 @@ pub(crate) fn edit(
     now: i64,
     offline: bool,
 ) -> Result<Option<Write>> {
-    validate_content(&content)?;
     let index = state
         .notes
         .iter()
@@ -466,7 +448,6 @@ pub(crate) fn recover(
     intent.state.validate()?;
     let mut conflict = false;
     for write in &intent.writes {
-        validate_content(&write.content)?;
         let index = intent
             .state
             .notes

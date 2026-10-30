@@ -170,8 +170,7 @@ impl State {
                 "版本关联无效"
             );
             ensure!(
-                v.content.len() <= 10 * 1024 * 1024
-                    && v.hash == format!("{:x}", Sha256::digest(v.content.as_bytes())),
+                v.hash == format!("{:x}", Sha256::digest(v.content.as_bytes())),
                 "笔记版本内容或哈希损坏"
             );
         }

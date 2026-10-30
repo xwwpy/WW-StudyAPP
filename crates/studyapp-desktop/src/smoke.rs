@@ -256,7 +256,6 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 let version = view.read(cx).snapshot.as_ref().unwrap().versions[0].id.clone();
                 window.click(SharedString::from(format!("associate-version-{version}")), cx);
                 capture(window, database.with_file_name("learning-editor.png")).unwrap();
-                window.click("summary-preview", cx);
                 window.render_frame(cx);
                 assert!(view.read(cx).summary_editor.read(cx).is_preview());
                 assert!(window.try_find("summary-markdown-preview").is_some());
@@ -276,7 +275,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 let session_id = session.id.clone();
                 view.update(cx, |app, cx| app.open_editor(crate::app::EditorMode::Edit(session_id), window, cx));
                 assert_eq!(view.read(cx).summary.read(cx).value().as_str(), source);
-                assert!(!view.read(cx).summary_editor.read(cx).is_preview());
+                assert!(view.read(cx).summary_editor.read(cx).is_preview());
                 window.click("cancel-editor", cx);
             }).expect("saved learning snapshot association");
 

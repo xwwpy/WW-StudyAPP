@@ -16,7 +16,6 @@ pub enum Pane {
 
 pub struct EffectiveLayout {
     pub navigation: Pixels,
-    pub folders: Pixels,
     pub notes: Pixels,
 }
 
@@ -140,7 +139,6 @@ pub fn fit_layout(preferred: &LayoutSettings, viewport: f32) -> EffectiveLayout 
     };
     EffectiveLayout {
         navigation: px(navigation),
-        folders: px(0.),
         notes: px(notes),
     }
 }
@@ -423,7 +421,6 @@ mod tests {
         let preferred = LayoutSettings::default();
         let actual = fit_layout(&preferred, 1280.);
         assert_eq!(actual.navigation, px(160.));
-        assert_eq!(actual.folders, px(0.));
         assert_eq!(actual.notes, px(280.));
         for navigation_visible in [false, true] {
             for folders_visible in [false, true] {
@@ -443,7 +440,6 @@ mod tests {
                             <= (width - WORKSPACE_PADDING - handles * HANDLE_WIDTH - DOCUMENT_MIN)
                                 .max(0.)
                     );
-                    assert_eq!(layout.folders, px(0.));
                     if !folders_visible {
                         assert_eq!(layout.notes, px(0.));
                     }

@@ -1204,6 +1204,108 @@ pub async fn exercise(
         })
         .unwrap();
     let note = create_note(window, view, "工作区拖动预览回归", None, cx).await;
+    let history_snapshot = window
+        .update(cx, |_, _, cx| view.read(cx).snapshot.clone().unwrap())
+        .unwrap();
+    let baseline = history_snapshot
+        .versions
+        .iter()
+        .find(|v| v.note_id == note.id)
+        .expect("new note baseline snapshot")
+        .clone();
+    let history_models = window
+        .update(cx, |_, _, cx| view.read(cx).read_models.clone())
+        .unwrap();
+    let mut history_fixture = history_snapshot.as_ref().clone();
+    history_fixture.versions = std::sync::Arc::new(
+        (0..80)
+            .map(|index| {
+                let mut version = baseline.clone();
+                version.id = format!("history-geometry-{index:03}");
+                version.captured_at += index * 60;
+                version
+            })
+            .collect(),
+    );
+    let fixture_models = studyapp_desktop::read_models::ReadModelCache::default().refresh(
+        &history_fixture,
+        &chrono::Local,
+        chrono::Local::now().timestamp(),
+    );
+    let history_fixture = std::sync::Arc::new(history_fixture);
+    // Exercise both reader widths: history dates always form a vertical rail.
+    for width in [1440., 1024.] {
+        window
+            .update(cx, |_, window, cx| {
+                crate::smoke_library::resize(window, size(px(width), px(1000.)));
+                view.update(cx, |app, cx| {
+                    app.selected_note = Some(note.id.clone());
+                    app.history = true;
+                    app.snapshot = Some(history_fixture.clone());
+                    app.read_models = fixture_models.clone();
+                    app.selected_version = Some("history-geometry-079".into());
+                    app.history_versions_scroll
+                        .set_offset(point(px(0.), px(0.)));
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                let rail = window.find("history-versions-scroll").bounds();
+                assert_eq!(rail.size.width, px(196.));
+                assert!(
+                    rail.size.height > px(42.),
+                    "history collapsed into a horizontal strip"
+                );
+                assert!(rail.bottom() <= window.viewport_size().height);
+                let id = "history-geometry-079".to_string();
+                let item = window
+                    .find(SharedString::from(format!("version-{id}")))
+                    .bounds();
+                assert!(
+                    item.right() <= rail.right() - px(16.),
+                    "date overlaps scrollbar gutter"
+                );
+                window.click(SharedString::from(format!("version-{id}")), cx);
+                assert_eq!(view.read(cx).selected_version.as_deref(), Some(id.as_str()));
+                let scroll = view.read(cx).history_versions_scroll.clone();
+                scroll.set_offset(point(px(0.), px(-100000.)));
+                window.render_frame(cx);
+                assert_eq!(
+                    scroll.offset().x,
+                    px(0.),
+                    "history acquired horizontal scrolling"
+                );
+                assert!(
+                    scroll.offset().y < px(0.),
+                    "long history cannot scroll vertically"
+                );
+                let oldest = window
+                    .find(SharedString::from("version-history-geometry-000"))
+                    .bounds();
+                assert!(
+                    oldest.top() >= rail.top() && oldest.bottom() <= rail.bottom(),
+                    "bottom scroll must reveal the oldest snapshot inside the viewport"
+                );
+                assert!(oldest.right() <= rail.right() - px(16.));
+                window.click(SharedString::from("version-history-geometry-000"), cx);
+                assert_eq!(
+                    view.read(cx).selected_version.as_deref(),
+                    Some("history-geometry-000")
+                );
+                view.update(cx, |app, cx| {
+                    app.history = false;
+                    app.snapshot = Some(history_snapshot.clone());
+                    app.read_models = history_models.clone();
+                    app.selected_version = None;
+                    cx.notify();
+                });
+            })
+            .unwrap();
+    }
+    window
+        .update(cx, |_, window, _| {
+            crate::smoke_library::resize(window, size(px(workspace_width), px(1000.)));
+        })
+        .unwrap();
     let original = std::fs::read(&note.path).unwrap();
     let editor = window
         .update(cx, |_, window, cx| {

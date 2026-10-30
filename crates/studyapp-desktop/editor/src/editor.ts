@@ -1,3 +1,4 @@
+import { installOutline, outlineUpdates, refreshOutline } from "./outline";
 import { applyEditorTheme } from "./theme";
 import { ChangeSet, Compartment, EditorSelection, EditorState, Extension, Text, Transaction } from "@codemirror/state";
 import { drawSelection, EditorView, keymap, placeholder, ViewUpdate } from "@codemirror/view";
@@ -12,7 +13,7 @@ import { syntaxHighlighting } from "@codemirror/language";
 import { codeHighlighting, fencedLanguage } from "./languages";
 import { imageMapChanged, updateImages, renderedMarkdown, rawUrlWrapping } from "./decorations";
 import { formatCommand, indentMarkdown } from "./formatting";
-import { documentBudget, documentLimits, resetDocumentBudget, MAX_DOCUMENT_BYTES, MAX_TRANSACTION_PATCHES, stringBytes } from "./limits";
+import { documentBudget, documentLimits, resetDocumentBudget, MAX_TRANSACTION_PATCHES, stringBytes } from "./limits";
 import { incompleteScalars, scalarText, splitsScalar } from "./unicode";
 import { eventBinding, resolveBindings, typingKeymap } from "./shortcuts";
 import { scanDocumentStatistics } from "./statistics";
@@ -299,7 +300,7 @@ function setShortcuts(values: Record<string, string>): void {
 }
 function extensions(readonly: boolean, rawText = ""): Extension[] {
   return [
-    readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : renderedMarkdown),
+    outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : renderedMarkdown),
     themeMode.of(EditorView.theme({})), rawUrlWrapping,
     documentLimits(rawText, warning, clearWarning),
     markdown({ base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
@@ -398,7 +399,6 @@ function load(value: Load): void {
   if (!Number.isSafeInteger(value?.generation) || value.generation < 0 || typeof value.text !== "string") {
     error("笔记载入参数无效"); return;
   }
-  if (stringBytes(value.text) > MAX_DOCUMENT_BYTES) { error("笔记超过 10 MiB，当前内容已保留。"); return; }
   loaded = false;
   updateImages({});
   unpublished = undefined;
@@ -411,6 +411,7 @@ function load(value: Load): void {
   status.classList.remove("error", "warning");
   // CM's Text uses LF internally. Only host canonical text owns raw CRLF/mixed EOL.
   view.setState(EditorState.create({ doc: value.text.replace(/\r\n?/g, "\n"), extensions: extensions(Boolean(value.readonly), value.text) }));
+  refreshOutline();
   view.scrollDOM.scrollTop = 0;
   loaded = true;
   updateToolbar();
@@ -421,7 +422,7 @@ function rebase(value: Rebase): void {
     if (!loaded || !view.state.readOnly || pendingFlush || unpublished
       || value.previousGeneration !== generation || value.previousRevision !== revision
       || !Number.isSafeInteger(value.generation) || value.generation <= generation
-      || typeof value.text !== "string" || stringBytes(value.text) > MAX_DOCUMENT_BYTES
+      || typeof value.text !== "string"
       || !Array.isArray(value.changes)) throw new Error("保存内容的编辑状态已变化");
     let end = 0;
     for (const change of value.changes) {
@@ -673,3 +674,5 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
 window.studyappEditor = bridge;
 updateToolbar();
 post({ type: "ready" });
+
+installOutline(view);

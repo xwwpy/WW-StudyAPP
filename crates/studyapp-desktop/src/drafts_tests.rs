@@ -257,33 +257,29 @@ fn escaped_large_markdown_and_image_context_survive_restart() {
 }
 
 #[test]
-fn oversized_record_is_reported_without_changing_valid_disk_content() {
+fn large_record_roundtrips_escaped_content_without_a_byte_ceiling() {
     let dir = tempfile::tempdir().unwrap().keep();
     let library = library(&dir);
-    let mut record = DraftRecord::new(draft("original"), 1);
+    // JSON escaping crosses the former 64 MiB record ceiling too.
+    let content = "\u{0001}".repeat(11 * 1024 * 1024);
+    let record = DraftRecord::new(draft(&content), 1);
     let store = DraftStore::new();
     store.persist_record(&library, record.clone(), 1);
-    while !matches!(
-        store.receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
-        DraftUpdate::Written { token: Some(1), .. }
-    ) {}
-    let path = DraftStore::record_path(&library, &record.id).unwrap();
-    let original = std::fs::read(&path).unwrap();
-    record.update(draft(&"x".repeat(10 * 1024 * 1024 + 1)), 2);
-    store.persist_record(&library, record, 2);
     loop {
-        if let DraftUpdate::Error {
-            token: Some(2),
-            message,
-            ..
-        } = store.receiver.recv_timeout(Duration::from_secs(5)).unwrap()
+        match store
+            .receiver
+            .recv_timeout(Duration::from_secs(30))
+            .unwrap()
         {
-            assert!(message.contains("10 MiB"));
-            break;
+            DraftUpdate::Written { token: Some(1), .. } => break,
+            DraftUpdate::Error { message, .. } => panic!("{message}"),
+            _ => {}
         }
     }
     drop(store);
-    assert_eq!(std::fs::read(path).unwrap(), original);
+    let (records, errors) = catalog(&DraftStore::new(), &library);
+    assert!(errors.is_empty(), "{errors:?}");
+    assert_eq!(records, vec![record]);
 }
 
 #[test]

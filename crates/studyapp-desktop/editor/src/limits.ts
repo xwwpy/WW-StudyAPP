@@ -1,7 +1,7 @@
 import { EditorState, Extension, Facet, StateEffect, StateField, Text, Transaction } from "@codemirror/state";
 import { incompleteScalars, scalarText, splitsScalar } from "./unicode";
 
-export const MAX_DOCUMENT_BYTES = 10 * 1024 * 1024;
+
 export const MAX_TRANSACTION_PATCHES = 4096;
 const encoder = new TextEncoder();
 interface Budget {
@@ -55,7 +55,7 @@ function estimate(transaction: Transaction): Budget {
     rawBytes += correction;
   }
   let newlineWidths = previous.newlineWidths;
-  if (rawBytes <= MAX_DOCUMENT_BYTES && patches <= MAX_TRANSACTION_PATCHES && newlineChanges.length) {
+  if (patches <= MAX_TRANSACTION_PATCHES && newlineChanges.length) {
     // Ordinary character typing reuses this list. Newline transactions make one
     // copy then splice only changed spans backwards, preserving untouched EOLs.
     newlineWidths = newlineWidths.slice();
@@ -104,14 +104,6 @@ export function documentLimits(rawText: string, rejected: (message: string) => v
     EditorState.transactionFilter.of(transaction => {
       if (!transaction.docChanged || transaction.startState.readOnly) return transaction;
       const { rawBytes, patches } = estimate(transaction);
-      if (rawBytes > MAX_DOCUMENT_BYTES) {
-        rejected("编辑未应用：笔记上限为 10 MiB，请减少粘贴内容。");
-        const rollback = incompleteScalars(transaction.startState.doc);
-        if (rollback.length) {
-          return { changes: rollback, annotations: Transaction.addToHistory.of(false) };
-        }
-        return [];
-      }
       if (patches > MAX_TRANSACTION_PATCHES) {
         rejected("编辑未应用：单次操作最多 4096 处修改，请分段格式化。");
         return [];

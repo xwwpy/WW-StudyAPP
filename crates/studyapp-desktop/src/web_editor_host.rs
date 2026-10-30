@@ -12,11 +12,6 @@ const EDITOR_PAGE: &str = "https://studyapp.editor/index.html";
 #[cfg(not(windows))]
 const EDITOR_PAGE: &str = "studyapp://editor/index.html";
 
-// JSON may expand each raw byte to six bytes (\u0000); allow the full 10 MiB
-// document plus bounded transaction metadata. The document itself is checked
-// separately by the native protocol and by the editor transaction filter.
-const MAX_IPC_BYTES: usize = 64 * 1024 * 1024;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EditorAsset {
     Html,
@@ -40,8 +35,8 @@ fn editor_page_allowed(url: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('#'))
 }
 
-fn ipc_allowed(url: &str, bytes: usize) -> bool {
-    editor_page_allowed(url) && bytes <= MAX_IPC_BYTES
+fn ipc_allowed(url: &str, _bytes: usize) -> bool {
+    editor_page_allowed(url)
 }
 
 #[cfg(windows)]
@@ -719,9 +714,9 @@ mod tests {
     }
 
     #[test]
-    fn oversized_ipc_cannot_enter_the_host_queue() {
-        assert!(ipc_allowed(EDITOR_PAGE, MAX_IPC_BYTES));
-        assert!(!ipc_allowed(EDITOR_PAGE, MAX_IPC_BYTES + 1));
+    fn large_document_ipc_remains_restricted_to_editor_origin() {
+        assert!(ipc_allowed(EDITOR_PAGE, 64 * 1024 * 1024));
+        assert!(ipc_allowed(EDITOR_PAGE, 65 * 1024 * 1024));
         assert!(!ipc_allowed("https://example.com/", 1));
     }
 }

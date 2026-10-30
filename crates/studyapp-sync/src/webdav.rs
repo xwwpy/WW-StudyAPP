@@ -321,14 +321,8 @@ impl Provider for WebDavProvider {
         if response.status().as_u16() != 200 {
             return Err(SyncError::Http(response.status().as_u16()));
         }
-        if response
-            .content_length()
-            .is_some_and(|len| len > MAX_CONTENT_BYTES as u64)
-        {
-            return Err(SyncError::LimitExceeded);
-        }
         let revision = Self::strong_etag(&response);
-        let content = bounded_read(response, MAX_CONTENT_BYTES)?;
+        let content = read_note(response)?;
         validate_content(&content)?;
         let hash = content_hash(&content);
         Ok(Some(RemoteNote {

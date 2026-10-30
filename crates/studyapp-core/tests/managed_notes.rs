@@ -291,16 +291,17 @@ fn synced_changes_are_offline_and_supplied_ids_are_validated() {
 #[test]
 fn bounds_and_managed_relink_are_rejected_without_mutation() {
     let (dir, mut engine) = fixture();
-    for (title, content) in [
-        ("字".repeat(201), String::new()),
-        ("ok".into(), "x".repeat(10 * 1024 * 1024 + 1)),
-    ] {
-        assert!(
-            engine
-                .apply(Command::CreateNote { title, content }, 1001)
-                .is_err()
-        );
-    }
+    assert!(
+        engine
+            .apply(
+                Command::CreateNote {
+                    title: "字".repeat(201),
+                    content: String::new()
+                },
+                1001
+            )
+            .is_err()
+    );
     assert!(engine.snapshot().notes.is_empty());
     let (id, _, path) = create(&mut engine, "original");
     let external = dir.join("external.md");
@@ -317,6 +318,37 @@ fn bounds_and_managed_relink_are_rejected_without_mutation() {
             .is_err()
     );
     assert_eq!(Path::new(&engine.snapshot().notes[0].path), path);
+}
+
+#[test]
+fn large_note_create_save_import_and_restart_preserve_content() {
+    let (dir, mut engine) = fixture();
+    let content = format!("# 大笔记\n{}", "中文内容\n".repeat(900_000));
+    assert!(content.len() > 10 * 1024 * 1024);
+    let (id, hash, path) = create(&mut engine, &content);
+    let updated = format!("{content}\n末尾修改");
+    save(&mut engine, &id, &hash, &updated, 1002).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), updated);
+    let external = dir.join("large-import.md");
+    std::fs::write(&external, &content).unwrap();
+    engine.apply(Command::Import(vec![external]), 1003).unwrap();
+    assert_eq!(engine.snapshot().notes.len(), 2);
+    drop(engine);
+    let reopened = Engine::open(&dir.join("learning.sqlite"), 1010).unwrap();
+    assert!(
+        reopened
+            .snapshot()
+            .versions
+            .iter()
+            .any(|v| v.content.as_str() == updated)
+    );
+    assert!(
+        reopened
+            .snapshot()
+            .versions
+            .iter()
+            .any(|v| v.content.as_str() == content)
+    );
 }
 
 #[test]

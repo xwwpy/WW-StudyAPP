@@ -144,10 +144,7 @@ impl LocalFolderProvider {
         if !metadata.is_file() {
             return Err(SyncError::InvalidPath);
         }
-        if metadata.len() > MAX_CONTENT_BYTES as u64 {
-            return Err(SyncError::LimitExceeded);
-        }
-        let content = bounded_read(File::open(path)?, MAX_CONTENT_BYTES)?;
+        let content = read_note(File::open(path)?)?;
         validate_content(&content)?;
         let hash = content_hash(&content);
         Ok(Some(RemoteNote {
@@ -288,7 +285,7 @@ impl Provider for LocalFolderProvider {
                 options.share_mode(5);
             }
             let original = options.open(&target)?;
-            let actual = bounded_read(&original, MAX_CONTENT_BYTES)?;
+            let actual = read_note(&original)?;
             if Some(content_hash(&actual).as_str()) != expected_revision {
                 return Err(SyncError::Conflict);
             }

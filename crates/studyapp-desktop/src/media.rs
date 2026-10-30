@@ -739,7 +739,6 @@ fn destination_range(text: &str, range: Range<usize>, reference: bool) -> Result
     Ok(range.start + start..range.start + at)
 }
 fn image_uses(text: &str) -> Result<Vec<ImageUse>> {
-    ensure!(text.len() <= 10 * 1024 * 1024, "笔记超过图片解析容量限制");
     let definition_parser = Parser::new_ext(text, Options::all());
     let definitions = definition_parser.reference_definitions();
     let parser = Parser::new_ext(text, Options::all());
@@ -913,18 +912,13 @@ pub fn execute(
             let mut images = BTreeMap::new();
             let mut missing = Vec::new();
             let mut total = 0;
-            for (index, dest) in uses
+            for dest in uses
                 .into_iter()
                 .map(|u| u.destination)
                 .collect::<BTreeSet<_>>()
                 .into_iter()
-                .enumerate()
             {
                 control.remaining()?;
-                if index >= MAX_IMAGE_OPERATIONS {
-                    missing.push(format!("{dest}：本次最多预览 200 张不同图片，引用已保留"));
-                    continue;
-                }
                 let result = (|| -> Result<String> {
                     let load_dest = bindings.get(&dest).unwrap_or(&dest);
                     let cache_key =
@@ -1679,6 +1673,35 @@ mod tests {
         assert!(missing.is_empty());
         assert!(images[&dest].starts_with("data:image/gif;base64,"));
     }
+
+    #[test]
+    fn preview_resolves_more_than_two_hundred_distinct_images() {
+        let database = database();
+        let source = database.parent().unwrap().join("many-images.md");
+        let mut content = String::new();
+        for index in 0..205 {
+            let name = format!("image-{index}.gif");
+            std::fs::write(source.with_file_name(&name), GIF).unwrap();
+            content.push_str(&format!("![图 {index}]({name})\n"));
+        }
+        let MediaOutcome::Resolved { images, missing } = execute(
+            &database,
+            MediaRequest::Resolve {
+                control: Default::default(),
+                generation: 1,
+                request: 1,
+                content,
+                note_path: Some(source),
+                settings: Default::default(),
+            },
+            None,
+        )
+        .unwrap() else {
+            panic!()
+        };
+        assert!(missing.is_empty(), "{missing:?}");
+        assert_eq!(images.len(), 205);
+    }
     #[test]
     fn adoption_copies_percent_encoded_external_image_and_rewrites_only_new_content() {
         let database = database();
@@ -1819,7 +1842,11 @@ mod tests {
                 .len(),
             201
         );
-        assert!(image_uses(&"x".repeat(10 * 1024 * 1024 + 1)).is_err());
+        assert!(
+            image_uses(&"x".repeat(10 * 1024 * 1024 + 1))
+                .unwrap()
+                .is_empty()
+        );
         assert!(asset_key("studyapp-media:../escape.png").is_err());
     }
     #[test]
@@ -2038,7 +2065,7 @@ mod tests {
         assert!(missing.is_empty());
     }
     #[test]
-    fn preview_and_adoption_bound_distinct_work_without_losing_excess_references() {
+    fn preview_resolves_all_images_and_adoption_preserves_excess_references() {
         let database = database();
         let root = database.parent().unwrap();
         let source = root.join("source.md");
@@ -2065,9 +2092,8 @@ mod tests {
         .unwrap() else {
             panic!()
         };
-        assert_eq!(images.len(), 200);
-        assert_eq!(missing.len(), 1);
-        assert!(missing[0].contains("image-200.gif"));
+        assert_eq!(images.len(), 201);
+        assert!(missing.is_empty());
         let MediaOutcome::Adopted {
             content: saved,
             missing,

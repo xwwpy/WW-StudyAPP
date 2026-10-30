@@ -1274,20 +1274,6 @@ test("incomplete native Unicode input never receives a save acknowledgement", as
   await page.close();
 });
 
-test("over-limit native emoji rolls back only its incomplete units and leaves editing usable", async () => {
-  const original = "x".repeat(10 * 1024 * 1024 - 3);
-  const { page } = await setup(original);
-  await action(page, { type: "replace", from: original.length, text: "\uD83E" });
-  await action(page, { type: "replace", from: original.length + 1, text: "\uDDE0" });
-  assert.ok((await state(page)).text === original, "over-limit pair must restore the valid document");
-  assert.equal((await state(page)).rawBytes, original.length);
-  assert.equal((await state(page)).readonly, false);
-  await action(page, { type: "replace", from: 0, to: 1, text: "" });
-  await action(page, { type: "replace", from: original.length - 1, text: "🧠" });
-  await page.evaluate(() => window.studyappEditor.flush({ request: 95 }));
-  assert.equal(await page.evaluate(() => window.messages.find(m => m.type === "flush").normalizedText.endsWith("🧠")), true);
-  await page.close();
-});
 
 test("inline formatting toggles and preserves heading/list prefixes across selected lines", async () => {
   const { page } = await setup("# heading\n\n- item\n\nword");
@@ -1696,22 +1682,33 @@ test("CodeMirror command bindings can be moved or cleared while normal navigatio
   await page.close();
 });
 
-test("oversized UTF-8 paste is rejected atomically and editing remains available", async () => {
-  const { page } = await setup("保留原文");
-  await select(page, 4);
-  await page.evaluate(() => {
-    const clipboard = new DataTransfer();
-    clipboard.setData("text/plain", "😀".repeat(10 * 1024 * 1024 / 4 + 1));
-    document.querySelector(".cm-content").dispatchEvent(new ClipboardEvent("paste", { clipboardData: clipboard, bubbles: true, cancelable: true }));
-  });
-  assert.ok((await state(page)).text === "保留原文", "oversized paste must preserve the original document");
-  assert.equal((await state(page)).revision, 0);
-  assert.equal((await state(page)).readonly, false);
-  assert.match(await page.locator("#editor-status").innerText(), /10 MiB/);
-  assert.equal(await page.evaluate(() => window.messages.filter(m => m.type === "change" || m.type === "error").length), 0);
-  await page.keyboard.insertText("！");
-  assert.equal((await state(page)).text, "保留原文！");
-  await page.close();
+test("large multiline UTF-8 documents load and edit beyond 10 MiB", async () => {
+ const text = "中文😀\n".repeat(1000000);
+ const {page}=await setup(text);
+ assert.equal((await state(page)).text,text);
+ await action(page,{type:"replace",from:0,text:"新增\n"});
+ assert.equal((await state(page)).text,"新增\n"+text);
+ await page.close();
+});
+
+test("outline parses headings and navigates duplicate Unicode headings", async () => {
+ const text="# 中文\n\n```md\n# hidden\n```\n\n中文\n---\n\n# 中文";
+ const {page}=await setup(text);
+ await page.locator("#outline-toggle").click();
+ assert.equal(await page.locator("#note-outline button").count(),3);
+ await page.locator("#note-outline button").last().click();
+ assert.equal((await state(page)).selection.anchor,text.lastIndexOf("# 中文"));
+ await page.evaluate(() => window.studyappEditor.load({generation:42,text:"# 新笔记",readonly:false}));
+ await page.waitForTimeout(400);
+ assert.equal(await page.locator("#note-outline button").count(),1);
+ await action(page,{type:"replace",from:0,text:"## 新标题\n\n"});
+ await page.waitForTimeout(400);
+ assert.equal(await page.locator("#note-outline button").count(),2);
+
+ await page.locator("#outline-toggle").click();
+ assert.equal(await page.locator("#note-outline").isVisible(),false);
+ assert.equal((await state(page)).text,"## 新标题\n\n# 新笔记");
+ await page.close();
 });
 
 test("a formatting transaction over 4096 patches is refused without losing the document", async () => {
@@ -1743,7 +1740,7 @@ test("raw-byte budget preserves mixed EOL widths and counts preferred inserted C
   await page.close();
 });
 
-test("a valid 10 MiB CRLF note can shrink and edit without exceeding its raw byte budget", async () => {
+test("a CRLF note can grow beyond 10 MiB while preserving exact EOL byte accounting", async () => {
   const { page } = await setup("");
   const report = await page.evaluate(async () => {
     const limit = 10 * 1024 * 1024;
@@ -1758,7 +1755,7 @@ test("a valid 10 MiB CRLF note can shrink and edit without exceeding its raw byt
       afterBytes: after.rawBytes, afterRevision: after.revision, readonly: after.readonly };
   });
   assert.deepEqual(report, { beforeBytes: 10 * 1024 * 1024, beforeNormalized: 10 * 1024 * 1024 - 1,
-    rejectedRevision: 0, afterBytes: 10 * 1024 * 1024, afterRevision: 2, readonly: false });
+    rejectedRevision: 1, afterBytes: 10 * 1024 * 1024 + 2, afterRevision: 3, readonly: false });
   await page.close();
 });
 
@@ -1856,4 +1853,23 @@ test("raw image destinations fill the reading column while prose keeps its polic
   await writeFile(new URL("../test-results/reading-geometry.json", import.meta.url),JSON.stringify(measurements,null,2));
   assert.deepEqual(externalRequests, []);
   await page.close();
+});
+
+
+test("outline invalidates stale entries immediately and remains usable in readonly notes", async () => {
+ const {page,errors}=await setup("# First\n\n"+"body\n".repeat(40)+"# Last");
+ await page.locator("#outline-toggle").click();
+ const result=await page.evaluate(async()=>{
+   const old=document.querySelector("#note-outline button:last-child");
+   await window.studyappEditor.load({generation:43,text:"# 短",readonly:true});
+   const disabled=old.disabled;
+   old.click();
+   return {disabled,toggleDisabled:document.querySelector("#outline-toggle").disabled};
+ });
+ assert.deepEqual(result,{disabled:true,toggleDisabled:false});
+ await page.waitForTimeout(400);
+ await page.locator("#note-outline button").click();
+ assert.equal((await state(page)).selection.anchor,0);
+ assert.deepEqual(errors,[]);
+ await page.close();
 });

@@ -7,7 +7,6 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-pub(crate) const MAX_BYTES: u64 = 10 * 1024 * 1024;
 pub(crate) fn read(path: &Path) -> Result<String> {
     ensure!(
         path.extension()
@@ -15,11 +14,10 @@ pub(crate) fn read(path: &Path) -> Result<String> {
             .is_some_and(|s| s.eq_ignore_ascii_case("md") || s.eq_ignore_ascii_case("markdown")),
         "仅支持 .md 或 .markdown 文件"
     );
-    let file = std::fs::File::open(path).with_context(|| format!("无法读取 {}", path.display()))?;
-    ensure!(file.metadata()?.len() <= MAX_BYTES, "笔记超过 10 MiB 限制");
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("无法读取 {}", path.display()))?;
     let mut bytes = vec![];
-    file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= MAX_BYTES, "笔记超过 10 MiB 限制");
+    file.read_to_end(&mut bytes)?;
     let text = String::from_utf8(bytes).context("笔记不是有效的 UTF-8 文本")?;
     Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).into())
 }

@@ -226,9 +226,6 @@ fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 fn validate_content(content: &str) -> Result<()> {
-    if content.len() > MAX_CONTENT_BYTES {
-        return Err(SyncError::LimitExceeded);
-    }
     if content.contains('\0') {
         return Err(SyncError::InvalidContent);
     }
@@ -245,3 +242,9 @@ fn bounded_read(reader: impl Read, limit: usize) -> Result<String> {
 
 #[cfg(test)]
 mod tests;
+
+fn read_note(mut reader: impl Read) -> Result<String> {
+    let mut bytes = Vec::new();
+    reader.read_to_end(&mut bytes)?;
+    String::from_utf8(bytes).map_err(|_| SyncError::InvalidContent)
+}

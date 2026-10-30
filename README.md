@@ -2,8 +2,8 @@
 
 本地优先的学习笔记应用，支持 Windows、Linux 和 macOS。
 
-- Markdown 笔记编辑、文件夹管理、搜索与自动保存。
-- 学习记录、定时提醒、间隔复习与学习统计。
+- Markdown 笔记编辑、可隐藏目录、标题跳转、文件夹管理、搜索与自动保存。
+- 学习记录与摘要实时预览、定时提醒、间隔复习与学习统计。
 - 图片管理、备份恢复，以及 WebDAV、本地文件夹和 NAS 同步。
 - 主题与快捷键设置；应用内显示 Markdown 更新日志并提示新版本。
 
@@ -14,8 +14,8 @@
 支持 Ubuntu 24.04 及兼容系统的 x86_64 桌面，需要 X11 或 XWayland，以及可用的 Vulkan 驱动。下载 `.deb` 和同名 `.sha256` 文件，在下载目录运行：
 
 ```bash
-sha256sum --check WW-StudyApp-0.1.3-linux-x86_64.deb.sha256
-sudo apt install ./WW-StudyApp-0.1.3-linux-x86_64.deb
+sha256sum --check WW-StudyApp-0.2.0-linux-x86_64.deb.sha256
+sudo apt install ./WW-StudyApp-0.2.0-linux-x86_64.deb
 studyapp
 ```
 
@@ -28,8 +28,8 @@ studyapp
 也可在下载目录使用命令安装（以下为 Apple 芯片版本）：
 
 ```bash
-shasum -a 256 --check WW-StudyApp-0.1.3-macos-arm64.dmg.sha256
-hdiutil attach WW-StudyApp-0.1.3-macos-arm64.dmg
+shasum -a 256 --check WW-StudyApp-0.2.0-macos-arm64.dmg.sha256
+hdiutil attach WW-StudyApp-0.2.0-macos-arm64.dmg
 sudo ditto /Volumes/WW-StudyApp/WW-StudyApp.app /Applications/WW-StudyApp.app
 hdiutil detach /Volumes/WW-StudyApp
 open /Applications/WW-StudyApp.app
@@ -41,6 +41,6 @@ open /Applications/WW-StudyApp.app
 
 启动时自动检查一次，运行期间每小时检查。发现新版本后会显示更新卡片，点击“立即更新”下载并验证安装包，保存当前草稿后安装并重新打开应用；需要权限时请完成系统授权。点击“稍后再说”后，同一版本在本次运行中不再主动弹出，也可以从设置中手动检查。
 
-Windows 需要使用安装版，Linux 需要通过 deb 安装；macOS 请先将应用安装到本机文件夹并退出磁盘映像中的副本。macOS 首次打开可能需要按系统提示正常确认；应用内更新经过发布签名验证和系统启动检查。若系统阻止新版本，当前应用会保持打开，请退出后手动安装新版。从 0.1.2 升级的 Linux/macOS 用户需先手动安装 0.1.3，此后的版本可使用应用内更新。
+Windows 需要使用安装版，Linux 需要通过 deb 安装；macOS 请先将应用安装到本机文件夹并退出磁盘映像中的副本。macOS 首次打开可能需要按系统提示正常确认；应用内更新经过发布签名验证和系统启动检查。若系统阻止新版本，当前应用会保持打开，请退出后手动安装新版。从 0.1.2 升级的 Linux/macOS 用户需先手动安装 0.2.0，此后的版本可使用应用内更新。
 
 macOS 如提示当前目录不支持自动更新，请将应用放入本人可写的 `~/Applications`，或退出应用后手动替换为新版本。

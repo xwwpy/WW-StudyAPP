@@ -89,8 +89,6 @@ impl DraftRecord {
     }
 }
 
-const MAX_JSON_BYTES: u64 = 64 * 1024 * 1024;
-
 /// A derived protection set for storage views. Rebuild at draft lifecycle
 /// boundaries, never once per rendered file. Destructive actions still consult
 /// the authoritative records before acting.
@@ -127,11 +125,9 @@ fn ordinary(path: &Path, directory: bool) -> Result<()> {
 }
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     ordinary(path, false)?;
-    let file = std::fs::File::open(path)?;
-    ensure!(file.metadata()?.len() <= MAX_JSON_BYTES, "草稿超过大小限制");
+    let mut file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
-    file.take(MAX_JSON_BYTES + 1).read_to_end(&mut bytes)?;
-    ensure!(bytes.len() as u64 <= MAX_JSON_BYTES, "草稿超过大小限制");
+    file.read_to_end(&mut bytes)?;
     Ok(serde_json::from_slice(&bytes)?)
 }
 fn validate(record: &DraftRecord) -> Result<()> {
@@ -142,10 +138,6 @@ fn validate(record: &DraftRecord) -> Result<()> {
     ensure!(
         uuid::Uuid::parse_str(&record.id).is_ok_and(|id| id.to_string() == record.id),
         "草稿身份无效"
-    );
-    ensure!(
-        record.draft.content.len() <= 10 * 1024 * 1024,
-        "Markdown 超过 10 MiB"
     );
     ensure!(record.media_bindings.len() <= 200, "草稿图片绑定过多");
     Ok(())
@@ -178,7 +170,6 @@ fn write_record(library: &str, record: &DraftRecord) -> Result<()> {
         Err(error) => return Err(error.into()),
     }
     let bytes = serde_json::to_vec(record)?;
-    ensure!(bytes.len() as u64 <= MAX_JSON_BYTES, "草稿超过大小限制");
     let next = parent.join(format!("{}.{}.next", record.id, uuid::Uuid::new_v4()));
     let mut output = std::fs::OpenOptions::new()
         .create_new(true)
@@ -227,7 +218,6 @@ fn catalog(library: &str) -> (Vec<DraftRecord>, Vec<String>) {
         let migrate = || -> Result<Option<DraftRecord>> {
             ordinary(&legacy_path, false)?;
             let bytes = std::fs::read(&legacy_path)?;
-            ensure!(bytes.len() as u64 <= MAX_JSON_BYTES, "旧草稿超过大小限制");
             let draft: Option<NoteDraft> = serde_json::from_slice(&bytes)?;
             let Some(draft) = draft else {
                 return Ok(None);

@@ -494,25 +494,22 @@ fn backup_with_inconsistent_activity_is_rejected_without_changing_live_state() {
     assert_eq!(engine.snapshot().timer.active_seconds, 0);
 }
 #[test]
-fn invalid_encoding_oversize_and_non_markdown_imports_are_partial_failures() {
+fn large_import_succeeds_while_invalid_encoding_and_extension_fail() {
     let (dir, mut engine) = fixture();
     let invalid = dir.path().join("invalid.md");
     let huge = dir.path().join("huge.md");
     let other = dir.path().join("other.txt");
     let valid = dir.path().join("valid.markdown");
     std::fs::write(&invalid, [0xff, 0xfe]).unwrap();
-    std::fs::File::create(&huge)
-        .unwrap()
-        .set_len(10 * 1024 * 1024 + 1)
-        .unwrap();
+    std::fs::write(&huge, "a".repeat(10 * 1024 * 1024 + 1)).unwrap();
     std::fs::write(&other, "text").unwrap();
     std::fs::write(&valid, "# Valid\n").unwrap();
     let message = engine
         .apply(Command::Import(vec![invalid, huge, other, valid]), 1000)
         .unwrap();
-    assert!(message.contains("失败 3"));
-    assert_eq!(engine.snapshot().notes.len(), 1);
-    assert_eq!(engine.snapshot().versions.len(), 1);
+    assert!(message.contains("失败 2"));
+    assert_eq!(engine.snapshot().notes.len(), 2);
+    assert_eq!(engine.snapshot().versions.len(), 2);
 }
 #[test]
 fn activity_ten_second_tick_splits_boundary_and_settings_take_next_cycle() {

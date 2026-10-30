@@ -148,7 +148,6 @@ impl EditorDocument {
         } else {
             normalized.replace('\n', self.eol)
         };
-        anyhow::ensure!(text.len() <= 10 * 1024 * 1024, "恢复内容超过 10 MiB");
         self.reset(text);
         Ok(())
     }
@@ -194,7 +193,6 @@ impl EditorDocument {
             previous_end = to;
             edits.push((from..to, replacement));
         }
-        anyhow::ensure!(bytes <= 10 * 1024 * 1024, "Markdown 超过 10 MiB 限制");
         // Validate the entire transaction before changing the canonical text.
         // No Markdown parsing or HTML rendering occurs on this hot path.
         for (range, replacement) in edits.into_iter().rev() {
@@ -390,6 +388,19 @@ mod tests {
         assert_eq!(doc.text(), "a\r\nupdated\r\nc\r\n");
         assert!(doc.recover("bad\rinput").is_err());
         assert_eq!(doc.generation(), 3);
+    }
+
+    #[test]
+    fn large_document_can_edit_flush_and_recover_without_byte_ceiling() {
+        let text = format!("# 大笔记\r\n{}", "中文\r\n".repeat(1_400_000));
+        assert!(text.len() > 10 * 1024 * 1024);
+        let mut doc = EditorDocument::new(text);
+        doc.apply(1, 0, 1, &[patch((1, 2), (1, 2), "新")]).unwrap();
+        let normalized = normalize(doc.text());
+        doc.verify_flush(1, 1, &normalized).unwrap();
+        doc.recover(&normalized).unwrap();
+        assert!(doc.text().starts_with("# 新大笔记\r\n"));
+        assert_eq!(doc.generation(), 2);
     }
 
     #[test]
