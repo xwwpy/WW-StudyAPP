@@ -24,7 +24,7 @@ ui-test = [
 ]
 
 [dependencies]
-wry = "=0.57.0"
+wry = "=0.57.1"
 studyapp-ui = { version = "0.2.0", path = "../studyapp-ui" }
 studyapp-core = { version = "0.2.0", path = "../studyapp-core" }
 studyapp-sync = { version = "0.2.0", path = "../studyapp-sync" }
