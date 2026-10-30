@@ -31,8 +31,21 @@ struct MacTransaction {
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| e.to_string())
 }
+#[cfg(feature = "update-acceptance")]
+fn acceptance_phase(stage: &str) {
+    if crate::update_acceptance::active() {
+        eprintln!(
+            "update preparation: {stage} at {:?}",
+            std::time::SystemTime::now()
+        );
+    }
+}
 fn output(program: &str, args: &[&str]) -> Result<String> {
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase(&format!("command start {program}"));
     let out = io(Command::new(program).args(args).env("LC_ALL", "C").output())?;
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase(&format!("command end {program}"));
     if !out.status.success() {
         return Err(format!(
             "{program} failed: {}",
@@ -220,10 +233,16 @@ fn pointer_path() -> Result<PathBuf> {
         .ok_or("No update record location".into())
 }
 pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathBuf> {
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("package reverify start");
     package.reverify()?;
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("package reverify end; installed validation start");
     let executable = io(std::env::current_exe())?;
     let target = bundle(&executable)?;
     validate_bundle(&target, env!("CARGO_PKG_VERSION"))?;
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("installed validation end");
     let parent = target.parent().ok_or("Missing bundle parent")?;
     let probe = parent.join(format!(".studyapp-write-probe-{}", uuid::Uuid::new_v4()));
     let elevated = match OpenOptions::new().write(true).create_new(true).open(&probe) {
@@ -260,14 +279,22 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
         ],
     )?;
     quarantine::propagate(&package.directory.join("package"), &dir.join("package"))?;
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("snapshot verify start");
     let staged = VerifiedPackage::verify(&dir)?;
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("snapshot verify end; readonly mount start");
     if staged.digest != package.digest || staged.version != package.version {
         return Err("Approved package changed".into());
     }
     // Assess the downloaded distribution before the current application closes.
     with_image(&dir, |point| {
         let candidate = point.join(APP);
+        #[cfg(feature = "update-acceptance")]
+        acceptance_phase("mounted source validation start");
         validate_bundle(&candidate, &package.version)?;
+        #[cfg(feature = "update-acceptance")]
+        acceptance_phase("mounted source validation end; approval start");
         launch::approve(package, &candidate)
     })?;
     if quarantine::read(&package.directory.join("package"))?
@@ -551,11 +578,15 @@ fn finish_install_cleanup(dir: &Path, installation: Result<()>, cleanup: Result<
 fn mount(dir: &Path) -> Result<(Mount, PathBuf)> {
     let point = dir.join(format!("mount-{}", uuid::Uuid::new_v4()));
     io(fs::DirBuilder::new().mode(0o700).create(&point))?;
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("hdiutil attach start");
     let out = io(Command::new("/usr/bin/hdiutil")
         .args(["attach", "-readonly", "-nobrowse", "-plist", "-mountpoint"])
         .arg(&point)
         .arg(dir.join("package"))
         .output())?;
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("hdiutil attach end");
     if !out.status.success() {
         return Err("Cannot mount update image readonly".into());
     }

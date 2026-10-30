@@ -193,6 +193,8 @@ fn quarantine_fingerprint(
 }
 
 fn prepare_approval_candidate(package: &VerifiedPackage, source: &Path) -> Result<Request> {
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("approval candidate preparation start");
     let dir = package.directory.join("approval");
     let candidate = dir.join(APP);
     if dir.exists() {
@@ -218,6 +220,8 @@ fn prepare_approval_candidate(package: &VerifiedPackage, source: &Path) -> Resul
         output("/usr/bin/ditto", &[text(source)?, text(&candidate)?])?;
         quarantine::preserve_tree(source, &candidate)?;
         quarantine::propagate(&package.directory.join("package"), &candidate)?;
+        #[cfg(feature = "update-acceptance")]
+        acceptance_phase("approval copy attributes done; binary hash start");
         let req = Request {
             nonce: uuid::Uuid::new_v4().to_string(),
             version: package.version.clone(),
@@ -232,11 +236,17 @@ fn prepare_approval_candidate(package: &VerifiedPackage, source: &Path) -> Resul
             &dir.join("request.json"),
             &serde_json::to_vec(&req).map_err(|e| e.to_string())?,
         )?;
+        #[cfg(feature = "update-acceptance")]
+        acceptance_phase("approval request published");
     }
     safe_dir(&dir, uid()?)?;
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("approval tree integrity start");
     if tree_digest(source)? != tree_digest(&candidate)? {
         return Err("Approval candidate differs from signed package".into());
     }
+    #[cfg(feature = "update-acceptance")]
+    acceptance_phase("approval tree integrity end");
     quarantine::preserve_tree(source, &candidate)?;
     let mut req = request(&dir)?;
     if req.version != package.version || req.sha256 != binary_hash(source)? {

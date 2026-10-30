@@ -12,6 +12,19 @@ spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
+    def test_preparation_processes_only_reads_app_descendants_without_arguments(self):
+        native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
+        native = importlib.util.module_from_spec(native_spec)
+        native_spec.loader.exec_module(native)
+        with patch.object(native.policy,"capture",side_effect=[
+            {"exit_code":0,"stdout":"222\n"}, {"exit_code":1,"stdout":""},
+            {"exit_code":0,"stdout":"111 1 S 00:10 app\n222 111 S 00:01 hdiutil"}]) as captured:
+            result = native.preparation_processes(111)
+            self.assertEqual(result["exit_code"],0)
+            calls = [call.args[0] for call in captured.call_args_list]
+            self.assertEqual(calls[:2], [["/usr/bin/pgrep","-P","111"],["/usr/bin/pgrep","-P","222"]])
+            self.assertEqual(calls[2],["/bin/ps","-o","pid=,ppid=,stat=,etime=,comm=","-p","111,222"])
+
     def test_approval_collection_keeps_metadata_not_bundle_or_unbounded_files(self):
         native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
         native = importlib.util.module_from_spec(native_spec)

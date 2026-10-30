@@ -81,6 +81,27 @@ def collect_approval(root):
         (fixture / "approval-collection-error.json").write_text(json.dumps({"error_type":type(error).__name__}))
 
 
+def preparation_processes(pid):
+    """Read only this app's bounded descendant tree, never command arguments/environment."""
+    pids = {pid}
+    pending = [pid]
+    deadline = time.monotonic() + 3
+    while pending:
+        if time.monotonic() >= deadline:
+            return {"error":"descendant-query-deadline"}
+        children = policy.capture(["/usr/bin/pgrep", "-P", str(pending.pop())], 1)
+        if children["exit_code"] not in (0, 1):
+            return {"error":"descendant-query-failed"}
+        for value in children["stdout"].split():
+            child = int(value)
+            if child > 1 and child not in pids:
+                if len(pids) >= 32:
+                    return {"error":"descendant-limit"}
+                pids.add(child)
+                pending.append(child)
+    return policy.capture(["/bin/ps", "-o", "pid=,ppid=,stat=,etime=,comm=", "-p", ",".join(map(str, sorted(pids)))], 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, required=True)
@@ -154,9 +175,15 @@ def transition(root, packages, source_sha, old_version, target_version, producti
                 downloaded = common.wait_file(fixture / "download-metadata.json", 120, old)
                 expected_probe = (Path(downloaded["path"]).parent / "approval").resolve()
                 deadline = time.monotonic() + 60
+                next_snapshot = time.monotonic()
+                snapshot = 0
                 while True:
                     if old.poll() is not None:
                         raise RuntimeError("Old app exited before system refusal was observed")
+                    if time.monotonic() >= next_snapshot:
+                        (fixture / f"preparation-processes-{snapshot}.json").write_text(json.dumps(preparation_processes(old.pid)))
+                        snapshot += 1
+                        next_snapshot = time.monotonic() + 15
                     try:
                         probe = Path(pointer.read_text())
                         request = json.loads((probe / "request.json").read_text())
