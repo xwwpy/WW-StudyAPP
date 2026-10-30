@@ -276,6 +276,8 @@ pub mod windows;
 #[cfg(any(target_os = "macos", test))]
 #[path = "update_launch_receipt.rs"]
 mod launch_receipt;
+#[path = "update_install_process.rs"]
+mod process_snapshot;
 #[cfg(any(target_os = "macos", test))]
 #[path = "update_install_quarantine.rs"]
 pub(crate) mod quarantine;

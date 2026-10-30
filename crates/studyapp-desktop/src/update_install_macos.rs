@@ -197,13 +197,21 @@ fn protected_bundle(app: &Path) -> Result<()> {
     Ok(())
 }
 fn start_identity(pid: u32) -> Result<u64> {
-    let value = output("/bin/ps", &["-p", &pid.to_string(), "-o", "lstart="])?;
-    let hash = Sha256::digest(value.as_bytes());
-    Ok(u64::from_le_bytes(
-        hash[..8]
-            .try_into()
-            .map_err(|_| "Invalid process identity")?,
-    ))
+    process_snapshot(pid)?
+        .filter(|value| !value.exited)
+        .map(|value| value.identity)
+        .ok_or("Process has exited".into())
+}
+fn process_snapshot(pid: u32) -> Result<Option<super::process_snapshot::Snapshot>> {
+    let out = io(Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "stat=,lstart="])
+        .env("LC_ALL", "C")
+        .output())?;
+    super::process_snapshot::parse(
+        out.status.code(),
+        std::str::from_utf8(&out.stdout).map_err(|_| "Invalid process snapshot encoding")?,
+        std::str::from_utf8(&out.stderr).map_err(|_| "Invalid process query error encoding")?,
+    )
 }
 fn transaction(dir: &Path, owner: u32) -> Result<MacTransaction> {
     safe_dir(dir, owner)?;
@@ -652,7 +660,9 @@ fn install(dir: &Path, tx: &MacTransaction) -> Result<()> {
     {
         return Err("Refusing non-newer package".into());
     }
-    if start_identity(tx.transaction.old_pid).ok() == Some(tx.transaction.old_start) {
+    if process_snapshot(tx.transaction.old_pid)?
+        .is_some_and(|value| value.matches_live(tx.transaction.old_start))
+    {
         return Err("Original application is still running".into());
     }
     with_image_mode(dir, true, |point| {
@@ -1027,6 +1037,38 @@ mod tests {
         let watcher = ExitWatch::register(child.id()).unwrap();
         watcher.wait().unwrap();
         assert!(child.wait().unwrap().success());
+    }
+    #[test]
+    fn update_install_macos_unreaped_exit_does_not_block_installation() {
+        struct Reap(std::process::Child);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut owned = Reap(
+            Command::new("/bin/sh")
+                .args(["-c", "read ignored"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let child = &mut owned.0;
+        let watcher = ExitWatch::register(child.id()).unwrap();
+        let live = process_snapshot(child.id()).unwrap().unwrap();
+        assert!(live.matches_live(live.identity));
+        drop(child.stdin.take());
+        watcher.wait().unwrap();
+        // Keep the child unreaped: lstart still identifies this exited process.
+        let zombie = process_snapshot(child.id()).unwrap().unwrap();
+        let reaped = child.wait();
+        assert_eq!(zombie.identity, live.identity);
+        assert!(zombie.exited);
+        assert!(!zombie.matches_live(live.identity));
+        assert!(reaped.is_ok());
     }
     #[test]
     fn update_install_macos_rejects_source_and_symlink_bundle_locations() {
