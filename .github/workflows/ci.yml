@@ -146,7 +146,7 @@ jobs:
         id: native-build
       - name: Preserve compiled native validation binary
         id: native-artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-validation-binary-${{ github.run_attempt }}
           path: target/debug/studyapp.exe
@@ -181,7 +181,7 @@ jobs:
           ./scripts/smoke-clipboard.ps1 -DataDirectory $clipboardDir
       - name: Preserve native screenshots and result
         if: always() && env.SMOKE_DIR != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-native-smoke-${{ github.run_attempt }}
           path: |
@@ -247,7 +247,7 @@ jobs:
           ./scripts/smoke-note-rename.ps1 -DataDirectory $renameDir
       - name: Preserve new native regression evidence
         if: always() && env.FEATURE_EVIDENCE_DIR != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: windows-feature-native-${{ github.run_attempt }}
           path: |
@@ -268,7 +268,7 @@ jobs:
           ./scripts/smoke-settings.ps1 -DataDirectory $settingsDir -BinaryPath ./target/release/studyapp.exe
       - name: Preserve optimized settings evidence
         if: always() && env.OPTIMIZED_SETTINGS_DIR != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-optimized-settings-${{ github.run_attempt }}
           path: |
@@ -350,7 +350,7 @@ jobs:
           CI_PLAN: ${{ needs.plan.outputs.plan }}
           GH_TOKEN: ${{ github.token }}
         run: python scripts/pipeline.py receipt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: ci-receipt-${{ github.run_attempt }}
@@ -415,7 +415,7 @@ jobs:
       - name: Preserve newly compiled maintenance validation binary
         id: validation-artifact
         if: needs.plan.outputs['maintenance-native'] == 'true' && needs.windows.outputs.native_binary == ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: maintenance-validation-binary-${{ github.run_attempt }}
           path: target/native-validation/studyapp.exe
@@ -445,13 +445,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Exact MSI owner regressions failed' }
       - name: Preserve exact MSI owner regression evidence
         if: needs.plan.outputs.package_run == ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: msi-owner-delta-${{ github.run_attempt }}
           path: ${{ env.MSI_DELTA_DIR }}/msi-owner-delta.json
           if-no-files-found: error
           retention-days: 90
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         id: release-artifact
         with:
           name: windows-release-${{ github.run_attempt }}
@@ -466,7 +466,7 @@ jobs:
       - name: Preserve private installer fixtures
         id: fixture-artifact
         if: needs.plan.outputs['maintenance-native'] == 'true' && steps.production-package.outputs['installer-fixtures'] != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: installer-lifecycle-fixtures-${{ github.run_attempt }}
           path: ${{ steps.production-package.outputs['installer-fixtures'] }}
@@ -474,7 +474,7 @@ jobs:
           retention-days: 14
       - name: Preserve installer compiler diagnostics
         if: always() && steps.production-package.outputs['installer-evidence'] != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: installer-compiler-evidence-${{ github.run_attempt }}
           path: |
@@ -526,7 +526,7 @@ jobs:
           ./scripts/smoke-maintenance.ps1 -Phase All -PackageDirectory dist -Version $version -PreviousPackageDirectory installer-fixtures -UiTestBinaryPath ./target/debug/studyapp.exe -ExecutionEvidenceDirectory (Join-Path $execution 'execution') -OutputDirectory $lifecycle
       - name: Preserve authentic maintenance evidence
         if: always() && env.EXECUTION_DIR != '' && env.LIFECYCLE_DIR != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: windows-maintenance-native-${{ github.run_attempt }}
           path: |
