@@ -78,6 +78,40 @@ impl Engine {
             .snapshot(self.path.to_string_lossy().into_owned())
     }
 
+    /// Permanently remove database snapshots and associations. The caller must
+    /// hold the library lock and separately confirm/remove enumerated owned files.
+    /// A cleanup error can follow a committed removal; it must be surfaced.
+    pub fn purge_managed_note(
+        &mut self,
+        note_id: &str,
+        expected_revision: u64,
+        now: i64,
+    ) -> Result<()> {
+        ensure!(
+            self.deferred_settings_baseline.is_none(),
+            "请先保存当前设置后再永久删除笔记"
+        );
+        let mut next = self.state.clone();
+        crate::purge::transform(&mut next, note_id, expected_revision, now)?;
+        self.conn
+            .execute_batch("PRAGMA secure_delete=ON; PRAGMA synchronous=FULL;")?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        crate::purge::verify(&tx)?;
+        let current = storage::load(&tx)?.context("资料库没有状态")?;
+        ensure!(
+            crate::purge::matches_persisted_state(&current, &self.state)?,
+            "资料库状态已改变，请重新载入后确认删除"
+        );
+        storage::write_state(&tx, &next, 0, true)?;
+        tx.commit()?;
+        // Never resurrect deleted snapshots in memory after a maintenance error.
+        self.state = next;
+        crate::purge::cleanup(&self.conn)
+            .context("笔记记录已删除，但数据库残留清理未完成，请重试数据库清理")
+    }
+
     /// Reset only the legacy configuration mirror. The caller must hold the
     /// library's exclusive lock; this never opens a normal scanning engine.
     pub fn reset_existing_preferences_for_uninstall(database: &Path) -> Result<()> {
