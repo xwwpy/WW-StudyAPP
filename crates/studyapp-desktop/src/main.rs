@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod app_migration;
 mod app_startup;
 mod app_usage;
 mod appearance_preview;
@@ -107,6 +108,31 @@ fn paths() -> anyhow::Result<(PathBuf, Option<PathBuf>, bool)> {
                 .ok_or_else(|| anyhow::anyhow!("--data-dir 后需要目录路径"))
         })
         .transpose()?;
+    #[cfg(feature = "ui-test")]
+    if smoke
+        && explicit.is_none()
+        && let Some(i) = args.iter().position(|a| a == "--smoke-app-dir")
+    {
+        anyhow::ensure!(
+            std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+            "应用位置交互测试仅在 CI 运行"
+        );
+        let directory = PathBuf::from(
+            args.get(i + 1)
+                .ok_or_else(|| anyhow::anyhow!("缺少隔离测试目录"))?,
+        );
+        anyhow::ensure!(
+            directory.is_absolute() && !directory.exists(),
+            "测试目录必须是新的绝对路径"
+        );
+        let paths = app_usage::runtime_paths()?;
+        app_migration::remember_library(&paths.legacy_location(), &directory)?;
+        return Ok((
+            directory.join("studyapp.sqlite3"),
+            Some(paths.legacy_location()),
+            true,
+        ));
+    }
     if smoke && explicit.is_none() {
         anyhow::bail!("--smoke-test 必须配合 --data-dir 指定隔离的测试目录");
     }
@@ -115,7 +141,14 @@ fn paths() -> anyhow::Result<(PathBuf, Option<PathBuf>, bool)> {
         (PathBuf::from(path), None)
     } else {
         let paths = studyapp_desktop::app_paths::AppPaths::current()?;
-        (paths.resolve_library(None)?, Some(paths.legacy_location()))
+        let library = paths.resolve_library(None)?;
+        if paths.configured_library().is_some() {
+            anyhow::ensure!(
+                library.join("studyapp.sqlite3").is_file(),
+                "配置的资料库不可用，请连接原磁盘后重试"
+            );
+        }
+        (library, Some(paths.legacy_location()))
     };
     Ok((directory.join("studyapp.sqlite3"), config, smoke))
 }
@@ -174,6 +207,7 @@ fn run() -> anyhow::Result<()> {
     match studyapp_desktop::maintenance::parse_entry_mode(basename, &arguments)? {
         studyapp_desktop::maintenance::EntryMode::Normal => {}
         studyapp_desktop::maintenance::EntryMode::UninstallInteractive => {
+            app_migration::ensure_no_pending()?;
             if let Some(recovery) = maintenance_execute::discover_recovery(&executable)? {
                 return maintenance_ui::run_recovery(recovery);
             }
@@ -182,6 +216,7 @@ fn run() -> anyhow::Result<()> {
             );
         }
         studyapp_desktop::maintenance::EntryMode::MaintenanceApply(transaction) => {
+            app_migration::ensure_no_pending()?;
             return maintenance_handoff::run_apply(&transaction);
         }
     }
@@ -198,7 +233,13 @@ fn run() -> anyhow::Result<()> {
     if update_acceptance::active() && !database.exists() {
         smoke::prepare(&database)?;
     }
-    let worker = worker::Worker::start(database.clone(), config);
+    let resume = if config.is_some() {
+        app_migration::pending(&app_usage::runtime_paths()?)?
+    } else {
+        None
+    };
+    app_migration::set_startup_pending(resume.is_some());
+    let worker = worker::Worker::start_resuming(database.clone(), config, resume);
     #[cfg(target_os = "linux")]
     let desktop = gpui_kit::platform::linux(WindowingModes::X11);
     #[cfg(not(target_os = "linux"))]

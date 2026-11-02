@@ -45,7 +45,7 @@ def main():
         raise ValueError("Smoke data directory must be new")
     data.parent.mkdir(parents=True, exist_ok=True)
     with data.with_suffix(".stdout.log").open("w") as stdout, data.with_suffix(".stderr.log").open("w") as stderr:
-        subprocess.run([str(args.binary.resolve(strict=True)), "--smoke-test", "--data-dir", str(data)],
+        subprocess.run([str(args.binary.resolve(strict=True)), "--smoke-test", "--smoke-app-dir" if args.interactive else "--data-dir", str(data)],
                        stdout=stdout, stderr=stderr, timeout=480, check=True)
     verify(data, args.interactive)
     print(f"Native startup and WebKit smoke passed: {data}")

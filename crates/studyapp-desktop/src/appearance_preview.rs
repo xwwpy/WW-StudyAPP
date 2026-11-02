@@ -70,6 +70,12 @@ impl AppearancePreview {
         Self::default()
     }
 
+    pub fn suspend_for_migration(&mut self, value: bool, cx: &mut Context<Self>) {
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |editor, cx| editor.suspend_for_migration(value, cx));
+        }
+    }
+
     pub fn configure(
         &mut self,
         theme: ResolvedTheme,

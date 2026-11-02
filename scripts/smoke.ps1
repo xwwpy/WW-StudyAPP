@@ -12,7 +12,7 @@ $data = [IO.Path]::GetFullPath($DataDirectory)
 if (Test-Path -LiteralPath $data) { throw 'Smoke directory must be fresh; no existing fixtures are changed' }
 $stdout = "$data.stdout.log"
 $stderr = "$data.stderr.log"
-$process = Start-Process -FilePath $binary -ArgumentList @('--smoke-test', '--data-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+$process = Start-Process -FilePath $binary -ArgumentList @('--smoke-test', '--smoke-app-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 # Includes real input, all settings categories, independent drafts and save-view
 # preservation. Keep a bounded deadline for the expanded sequential scenario.
 if (-not $process.WaitForExit(480000)) { $process.Kill(); throw 'Native smoke exceeded 480 seconds' }

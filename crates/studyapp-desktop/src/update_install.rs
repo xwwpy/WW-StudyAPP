@@ -224,6 +224,10 @@ pub fn dispatch() -> Option<i32> {
             },
         );
     }
+    if let Err(error) = crate::app_migration::ensure_no_pending() {
+        eprintln!("Update helper: {error:#}");
+        return Some(1);
+    }
     #[cfg(target_os = "linux")]
     let result = if args.len() == 2 {
         let directory = PathBuf::from(&args[1]);

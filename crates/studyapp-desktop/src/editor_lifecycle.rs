@@ -36,6 +36,7 @@ pub enum NoteIntent {
     Discard,
     SwitchLibrary,
     PrepareMigration,
+    PrepareAppMigration,
     DeferredWork,
     Close,
 }
@@ -305,6 +306,7 @@ impl StudyApp {
             NoteIntent::Navigate(page) => self.navigate(page, window, cx),
             NoteIntent::SwitchLibrary
             | NoteIntent::PrepareMigration
+            | NoteIntent::PrepareAppMigration
             | NoteIntent::DeferredWork
             | NoteIntent::Close => self.begin_draft_drain(intent, cx),
             _ => {}
@@ -340,7 +342,8 @@ impl StudyApp {
                 }
             }
             NoteIntent::SwitchLibrary => self.finish_library_transition(window, cx),
-            NoteIntent::PrepareMigration => self.pick_migration(window, cx),
+            NoteIntent::PrepareMigration => self.pick_migration(window, cx, false),
+            NoteIntent::PrepareAppMigration => self.pick_migration(window, cx, true),
             NoteIntent::DeferredWork => {
                 if let Some((library, work)) = self.draft_deferred_work.take() {
                     self.draft_work_ready = true;

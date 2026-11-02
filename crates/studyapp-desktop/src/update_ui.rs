@@ -54,6 +54,7 @@ pub struct UpdatePanel {
     library: String,
     isolated_launch: bool,
     busy: bool,
+    relocating: bool,
     check_policy: UpdateCheckPolicy,
     check_epoch: std::time::Instant,
     release: Option<UpdateRelease>,
@@ -112,6 +113,19 @@ impl UpdatePanel {
             .map(|manifest| manifest.notes.as_str())
             .or_else(|| self.release.as_ref().map(|release| release.notes.as_str()))
     }
+    pub(crate) fn relocation_blocked(&self) -> bool {
+        self.busy
+            || self.repair_needed
+            || self.prepared.is_some()
+            || self.nsis_setup.is_some()
+            || self.install_prepared.is_some()
+    }
+    pub(crate) fn set_relocating(&mut self, value: bool) {
+        self.relocating = value;
+    }
+    pub(crate) fn is_relocating(&self) -> bool {
+        self.relocating
+    }
     pub(crate) fn cancel_install_preparation(&mut self) {
         self.install_preparation.invalidate();
         self.install_prepared = None;
@@ -126,7 +140,7 @@ impl UpdatePanel {
             .map(|(_, prepared)| prepared)
     }
     fn prepare_install(&mut self, data: Option<PathBuf>, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.relocating || self.busy {
             return;
         }
         let Some(package) = self.nsis_setup.clone() else {
@@ -172,6 +186,7 @@ impl UpdatePanel {
         Self {
             library: String::new(),
             busy: false,
+            relocating: false,
             check_policy: UpdateCheckPolicy::default(),
             check_epoch: std::time::Instant::now(),
             release: None,
@@ -283,7 +298,7 @@ impl UpdatePanel {
     }
 
     pub fn install_from_dialog(&mut self, cx: &mut Context<Self>) {
-        if self.busy {
+        if self.relocating || self.busy {
             return;
         }
         if self.nsis.is_some() {
@@ -693,6 +708,9 @@ impl UpdatePanel {
         self.check(CheckOrigin::Manual, cx);
     }
     fn checks_allowed(&self) -> bool {
+        if self.relocating || crate::app_migration::startup_pending() {
+            return false;
+        }
         #[cfg(feature = "update-acceptance")]
         if crate::update_acceptance::active() {
             return crate::update_acceptance::checks_allowed();
@@ -980,6 +998,7 @@ mod tests {
             library: String::new(),
             isolated_launch: true,
             busy: true,
+            relocating: false,
             release: None,
             prepared: None,
             status: "已准备的更新状态".into(),

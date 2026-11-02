@@ -14,6 +14,7 @@ pub mod settings_color;
 pub mod settings_color_value;
 pub mod settings_components;
 pub mod theme;
+pub mod transfer_progress;
 pub mod update_available;
 pub mod update_dialog;
 pub mod virtual_list_scrollbar;
