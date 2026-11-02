@@ -10,7 +10,7 @@ mod planner;
 mod webdav;
 pub use local::LocalFolderProvider;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub use local::unix_removal::claim_unlink;
+pub use local::unix_removal::{claim_unlink, recover_removal_dir};
 pub use object_store::{ObjectAddressing, ObjectStoreConfig, ObjectStoreProvider};
 pub use planner::plan_sync;
 pub use webdav::WebDavProvider;
@@ -41,10 +41,9 @@ pub enum SyncError {
 impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::RemovalRecovery(path) => write!(
-                f,
-                "未删除发生变化的文件；已保留在 {path}，原路径被占用，请手动恢复"
-            ),
+            Self::RemovalRecovery(path) => {
+                write!(f, "领取的文件尚未清理，已保存在 {path}；请核对原位置后重试")
+            }
             Self::UnsupportedRemoval(reason) => write!(f, "无法永久删除此目标：{reason}"),
             Self::MissingRevision => write!(f, "WebDAV 未提供强 ETag，已拒绝覆盖现有笔记"),
             Self::Conflict => write!(f, "远端内容已更改，请重新同步；未覆盖未知版本"),

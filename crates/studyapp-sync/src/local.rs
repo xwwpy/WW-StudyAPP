@@ -133,6 +133,11 @@ impl LocalFolderProvider {
             .open(lock_path)?;
         lock.try_lock().map_err(|_| SyncError::LockBusy)?;
         self.ensure_dirs()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            unix_removal::recover_provider_dir(self, &notes, false)?;
+            unix_removal::recover_provider_dir(self, &notes.join(".retained"), false)?;
+        }
         Ok((notes, lock))
     }
 
@@ -497,6 +502,12 @@ impl Provider for LocalFolderProvider {
     fn read_asset(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let (_notes, _lock) = self.locked_dir()?;
         let path = self.asset_path(key, false)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        unix_removal::recover_provider_dir(
+            self,
+            path.parent().ok_or(SyncError::InvalidPath)?,
+            !path.try_exists()?,
+        )?;
         let Some(metadata) = checked_metadata(&path)? else {
             return Ok(None);
         };
@@ -514,6 +525,12 @@ impl Provider for LocalFolderProvider {
         }
         let (notes, _lock) = self.locked_dir()?;
         let target = self.asset_path(key, true)?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        unix_removal::recover_provider_dir(
+            self,
+            target.parent().ok_or(SyncError::InvalidPath)?,
+            !target.try_exists()?,
+        )?;
         if checked_metadata(&target)?.is_some() {
             return Err(SyncError::Conflict);
         }
@@ -538,6 +555,8 @@ impl Provider for LocalFolderProvider {
     }
     fn list(&self) -> Result<Vec<String>> {
         let (notes, _lock) = self.locked_dir()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        unix_removal::recover_provider_dir(self, &notes, true)?;
         let mut ids = Vec::new();
         let mut scanned = 0usize;
         for entry in fs::read_dir(notes)? {
@@ -563,6 +582,11 @@ impl Provider for LocalFolderProvider {
     fn read(&self, id: &str) -> Result<Option<RemoteNote>> {
         validate_id(id)?;
         let (notes, _lock) = self.locked_dir()?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if !notes.join(format!("{id}.md")).try_exists()? {
+            unix_removal::recover_provider_dir(self, &notes, true)?;
+            unix_removal::recover_provider_dir(self, &notes.join(".retained"), true)?;
+        }
         Self::read_at(&notes, id)
     }
     fn write(

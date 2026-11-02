@@ -381,6 +381,33 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
     let path = owned_path(s, note)?;
     let dir = root(s)?;
     let prior = prior_inventory(dir, id)?;
+    let image_root = s
+        .settings
+        .images
+        .root
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dir.join("images"));
+    let approved = [
+        dir.canonicalize()?,
+        image_root
+            .canonicalize()
+            .unwrap_or_else(|_| image_root.clone()),
+    ];
+    // A crash can hide an approved note, draft, index, or retained writer link.
+    // Restore matching claims before recomputing references or file ownership.
+    let mut recovered = BTreeSet::new();
+    for p in prior.files.keys() {
+        if !p
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+            && approved.iter().any(|root| p.starts_with(root))
+            && let Some(parent) = p.parent()
+            && recovered.insert(parent.to_owned())
+        {
+            crate::app_migration::recover_removal_parent(parent)?;
+        }
+    }
     let mut plan = Plan {
         library: s.data_path.clone(),
         note_id: id.into(),
@@ -486,13 +513,6 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
         }
     }
 
-    let image_root = s
-        .settings
-        .images
-        .root
-        .as_ref()
-        .map(PathBuf::from)
-        .unwrap_or(dir.join("images"));
     let index = dir.join("image-index");
     let mut assets: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     if index.try_exists()? {
@@ -518,10 +538,25 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
                     if groups.contains(key.split('/').nth(1).unwrap_or(""))
                         || refs.mine.contains(&key)
                     {
-                        assets
-                            .entry(key)
-                            .or_default()
-                            .extend(paths.into_iter().chain(std::iter::once(p.to_owned())));
+                        let allowed = assets.entry(key).or_default();
+                        for candidate in paths {
+                            // A legacy library copy can still point to the image
+                            // in its retained source. A matching hidden link in
+                            // that library proves its ownership, not ours.
+                            let current = image_root.join(&tail);
+                            if candidate != current
+                                && !candidate
+                                    .canonicalize()
+                                    .ok()
+                                    .zip(current.canonicalize().ok())
+                                    .is_some_and(|(a, b)| a == b)
+                            {
+                                plan.unresolved.insert(candidate);
+                            } else {
+                                allowed.push(candidate);
+                            }
+                        }
+                        allowed.push(p.to_owned());
                     }
                 }
                 Ok(())
@@ -597,6 +632,24 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
                     .is_ok_and(|r| canonical.starts_with(r))
                     && !index.canonicalize().is_ok_and(|r| canonical.starts_with(r))
                 {
+                    let asset_base = parent.parent().context("图片目录无效")?;
+                    let current_library = dir.canonicalize()?;
+                    let mut retained_library = false;
+                    for ancestor in asset_base.canonicalize()?.ancestors() {
+                        if ancestor == current_library {
+                            break;
+                        }
+                        if ancestor.join("studyapp.sqlite3").try_exists()?
+                            || ancestor.join("image-index").try_exists()?
+                        {
+                            retained_library = true;
+                            break;
+                        }
+                    }
+                    if retained_library {
+                        plan.unresolved.insert(p);
+                        continue;
+                    }
                     let id = stamp(&p)?.identity;
                     let mut verified = false;
                     for alias in entries(parent)? {
@@ -762,6 +815,8 @@ pub fn execute(engine: &mut Engine, plan: &Plan, now: i64) -> Result<()> {
         out.write_all(b"1\n")?;
         out.sync_all()?;
     }
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
     for (p, s) in &plan.backups {
         let _parent = guard_directories(p.parent().context("备份目录无效")?, false)?;
         let _lease = crate::maintenance_runtime::no_delete_file_handle(p)?;
@@ -804,6 +859,42 @@ pub fn execute(engine: &mut Engine, plan: &Plan, now: i64) -> Result<()> {
 mod tests {
     use super::*;
     use studyapp_core::Command;
+    #[cfg(unix)]
+    #[test]
+    fn fresh_purge_restores_and_removes_previously_claimed_note() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut engine = Engine::open(&root.join("studyapp.sqlite3"), 10).unwrap();
+        engine
+            .apply(
+                Command::CreateNoteWithId {
+                    note_id: id.clone(),
+                    title: "original".into(),
+                    content: "bytes".into(),
+                    folder_id: None,
+                },
+                11,
+            )
+            .unwrap();
+        let plan = prepare(&engine.snapshot(), &id).unwrap();
+        let markers = root.join(".purged-notes");
+        fs::create_dir_all(&markers).unwrap();
+        let inventory = Inventory {
+            files: plan.files.clone(),
+            backups: plan.backups.clone(),
+        };
+        fs::write(
+            markers.join(format!("scope-{id}-{}.json", uuid::Uuid::new_v4())),
+            serde_json::to_vec(&inventory).unwrap(),
+        )
+        .unwrap();
+        let note = root.join("notes").join(format!("{id}.md"));
+        let claim = crate::app_migration::simulate_interrupted_claim(&note);
+        let retried = prepare(&engine.snapshot(), &id).unwrap();
+        assert!(note.exists() && !claim.exists());
+        execute(&mut engine, &retried, 12).unwrap();
+        assert!(!note.exists() && !claim.exists());
+    }
     #[test]
     fn live_external_markdown_invalidates_preview_and_protects_an_image_alias() {
         let dir = tempfile::tempdir().unwrap().keep();

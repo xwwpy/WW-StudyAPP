@@ -91,12 +91,48 @@ fn parent(provider: &LocalFolderProvider, path: &Path) -> Result<File> {
     }
     Ok(dir)
 }
+// Ordinary reads check the single recovery slot in constant time. Missing
+// entries also check for legacy claims that predate durable receipts.
+pub(super) fn recover_provider_dir(
+    provider: &LocalFolderProvider,
+    folder: &Path,
+    legacy: bool,
+) -> Result<()> {
+    if !folder.try_exists()? {
+        return Ok(());
+    }
+    let needs_slot = folder.join(SLOT).try_exists()?;
+    if !needs_slot
+        && (!legacy
+            || !fs::read_dir(folder)?.any(|e| {
+                e.map_or(true, |e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with(".studyapp-removal-")
+                })
+            }))
+    {
+        return Ok(());
+    }
+    let dir = parent(provider, &folder.join("sentinel"))?;
+    if legacy {
+        recover_removal_dir(&dir, folder)
+    } else {
+        recover_slot(&dir, folder)
+    }
+}
 fn inspect_locked(
     provider: &LocalFolderProvider,
     target: &str,
     asset: bool,
 ) -> Result<RemoteRemoval> {
     let path = provider.removal_path(target, asset)?;
+    recover_provider_dir(provider, path.parent().ok_or(SyncError::InvalidPath)?, true)?;
+    recover_provider_dir(
+        provider,
+        &provider.root.join("StudyApp/notes/.retained"),
+        true,
+    )?;
     let dir = parent(provider, &path)?;
     let file = open_at(&dir, path.file_name().ok_or(SyncError::InvalidPath)?, false)?;
     if !file.metadata()?.is_file() {
@@ -152,7 +188,174 @@ fn restore(
             recovery.to_string_lossy().into_owned(),
         ));
     }
-    syscall(unsafe { unlinkat(txn.as_raw_fd(), claimed.as_ptr(), 0) })
+    dir.sync_all()?;
+    syscall(unsafe { unlinkat(txn.as_raw_fd(), claimed.as_ptr(), 0) })?;
+    txn.sync_all()?;
+    Ok(())
+}
+const SLOT: &str = ".studyapp-removal-v1";
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClaimReceipt {
+    name: Vec<u8>,
+    parent: String,
+    transaction: String,
+    revision: String,
+    hash: String,
+    bytes: u64,
+}
+fn missing(e: &SyncError) -> bool {
+    matches!(e, SyncError::Io(std::io::ErrorKind::NotFound))
+}
+fn recovery_error(folder: &Path) -> SyncError {
+    SyncError::RemovalRecovery(
+        folder
+            .join(SLOT)
+            .join("claimed")
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+fn write_receipt(dir: &File, txn: &File, receipt: &ClaimReceipt) -> Result<()> {
+    let temporary = CString::new(format!("receipt-{}", uuid::Uuid::new_v4())).unwrap();
+    #[cfg(target_os = "linux")]
+    let create = 0x40 | 0x80;
+    #[cfg(target_os = "macos")]
+    let create = 0x200 | 0x800;
+    let fd = unsafe {
+        openat(
+            txn.as_raw_fd(),
+            temporary.as_ptr(),
+            1 | create | NOFOLLOW | CLOEXEC,
+            0o600 as c_int,
+        )
+    };
+    syscall(fd)?;
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    serde_json::to_writer(&mut file, receipt).map_err(|_| SyncError::InvalidContent)?;
+    file.sync_all()?;
+    syscall(unsafe {
+        renameat(
+            txn.as_raw_fd(),
+            temporary.as_ptr(),
+            txn.as_raw_fd(),
+            c"receipt.json".as_ptr(),
+        )
+    })?;
+    txn.sync_all()?;
+    dir.sync_all()?;
+    Ok(())
+}
+// Return the claimed bytes to their original name before a fresh ownership /
+// reference preview. Never discard a stranger or replace a newly occupied name.
+fn recover_locked(dir: &File, txn: &File, folder: &Path) -> Result<()> {
+    let claimed = match open_at(txn, std::ffi::OsStr::new("claimed"), false) {
+        Ok(file) => file,
+        Err(e) if missing(&e) => return Ok(()),
+        Err(_) => return Err(recovery_error(folder)),
+    };
+    let evidence = || -> Result<_> {
+        let f = open_at(txn, std::ffi::OsStr::new("receipt.json"), false)?;
+        if f.metadata()?.len() > 16384 {
+            return Err(SyncError::InvalidContent);
+        }
+        let receipt: ClaimReceipt =
+            serde_json::from_reader(f.take(16385)).map_err(|_| SyncError::InvalidContent)?;
+        let part = std::ffi::OsStr::from_bytes(&receipt.name);
+        if Path::new(part).file_name() != Some(part)
+            || receipt.parent != removal_identity(dir)?
+            || receipt.transaction != removal_identity(txn)?
+        {
+            return Err(SyncError::InvalidPath);
+        }
+        let id = removal_identity(&claimed)?;
+        if !claimed.metadata()?.is_file() || claimed.metadata()?.len() != receipt.bytes {
+            return Err(SyncError::Conflict);
+        }
+        let (hash, len) = removal_hash(&claimed, receipt.bytes)?;
+        if receipt.revision != format!("{id}:{hash}")
+            || receipt.hash != hash
+            || receipt.bytes != len
+        {
+            return Err(SyncError::Conflict);
+        }
+        Ok((receipt, id))
+    };
+    let (receipt, id) = evidence().map_err(|_| recovery_error(folder))?;
+    let part = std::ffi::OsStr::from_bytes(&receipt.name);
+    let original = name(part)?;
+    let existing = open_at(dir, part, false);
+    match existing {
+        Ok(file) if removal_identity(&file)? == id => {}
+        Err(e) if missing(&e) => {
+            if unsafe {
+                linkat(
+                    txn.as_raw_fd(),
+                    c"claimed".as_ptr(),
+                    dir.as_raw_fd(),
+                    original.as_ptr(),
+                    0,
+                )
+            } < 0
+            {
+                return Err(recovery_error(folder));
+            }
+        }
+        _ => return Err(recovery_error(folder)),
+    }
+    dir.sync_all()?;
+    syscall(unsafe { unlinkat(txn.as_raw_fd(), c"claimed".as_ptr(), 0) })?;
+    txn.sync_all()?;
+    Ok(())
+}
+fn recover_slot(dir: &File, folder: &Path) -> Result<()> {
+    let txn = match open_at(dir, std::ffi::OsStr::new(SLOT), true) {
+        Ok(txn) => txn,
+        Err(e) if missing(&e) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    owned(dir)?;
+    owned(&txn)?;
+    if txn.metadata()?.mode() & 0o777 != 0o700 {
+        return Err(recovery_error(folder));
+    }
+    txn.try_lock().map_err(|_| SyncError::LockBusy)?;
+    recover_locked(dir, &txn, folder)
+}
+/// Recover previously confirmed, interrupted claims, without deleting their
+/// contents. Legacy private claims without a durable receipt need manual recovery.
+pub fn recover_removal_dir(dir: &File, folder: &Path) -> Result<()> {
+    recover_slot(dir, folder)?;
+    if removal_identity(dir)? != removal_identity(&File::open(folder)?)? {
+        return Err(SyncError::InvalidPath);
+    }
+    for (n, e) in fs::read_dir(folder)?.enumerate() {
+        if n >= 100_000 {
+            return Err(SyncError::LimitExceeded);
+        }
+        let part = e?.file_name();
+        let Some(s) = part.to_str() else { continue };
+        if !s
+            .strip_prefix(".studyapp-removal-")
+            .is_some_and(|tail| uuid::Uuid::parse_str(tail).is_ok())
+        {
+            continue;
+        }
+        let old = open_at(dir, &part, true)?;
+        match open_at(&old, std::ffi::OsStr::new("claimed"), false) {
+            Err(e) if missing(&e) => {}
+            _ => {
+                return Err(SyncError::RemovalRecovery(
+                    folder
+                        .join(part)
+                        .join("claimed")
+                        .to_string_lossy()
+                        .into_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 /// Atomically claim a single directory entry under an already-pinned parent.
 pub fn claim_unlink(
@@ -165,21 +368,35 @@ pub fn claim_unlink(
 ) -> Result<()> {
     owned(dir)?;
     let original = name(path.file_name().ok_or(SyncError::InvalidPath)?)?;
-    let transaction = format!(".studyapp-removal-{}", uuid::Uuid::new_v4());
-    let txn_name = name(std::ffi::OsStr::new(&transaction))?;
-    syscall(unsafe { mkdirat(dir.as_raw_fd(), txn_name.as_ptr(), 0o700) })?;
-    let txn = open_at(dir, std::ffi::OsStr::new(&transaction), true)?;
+    let folder = path.parent().ok_or(SyncError::InvalidPath)?;
+    let txn_name = name(std::ffi::OsStr::new(SLOT))?;
+    if unsafe { mkdirat(dir.as_raw_fd(), txn_name.as_ptr(), 0o700) } < 0
+        && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let txn = open_at(dir, std::ffi::OsStr::new(SLOT), true)?;
     owned(&txn)?;
     if txn.metadata()?.mode() & 0o777 != 0o700 {
         return Err(SyncError::UnsupportedRemoval(
             "Unix transaction directory must have exact 0700 permissions",
         ));
     }
-    let recovery = path
-        .parent()
-        .ok_or(SyncError::InvalidPath)?
-        .join(&transaction)
-        .join("claimed");
+    txn.try_lock().map_err(|_| SyncError::LockBusy)?;
+    recover_locked(dir, &txn, folder)?;
+    write_receipt(
+        dir,
+        &txn,
+        &ClaimReceipt {
+            name: original.as_bytes().to_vec(),
+            parent: removal_identity(dir)?,
+            transaction: removal_identity(&txn)?,
+            revision: revision.into(),
+            hash: hash.into(),
+            bytes,
+        },
+    )?;
+    let recovery = folder.join(SLOT).join("claimed");
     let claimed = CString::new("claimed").unwrap();
     #[cfg(test)]
     BEFORE_REMOVE.with(|hook| {
@@ -195,6 +412,8 @@ pub fn claim_unlink(
             claimed.as_ptr(),
         )
     })?;
+    txn.sync_all()?;
+    dir.sync_all()?;
     #[cfg(test)]
     AFTER_CLAIM.with(|hook| {
         if let Some(hook) = hook.borrow_mut().take() {
@@ -236,6 +455,7 @@ pub fn claim_unlink(
         restore(dir, &original, &txn, &claimed, &recovery)?;
         return Err(error);
     }
+    txn.sync_all()?;
     Ok(())
 }
 pub(super) fn execute(
@@ -352,6 +572,56 @@ mod tests {
             fs::read_to_string(root.join(format!("StudyApp/notes/{ID}.md"))).unwrap(),
             "replacement"
         );
+    }
+    #[test]
+    fn removal_unix_repreview_after_interrupted_claim_preserves_replacement_and_completes() {
+        let (root, p) = fixture();
+        let notes = root.join("StudyApp/notes");
+        let target = notes.join(format!("{ID}.md"));
+        let mut plan = p.inspect_note(ID).unwrap();
+        plan.confirmed_retained.clear();
+        AFTER_CLAIM.with(|h| {
+            *h.borrow_mut() = Some(Box::new(|_| {
+                panic!("simulate process stopping after durable rename")
+            }))
+        });
+        let interrupted = std::panic::catch_unwind(|| p.delete_note(&plan));
+        assert!(interrupted.is_err() && !target.exists());
+        let private = notes.join(SLOT).join("claimed");
+        assert_eq!(fs::read_to_string(&private).unwrap(), "note");
+        drop(p);
+        let p = LocalFolderProvider::new(&root).unwrap();
+        fs::write(&target, "new owner").unwrap();
+        let Err(SyncError::RemovalRecovery(path)) = p.read(ID) else {
+            panic!("collision must not report absence")
+        };
+        assert_eq!(Path::new(&path), private);
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new owner");
+        fs::rename(&target, root.join("preserved stranger")).unwrap();
+        assert_eq!(p.read(ID).unwrap().unwrap().content, "note");
+        assert!(!private.exists());
+        let resumed = p.inspect_note(ID).unwrap();
+        p.delete_note(&resumed).unwrap();
+        assert!(p.read(ID).unwrap().is_none());
+        assert!(!private.exists());
+        assert_eq!(
+            fs::read_to_string(root.join("preserved stranger")).unwrap(),
+            "new owner"
+        );
+    }
+    #[test]
+    fn missing_source_with_unjournaled_legacy_claim_is_not_absent() {
+        let (root, p) = fixture();
+        let notes = root.join("StudyApp/notes");
+        let tx = notes.join(format!(".studyapp-removal-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&tx).unwrap();
+        let claimed = tx.join("claimed");
+        fs::rename(notes.join(format!("{ID}.md")), &claimed).unwrap();
+        assert!(
+            matches!(p.read(ID),Err(SyncError::RemovalRecovery(ref path)) if Path::new(path)==claimed)
+        );
+        assert!(matches!(p.list(), Err(SyncError::RemovalRecovery(_))));
+        assert_eq!(fs::read_to_string(claimed).unwrap(), "note");
     }
     #[test]
     fn removal_unix_restore_collision_preserves_both_files_with_recovery_path() {

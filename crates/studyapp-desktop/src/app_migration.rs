@@ -244,19 +244,54 @@ pub fn remaining_cleanup(
     paths: &AppPaths,
     snapshot: &studyapp_core::Snapshot,
 ) -> Result<Vec<CopyRecord>> {
+    let (_, records) = recorded_inventory(paths, snapshot)?;
+    let mut checked_parents = std::collections::BTreeSet::new();
+    let mut remaining = Vec::new();
+    for r in records {
+        if let Some(parent) = r.source.parent()
+            && checked_parents.insert(parent.to_owned())
+        {
+            recover_removal_parent(parent)?;
+        }
+        if r.source.try_exists()? {
+            remaining.push(r)
+        }
+    }
+    Ok(remaining)
+}
+// Statistics must not recover claims, repair pointers or traverse old roots.
+pub fn inventory_paths(
+    paths: &AppPaths,
+    snapshot: &studyapp_core::Snapshot,
+) -> Result<(Option<PathBuf>, Vec<PathBuf>)> {
+    let (stage, records) = recorded_inventory(paths, snapshot)?;
+    let mut files = std::collections::BTreeSet::new();
+    for r in records {
+        let parent = r.source.parent().context("旧副本父目录无效")?;
+        for p in [&r.source, &parent.join(".studyapp-removal-v1/claimed")] {
+            validate_path(p)?;
+            if p.try_exists()? {
+                let _guards = guard_directories(p.parent().context("旧副本文件位置无效")?, false)?;
+                if crate::app_usage::identity(&plain_handle(p, false, false)?)? == r.identity {
+                    files.insert(p.to_owned());
+                }
+            }
+        }
+    }
+    Ok((stage, files.into_iter().collect()))
+}
+fn recorded_inventory(
+    paths: &AppPaths,
+    snapshot: &studyapp_core::Snapshot,
+) -> Result<(Option<PathBuf>, Vec<CopyRecord>)> {
     let Some(j) = journal(paths)? else {
-        return Ok(Vec::new());
+        return Ok((None, vec![]));
     };
-    let Some(expected) = j.cleanup_digest else {
-        return Ok(Vec::new());
-    };
-    let next_library = j.destination.join("library");
-    if paths.custom_root.as_ref() != Some(&j.destination)
-        || paths.configured_library() != Some(next_library.as_path())
-        || Path::new(&snapshot.data_path) != next_library.join("studyapp.sqlite3")
-        || !matches!(j.phase, Phase::Publishing | Phase::Complete)
-    {
-        return Ok(Vec::new());
+    let active = Path::new(&snapshot.data_path)
+        .parent()
+        .context("资料库目录无效")?;
+    if paths.custom_root.as_ref() != Some(&j.destination) && canon(active)? != j.source {
+        return Ok((None, vec![]));
     }
     let stage = j.destination.join(format!(".studyapp-migration-{}", j.id));
     let _guards = guard_directories(&stage, false)?;
@@ -267,6 +302,17 @@ pub fn remaining_cleanup(
             == j.stage_identity,
         "迁移记录目录已变化"
     );
+    let Some(expected) = j.cleanup_digest else {
+        return Ok((Some(stage), vec![]));
+    };
+    let next_library = j.destination.join("library");
+    if paths.custom_root.as_ref() != Some(&j.destination)
+        || paths.configured_library() != Some(next_library.as_path())
+        || Path::new(&snapshot.data_path) != next_library.join("studyapp.sqlite3")
+        || !matches!(j.phase, Phase::Publishing | Phase::Complete)
+    {
+        return Ok((Some(stage), vec![]));
+    }
     let receipt = stage.join("cleanup.json");
     let file = plain_handle(&receipt, false, true)?;
     ensure!(file.metadata()?.len() <= 64 * 1024 * 1024, "旧副本清单过大");
@@ -314,11 +360,19 @@ pub fn remaining_cleanup(
             anyhow::bail!("旧副本不在已登记的源目录中")
         };
         ensure!(r.target == expected, "旧副本目标已变化");
-        if r.source.try_exists()? {
-            remaining.push(r)
-        }
+        remaining.push(r);
     }
-    Ok(remaining)
+    Ok((Some(stage), remaining))
+}
+pub(crate) fn recover_removal_parent(parent: &Path) -> Result<()> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if parent.try_exists()? {
+        let guards = guard_directories(parent, false)?;
+        studyapp_sync::recover_removal_dir(guards.last().context("文件目录无效")?, parent)?;
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let _ = parent;
+    Ok(())
 }
 fn canon(path: &Path) -> Result<PathBuf> {
     validate_path(path)?;
@@ -396,10 +450,8 @@ fn manifest(
         }
         seen.push(root.clone());
         let _guards = guard_directories(root, false)?;
-        crate::storage_backend::visit_tree(
+        crate::storage_backend::visit_migration_tree(
             root,
-            Path::new(""),
-            true,
             &|rel| {
                 let p = root.join(rel);
                 let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -457,6 +509,7 @@ fn moved_indexes(
     files: &BTreeMap<PathBuf, Entry>,
     source: &Path,
     target: &Path,
+    default_images: bool,
 ) -> Result<BTreeMap<(u64, u128), MovedIndex>> {
     let mut result = BTreeMap::new();
     for (rel, entry) in files {
@@ -478,7 +531,17 @@ fn moved_indexes(
             .read_to_end(&mut bytes)?;
         ensure!(bytes.len() <= 32768, "图片索引过大");
         let stored: PathBuf = serde_json::from_slice(&bytes)?;
-        if path_key(&stored) == path_key(&source.join("images").join(&tail)) {
+        ensure!(
+            stored.is_absolute()
+                && !stored
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                && stored.ends_with(Path::new(&tail)),
+            "图片索引与资产身份不匹配"
+        );
+        if path_key(&stored) == path_key(&source.join("images").join(&tail))
+            || (default_images && files.contains_key(&Path::new("library/images").join(&tail)))
+        {
             let replacement = serde_json::to_vec(&target.join("library/images").join(tail))?;
             result.insert(
                 entry.identity,
@@ -745,7 +808,12 @@ fn prepare_checked(
         // Partial bytes never shadow a final file; each restart independently
         // verifies already-published files against the newly quiesced source.
 
-        let indexes = moved_indexes(&files, &source, &dest)?;
+        let indexes = moved_indexes(
+            &files,
+            &source,
+            &dest,
+            snapshot.settings.images.root.is_none(),
+        )?;
         let mut representatives: BTreeMap<(u64, u128), PathBuf> = BTreeMap::new();
         let mut destination_groups = BTreeMap::new();
         let verify_total = files
@@ -1187,6 +1255,25 @@ fn unlink_os(path: &Path, identity: (u64, u128), expected: &[u8; 32]) -> Result<
     studyapp_sync::claim_unlink(&dir, path, &revision, &hash, bytes, None)?;
     Ok(())
 }
+#[cfg(all(test, unix))]
+pub(crate) fn simulate_interrupted_claim(path: &Path) -> PathBuf {
+    use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+    let identity = |f: &File| {
+        let (dev, ino) = crate::app_usage::identity(f).unwrap();
+        format!("{dev}:{ino}")
+    };
+    let parent = path.parent().unwrap();
+    let slot = parent.join(".studyapp-removal-v1");
+    fs::create_dir(&slot).unwrap();
+    fs::set_permissions(&slot, fs::Permissions::from_mode(0o700)).unwrap();
+    let file = File::open(path).unwrap();
+    let hash = format!("{:x}", Sha256::digest(fs::read(path).unwrap()));
+    let receipt = serde_json::json!({"name":path.file_name().unwrap().as_bytes(),"parent":identity(&File::open(parent).unwrap()),"transaction":identity(&File::open(&slot).unwrap()),"revision":format!("{}:{hash}",identity(&file)),"hash":hash,"bytes":file.metadata().unwrap().len()});
+    fs::write(slot.join("receipt.json"), receipt.to_string()).unwrap();
+    let claimed = slot.join("claimed");
+    fs::rename(path, &claimed).unwrap();
+    claimed
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1282,8 +1369,22 @@ mod tests {
             fs::write(&p, content).unwrap();
             fs::hard_link(&p, p.with_file_name(&pending)).unwrap();
         }
+        let middle = base.join("middle");
+        let db =
+            crate::storage_backend::migrate_library(&mut engine, &middle, 1011, |_| {}).unwrap();
+        let mut middle_engine = Engine::open(&db, 1011).unwrap();
+        remember_library(&paths.legacy_location(), &middle).unwrap();
+        let before =
+            crate::storage_backend::purge::prepare(&middle_engine.snapshot(), &id).unwrap();
+        assert!(
+            !before
+                .files
+                .keys()
+                .any(|p| p.starts_with(fs::canonicalize(source).unwrap()))
+        );
         let target = base.join("new");
-        let mut migration = prepare(&mut engine, paths.clone(), &target, 1011, |_| {}).unwrap();
+        let mut migration =
+            prepare(&mut middle_engine, paths.clone(), &target, 1011, |_| {}).unwrap();
         migration.commit().unwrap();
         let mut next = Engine::open(&migration.database, 1012).unwrap();
         for rel in [&image, &index] {
@@ -1293,7 +1394,17 @@ mod tests {
             assert_ne!(identity(&p), identity(&source.join(rel)));
         }
         let plan = crate::storage_backend::purge::prepare(&next.snapshot(), &id).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<PathBuf>(
+                &fs::read(target.join("library").join(&index)).unwrap()
+            )
+            .unwrap(),
+            fs::canonicalize(target.join("library").join(&image)).unwrap()
+        );
         crate::storage_backend::purge::execute(&mut next, &plan, 1013).unwrap();
+        let before =
+            crate::storage_backend::purge::prepare(&middle_engine.snapshot(), &id).unwrap();
+        crate::storage_backend::purge::execute(&mut middle_engine, &before, 1014).unwrap();
         for rel in [&image, &index] {
             let p = target.join("library").join(rel);
             assert!(!p.exists() && !p.with_file_name(&pending).exists());
@@ -1340,7 +1451,17 @@ mod tests {
             canon(&target).unwrap().join("library")
         );
         assert!(pending(&after).unwrap().is_none());
+        #[cfg(unix)]
+        let claim = simulate_interrupted_claim(&profile.join("Preferences"));
+        let (recorded_stage, old) = inventory_paths(&after, &_next.snapshot()).unwrap();
+        assert!(recorded_stage.unwrap().join("cleanup.json").exists());
+        #[cfg(unix)]
+        assert!(claim.exists() && !profile.join("Preferences").exists() && old.contains(&claim));
+        #[cfg(windows)]
+        assert!(old.iter().any(|f| f.ends_with("Preferences")));
         let restored = remaining_cleanup(&after, &_next.snapshot()).unwrap();
+        #[cfg(unix)]
+        assert!(!claim.exists() && profile.join("Preferences").exists());
         assert_eq!(restored.len(), prepared.records.len());
         let j = journal(&after).unwrap().unwrap();
         let receipt = j
