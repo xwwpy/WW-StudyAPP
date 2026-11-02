@@ -246,6 +246,8 @@ fn backup_scrub_verifies_identity_and_does_not_create_recovery_files() {
     let backup = dir.join("backup.sqlite");
     engine.apply(Command::Backup(backup.clone()), 1002).unwrap();
     let before = files(&dir);
+    assert!(studyapp_core::finish_purge_cleanup(&backup, &id).is_err());
+    assert!(studyapp_core::scrub_confirmed_backup(&backup, &id, [0; 32]).is_err());
     assert!(purge_managed_note_from_backup(&backup, &id).unwrap());
     assert!(!purge_managed_note_from_backup(&backup, &id).unwrap());
     assert_eq!(files(&dir), before);
@@ -325,7 +327,7 @@ fn pinned_wal_reader_reports_cleanup_failure_after_committed_removal() {
     assert!(engine.snapshot().notes.is_empty());
     drop(conn);
     // The verified scrub helper can finish cleanup without reporting another removal.
-    assert!(!purge_managed_note_from_backup(&dir.join("learning.sqlite"), &id).unwrap());
+    studyapp_core::finish_purge_cleanup(&dir.join("learning.sqlite"), &id).unwrap();
     assert!(
         !std::fs::read(dir.join("learning.sqlite"))
             .unwrap()

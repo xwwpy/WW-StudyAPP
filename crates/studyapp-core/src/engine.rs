@@ -78,6 +78,21 @@ impl Engine {
             .snapshot(self.path.to_string_lossy().into_owned())
     }
 
+    /// Preflight before a controller removes any independently stored objects.
+    pub fn verify_purge_ready(&self) -> Result<()> {
+        ensure!(
+            self.deferred_settings_baseline.is_none(),
+            "请先保存当前设置后再永久删除笔记"
+        );
+        crate::purge::verify(&self.conn)?;
+        let persisted = storage::load(&self.conn)?.context("资料库没有状态")?;
+        ensure!(
+            crate::purge::matches_persisted_state(&persisted, &self.state)?,
+            "资料库已改变，请重新核对"
+        );
+        Ok(())
+    }
+
     /// Permanently remove database snapshots and associations. The caller must
     /// hold the library lock and separately confirm/remove enumerated owned files.
     /// A cleanup error can follow a committed removal; it must be surfaced.

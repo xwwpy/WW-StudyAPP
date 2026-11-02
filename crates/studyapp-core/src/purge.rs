@@ -108,11 +108,42 @@ pub(crate) fn cleanup(conn: &Connection) -> Result<()> {
     truncate_wal(conn)
 }
 
+/// Inspect a candidate backup without opening a scanning engine or creating any files.
+pub fn inspect_purge_backup(path: &Path) -> Result<Option<crate::Snapshot>> {
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    if conn.query_row("PRAGMA application_id", [], |r| r.get::<_, i32>(0))? != storage::APP_ID {
+        return Ok(None);
+    }
+    verify(&conn)?;
+    let state = storage::load(&conn)?.context("备份中没有资料")?;
+    Ok(Some(state.snapshot(path.to_string_lossy().into_owned())))
+}
+
 /// Scrub one caller-verified, app-owned SQLite backup after explicit confirmation.
 /// Never migrates or makes a recovery copy. Requires exclusive access to the file.
 /// Returns false if the note is already absent. An error may follow a committed
 /// deletion when SQLite cannot finish reclaiming its old pages or WAL.
 pub fn purge_managed_note_from_backup(path: &Path, note_id: &str) -> Result<bool> {
+    scrub(path, note_id, true, None)
+}
+pub fn purge_backup_revision(snapshot: &crate::Snapshot) -> Result<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    serde_json::to_writer(&mut hash, snapshot)?;
+    Ok(hash.finalize().into())
+}
+/// Bind the write transaction to the reviewed snapshot, including WAL changes.
+pub fn scrub_confirmed_backup(path: &Path, note_id: &str, revision: [u8; 32]) -> Result<bool> {
+    scrub(path, note_id, true, Some(revision))
+}
+
+/// Retry maintenance of a live library only after the approved note was removed.
+/// A restored or concurrently replaced note must never be deleted by a retry.
+pub fn finish_purge_cleanup(path: &Path, note_id: &str) -> Result<()> {
+    scrub(path, note_id, false, None).map(|_| ())
+}
+
+fn scrub(path: &Path, note_id: &str, backup: bool, expected: Option<[u8; 32]>) -> Result<bool> {
     crate::managed::validate_id(note_id)?;
     let mut conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -121,15 +152,30 @@ pub fn purge_managed_note_from_backup(path: &Path, note_id: &str) -> Result<bool
     let check: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     ensure!(check == "ok", "备份完整性检查失败：{check}");
     conn.execute_batch("PRAGMA secure_delete=ON; PRAGMA synchronous=FULL;")?;
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    if backup {
+        conn.execute_batch("PRAGMA locking_mode=EXCLUSIVE;")?;
+    }
+    let tx = conn.transaction_with_behavior(if backup {
+        TransactionBehavior::Exclusive
+    } else {
+        TransactionBehavior::Immediate
+    })?;
     verify(&tx)?;
     let mut state = storage::load(&tx)?.context("备份中没有资料")?;
+    if let Some(revision) = expected {
+        ensure!(
+            purge_backup_revision(&state.snapshot(path.to_string_lossy().into_owned()))?
+                == revision,
+            "备份内容已改变，请重新预览"
+        );
+    }
     let Some(note) = state.notes.iter().find(|n| n.id == note_id) else {
         tx.rollback()?;
         // Also completes residual cleanup after an earlier committed scrub.
         cleanup(&conn)?;
         return Ok(false);
     };
+    ensure!(backup, "待清理笔记已重新出现，请重新预览");
     let revision = note.revision;
     let now = state.last_tick;
     transform(&mut state, note_id, revision, now)?;
