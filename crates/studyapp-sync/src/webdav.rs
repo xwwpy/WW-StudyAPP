@@ -236,6 +236,118 @@ impl WebDavProvider {
 }
 
 impl WebDavProvider {
+    fn require_file_resource(&self, url: Url, etag: &str) -> Result<()> {
+        let unsupported = || {
+            SyncError::UnsupportedRemoval(
+                "WebDAV must prove exact ordinary file and matching ETag via Depth 0 DAV properties",
+            )
+        };
+        let response=Self::send(self.request(Method::from_bytes(b"PROPFIND").map_err(|_|unsupported())?,url.clone())
+            .header("Depth","0").header("Content-Type","application/xml")
+            .body("<d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/><d:getetag/></d:prop></d:propfind>"))?;
+        if response.status().as_u16() != 207 {
+            return Err(unsupported());
+        }
+        let xml = bounded_read(response, MAX_XML_BYTES)?;
+        #[derive(Default)]
+        struct Node {
+            name: String,
+            text: String,
+            children: Vec<Node>,
+        }
+        let mut reader = quick_xml::NsReader::from_str(&xml);
+        reader.config_mut().expand_empty_elements = true;
+        let mut stack: Vec<Node> = Vec::new();
+        let mut root = None;
+        loop {
+            let (ns, event) = reader.read_resolved_event().map_err(|_| unsupported())?;
+            let dav = matches!(ns,quick_xml::name::ResolveResult::Bound(n) if n.as_ref()==b"DAV:");
+            match event {
+                Event::Start(e) | Event::Empty(e) => {
+                    if !dav || stack.len() > 12 {
+                        return Err(unsupported());
+                    }
+                    let node = Node {
+                        name: String::from_utf8(e.local_name().as_ref().to_vec())
+                            .map_err(|_| unsupported())?,
+                        ..Default::default()
+                    };
+                    // Empty elements are handled by expanding them in the input reader.
+                    stack.push(node);
+                }
+                Event::End(_) => {
+                    let node = stack.pop().ok_or_else(unsupported)?;
+                    if let Some(parent) = stack.last_mut() {
+                        parent.children.push(node);
+                    } else if root.replace(node).is_some() {
+                        return Err(unsupported());
+                    }
+                }
+                Event::Text(e) => {
+                    let text = e.decode().map_err(|_| unsupported())?;
+                    if let Some(node) = stack.last_mut() {
+                        node.text.push_str(&text);
+                    } else if !text.trim().is_empty() {
+                        return Err(unsupported());
+                    }
+                }
+                Event::GeneralRef(e) => {
+                    let escaped = format!("&{};", e.decode().map_err(|_| unsupported())?);
+                    stack.last_mut().ok_or_else(unsupported)?.text.push_str(
+                        &quick_xml::escape::unescape(&escaped).map_err(|_| unsupported())?,
+                    );
+                }
+                Event::Decl(_) | Event::Comment(_) => {}
+                Event::Eof => break,
+                _ => return Err(unsupported()),
+            }
+        }
+        fn child<'a>(node: &'a Node, name: &str) -> Option<&'a Node> {
+            let mut found = node.children.iter().filter(|c| c.name == name);
+            let result = found.next()?;
+            if found.next().is_some() {
+                None
+            } else {
+                Some(result)
+            }
+        }
+        let root = root.ok_or_else(unsupported)?;
+        if !stack.is_empty() || root.name != "multistatus" || root.children.len() != 1 {
+            return Err(unsupported());
+        }
+        let response = child(&root, "response").ok_or_else(unsupported)?;
+        if response.children.len() != 2 {
+            return Err(unsupported());
+        }
+        let href = child(response, "href").ok_or_else(unsupported)?;
+        if !href.children.is_empty()
+            || url.join(href.text.trim()).map_err(|_| unsupported())? != url
+        {
+            return Err(unsupported());
+        }
+        let propstat = child(response, "propstat").ok_or_else(unsupported)?;
+        if propstat.children.len() != 2 {
+            return Err(unsupported());
+        }
+        let status = child(propstat, "status").ok_or_else(unsupported)?;
+        if !matches!(status.text.split_whitespace().nth(1), Some("200")) {
+            return Err(unsupported());
+        }
+        let prop = child(propstat, "prop").ok_or_else(unsupported)?;
+        if prop.children.len() != 2 {
+            return Err(unsupported());
+        }
+        let kind = child(prop, "resourcetype").ok_or_else(unsupported)?;
+        let revision = child(prop, "getetag").ok_or_else(unsupported)?;
+        if !kind.children.is_empty()
+            || !kind.text.trim().is_empty()
+            || !revision.children.is_empty()
+            || revision.text.trim() != etag
+        {
+            return Err(unsupported());
+        }
+        Ok(())
+    }
     fn removal_url(&self, target: &str, asset: bool) -> Result<Url> {
         if !asset {
             return self.object_url(target);
@@ -257,7 +369,9 @@ impl WebDavProvider {
         }
         let revision = Self::strong_etag(&response).ok_or(SyncError::MissingRevision)?;
         let bytes = bounded_bytes(response)?;
+        self.require_file_resource(self.removal_url(target, asset)?, &revision)?;
         Ok(RemoteRemoval {
+            confirmed_retained: Vec::new(),
             target: target.into(),
             revision,
             hash: content_hash_bytes(&bytes),
@@ -281,14 +395,9 @@ impl WebDavProvider {
             404 | 412 => return Err(SyncError::Conflict),
             status => return Err(SyncError::Http(status)),
         }
-        let verify = Self::send(self.request(Method::GET, url))?;
-        match verify.status().as_u16() {
-            404 => Ok(RemovalOutcome {
-                residual: RemovalResidual::ProviderBackupsUnknown,
-            }),
-            200 => Err(SyncError::Conflict),
-            status => Err(SyncError::Http(status)),
-        }
+        let verified = Self::send(self.request(Method::GET, url))
+            .is_ok_and(|response| response.status().as_u16() == 404);
+        Ok(RemovalOutcome::remote(verified))
     }
 }
 impl Provider for WebDavProvider {

@@ -18,6 +18,7 @@ type RaceHook = Box<dyn FnOnce(&Path)>;
 #[cfg(test)]
 thread_local! {
     pub(crate) static BEFORE_RETAIN: std::cell::RefCell<Option<RaceHook>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static BEFORE_REMOVE: std::cell::RefCell<Option<RaceHook>> = const { std::cell::RefCell::new(None) };
     pub(crate) static BEFORE_PUBLISH: std::cell::RefCell<Option<RaceHook>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -265,6 +266,7 @@ impl LocalFolderProvider {
         let bytes = bounded_bytes(file)?;
         let hash = content_hash_bytes(&bytes);
         Ok(RemoteRemoval {
+            confirmed_retained: self.removal_retained(file)?,
             target: target.into(),
             revision: format!("{identity}:{hash}"),
             hash,
@@ -275,17 +277,157 @@ impl LocalFolderProvider {
         })
     }
     fn inspect_removal(&self, target: &str, asset: bool) -> Result<RemoteRemoval> {
-        let (_notes, _lock) = self.locked_dir()?;
-        let path = self.removal_path(target, asset)?;
-        let file = Self::removal_open(&path, false)?;
-        self.inspect_removal_file(target, &path, &file)
+        #[cfg(not(windows))]
+        return Err(SyncError::UnsupportedRemoval(
+            "platform has no atomic identity-bound unlink; external same-user writers cannot be excluded",
+        ));
+        #[cfg(windows)]
+        {
+            let (_notes, _lock) = self.locked_dir()?;
+            let path = self.removal_path(target, asset)?;
+            let file = Self::removal_open(&path, false)?;
+            self.inspect_removal_file(target, &path, &file)
+        }
+    }
+    fn removal_retained(&self, source: &File) -> Result<Vec<RetainedRemoval>> {
+        let dir = self.root.join("StudyApp/notes/.retained");
+        let Some(meta) = checked_metadata(&dir)? else {
+            return Ok(Vec::new());
+        };
+        if !meta.is_dir() {
+            return Err(SyncError::InvalidPath);
+        }
+        let source_identity = removal_identity(source)?;
+        let mut result = Vec::new();
+        for (count, entry) in fs::read_dir(&dir)?.enumerate() {
+            if count >= MAX_ENTRIES {
+                return Err(SyncError::LimitExceeded);
+            }
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let stem = name
+                .strip_suffix(".asset-pending")
+                .or_else(|| name.strip_suffix(".pending"));
+            if !stem.is_some_and(|stem| validate_id(stem).is_ok()) {
+                continue;
+            }
+            let path = entry.path();
+            if !checked_metadata(&path)?.is_some_and(|m| m.is_file()) {
+                continue;
+            }
+            let file = Self::removal_open(&path, false)?;
+            if removal_identity(&file)? != source_identity {
+                continue;
+            }
+            let bytes = bounded_bytes(&file)?;
+            let hash = content_hash_bytes(&bytes);
+            result.push(RetainedRemoval {
+                name,
+                revision: format!("{source_identity}:{hash}"),
+                hash,
+                bytes: bytes.len() as u64,
+            });
+        }
+        result.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(result)
     }
     fn execute_removal(&self, plan: &RemoteRemoval, asset: bool) -> Result<RemovalOutcome> {
-        let (_notes, _lock) = self.locked_dir()?;
-        let path = self.removal_path(&plan.target, asset)?;
-        let file = Self::removal_open(&path, true)?;
-        let current = self.inspect_removal_file(&plan.target, &path, &file)?;
-        if &current != plan {
+        #[cfg(not(windows))]
+        return Err(SyncError::UnsupportedRemoval(
+            "platform has no atomic identity-bound unlink",
+        ));
+        #[cfg(windows)]
+        {
+            let (_notes, _lock) = self.locked_dir()?;
+            let path = self.removal_path(&plan.target, asset)?;
+            let file = Self::removal_open(&path, false)?;
+            let mut current = self.inspect_removal_file(&plan.target, &path, &file)?;
+            if plan.confirmed_retained.iter().enumerate().any(|(i, e)| {
+                !current.confirmed_retained.contains(e) || plan.confirmed_retained[..i].contains(e)
+            }) {
+                return Err(SyncError::Conflict);
+            }
+            let mut expected = plan.clone();
+            current.confirmed_retained.clear();
+            expected.confirmed_retained.clear();
+            if current != expected {
+                return Err(SyncError::Conflict);
+            }
+            drop(file);
+            let mut removed = 0;
+            for (index, retained) in plan.confirmed_retained.iter().enumerate() {
+                let retained_path = self
+                    .root
+                    .join("StudyApp/notes/.retained")
+                    .join(&retained.name);
+                if let Err(error) = self.delete_confirmed_file(
+                    &retained_path,
+                    &retained.revision,
+                    &retained.hash,
+                    retained.bytes,
+                ) {
+                    if removed == 0 {
+                        return Err(error);
+                    }
+                    return Ok(RemovalOutcome {
+                        state: RemovalState::Partial,
+                        residual: RemovalResidual::RetainedCopies,
+                        removed_retained: removed,
+                        remaining_confirmed: plan.confirmed_retained[index..].to_vec(),
+                    });
+                }
+                removed += 1;
+            }
+            if let Err(error) =
+                self.delete_confirmed_file(&path, &plan.revision, &plan.hash, plan.bytes)
+            {
+                if removed == 0 {
+                    return Err(error);
+                }
+                return Ok(RemovalOutcome {
+                    state: RemovalState::Partial,
+                    residual: RemovalResidual::RetainedCopies,
+                    removed_retained: removed,
+                    remaining_confirmed: Vec::new(),
+                });
+            }
+            Ok(RemovalOutcome {
+                state: RemovalState::VerifiedAbsent,
+                residual: RemovalResidual::RetainedCopies,
+                removed_retained: removed,
+                remaining_confirmed: Vec::new(),
+            })
+        }
+    }
+    #[cfg(windows)]
+    fn delete_confirmed_file(
+        &self,
+        path: &Path,
+        revision: &str,
+        hash: &str,
+        bytes: u64,
+    ) -> Result<()> {
+        self.ensure_dirs()?;
+        let parent = path.parent().ok_or(SyncError::InvalidPath)?;
+        if !checked_metadata(parent)?.is_some_and(|m| m.is_dir())
+            || !fs::canonicalize(parent)?.starts_with(&self.root)
+        {
+            return Err(SyncError::InvalidPath);
+        }
+        #[cfg(test)]
+        BEFORE_REMOVE.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook(path);
+            }
+        });
+        let file = Self::removal_open(path, true)?;
+        let identity = removal_identity(&file)?;
+        let content = bounded_bytes(&file)?;
+        let actual_hash = content_hash_bytes(&content);
+        if format!("{identity}:{actual_hash}") != revision
+            || actual_hash != hash
+            || content.len() as u64 != bytes
+        {
             return Err(SyncError::Conflict);
         }
         #[cfg(windows)]
@@ -314,19 +456,8 @@ impl LocalFolderProvider {
                 return Err(std::io::Error::last_os_error().into());
             }
         }
-        #[cfg(not(windows))]
-        {
-            // Same nonblocking app lock as writes; recheck immediately before unlink.
-            let check = Self::removal_open(&path, false)?;
-            if removal_identity(&check)? != removal_identity(&file)? {
-                return Err(SyncError::Conflict);
-            }
-            fs::remove_file(&path)?;
-        }
         drop(file);
-        Ok(RemovalOutcome {
-            residual: current.residual,
-        })
+        Ok(())
     }
 }
 

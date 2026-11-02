@@ -38,6 +38,7 @@ pub struct ObjectStoreProvider {
     config: ObjectStoreConfig,
     access_key_id: Zeroizing<String>,
     secret: Zeroizing<String>,
+    removal_supported: bool,
 }
 
 struct Signature {
@@ -158,7 +159,12 @@ impl ObjectStoreProvider {
             .timeout(Duration::from_secs(20))
             .build()
             .map_err(|_| SyncError::Transport)?;
+        let host = base.host_str().unwrap_or("");
+        let removal_supported = loopback
+            || host == "s3.amazonaws.com"
+            || host == format!("s3.{}.amazonaws.com", config.region);
         Ok(Self {
+            removal_supported,
             client,
             base,
             config,
@@ -301,6 +307,11 @@ impl ObjectStoreProvider {
 
 impl ObjectStoreProvider {
     fn require_unversioned(&self) -> Result<()> {
+        if !self.removal_supported {
+            return Err(SyncError::UnsupportedRemoval(
+                "endpoint conditional DELETE capability is unverified; only standard AWS S3 endpoints supported",
+            ));
+        }
         let unsupported = || {
             SyncError::UnsupportedRemoval(
                 "bucket version retention is enabled, suspended or unverified",
@@ -378,6 +389,7 @@ impl ObjectStoreProvider {
             .to_owned();
         let bytes = crate::bounded_bytes(response)?;
         Ok(RemoteRemoval {
+            confirmed_retained: Vec::new(),
             target: key.into(),
             revision,
             hash: hash(&bytes),
@@ -422,18 +434,12 @@ impl AssetProvider for ObjectStoreProvider {
                 .get("x-amz-version-id")
                 .is_some_and(|v| v != "null")
         {
-            return Err(SyncError::UnsupportedRemoval(
-                "versioning changed during deletion; retained versions may remain",
-            ));
+            return Ok(RemovalOutcome::remote(false));
         }
-        let verify = self.request(Method::GET, self.asset_url(&plan.target)?, &[], false)?;
-        match verify.status().as_u16() {
-            404 => Ok(RemovalOutcome {
-                residual: RemovalResidual::ProviderBackupsUnknown,
-            }),
-            200 => Err(SyncError::Conflict),
-            status => Err(SyncError::Http(status)),
-        }
+        let verified = self
+            .request(Method::GET, self.asset_url(&plan.target)?, &[], false)
+            .is_ok_and(|response| response.status().as_u16() == 404);
+        Ok(RemovalOutcome::remote(verified))
     }
 
     fn get_asset(&self, key: &str) -> Result<Option<Vec<u8>>> {
@@ -847,5 +853,60 @@ mod removal_guards_tests {
         assert_eq!(sign("b=two%20words&a=%2F"), sign("a=%2F&b=two+words"));
         assert_ne!(sign("versioning="), sign(""));
         assert_ne!(sign("a=%2F"), sign("a=%252F"));
+    }
+}
+
+#[cfg(test)]
+mod removal_review_tests {
+    use super::*;
+    #[test]
+    fn removal_unknown_s3_endpoint_is_unsupported_without_requests() {
+        let p = ObjectStoreProvider::new(
+            ObjectStoreConfig {
+                endpoint: "https://127.0.0.1:1".into(),
+                bucket: "bucket".into(),
+                region: "us-east-1".into(),
+                prefix: String::new(),
+                addressing: ObjectAddressing::Path,
+            },
+            "testkey",
+            "secret",
+        )
+        .unwrap();
+        assert!(matches!(
+            p.inspect_asset("assets/123e4567-e89b-42d3-a456-426614174000/a.png"),
+            Err(SyncError::UnsupportedRemoval(_))
+        ));
+    }
+    #[test]
+    fn removal_s3_acknowledged_but_get_forbidden_is_unverified() {
+        let (url, server) = crate::removal_tests::removal_server(vec![
+            (200, "", "<VersioningConfiguration/>"),
+            (200, "ETag: \"v\"\r\n", "x"),
+            (200, "", "<VersioningConfiguration/>"),
+            (200, "ETag: \"v\"\r\n", "x"),
+            (204, "", ""),
+            (403, "", ""),
+        ]);
+        let p = ObjectStoreProvider::for_loopback_test(
+            ObjectStoreConfig {
+                endpoint: url,
+                bucket: "bucket".into(),
+                region: "us-east-1".into(),
+                prefix: String::new(),
+                addressing: ObjectAddressing::Path,
+            },
+            "testkey",
+            "secret",
+        )
+        .unwrap();
+        let plan = p
+            .inspect_asset("assets/123e4567-e89b-42d3-a456-426614174000/a.png")
+            .unwrap();
+        assert_eq!(
+            p.delete_asset(&plan).unwrap().state,
+            crate::RemovalState::AcknowledgedUnverified
+        );
+        server.join().unwrap();
     }
 }

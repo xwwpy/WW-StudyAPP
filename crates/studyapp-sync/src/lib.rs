@@ -90,20 +90,52 @@ pub enum RemovalResidual {
     NoneKnown,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetainedRemoval {
+    pub name: String,
+    pub revision: String,
+    pub hash: String,
+    pub bytes: u64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteRemoval {
     pub target: String,
     pub revision: String,
     pub hash: String,
     pub bytes: u64,
     pub provider_identity: String,
+    #[serde(default)]
+    pub confirmed_retained: Vec<RetainedRemoval>,
     pub residual: RemovalResidual,
 }
 pub type AssetRevision = RemoteRemoval;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RemovalState {
+    VerifiedAbsent,
+    AcknowledgedUnverified,
+    Partial,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemovalOutcome {
+    pub state: RemovalState,
+    pub removed_retained: u64,
+    pub remaining_confirmed: Vec<RetainedRemoval>,
     pub residual: RemovalResidual,
 }
 
+impl RemovalOutcome {
+    pub(crate) fn remote(verified: bool) -> Self {
+        Self {
+            residual: RemovalResidual::ProviderBackupsUnknown,
+            state: if verified {
+                RemovalState::VerifiedAbsent
+            } else {
+                RemovalState::AcknowledgedUnverified
+            },
+            removed_retained: 0,
+            remaining_confirmed: Vec::new(),
+        }
+    }
+}
 pub trait Provider: Send + Sync {
     fn inspect_note(&self, _id: &str) -> Result<RemoteRemoval> {
         Err(SyncError::UnsupportedRemoval(

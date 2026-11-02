@@ -4,6 +4,7 @@ fn folder() -> std::path::PathBuf {
     tempfile::tempdir().unwrap().keep()
 }
 #[test]
+#[cfg(windows)]
 fn removal_local_conditional_and_retained_status() {
     let root = folder();
     let p = LocalFolderProvider::new(&root).unwrap();
@@ -19,10 +20,11 @@ fn removal_local_conditional_and_retained_status() {
         std::fs::read_dir(root.join("StudyApp/notes/.retained"))
             .unwrap()
             .next()
-            .is_some()
+            .is_none()
     );
 }
 #[test]
+#[cfg(windows)]
 fn removal_local_stale_foreign_lock_and_unrelated() {
     let root = folder();
     let p = LocalFolderProvider::new(&root).unwrap();
@@ -85,16 +87,49 @@ pub(crate) fn removal_server(
                     break;
                 }
             }
-            calls.push(String::from_utf8(request).unwrap());
+            let request = String::from_utf8(request).unwrap();
+            let length = request
+                .lines()
+                .find_map(|line| {
+                    line.to_lowercase()
+                        .strip_prefix("content-length:")
+                        .and_then(|n| n.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            let mut body_bytes = vec![0; length];
+            stream.read_exact(&mut body_bytes).unwrap();
+            calls.push(request);
             write!(stream,"HTTP/1.1 {status} Result\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}",body.len()).unwrap();
         }
         calls
     });
     (format!("http://{addr}/"), thread)
 }
+fn dav_fixture(
+    replies: Vec<(u16, &'static str, &'static str)>,
+    target: &str,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    let mut expanded = Vec::new();
+    for (i, reply) in replies.into_iter().enumerate() {
+        expanded.push(reply);
+        if i < 2 && reply.0 == 200 && reply.1.starts_with("ETag: \"") {
+            let etag = reply.1.trim().strip_prefix("ETag: ").unwrap();
+            let xml = format!(
+                "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{target}</d:href><d:propstat><d:prop><d:resourcetype/><d:getetag>{etag}</d:getetag></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>"
+            );
+            expanded.push((207, "", Box::leak(xml.into_boxed_str())));
+        }
+    }
+    removal_server(expanded)
+}
+fn webdav_server(
+    replies: Vec<(u16, &'static str, &'static str)>,
+) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    dav_fixture(replies, &format!("/StudyApp/notes/{ID}.md"))
+}
 #[test]
 fn removal_webdav_condition_and_verified_absence() {
-    let (url, server) = removal_server(vec![
+    let (url, server) = webdav_server(vec![
         (200, "ETag: \"v1\"\r\n", "note"),
         (200, "ETag: \"v1\"\r\n", "note"),
         (204, "", ""),
@@ -108,8 +143,8 @@ fn removal_webdav_condition_and_verified_absence() {
         RemovalResidual::ProviderBackupsUnknown
     );
     let calls = server.join().unwrap();
-    assert!(calls[2].starts_with("DELETE /StudyApp/notes/"));
-    assert!(calls[2].to_lowercase().contains("if-match: \"v1\""));
+    assert!(calls[4].starts_with("DELETE /StudyApp/notes/"));
+    assert!(calls[4].to_lowercase().contains("if-match: \"v1\""));
     assert!(!format!("{plan:?}").contains("secret"));
 }
 #[test]
@@ -121,7 +156,7 @@ fn removal_webdav_missing_weak_and_failed_reads_never_delete() {
         (302, "Location: https://example.com\r\n"),
         (401, ""),
     ] {
-        let (url, server) = removal_server(vec![(status, etag, "")]);
+        let (url, server) = webdav_server(vec![(status, etag, "")]);
         let p = WebDavProvider::for_loopback_test(&url, "u", "p").unwrap();
         assert!(p.inspect_note(ID).is_err());
         assert_eq!(server.join().unwrap().len(), 1);
@@ -130,7 +165,7 @@ fn removal_webdav_missing_weak_and_failed_reads_never_delete() {
 #[test]
 fn removal_webdav_conflict_refusal_and_false_success() {
     for status in [412, 403, 302, 404, 500] {
-        let (url, server) = removal_server(vec![
+        let (url, server) = webdav_server(vec![
             (200, "ETag: \"v\"\r\n", "x"),
             (200, "ETag: \"v\"\r\n", "x"),
             (status, "", ""),
@@ -140,7 +175,7 @@ fn removal_webdav_conflict_refusal_and_false_success() {
         assert!(p.delete_note(&plan).is_err());
         server.join().unwrap();
     }
-    let (url, server) = removal_server(vec![
+    let (url, server) = webdav_server(vec![
         (200, "ETag: \"v\"\r\n", "x"),
         (200, "ETag: \"v\"\r\n", "x"),
         (204, "", ""),
@@ -148,10 +183,14 @@ fn removal_webdav_conflict_refusal_and_false_success() {
     ]);
     let p = WebDavProvider::for_loopback_test(&url, "u", "p").unwrap();
     let plan = p.inspect_note(ID).unwrap();
-    assert!(p.delete_note(&plan).is_err());
+    assert_eq!(
+        p.delete_note(&plan).unwrap().state,
+        RemovalState::AcknowledgedUnverified
+    );
     server.join().unwrap();
 }
 #[test]
+#[cfg(windows)]
 fn removal_local_same_bytes_new_identity_and_shared_alias_are_preserved() {
     let root = folder();
     let p = LocalFolderProvider::new(&root).unwrap();
@@ -173,6 +212,7 @@ fn removal_local_same_bytes_new_identity_and_shared_alias_are_preserved() {
     assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "same");
 }
 #[test]
+#[cfg(windows)]
 fn removal_local_asset_is_exact_and_missing_parent_never_selects_foreign_file() {
     let root = folder();
     let p = LocalFolderProvider::new(&root).unwrap();
@@ -190,10 +230,13 @@ fn removal_local_asset_is_exact_and_missing_parent_never_selects_foreign_file() 
 #[test]
 fn removal_webdav_assets_stale_bytes_never_delete() {
     let key = format!("assets/{ID}/image.png");
-    let (url, server) = removal_server(vec![
-        (200, "ETag: \"v\"\r\n", "x"),
-        (200, "ETag: \"v\"\r\n", "changed"),
-    ]);
+    let (url, server) = dav_fixture(
+        vec![
+            (200, "ETag: \"v\"\r\n", "x"),
+            (200, "ETag: \"v\"\r\n", "changed"),
+        ],
+        &format!("/StudyApp/{key}"),
+    );
     let p = WebDavProvider::for_loopback_test(&url, "u", "p").unwrap();
     let plan = Provider::inspect_asset(&p, &key).unwrap();
     assert!(matches!(
@@ -202,4 +245,105 @@ fn removal_webdav_assets_stale_bytes_never_delete() {
     ));
     let calls = server.join().unwrap();
     assert!(calls[0].contains(&key));
+}
+
+#[test]
+fn removal_webdav_collection_ambiguous_and_unmatched_properties_never_delete() {
+    for (href, kind, etag, status) in [
+        (
+            format!("/StudyApp/notes/{ID}.md"),
+            "<d:collection/>",
+            "\"v\"",
+            "200",
+        ),
+        ("/other.md".into(), "", "\"v\"", "200"),
+        (format!("/StudyApp/notes/{ID}.md"), "", "\"stale\"", "200"),
+        (format!("/StudyApp/notes/{ID}.md"), "", "\"v\"", "404"),
+        (
+            format!("/StudyApp/notes/{ID}.md"),
+            "<d:unknown/>",
+            "\"v\"",
+            "200",
+        ),
+    ] {
+        let xml = format!(
+            "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>{href}</d:href><d:propstat><d:prop><d:resourcetype>{kind}</d:resourcetype><d:getetag>{etag}</d:getetag></d:prop><d:status>HTTP/1.1 {status} Status</d:status></d:propstat></d:response></d:multistatus>"
+        );
+        let (url, server) = removal_server(vec![
+            (200, "ETag: \"v\"\r\n", "index"),
+            (207, "", Box::leak(xml.into_boxed_str())),
+        ]);
+        let p = WebDavProvider::for_loopback_test(&url, "u", "p").unwrap();
+        assert!(p.inspect_note(ID).is_err());
+        let calls = server.join().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].starts_with("PROPFIND "));
+        assert!(calls[1].to_lowercase().contains("depth: 0"));
+        assert!(!calls.iter().any(|r| r.starts_with("DELETE ")));
+    }
+}
+#[test]
+fn removal_webdav_acknowledged_but_unverified_is_not_refusal() {
+    let (url, server) = webdav_server(vec![
+        (200, "ETag: \"v\"\r\n", "x"),
+        (200, "ETag: \"v\"\r\n", "x"),
+        (204, "", ""),
+        (403, "", ""),
+    ]);
+    let p = WebDavProvider::for_loopback_test(&url, "u", "p").unwrap();
+    let plan = p.inspect_note(ID).unwrap();
+    assert_eq!(
+        p.delete_note(&plan).unwrap().state,
+        RemovalState::AcknowledgedUnverified
+    );
+    server.join().unwrap();
+}
+#[test]
+#[cfg(windows)]
+fn removal_local_selected_retained_and_partial_completion() {
+    let root = folder();
+    let p = LocalFolderProvider::new(&root).unwrap();
+    p.write(ID, "note", None).unwrap();
+    let mut plan = p.inspect_note(ID).unwrap();
+    assert_eq!(plan.confirmed_retained.len(), 1);
+    let retained = root
+        .join("StudyApp/notes/.retained")
+        .join(&plan.confirmed_retained[0].name);
+    plan.confirmed_retained.clear();
+    assert_eq!(p.delete_note(&plan).unwrap().removed_retained, 0);
+    assert_eq!(std::fs::read_to_string(retained).unwrap(), "note");
+    let root = folder();
+    let p = LocalFolderProvider::new(&root).unwrap();
+    p.write(ID, "note", None).unwrap();
+    let target = root.join(format!("StudyApp/notes/{ID}.md"));
+    let second = root.join("StudyApp/notes/.retained/ffffffff-ffff-4fff-8fff-ffffffffffff.pending");
+    std::fs::hard_link(&target, &second).unwrap();
+    let plan = p.inspect_note(ID).unwrap();
+    assert_eq!(plan.confirmed_retained.len(), 2);
+    let changed = root
+        .join("StudyApp/notes/.retained")
+        .join(&plan.confirmed_retained[1].name);
+    local::BEFORE_REMOVE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |_| {
+            std::fs::rename(&changed, changed.with_extension("foreign")).unwrap();
+            std::fs::write(changed, "replacement").unwrap();
+        }))
+    });
+    let outcome = p.delete_note(&plan).unwrap();
+    assert_eq!(outcome.state, RemovalState::Partial);
+    assert_eq!(outcome.removed_retained, 1);
+    assert_eq!(outcome.remaining_confirmed.len(), 1);
+    assert!(target.exists());
+}
+#[test]
+#[cfg(not(windows))]
+fn removal_local_unix_is_unsupported_before_any_mutation() {
+    let root = folder();
+    let p = LocalFolderProvider::new(&root).unwrap();
+    p.write(ID, "note", None).unwrap();
+    assert!(matches!(
+        p.inspect_note(ID),
+        Err(SyncError::UnsupportedRemoval(_))
+    ));
+    assert_eq!(p.read(ID).unwrap().unwrap().content, "note");
 }
