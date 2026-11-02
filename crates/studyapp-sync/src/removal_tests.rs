@@ -299,7 +299,7 @@ fn removal_webdav_acknowledged_but_unverified_is_not_refusal() {
     server.join().unwrap();
 }
 #[test]
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 fn removal_local_selected_retained_and_partial_completion() {
     let root = folder();
     let p = LocalFolderProvider::new(&root).unwrap();
@@ -336,7 +336,7 @@ fn removal_local_selected_retained_and_partial_completion() {
     assert!(target.exists());
 }
 #[test]
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn removal_local_unix_is_unsupported_before_any_mutation() {
     let root = folder();
     let p = LocalFolderProvider::new(&root).unwrap();

@@ -34,10 +34,15 @@ pub enum SyncError {
     Io(std::io::ErrorKind),
     LockBusy,
     UnsupportedRemoval(&'static str),
+    RemovalRecovery(String),
 }
 impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::RemovalRecovery(path) => write!(
+                f,
+                "未删除发生变化的文件；已保留在 {path}，原路径被占用，请手动恢复"
+            ),
             Self::UnsupportedRemoval(reason) => write!(f, "无法永久删除此目标：{reason}"),
             Self::MissingRevision => write!(f, "WebDAV 未提供强 ETag，已拒绝覆盖现有笔记"),
             Self::Conflict => write!(f, "远端内容已更改，请重新同步；未覆盖未知版本"),
@@ -118,6 +123,7 @@ pub enum RemovalState {
 pub struct RemovalOutcome {
     pub state: RemovalState,
     pub removed_retained: u64,
+    pub recovery_paths: Vec<String>,
     pub remaining_confirmed: Vec<RetainedRemoval>,
     pub residual: RemovalResidual,
 }
@@ -132,6 +138,7 @@ impl RemovalOutcome {
                 RemovalState::AcknowledgedUnverified
             },
             removed_retained: 0,
+            recovery_paths: Vec::new(),
             remaining_confirmed: Vec::new(),
         }
     }

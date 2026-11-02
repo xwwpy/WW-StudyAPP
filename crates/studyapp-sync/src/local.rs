@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix_removal;
 use crate::*;
 use std::{
     fs::{self, File, OpenOptions},
@@ -18,6 +20,7 @@ type RaceHook = Box<dyn FnOnce(&Path)>;
 #[cfg(test)]
 thread_local! {
     pub(crate) static BEFORE_RETAIN: std::cell::RefCell<Option<RaceHook>> = const { std::cell::RefCell::new(None) };
+    pub(crate) static AFTER_CLAIM: std::cell::RefCell<Option<RaceHook>> = const { std::cell::RefCell::new(None) };
     pub(crate) static BEFORE_REMOVE: std::cell::RefCell<Option<RaceHook>> = const { std::cell::RefCell::new(None) };
     pub(crate) static BEFORE_PUBLISH: std::cell::RefCell<Option<RaceHook>> = const { std::cell::RefCell::new(None) };
 }
@@ -277,7 +280,9 @@ impl LocalFolderProvider {
         })
     }
     fn inspect_removal(&self, target: &str, asset: bool) -> Result<RemoteRemoval> {
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        return unix_removal::inspect(self, target, asset);
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         return Err(SyncError::UnsupportedRemoval(
             "platform has no atomic identity-bound unlink; external same-user writers cannot be excluded",
         ));
@@ -332,7 +337,9 @@ impl LocalFolderProvider {
         Ok(result)
     }
     fn execute_removal(&self, plan: &RemoteRemoval, asset: bool) -> Result<RemovalOutcome> {
-        #[cfg(not(windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        return unix_removal::execute(self, plan, asset);
+        #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
         return Err(SyncError::UnsupportedRemoval(
             "platform has no atomic identity-bound unlink",
         ));
@@ -373,6 +380,7 @@ impl LocalFolderProvider {
                         state: RemovalState::Partial,
                         residual: RemovalResidual::RetainedCopies,
                         removed_retained: removed,
+                        recovery_paths: Vec::new(),
                         remaining_confirmed: plan.confirmed_retained[index..].to_vec(),
                     });
                 }
@@ -388,6 +396,7 @@ impl LocalFolderProvider {
                     state: RemovalState::Partial,
                     residual: RemovalResidual::RetainedCopies,
                     removed_retained: removed,
+                    recovery_paths: Vec::new(),
                     remaining_confirmed: Vec::new(),
                 });
             }
@@ -395,6 +404,7 @@ impl LocalFolderProvider {
                 state: RemovalState::VerifiedAbsent,
                 residual: RemovalResidual::RetainedCopies,
                 removed_retained: removed,
+                recovery_paths: Vec::new(),
                 remaining_confirmed: Vec::new(),
             })
         }
