@@ -118,6 +118,22 @@ pub fn execute(
             msg.push_str("远端可能保留历史副本。");
         }
     }
+    let missing_notes = usize::from(expected.scope.sync && expected.remote_note.is_none());
+    let missing_images = if expected.scope.cloud {
+        expected
+            .local
+            .keys
+            .len()
+            .saturating_sub(expected.remote_shared + expected.remote_images.len())
+    } else {
+        0
+    };
+    if missing_notes + missing_images > 0 {
+        msg.push_str(&format!(
+            "另有 {} 项未发现远端当前对象，其历史副本未验证。",
+            missing_notes + missing_images
+        ));
+    }
     Ok(msg)
 }
 fn verified(
