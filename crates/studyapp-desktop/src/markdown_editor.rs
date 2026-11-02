@@ -113,6 +113,8 @@ pub struct MarkdownEditor {
     #[cfg(target_os = "linux")]
     native_closed: bool,
     creating: bool,
+    suspended: bool,
+    host_epoch: u64,
     ready: bool,
     visible: bool,
     readonly: bool,
@@ -133,6 +135,13 @@ pub struct MarkdownEditor {
 }
 impl EventEmitter<MarkdownChanged> for MarkdownEditor {}
 impl EventEmitter<MarkdownEvent> for MarkdownEditor {}
+
+fn schedule_editor_profile(
+    executor: &BackgroundExecutor,
+    resolve: impl FnOnce() -> anyhow::Result<studyapp_desktop::app_paths::AppPaths> + Send + 'static,
+) -> Task<anyhow::Result<PathBuf>> {
+    executor.spawn(async move { resolve().map(|paths| paths.effective.cache.join("editor")) })
+}
 
 impl MarkdownEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -165,6 +174,8 @@ impl MarkdownEditor {
             #[cfg(target_os = "linux")]
             native_closed: false,
             creating: false,
+            suspended: false,
+            host_epoch: 0,
             ready: false,
             visible: false,
             readonly: false,
@@ -718,12 +729,28 @@ impl MarkdownEditor {
         }
     }
 
+    pub(crate) fn suspend_for_migration(&mut self, suspended: bool, cx: &mut Context<Self>) {
+        self.suspended = suspended;
+        self.host_epoch = self.host_epoch.wrapping_add(1);
+        self.host = None;
+        self.creating = false;
+        self.ready = false;
+        self.error = None;
+        cx.notify();
+    }
+
     fn ensure_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         #[cfg(target_os = "linux")]
         if self.native_closed {
             return;
         }
-        if self.host.is_some() || self.creating || self.error.is_some() || !self.visible {
+        if self.suspended
+            || crate::app_migration::startup_pending()
+            || self.host.is_some()
+            || self.creating
+            || self.error.is_some()
+            || !self.visible
+        {
             return;
         }
         let parent = match crate::web_editor_host::ParentWindow::capture(window) {
@@ -733,19 +760,9 @@ impl MarkdownEditor {
                 return;
             }
         };
-        let profile = if cfg!(feature = "ui-test") {
-            std::env::temp_dir().join(format!("studyapp-editor-test-{}", std::process::id()))
-        } else {
-            match studyapp_desktop::app_paths::AppPaths::current() {
-                Ok(paths) => paths.effective.cache.join("editor"),
-                Err(error) => {
-                    self.fail(format!("无法定位编辑器缓存：{error:#}"), cx);
-                    return;
-                }
-            }
-        };
         let sender = self.sender.clone();
         self.creating = true;
+        let epoch = self.host_epoch;
         cx.spawn(async move |this, cx| {
             // Wry pumps Windows messages. Absolutely no GPUI App/entity borrow
             // may be held during the constructor (including a render callback).
@@ -759,12 +776,38 @@ impl MarkdownEditor {
             {
                 return;
             }
+            // Resolve the locator on a worker. Render only schedules this work.
+            let profile = schedule_editor_profile(
+                cx.background_executor(),
+                studyapp_desktop::app_paths::AppPaths::runtime,
+            )
+            .await;
+            if this
+                .update(cx, |this, _| this.suspended || this.host_epoch != epoch)
+                .unwrap_or(true)
+            {
+                return;
+            }
+            let profile = match profile {
+                Ok(profile) => profile,
+                Err(error) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.creating = false;
+                        this.fail(format!("无法定位编辑器缓存：{error:#}"), cx);
+                    });
+                    return;
+                }
+            };
             #[cfg(feature = "ui-test")]
             eprintln!("native editor: creating WebView");
             let result = crate::web_editor_host::HostedEditor::new(parent, sender, profile);
             #[cfg(feature = "ui-test")]
             eprintln!("native editor: constructor finished");
             let _ = this.update(cx, |this, cx| {
+                if this.suspended || this.host_epoch != epoch {
+                    drop(result);
+                    return;
+                }
                 this.creating = false;
                 #[cfg(target_os = "linux")]
                 if this.native_closed {
@@ -787,6 +830,16 @@ impl MarkdownEditor {
             });
         })
         .detach();
+    }
+
+    #[cfg(feature = "ui-test")]
+    pub(crate) fn test_profile_marker(&self, write: bool) -> anyhow::Result<()> {
+        let write = if write {
+            "localStorage.setItem('studyapp-relocation-smoke','persisted');"
+        } else {
+            ""
+        };
+        self.evaluate(&format!("{write}window.ipc.postMessage(JSON.stringify({{type:'test',generation:0,request:'migration-profile-marker',result:localStorage.getItem('studyapp-relocation-smoke')}}));"))
     }
 
     #[cfg(feature = "ui-test")]
@@ -939,5 +992,56 @@ impl Render for MarkdownEditor {
                 .size_full()
                 .min_h(px(180.)),
             )
+    }
+}
+
+#[cfg(all(test, feature = "ui-test"))]
+mod profile_tests {
+    use super::schedule_editor_profile;
+    use gpui_kit::TestAppContext;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    #[gpui_kit::test]
+    fn profile_resolution_is_deferred_off_render(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap().keep();
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: root.join("data"),
+            config: root.join("config"),
+            local_data: root.join("local"),
+            cache: root.join("cache"),
+            updates: root.join("updates"),
+        };
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        let locator = dirs.config.join("storage-location.json");
+        let custom = root.join("custom");
+        std::fs::write(
+            &locator,
+            serde_json::to_vec(&serde_json::json!({"schema":1,"root":custom})).unwrap(),
+        )
+        .unwrap();
+        let resolved = Arc::new(AtomicBool::new(false));
+        let observed = resolved.clone();
+        let task = schedule_editor_profile(&cx.executor(), move || {
+            observed.store(true, Ordering::SeqCst);
+            studyapp_desktop::app_paths::AppPaths::from_defaults(dirs, locator)
+        });
+        assert!(
+            !resolved.load(Ordering::SeqCst),
+            "Scheduling a render must not read the locator"
+        );
+        let (sender, receiver) = std::sync::mpsc::channel();
+        cx.executor()
+            .spawn(async move {
+                sender.send(task.await).unwrap();
+            })
+            .detach();
+        cx.executor().run_until_parked();
+        assert_eq!(
+            receiver.try_recv().unwrap().unwrap(),
+            custom.join("cache/editor")
+        );
+        assert!(resolved.load(Ordering::SeqCst));
     }
 }

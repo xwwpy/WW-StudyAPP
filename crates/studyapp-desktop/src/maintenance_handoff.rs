@@ -168,7 +168,9 @@ pub(crate) fn create_download_stage() -> Result<PathBuf> {
     let root = std::env::temp_dir();
     create_download_stage_in(&root)
 }
-fn create_download_stage_in(root: &Path) -> Result<PathBuf> {
+pub(crate) fn create_download_stage_in(root: &Path) -> Result<PathBuf> {
+    studyapp_desktop::app_paths::validate_path(root)?;
+    let _guards = crate::storage_backend::guard_directories(root, true)?;
     cleanup::retry_before_create(root)?;
     let path = root.join(format!(
         "WW-StudyApp-maintenance-{}",

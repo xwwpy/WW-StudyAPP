@@ -40,6 +40,7 @@ pub struct ApplicationLocation {
     pub files: u64,
     pub movable: bool,
     pub reason: String,
+    file_only: bool,
 }
 #[derive(Clone, Debug)]
 pub struct ApplicationIssue {
@@ -48,6 +49,7 @@ pub struct ApplicationIssue {
 }
 fn location(label: &str, path: PathBuf, movable: bool) -> ApplicationLocation {
     ApplicationLocation {
+        file_only: false,
         label: label.into(),
         path,
         bytes: 0,
@@ -66,8 +68,10 @@ struct Seen {
     paths: HashSet<PathBuf>,
     identities: HashSet<(u64, u128)>,
     entries: usize,
+    budget: usize,
+    exhausted: bool,
 }
-fn identity(file: &File) -> Result<(u64, u128)> {
+pub(crate) fn identity(file: &File) -> Result<(u64, u128)> {
     #[cfg(windows)]
     {
         use std::os::windows::io::AsRawHandle;
@@ -101,10 +105,14 @@ fn visit(
     report: &mut ApplicationReport,
     seen: &mut Seen,
 ) -> Result<()> {
-    ensure!(
-        depth <= 128 && seen.entries < 1_000_000,
-        "统计深度或文件数量超过上限"
-    );
+    if seen.exhausted {
+        return Ok(());
+    }
+    if seen.entries >= seen.budget {
+        seen.exhausted = true;
+        anyhow::bail!("统计文件数量超过上限");
+    }
+    ensure!(depth <= 128, "统计深度超过上限");
     seen.entries += 1;
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(m) => m,
@@ -113,13 +121,33 @@ fn visit(
     };
     let _parents = crate::storage_backend::guard_directories(path.parent().unwrap_or(path), false)?;
     let directory = metadata.is_dir();
+    ensure!(
+        !row.file_only || metadata.is_file(),
+        "登记的外置图片不是普通文件"
+    );
     let file = crate::storage_backend::plain_handle(path, directory, false)?;
     let canonical = std::fs::canonicalize(path)?;
     if !seen.paths.insert(canonical) {
         return Ok(());
     }
     if directory {
-        for entry in std::fs::read_dir(path)? {
+        let mut entries = std::fs::read_dir(path)?;
+        loop {
+            if seen.exhausted {
+                break;
+            }
+            // Check before advancing ReadDir, including siblings whose inspection fails.
+            if seen.entries >= seen.budget {
+                seen.exhausted = true;
+                report.issues.push(ApplicationIssue {
+                    path: path.into(),
+                    message: "统计文件数量超过上限".into(),
+                });
+                break;
+            }
+            let Some(entry) = entries.next() else {
+                break;
+            };
             match entry {
                 Ok(e) => {
                     if let Err(error) = visit(&e.path(), depth + 1, row, report, seen) {
@@ -129,10 +157,13 @@ fn visit(
                         });
                     }
                 }
-                Err(error) => report.issues.push(ApplicationIssue {
-                    path: path.into(),
-                    message: error.to_string(),
-                }),
+                Err(error) => {
+                    seen.entries += 1;
+                    report.issues.push(ApplicationIssue {
+                        path: path.into(),
+                        message: error.to_string(),
+                    });
+                }
             }
         }
     } else {
@@ -152,15 +183,26 @@ pub fn scan(
     locations: Vec<ApplicationLocation>,
     issues: Vec<ApplicationIssue>,
 ) -> ApplicationReport {
+    scan_with_budget(locations, issues, 1_000_000)
+}
+fn scan_with_budget(
+    locations: Vec<ApplicationLocation>,
+    issues: Vec<ApplicationIssue>,
+    budget: usize,
+) -> ApplicationReport {
     let mut report = ApplicationReport {
         issues,
         ..Default::default()
     };
-    let mut seen = Seen::default();
+    let mut seen = Seen {
+        budget,
+        ..Seen::default()
+    };
     for mut row in locations {
         let path = row.path.clone();
-        if let Err(error) = studyapp_desktop::app_paths::validate_path(&path)
-            .and_then(|_| visit(&path, 0, &mut row, &mut report, &mut seen))
+        if !seen.exhausted
+            && let Err(error) = studyapp_desktop::app_paths::validate_path(&path)
+                .and_then(|_| visit(&path, 0, &mut row, &mut report, &mut seen))
         {
             report.issues.push(ApplicationIssue {
                 path: row.path.clone(),
@@ -191,7 +233,9 @@ pub fn inspect(
         }
     }
     for path in external {
-        locations.push(location("已登记外置图片", path, false));
+        let mut row = location("已登记外置图片", path, false);
+        row.file_only = true;
+        locations.push(row);
     }
     let mut issues = vec![];
     if native {
@@ -466,6 +510,35 @@ mod safety_tests {
             vec![],
         );
         assert_eq!(report.logical_bytes, 3);
+    }
+    #[test]
+    fn indexed_directory_is_never_traversed() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: root.join("data"),
+            config: root.join("config"),
+            local_data: root.join("local"),
+            cache: root.join("cache"),
+            updates: root.join("updates"),
+        };
+        let paths = AppPaths::from_defaults(dirs, root.join("locator.json")).unwrap();
+        let indexed = root.join("external/old-image.png");
+        std::fs::create_dir_all(&indexed).unwrap();
+        std::fs::write(indexed.join("unrelated"), b"secret").unwrap();
+        let report = inspect(&paths, &root.join("library"), [indexed], false);
+        assert_eq!(report.logical_bytes, 0);
+        assert!(report.incomplete);
+    }
+    #[test]
+    fn traversal_budget_stops_siblings_and_bounds_diagnostics() {
+        let root = tempfile::tempdir().unwrap().keep();
+        for n in 0..40 {
+            std::fs::write(root.join(n.to_string()), b"x").unwrap();
+        }
+        let report = scan_with_budget(vec![location("root", root, true)], vec![], 4);
+        assert_eq!(report.files, 3);
+        assert_eq!(report.issues.len(), 1);
+        assert!(report.incomplete);
     }
     #[cfg(windows)]
     #[test]

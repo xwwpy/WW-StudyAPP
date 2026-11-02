@@ -336,11 +336,9 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
         dir.join("supervisor"),
         fs::Permissions::from_mode(0o700),
     ))?;
-    let pointer = pointer_path()?;
-    io(fs::create_dir_all(
-        pointer.parent().ok_or("Missing pointer parent")?,
-    ))?;
-    io(fs::write(pointer, text(&dir)?))?;
+    crate::app_usage::runtime_paths()
+        .and_then(|paths| paths.publish_update_pointer(&dir))
+        .map_err(|error| error.to_string())?;
     Ok(dir)
 }
 pub fn spawn(dir: &Path) -> Result<()> {

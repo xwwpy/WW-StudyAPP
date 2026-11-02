@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
 #[derive(Clone, Debug)]
@@ -113,6 +113,55 @@ impl AppPaths {
         validate_path(&result)?;
         Ok(result)
     }
+    /// Relocation must not detach an active or failed recovery transaction.
+    pub fn verify_relocation_allowed(&self) -> Result<()> {
+        for directory in [&self.defaults.local_data, &self.effective.local_data] {
+            let pointer = directory.join("update-last.txt");
+            validate_path(&pointer)?;
+            if pointer.try_exists()? {
+                ensure_terminal_pointer_for(&pointer, false)?;
+            }
+        }
+        Ok(())
+    }
+    /// Publish a new transaction only after prior evidence is known to be terminal.
+    /// Legacy recovery evidence remains at its original path after a root change.
+    pub fn publish_update_pointer(&self, stage: &Path) -> Result<()> {
+        validate_path(stage)?;
+        let destination = self.effective.local_data.join("update-last.txt");
+        let legacy = self.defaults.local_data.join("update-last.txt");
+        for pointer in [&destination, &legacy] {
+            validate_path(pointer)?;
+            if pointer.try_exists()? {
+                ensure_terminal_pointer(pointer)
+                    .context("已有更新事务仍活跃或无法验证；请先恢复该事务")?;
+            }
+        }
+        validate_path(&destination)?;
+        std::fs::create_dir_all(&self.effective.local_data)
+            .context("create update pointer parent")?;
+        let _guards =
+            guard_existing_parents(&destination).context("guard update pointer parent")?;
+        let temporary = self
+            .effective
+            .local_data
+            .join(format!("update-pointer-{}.tmp", uuid::Uuid::new_v4()));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .context("create temporary update pointer")?;
+        file.write_all(
+            stage
+                .to_str()
+                .context("更新目录需要有效文本路径")?
+                .as_bytes(),
+        )?;
+        file.sync_all().context("sync update pointer")?;
+        drop(file);
+        std::fs::rename(&temporary, &destination).context("publish update pointer")?;
+        Ok(())
+    }
     /// Preserve the existing transaction's pointer; never transplant its contents.
     pub fn update_pointer(&self) -> Result<PathBuf> {
         let new = self.effective.local_data.join("update-last.txt");
@@ -159,6 +208,9 @@ pub fn validate_path(path: &Path) -> Result<()> {
     Ok(())
 }
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
+    serde_json::from_slice(&read_bounded(path)?).context("无法解析应用位置配置")
+}
+fn read_bounded(path: &Path) -> Result<Vec<u8>> {
     let _guards = guard_existing_parents(path)?;
     validate_path(path)?;
     let mut options = std::fs::OpenOptions::new();
@@ -187,7 +239,7 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     let mut bytes = Vec::new();
     file.take(65537).read_to_end(&mut bytes)?;
     ensure!(bytes.len() <= 65536, "位置配置过大");
-    serde_json::from_slice(&bytes).context("无法解析应用位置配置")
+    Ok(bytes)
 }
 
 fn guard_existing_parents(path: &Path) -> Result<Vec<File>> {
@@ -222,4 +274,54 @@ fn guard_existing_parents(path: &Path) -> Result<Vec<File>> {
         }
     }
     Ok(guards)
+}
+
+fn ensure_terminal_pointer(pointer: &Path) -> Result<()> {
+    ensure_terminal_pointer_for(pointer, true)
+}
+fn ensure_terminal_pointer_for(pointer: &Path, allow_failed: bool) -> Result<()> {
+    let stage = PathBuf::from(String::from_utf8(read_bounded(pointer)?)?);
+    validate_path(&stage)?;
+    let transaction: serde_json::Value = read_json(&stage.join("transaction.json"))?;
+    let transaction = transaction.get("transaction").unwrap_or(&transaction);
+    ensure!(
+        transaction["schema"] == 1 && transaction["id"].as_str().is_some_and(|s| !s.is_empty()),
+        "更新事务无效"
+    );
+    let mut newest = None;
+    let mut terminal = false;
+    for (count, entry) in std::fs::read_dir(&stage)?.enumerate() {
+        ensure!(count < 256, "更新事务记录过多");
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("status-") || !name.ends_with(".json") {
+            continue;
+        }
+        let value: serde_json::Value = read_json(&entry.path())?;
+        let state = value["state"].as_str().context("更新状态无效")?;
+        ensure!(
+            name.starts_with(&format!("status-{state}-")),
+            "更新状态记录不匹配"
+        );
+        let is_terminal = matches!(state, "healthy" | "recovered" | "cancelled")
+            || (allow_failed && state == "failed");
+        let modified = entry.metadata()?.modified()?;
+        match newest {
+            None => {
+                newest = Some(modified);
+                terminal = is_terminal;
+            }
+            Some(previous) if modified > previous => {
+                newest = Some(modified);
+                terminal = is_terminal;
+            }
+            Some(previous) if modified == previous => {
+                terminal &= is_terminal;
+            }
+            _ => {}
+        }
+    }
+    ensure!(newest.is_some() && terminal, "更新尚未结束");
+    Ok(())
 }

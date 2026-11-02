@@ -226,11 +226,9 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
         &serde_json::to_vec(&tx).map_err(|e| e.to_string())?,
     )?;
     stage_supervisor(&executable, &dir)?;
-    let location = pointer()?;
-    io(fs::create_dir_all(
-        location.parent().ok_or("Missing status parent")?,
-    ))?;
-    io(fs::write(location, dir.to_string_lossy().as_bytes()))?;
+    crate::app_usage::runtime_paths()
+        .and_then(|paths| paths.publish_update_pointer(&dir))
+        .map_err(|error| error.to_string())?;
     Ok(dir)
 }
 fn stage_supervisor(executable: &Path, dir: &Path) -> Result<()> {

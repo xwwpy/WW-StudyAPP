@@ -50,6 +50,13 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
     Ok(serde_json::from_slice(&bytes)?)
 }
 pub(crate) fn discover_library(context: &DiscoveryContext) -> LibraryDiscovery {
+    discover_library_for_purpose(context, true)
+}
+/// Updates protect resolved resources but do not request cleanup capability.
+pub(crate) fn discover_library_for_update(context: &DiscoveryContext) -> LibraryDiscovery {
+    discover_library_for_purpose(context, false)
+}
+fn discover_library_for_purpose(context: &DiscoveryContext, cleanup: bool) -> LibraryDiscovery {
     let mut report = LibraryDiscovery::default();
     let resolve = || -> Result<PathBuf> {
         if let Some(paths) = &context.app_paths {
@@ -113,10 +120,11 @@ pub(crate) fn discover_library(context: &DiscoveryContext) -> LibraryDiscovery {
             &mut report.configuration_files,
             paths.storage_locator().to_owned(),
         ) {
-            Ok(()) => report.issues.push(
+            Ok(()) if cleanup => report.issues.push(
                 "应用位置配置已登记；此版本维护程序暂不支持清理其配置或数据库，已保留全部数据。"
                     .into(),
             ),
+            Ok(()) => {}
             Err(_) => report
                 .issues
                 .push("应用位置配置无法验证；配置和数据库清理暂不可用。".into()),

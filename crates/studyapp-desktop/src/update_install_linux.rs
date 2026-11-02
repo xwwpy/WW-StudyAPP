@@ -167,14 +167,9 @@ pub fn prepare(package: &VerifiedPackage, data_directory: Option<PathBuf>) -> Re
         package.directory.join("supervisor"),
         fs::Permissions::from_mode(0o700),
     ))?;
-    let pointer = pointer_path()?;
-    io(fs::create_dir_all(
-        pointer.parent().ok_or("Invalid update record path")?,
-    ))?;
-    io(fs::write(
-        pointer,
-        package.directory.to_string_lossy().as_bytes(),
-    ))?;
+    crate::app_usage::runtime_paths()
+        .and_then(|paths| paths.publish_update_pointer(&package.directory))
+        .map_err(|error| error.to_string())?;
     Ok(package.directory.clone())
 }
 /// Readiness must succeed before the caller closes its window.

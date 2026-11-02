@@ -1240,10 +1240,22 @@ fn maintenance_context(
     Ok(context)
 }
 
+fn create_maintenance_download_stage(
+    context: &crate::maintenance_runtime::DiscoveryContext,
+) -> UpdateResult<PathBuf> {
+    let stage = if let Some(paths) = &context.app_paths {
+        crate::maintenance_handoff::create_download_stage_in(&paths.effective.updates)
+    } else {
+        // Explicit acceptance contexts retain their original staging contract.
+        crate::maintenance_handoff::create_download_stage()
+    };
+    stage.map_err(|_| failure(UpdateErrorKind::Preparation))
+}
+
 fn protected_update_paths(
     context: &crate::maintenance_runtime::DiscoveryContext,
 ) -> UpdateResult<studyapp_desktop::maintenance::ProtectedPaths> {
-    let library = crate::maintenance_runtime::discover_library(context);
+    let library = crate::maintenance_runtime::discover_library_for_update(context);
     if !library.issues.is_empty() {
         return Err(failure(UpdateErrorKind::Preparation));
     }
@@ -1326,8 +1338,7 @@ fn repair_installation_core(
             check_current_tag_for_repair_with_transport(env!("CARGO_PKG_VERSION"), transport)?
         }
     };
-    let stage = crate::maintenance_handoff::create_download_stage()
-        .map_err(|_| failure(UpdateErrorKind::Preparation))?;
+    let stage = create_maintenance_download_stage(&context)?;
     let _guards = crate::storage_backend::guard_directories(&stage, false)
         .map_err(|_| failure(UpdateErrorKind::Preparation))?;
     let (archive, hash, _, identity) =
@@ -1384,8 +1395,7 @@ pub fn prepare_update(
         crate::maintenance_runtime::read_portable_receipt(&target)
             .map_err(|_| failure(UpdateErrorKind::RepairRequired))?
     };
-    let stage = crate::maintenance_handoff::create_download_stage()
-        .map_err(|_| failure(UpdateErrorKind::Preparation))?;
+    let stage = create_maintenance_download_stage(&context)?;
     let _guards = crate::storage_backend::guard_directories(&stage, false)
         .map_err(|_| failure(UpdateErrorKind::Preparation))?;
     let (payload, hash, _, identity) =
@@ -1598,4 +1608,54 @@ pub fn read_last_update_status() -> UpdateResult<Option<UpdateStatus>> {
         return Ok(None);
     }
     Ok(Some(value))
+}
+
+#[cfg(test)]
+mod custom_root_regressions {
+    use super::*;
+    fn context() -> crate::maintenance_runtime::DiscoveryContext {
+        let root = tempfile::tempdir().unwrap().keep();
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: root.join("data"),
+            config: root.join("config"),
+            local_data: root.join("local"),
+            cache: root.join("cache"),
+            updates: root.join("updates"),
+        };
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        let locator = dirs.config.join("storage-location.json");
+        std::fs::write(
+            &locator,
+            serde_json::to_vec(&serde_json::json!({"schema":1,"root":root.join("custom")}))
+                .unwrap(),
+        )
+        .unwrap();
+        let paths = studyapp_desktop::app_paths::AppPaths::from_defaults(dirs, locator).unwrap();
+        crate::maintenance_runtime::DiscoveryContext {
+            default_library: paths.effective.data.clone(),
+            location_file: Some(paths.legacy_location()),
+            explicit_library: None,
+            app_paths: Some(paths),
+        }
+    }
+    #[test]
+    fn locator_allows_update_protection_but_retains_cleanup_guard() {
+        let context = context();
+        assert!(protected_update_paths(&context).is_ok());
+        assert!(
+            !crate::maintenance_runtime::discover_library(&context)
+                .issues
+                .is_empty()
+        );
+    }
+    #[test]
+    fn update_and_repair_download_stages_use_effective_root() {
+        let context = context();
+        let expected = &context.app_paths.as_ref().unwrap().effective.updates;
+        for _ in 0..2 {
+            let stage = create_maintenance_download_stage(&context).unwrap();
+            assert_eq!(stage.parent(), Some(expected.as_path()));
+            assert!(stage.is_dir());
+        }
+    }
 }
