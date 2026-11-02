@@ -95,6 +95,8 @@ pub(crate) fn removal_server(
                     Err(e) => panic!("{e}"),
                 }
             };
+            // Winsock propagates the listening socket's nonblocking mode.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                 .unwrap();
