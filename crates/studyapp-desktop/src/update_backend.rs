@@ -1639,11 +1639,11 @@ mod custom_root_regressions {
         }
     }
     #[test]
-    fn locator_allows_update_protection_but_retains_cleanup_guard() {
+    fn locator_allows_update_and_authenticated_cleanup() {
         let context = context();
         assert!(protected_update_paths(&context).is_ok());
         assert!(
-            !crate::maintenance_runtime::discover_library(&context)
+            crate::maintenance_runtime::discover_library(&context)
                 .issues
                 .is_empty()
         );
