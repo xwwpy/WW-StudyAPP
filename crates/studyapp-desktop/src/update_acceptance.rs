@@ -113,6 +113,10 @@ pub(crate) fn downloaded(path: &Path) -> Result<(), String> {
         save(
             "download-metadata.json",
             json!({"path":path,"quarantine":crate::update_install::quarantine::read(path)?,
+            "policy_probe_pointer":crate::app_usage::runtime_paths()
+                .and_then(|paths|paths.update_pointer())
+                .map_err(|error|error.to_string())?
+                .with_file_name("update-policy-probe.txt"),
             "production_file_writer":true,"fixture_network_transport":true}),
         );
     }

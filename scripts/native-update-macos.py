@@ -24,6 +24,26 @@ common = load("native_common", "native-update-acceptance.py")
 policy = load("native_policy", "assess-macos-update.py")
 
 
+def approval_pointer(downloaded, pid):
+    # The app resolves its locator and isolated acceptance profile. Never guess a
+    # system profile here: each scenario has a different runtime process/root.
+    package = Path(downloaded["path"])
+    pointer = Path(downloaded["policy_probe_pointer"])
+    if not package.is_absolute() or len(package.parents) < 3:
+        raise ValueError("Expected an absolute acceptance download path")
+    runtime = package.parents[2].resolve()
+    expected = runtime / "local/update-policy-probe.txt"
+    if (runtime.name != f"studyapp-runtime-test-{pid}"
+            or package.parent.parent.name != "updates"
+            or not package.parent.name.startswith("studyapp-update-")
+            or package.name != "package"
+            or not pointer.is_absolute()
+            or pointer.name != "update-policy-probe.txt"
+            or pointer.resolve() != expected):
+        raise ValueError("Policy probe pointer is outside this app's acceptance runtime")
+    return pointer
+
+
 def mount(package, destination):
     destination.mkdir()
     common.run(["hdiutil", "attach", package, "-readonly", "-nobrowse", "-mountpoint", destination])
@@ -177,8 +197,8 @@ def transition(root, packages, source_sha, old_version, target_version, producti
             old = subprocess.Popen([installed / "Contents/MacOS/studyapp", "--data-dir", data], env=environment, stdout=log, stderr=log)
             before = common.wait_file(fixture / "old-observation.json", 120, old)
             if scenario == "quarantine-refusal":
-                pointer = Path.home() / "Library/Application Support/io.StudyApp.StudyApp/update-policy-probe.txt"
                 downloaded = common.wait_file(fixture / "download-metadata.json", 120, old)
+                pointer = approval_pointer(downloaded, old.pid)
                 expected_probe = (Path(downloaded["path"]).parent / "approval").resolve()
                 deadline = time.monotonic() + 60
                 next_snapshot = time.monotonic()
@@ -239,7 +259,8 @@ def transition(root, packages, source_sha, old_version, target_version, producti
                 os.kill(old.pid,15)
                 old.wait(timeout=15)
                 return
-            pointer = Path.home() / "Library/Application Support/io.StudyApp.StudyApp/update-policy-probe.txt"
+            downloaded = common.wait_file(fixture / "download-metadata.json", 120, old)
+            pointer = approval_pointer(downloaded, old.pid)
             deadline = time.monotonic() + 180
             approved = False
             while old.poll() is None:
