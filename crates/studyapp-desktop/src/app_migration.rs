@@ -148,6 +148,8 @@ struct Journal {
     backup_digest: Option<[u8; 32]>,
     #[serde(default)]
     stage_identity: Option<(u64, u128)>,
+    #[serde(default)]
+    cleanup_digest: Option<[u8; 32]>,
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
 enum Phase {
@@ -216,7 +218,8 @@ struct Entry {
     size: u64,
     identity: (u64, u128),
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CopyRecord {
     source: PathBuf,
     target: PathBuf,
@@ -232,6 +235,88 @@ impl CopyRecord {
     pub fn size(&self) -> u64 {
         self.size
     }
+}
+// A saved receipt never grants permission: the user sees the remaining exact
+// paths again, and deletion revalidates each open file after confirmation.
+pub fn remaining_cleanup(
+    paths: &AppPaths,
+    snapshot: &studyapp_core::Snapshot,
+) -> Result<Vec<CopyRecord>> {
+    let Some(j) = journal(paths)? else {
+        return Ok(Vec::new());
+    };
+    let Some(expected) = j.cleanup_digest else {
+        return Ok(Vec::new());
+    };
+    let next_library = j.destination.join("library");
+    if paths.custom_root.as_ref() != Some(&j.destination)
+        || paths.configured_library() != Some(next_library.as_path())
+        || Path::new(&snapshot.data_path) != next_library.join("studyapp.sqlite3")
+        || !matches!(j.phase, Phase::Publishing | Phase::Complete)
+    {
+        return Ok(Vec::new());
+    }
+    let stage = j.destination.join(format!(".studyapp-migration-{}", j.id));
+    let _guards = guard_directories(&stage, false)?;
+    ensure!(
+        Some(crate::app_usage::identity(&plain_handle(
+            &stage, true, false
+        )?)?)
+            == j.stage_identity,
+        "迁移记录目录已变化"
+    );
+    let receipt = stage.join("cleanup.json");
+    let file = plain_handle(&receipt, false, true)?;
+    ensure!(file.metadata()?.len() <= 64 * 1024 * 1024, "旧副本清单过大");
+    let mut bytes = Vec::new();
+    file.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= 64 * 1024 * 1024 && <[u8; 32]>::from(Sha256::digest(&bytes)) == expected,
+        "旧副本清单摘要已变化"
+    );
+    let records: Vec<CopyRecord> = serde_json::from_slice(&bytes)?;
+    ensure!(records.len() <= 100_001, "旧副本清单条目过多");
+    let old_cache = match j.previous {
+        None => paths.defaults.cache.clone(),
+        Some(raw) => {
+            let config = validate_config(&serde_json::from_slice(&raw)?)?;
+            config.root.join("cache")
+        }
+    };
+    let old_profile = canon(&old_cache)?.join("editor");
+    let owned_notes: std::collections::BTreeSet<_> = snapshot
+        .notes
+        .iter()
+        .filter(|n| n.managed)
+        .map(|n| Path::new("notes").join(format!("{}.md", n.id)))
+        .collect();
+    let mut remaining = Vec::new();
+    for r in records {
+        validate_path(&r.source)?;
+        validate_path(&r.target)?;
+        ensure!(
+            r.old_library == j.source && !nested(&r.source, &j.destination),
+            "旧副本目录无效"
+        );
+        let expected = if let Ok(rel) = r.source.strip_prefix(&old_profile) {
+            j.destination.join("cache/editor").join(rel)
+        } else if let Ok(rel) = r.source.strip_prefix(&j.source) {
+            if !(rel == Path::new("studyapp.sqlite3")
+                || owned_notes.contains(rel)
+                || owned_library_payload(rel))
+            {
+                continue;
+            }
+            next_library.join(rel)
+        } else {
+            anyhow::bail!("旧副本不在已登记的源目录中")
+        };
+        ensure!(r.target == expected, "旧副本目标已变化");
+        if r.source.try_exists()? {
+            remaining.push(r)
+        }
+    }
+    Ok(remaining)
 }
 fn canon(path: &Path) -> Result<PathBuf> {
     validate_path(path)?;
@@ -399,6 +484,13 @@ impl Prepared {
             read_optional(&self.paths.locator)? == self.journal.previous,
             "位置配置已变化，请重新迁移"
         );
+        let receipt = self
+            .journal
+            .destination
+            .join(format!(".studyapp-migration-{}", self.journal.id))
+            .join("cleanup.json");
+        atomic_json(&receipt, &self.records)?;
+        self.journal.cleanup_digest = Some(digest(plain_handle(&receipt, false, true)?, |_| {})?);
         self.journal.phase = Phase::Publishing;
         atomic_json(&journal_file(&self.paths), &self.journal)?;
         publish_config(
@@ -494,6 +586,7 @@ pub fn prepare(
             backup_identity: None,
             backup_digest: None,
             stage_identity: Some(stage_id),
+            cleanup_digest: None,
         };
         atomic_json(&journal_file(&paths), &j)?;
         j
@@ -790,7 +883,14 @@ fn owned_library_payload(rel: &Path) -> bool {
                 | "sync.json"
         )
 }
-pub fn cleanup(records: &[CopyRecord], current_database: &str) -> Result<String> {
+pub fn cleanup(records: &[CopyRecord], snapshot: &studyapp_core::Snapshot) -> Result<String> {
+    let current_database = &snapshot.data_path;
+    let external: std::collections::BTreeSet<_> = snapshot
+        .notes
+        .iter()
+        .filter(|n| !n.managed)
+        .map(|n| path_key(Path::new(&n.path)))
+        .collect();
     let first = records.first().context("没有待删除的旧副本")?;
     let paths = crate::app_usage::runtime_paths()?;
     let active = canon(
@@ -803,6 +903,10 @@ pub fn cleanup(records: &[CopyRecord], current_database: &str) -> Result<String>
         "应用位置已经变化，旧副本已保留"
     );
     let root = canon(paths.custom_root.as_deref().context("未配置应用位置")?)?;
+    ensure!(
+        active == root.join("library"),
+        "当前资料库已切换，旧文件保留"
+    );
     let old = canon(&first.old_library)?;
     ensure!(
         !nested(&old, &root) && !nested(&root, &old),
@@ -828,6 +932,17 @@ pub fn cleanup(records: &[CopyRecord], current_database: &str) -> Result<String>
                     && !nested(&record.source, &root)
                     && nested(&record.target, &root),
                 "源或目标目录已变化"
+            );
+            let source_key = path_key(&record.source);
+            ensure!(
+                !external.contains(&source_key)
+                    && !snapshot
+                        .settings
+                        .images
+                        .root
+                        .as_ref()
+                        .is_some_and(|r| source_key.starts_with(path_key(Path::new(r)))),
+                "旧文件仍被当前资料库作为外部文件引用"
             );
             let _src = guard_directories(record.source.parent().context("源目录无效")?, false)?;
             let _dst = guard_directories(record.target.parent().context("目标目录无效")?, false)?;
@@ -996,6 +1111,15 @@ mod tests {
             canon(&target).unwrap().join("library")
         );
         assert!(pending(&after).unwrap().is_none());
+        let restored = remaining_cleanup(&after, &_next.snapshot()).unwrap();
+        assert_eq!(restored.len(), prepared.records.len());
+        let j = journal(&after).unwrap().unwrap();
+        let receipt = j
+            .destination
+            .join(format!(".studyapp-migration-{}", j.id))
+            .join("cleanup.json");
+        fs::write(receipt, b"[]").unwrap();
+        assert!(remaining_cleanup(&after, &_next.snapshot()).is_err());
     }
     #[test]
     fn unrelated_and_overlapping_targets_preserve_locator() {
