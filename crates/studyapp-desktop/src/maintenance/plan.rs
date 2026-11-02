@@ -157,6 +157,7 @@ pub fn preview_uninstall(
         vec![]
     };
     Ok(UninstallPreview {
+        location_anchors: vec![],
         preview_id: uuid::Uuid::new_v4().to_string(),
         install_id: receipt.install_id.clone(),
         database_path,

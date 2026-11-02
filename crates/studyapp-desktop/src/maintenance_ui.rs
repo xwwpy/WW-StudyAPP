@@ -77,12 +77,14 @@ impl MaintenanceController {
                 .receipt
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("安装所有权尚未验证"))?;
-            self.confirmation = Some(UninstallConfirmation::new(preview_uninstall(
+            let mut preview = preview_uninstall(
                 receipt,
                 self.selection,
                 self.discovery.library.verified_database.clone(),
                 self.discovery.library.configuration_files.clone(),
-            )?));
+            )?;
+            preview.location_anchors = self.discovery.library.location_anchors.clone();
+            self.confirmation = Some(UninstallConfirmation::new(preview));
         }
         let confirmation = self.confirmation.as_mut().expect("initialized above");
         match confirmation.stage() {

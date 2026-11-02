@@ -13,7 +13,18 @@ pub(crate) fn prepare_uninstall(
         "卸载预览与当前安装不符"
     );
     let _guards = checked_root(receipt)?;
+    let _location_lease = context
+        .app_paths
+        .as_ref()
+        .map(|p| location_lease(&p.locator))
+        .transpose()?;
     let library = runtime::discover_library(context);
+    if preview.selection.database || preview.selection.configuration {
+        ensure!(
+            preview.location_anchors == library.location_anchors,
+            "应用位置锚点已改变，请重新确认"
+        );
+    }
     let location_file = if context.explicit_library.is_none() {
         context.location_file.clone()
     } else {
@@ -83,7 +94,16 @@ pub(crate) fn prepare_uninstall(
             }
         }
     }
+    let location_state = context.app_paths.as_ref().map(|p| UninstallLocationState {
+        default_data: p.defaults.data.clone(),
+        default_config: p.defaults.config.clone(),
+        locator: p.locator.clone(),
+        explicit_library: context.explicit_library.clone(),
+        anchors: library.location_anchors.clone(),
+    });
     Ok(AuthenticatedUninstall {
+        intent_schema: 2,
+        location_state,
         receipt: receipt.clone(),
         transaction_id: uuid::Uuid::new_v4().simple().to_string(),
         configuration: preview.selection.configuration,
@@ -100,6 +120,7 @@ pub(crate) fn prepare_uninstall(
 pub(crate) fn apply_authenticated_uninstall(
     intent: AuthenticatedUninstall,
 ) -> Result<MaintenanceStatus> {
+    ensure!(intent.intent_schema == 2, "维护意图版本已过期，请重新确认");
     validate_receipt(&intent.receipt)?;
     ensure!(
         (intent.configuration || intent.configuration_files.is_empty())
@@ -115,6 +136,14 @@ pub(crate) fn apply_authenticated_uninstall(
             && intent.transaction_id.bytes().all(|c| c.is_ascii_hexdigit()),
         "卸载事务引用无效"
     );
+    let _location_lease = intent
+        .location_state
+        .as_ref()
+        .map(|s| location_lease(&s.locator))
+        .transpose()?;
+    if intent.configuration || intent.database {
+        validate_location_intent(&intent)?;
+    }
     let mut status = MaintenanceStatus {
         transaction_id: intent.transaction_id.clone(),
         state: MaintenanceState::Failed,
@@ -451,8 +480,30 @@ fn cleanup_data(intent: &AuthenticatedUninstall, retained: &mut Vec<PathBuf>) ->
             "数据库身份已改变"
         );
     }
+    // Pin present routing anchors while database and settings cleanup runs.
+    let anchor_guards: Vec<File> = intent
+        .location_state
+        .as_ref()
+        .map(|state| -> Result<Vec<File>> {
+            state
+                .anchors
+                .iter()
+                .filter(|(_, identity)| identity.is_some())
+                .map(|(path, _)| crate::storage_backend::plain_handle(path, false, true))
+                .collect()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    validate_location_intent(intent)?;
     if intent.configuration {
-        let inventory = runtime::configuration_inventory(library, intent.location_file.as_deref())?;
+        let mut inventory =
+            runtime::configuration_inventory(library, intent.location_file.as_deref())?;
+        if let Some(state) = &intent.location_state
+            && state.explicit_library.is_none()
+            && state.locator.try_exists()?
+        {
+            inventory.push(state.locator.clone());
+        }
         ensure!(
             intent
                 .configuration_files
@@ -507,24 +558,84 @@ fn cleanup_data(intent: &AuthenticatedUninstall, retained: &mut Vec<PathBuf>) ->
         studyapp_core::Engine::reset_existing_preferences_for_uninstall(&expected_database)?;
         drop(sidecars);
     }
-    let location = intent.location_file.as_ref();
+    let anchors: Vec<_> = intent
+        .location_state
+        .as_ref()
+        .map(|s| s.anchors.iter().map(|(p, _)| p).collect())
+        .unwrap_or_else(|| intent.location_file.iter().collect());
+    // Keep startup routing whenever the database is retained. Delete anchors last.
     for file in intent
         .configuration_files
         .iter()
-        .filter(|f| Some(&f.path) != location)
+        .filter(|f| !anchors.contains(&&f.path))
         .chain(&intent.database_files)
-        .chain(
-            intent
-                .configuration_files
-                .iter()
-                .filter(|f| Some(&f.path) == location),
-        )
     {
         if let Err(error) = file_ops::delete_exact(&file.path, &file.identity) {
             retained.push(file.path.clone());
             return Err(error);
         }
     }
+    drop(anchor_guards);
+    if intent.database {
+        for file in intent
+            .configuration_files
+            .iter()
+            .filter(|f| anchors.contains(&&f.path))
+        {
+            if let Err(error) = file_ops::delete_exact(&file.path, &file.identity) {
+                retained.push(file.path.clone());
+                return Err(error);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn location_lease(locator: &Path) -> Result<File> {
+    let parent = locator.parent().context("位置配置目录无效")?;
+    let _guards = crate::storage_backend::guard_directories(parent, true)?;
+    let path = parent.join("app-migration.lock");
+    studyapp_desktop::app_paths::validate_path(&path)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)?;
+    lock.try_lock().context("应用位置正在迁移或更改")?;
+    Ok(lock)
+}
+fn validate_location_intent(intent: &AuthenticatedUninstall) -> Result<()> {
+    let Some(state) = &intent.location_state else {
+        return Ok(());
+    };
+    ensure!(
+        state.locator == state.default_config.join("storage-location.json"),
+        "位置锚点不属于固定配置目录"
+    );
+    let dirs = studyapp_desktop::app_paths::AppDirectories {
+        data: state.default_data.clone(),
+        config: state.default_config.clone(),
+        local_data: state.default_data.clone(),
+        cache: state.default_data.clone(),
+        updates: state.default_data.clone(),
+    };
+    let paths = studyapp_desktop::app_paths::AppPaths::from_defaults(dirs, state.locator.clone())?;
+    let context = runtime::DiscoveryContext {
+        location_file: Some(paths.legacy_location()),
+        default_library: state.default_data.clone(),
+        explicit_library: state.explicit_library.clone(),
+        app_paths: Some(paths),
+    };
+    let current = runtime::discover_library(&context);
+    ensure!(
+        current.issues.is_empty() && current.location_anchors == state.anchors,
+        "应用位置已改变或迁移未完成"
+    );
+    ensure!(
+        current.database_path.as_deref().and_then(Path::parent) == intent.library_path.as_deref(),
+        "当前资料库与已确认位置不符"
+    );
     Ok(())
 }
 
@@ -871,12 +982,7 @@ mod tests {
         assert_eq!(std::fs::read(&seal).unwrap(), b"untrusted ownership seal");
     }
     fn fixture(selection: DataSelection) -> (AuthenticatedUninstall, PathBuf, PathBuf) {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(2)
-            .unwrap()
-            .join(".scratch/installation-20261026/test-temp")
-            .join(format!("uninstall-{}", uuid::Uuid::new_v4()));
+        let root = tempfile::tempdir().unwrap().keep();
         let app = root.join("application");
         let data = root.join("library");
         std::fs::create_dir_all(app.join("support")).unwrap();
@@ -950,6 +1056,159 @@ mod tests {
         }
         let intent = prepare_uninstall(confirmation.finish().unwrap(), &receipt, &context).unwrap();
         (intent, app, data)
+    }
+    fn custom_fixture(
+        selection: DataSelection,
+    ) -> (
+        InstallReceipt,
+        runtime::DiscoveryContext,
+        ConfirmedUninstall,
+        PathBuf,
+    ) {
+        let (old, _, data) = fixture(selection);
+        let base = data.parent().unwrap();
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: base.join("default"),
+            config: base.join("config"),
+            local_data: base.join("local"),
+            cache: base.join("cache"),
+            updates: base.join("updates"),
+        };
+        std::fs::create_dir_all(&dirs.config).unwrap();
+        let locator = dirs.config.join("storage-location.json");
+        std::fs::write(
+            &locator,
+            serde_json::to_vec(
+                &serde_json::json!({"schema":1,"root":base.join("custom"),"library":data}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dirs.config.join("location.json"),
+            serde_json::to_vec(&base.join("legacy-unused")).unwrap(),
+        )
+        .unwrap();
+        let paths = studyapp_desktop::app_paths::AppPaths::from_defaults(dirs, locator).unwrap();
+        let context = runtime::DiscoveryContext {
+            default_library: data.clone(),
+            location_file: Some(paths.legacy_location()),
+            explicit_library: None,
+            app_paths: Some(paths),
+        };
+        let discovery = runtime::discover_library(&context);
+        assert!(discovery.issues.is_empty(), "{:?}", discovery.issues);
+        let mut preview = preview_uninstall(
+            &old.receipt,
+            selection,
+            discovery.verified_database,
+            discovery.configuration_files,
+        )
+        .unwrap();
+        preview.location_anchors = discovery.location_anchors;
+        let mut confirmation = UninstallConfirmation::new(preview);
+        confirmation.confirm_selection();
+        if selection.database {
+            confirmation.confirm_database_review().unwrap();
+            confirmation.confirm_database_final("删除数据库").unwrap();
+        }
+        (old.receipt, context, confirmation.finish().unwrap(), data)
+    }
+    #[test]
+    fn custom_location_all_cleanup_choices_keep_startup_when_retaining_database() {
+        for configuration in [false, true] {
+            for database in [false, true] {
+                let (receipt, context, confirmed, data) = custom_fixture(DataSelection {
+                    configuration,
+                    database,
+                });
+                let paths = context.app_paths.as_ref().unwrap();
+                let intent = prepare_uninstall(confirmed, &receipt, &context).unwrap();
+                let status = apply_authenticated_uninstall(intent).unwrap();
+                assert_eq!(
+                    status.state,
+                    MaintenanceState::Succeeded,
+                    "{configuration}/{database}: {status:?}"
+                );
+                assert_eq!(paths.locator.exists(), !(configuration && database));
+                assert_eq!(
+                    paths.legacy_location().exists(),
+                    !(configuration && database)
+                );
+                assert_eq!(data.join("studyapp.sqlite3").exists(), !database);
+                assert_eq!(data.join("sync-config.json").exists(), !configuration);
+                if !database {
+                    let fresh = studyapp_desktop::app_paths::AppPaths::from_defaults(
+                        paths.defaults.clone(),
+                        paths.locator.clone(),
+                    )
+                    .unwrap();
+                    assert_eq!(fresh.resolve_library(None).unwrap(), data);
+                }
+                assert_eq!(
+                    std::fs::read(data.join("original.md")).unwrap(),
+                    b"original content"
+                );
+                assert!(data.join("backup.sqlite3").exists());
+            }
+        }
+    }
+    #[test]
+    fn changed_location_rejects_confirmation_and_authenticated_execution() {
+        for after_prepare in [false, true] {
+            let (receipt, context, confirmed, data) = custom_fixture(DataSelection {
+                configuration: true,
+                database: true,
+            });
+            let mut confirmed = Some(confirmed);
+            let prepared = if after_prepare {
+                Some(prepare_uninstall(confirmed.take().unwrap(), &receipt, &context).unwrap())
+            } else {
+                None
+            };
+            let paths = context.app_paths.as_ref().unwrap();
+            // Same resolved library, different locator identity/content: still stale intent.
+            std::fs::write(&paths.locator, serde_json::to_vec(&serde_json::json!({"schema":1,"root":data.parent().unwrap().join("other"),"library":data})).unwrap()).unwrap();
+            if let Some(intent) = prepared {
+                assert!(apply_authenticated_uninstall(intent).is_err());
+            } else {
+                assert!(prepare_uninstall(confirmed.take().unwrap(), &receipt, &context).is_err());
+            }
+            assert!(data.join("studyapp.sqlite3").exists());
+            assert!(receipt.install_root.join("runtime.dll").exists());
+        }
+    }
+    #[test]
+    fn expired_uninstall_intent_schema_is_rejected() {
+        let (intent, _, _) = fixture(DataSelection::default());
+        let mut value = serde_json::to_value(intent).unwrap();
+        value.as_object_mut().unwrap().remove("intent_schema");
+        assert!(serde_json::from_value::<AuthenticatedUninstall>(value).is_err());
+    }
+    #[test]
+    fn custom_location_migration_lock_and_pending_journal_block_cleanup() {
+        for pending in [false, true] {
+            let (receipt, context, confirmed, data) = custom_fixture(DataSelection {
+                configuration: true,
+                database: true,
+            });
+            let paths = context.app_paths.as_ref().unwrap();
+            let lock = if !pending {
+                Some(location_lease(&paths.locator).unwrap())
+            } else {
+                None
+            };
+            if pending {
+                std::fs::write(
+                    paths.locator.with_file_name("app-migration.json"),
+                    b"unverified in-progress migration",
+                )
+                .unwrap();
+            }
+            assert!(prepare_uninstall(confirmed, &receipt, &context).is_err());
+            assert!(data.join("studyapp.sqlite3").exists());
+            drop(lock);
+        }
     }
     #[test]
     fn maintenance_uninstall_configuration_rejects_post_confirmation_hardlinks() {

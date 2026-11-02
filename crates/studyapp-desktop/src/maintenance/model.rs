@@ -120,6 +120,7 @@ pub struct DataSelection {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UninstallPreview {
+    pub location_anchors: Vec<(PathBuf, Option<FileIdentity>)>,
     pub preview_id: String,
     pub install_id: String,
     pub database_path: Option<PathBuf>,

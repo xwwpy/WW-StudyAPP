@@ -947,7 +947,18 @@ pub(crate) struct CapturedFile {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct UninstallLocationState {
+    pub(crate) default_data: PathBuf,
+    pub(crate) default_config: PathBuf,
+    pub(crate) locator: PathBuf,
+    pub(crate) explicit_library: Option<PathBuf>,
+    pub(crate) anchors: Vec<(PathBuf, Option<FileIdentity>)>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct AuthenticatedUninstall {
+    pub(crate) intent_schema: u32,
+    pub(crate) location_state: Option<UninstallLocationState>,
     pub(crate) receipt: InstallReceipt,
     pub(crate) transaction_id: String,
     pub(crate) configuration: bool,

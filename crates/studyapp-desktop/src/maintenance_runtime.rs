@@ -34,6 +34,7 @@ pub(crate) struct LibraryDiscovery {
     pub database_path: Option<PathBuf>,
     pub verified_database: Option<(PathBuf, FileIdentity)>,
     pub configuration_files: Vec<PathBuf>,
+    pub location_anchors: Vec<(PathBuf, Option<FileIdentity>)>,
     pub issues: Vec<String>,
 }
 fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T> {
@@ -60,7 +61,22 @@ fn discover_library_for_purpose(context: &DiscoveryContext, cleanup: bool) -> Li
     let mut report = LibraryDiscovery::default();
     let resolve = || -> Result<PathBuf> {
         if let Some(paths) = &context.app_paths {
-            return paths.resolve_library(context.explicit_library.as_deref());
+            ensure!(
+                context.location_file.as_deref() == Some(paths.legacy_location().as_path()),
+                "位置指针不属于固定配置目录"
+            );
+            let fresh = studyapp_desktop::app_paths::AppPaths::from_defaults(
+                paths.defaults.clone(),
+                paths.locator.clone(),
+            )?;
+            if cleanup {
+                ensure!(
+                    !crate::app_migration::startup_pending()
+                        && crate::app_migration::pending(&fresh)?.is_none(),
+                    "应用位置迁移尚未完成"
+                );
+            }
+            return fresh.resolve_library(context.explicit_library.as_deref());
         }
         let library = if let Some(explicit) = &context.explicit_library {
             explicit.clone()
@@ -114,23 +130,36 @@ fn discover_library_for_purpose(context: &DiscoveryContext, cleanup: bool) -> Li
         && let Some(paths) = &context.app_paths
         && paths.storage_locator().exists()
     {
-        // Keep the real anchor visible. Existing uninstall execution only supports
-        // the legacy anchor, so it must refuse data/config cleanup for this schema.
         match push_existing(
             &mut report.configuration_files,
             paths.storage_locator().to_owned(),
         ) {
-            Ok(()) if cleanup => report.issues.push(
-                "应用位置配置已登记；此版本维护程序暂不支持清理其配置或数据库，已保留全部数据。"
-                    .into(),
-            ),
             Ok(()) => {}
             Err(_) => report
                 .issues
                 .push("应用位置配置无法验证；配置和数据库清理暂不可用。".into()),
         }
     }
+    if let Some(paths) = &context.app_paths {
+        for path in [paths.locator.clone(), paths.legacy_location()] {
+            match location_anchor(&path) {
+                Ok(identity) => report.location_anchors.push((path, identity)),
+                Err(_) => report
+                    .issues
+                    .push("应用位置锚点无法验证，保留数据。".into()),
+            }
+        }
+    }
     report
+}
+pub(crate) fn location_anchor(path: &Path) -> Result<Option<FileIdentity>> {
+    studyapp_desktop::app_paths::validate_path(path)?;
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let observed = observe_file(path, "location-anchor")?;
+    ensure!(observed.link_count == 1, "位置锚点存在多个链接");
+    Ok(Some(observed.identity))
 }
 fn revision_valid(name: &str) -> bool {
     name.starts_with("v1-")
@@ -911,6 +940,6 @@ mod registry_tests {
         assert_eq!(report.database_path, Some(library.join("studyapp.sqlite3")));
         assert!(report.configuration_files.contains(&locator));
         assert!(report.configuration_files.contains(&legacy));
-        assert!(report.issues.iter().any(|i| i.contains("暂不支持清理")));
+        assert!(report.issues.is_empty(), "{:?}", report.issues);
     }
 }
