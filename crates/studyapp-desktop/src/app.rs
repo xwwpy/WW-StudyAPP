@@ -517,6 +517,8 @@ impl StudyApp {
         while let Ok(update) = self.worker.receiver.try_recv() {
             let startup_failed = update.startup_failure.is_some();
             if let Some(failure) = update.startup_failure {
+                self.snapshot = None;
+                self.pending_library = None;
                 self.startup_failure = Some(failure);
                 self.startup_busy = false;
                 self.draft_loading = false;

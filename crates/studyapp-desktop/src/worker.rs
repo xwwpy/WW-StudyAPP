@@ -278,18 +278,86 @@ fn relocate(
     engine: &mut Engine,
     target: &std::path::Path,
     updates: &mpsc::Sender<Update>,
-) -> anyhow::Result<(OpenLibrary, Vec<crate::app_migration::CopyRecord>)> {
+    commands: &mpsc::Receiver<Work>,
+) -> anyhow::Result<Option<(OpenLibrary, Vec<crate::app_migration::CopyRecord>)>> {
     let paths = crate::app_usage::runtime_paths()?;
     let now = chrono::Utc::now().timestamp();
-    let mut migration = crate::app_migration::prepare(engine, paths, target, now, |message| {
+    let migration = crate::app_migration::prepare(engine, paths, target, now, |message| {
         let _ = updates.send(Update {
             storage_event: Some(StorageEvent::Progress(message)),
             ..Default::default()
         });
     })?;
-    let next = open_locked_library(&migration.database, now, migration.target_lock.try_clone()?)?;
-    migration.commit()?;
-    Ok((next, migration.records))
+    let expected = crate::app_usage::identity(&crate::storage_backend::plain_handle(
+        &migration.database,
+        false,
+        true,
+    )?)?;
+    let (database, target_lock, records) = migration.publish()?;
+    let open_target = || -> Result<OpenLibrary, StartupFailure> {
+        let checked = (|| -> anyhow::Result<_> {
+            let file = crate::storage_backend::plain_handle(&database, false, false)?;
+            anyhow::ensure!(
+                crate::app_usage::identity(&file)? == expected,
+                "迁移后的数据库已被替换，文件已保留"
+            );
+            Ok((file, target_lock.try_clone()?))
+        })()
+        .map_err(|e| {
+            StartupFailure::from_error(&database, StartupStage::Database, &database, &e)
+        })?;
+        open_locked_library(&database, chrono::Utc::now().timestamp(), checked.1)
+    };
+    let mut next = open_target();
+    loop {
+        let failure = match next {
+            Ok(library) => return Ok(Some((library, records))),
+            Err(e) => e,
+        };
+        if updates
+            .send(Update {
+                startup_failure: Some(failure.clone()),
+                storage_event: Some(StorageEvent::Finished(Err(
+                    "已切换至验证过的目标，请重试打开资料库。".into(),
+                ))),
+                ..Default::default()
+            })
+            .is_err()
+        {
+            return Ok(None);
+        }
+        loop {
+            match commands.recv() {
+                Ok(Work::Shutdown) | Err(_) => return Ok(None),
+                Ok(Work::RetryOpenLibrary) => {
+                    next = open_target();
+                    break;
+                }
+                Ok(Work::SwitchLibrary(dir)) => {
+                    let chosen = dir.join("studyapp.sqlite3");
+                    let legacy = crate::app_usage::runtime_paths().map(|p| p.legacy_location());
+                    next =
+                        open_library(&chosen, chrono::Utc::now().timestamp()).and_then(|opened| {
+                            let result = legacy
+                                .and_then(|loc| crate::app_migration::remember_library(&loc, &dir));
+                            result.map(|_| opened).map_err(|e| {
+                                StartupFailure::from_error(
+                                    &chosen,
+                                    StartupStage::RememberLocation,
+                                    &dir,
+                                    &e,
+                                )
+                            })
+                        });
+                    if let Ok(library) = next {
+                        return Ok(Some((library, Vec::new())));
+                    }
+                    break;
+                }
+                Ok(_) => continue,
+            }
+        }
+    }
 }
 fn offer_cleanup(files: Vec<crate::app_migration::CopyRecord>, updates: &mpsc::Sender<Update>) {
     let _ = updates.send(Update {
@@ -434,8 +502,9 @@ impl Worker {
             };
             let mut startup_notice = None;
             if let Some(target) = resume {
-                match relocate(&mut engine, &target, &updates) {
-                    Ok(((lock, next, prefs, sync), files)) => {
+                match relocate(&mut engine, &target, &updates, &commands) {
+                    Ok(None) => return,
+                    Ok(Some(((lock, next, prefs, sync), files))) => {
                         engine = next;
                         library_lock = lock;
                         preferences = prefs;
@@ -970,8 +1039,11 @@ impl Worker {
                                 !synchronization.status.busy && !image_cloud_busy,
                                 "请先等待同步完成"
                             );
-                            let ((lock, next, prefs, sync), files) =
-                                relocate(&mut engine, &directory, &updates)?;
+                            let Some(((lock, next, prefs, sync), files)) =
+                                relocate(&mut engine, &directory, &updates, &commands)?
+                            else {
+                                return Ok(None);
+                            };
                             engine = next;
                             library_lock = lock;
                             preferences = prefs;
@@ -983,9 +1055,13 @@ impl Worker {
                             library_replaced = true;
                             offer_cleanup(files, &updates);
                             notice = Some(Ok("已切换至新应用目录，旧文件仍保留。".into()));
-                            crate::storage_backend::inspect(&engine.snapshot())
-                        })()
-                        .map_err(|e| format!("{e:#}"));
+                            crate::storage_backend::inspect(&engine.snapshot()).map(Some)
+                        })();
+                        let result = match result {
+                            Ok(Some(report)) => Ok(report),
+                            Ok(None) => return,
+                            Err(e) => Err(format!("{e:#}")),
+                        };
                         storage_event = Some(StorageEvent::Finished(result));
                         changed = true;
                     }

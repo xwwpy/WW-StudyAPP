@@ -4,6 +4,28 @@ fn folder() -> std::path::PathBuf {
     tempfile::tempdir().unwrap().keep()
 }
 #[test]
+#[cfg(any(windows, target_os = "linux", target_os = "macos"))]
+fn local_removal_streams_large_notes_and_preserves_asset_size_limit() {
+    let root = folder();
+    let provider = LocalFolderProvider::new(&root).unwrap();
+    provider.write(ID, "initial", None).unwrap();
+    let data = vec![b'a'; MAX_CONTENT_BYTES + 1];
+    std::fs::write(root.join(format!("StudyApp/notes/{ID}.md")), &data).unwrap();
+    let plan = provider.inspect_note(ID).unwrap();
+    assert_eq!(plan.bytes, data.len() as u64);
+    assert_eq!(plan.hash, content_hash_bytes(&data));
+    provider.delete_note(&plan).unwrap();
+    let key = format!("assets/{ID}/one.png");
+    provider.write_asset(&key, b"asset").unwrap();
+    let stored = root.join("StudyApp").join(&key);
+    std::fs::write(&stored, &data).unwrap();
+    assert!(matches!(
+        Provider::inspect_asset(&provider, &key),
+        Err(SyncError::LimitExceeded)
+    ));
+    assert_eq!(std::fs::metadata(stored).unwrap().len(), data.len() as u64);
+}
+#[test]
 #[cfg(windows)]
 fn removal_local_conditional_and_retained_status() {
     let root = folder();

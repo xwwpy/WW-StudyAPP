@@ -9,6 +9,8 @@ mod object_store;
 mod planner;
 mod webdav;
 pub use local::LocalFolderProvider;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub use local::unix_removal::claim_unlink;
 pub use object_store::{ObjectAddressing, ObjectStoreConfig, ObjectStoreProvider};
 pub use planner::plan_sync;
 pub use webdav::WebDavProvider;

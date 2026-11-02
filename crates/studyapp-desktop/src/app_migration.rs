@@ -226,6 +226,8 @@ pub struct CopyRecord {
     identity: (u64, u128),
     size: u64,
     digest: [u8; 32],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_digest: Option<[u8; 32]>,
     old_library: PathBuf,
 }
 impl CopyRecord {
@@ -445,6 +447,50 @@ fn manifest(
     }
     Ok(result)
 }
+struct MovedIndex {
+    source_digest: [u8; 32],
+    bytes: Vec<u8>,
+}
+// The committed index and its writer's hidden alias share an inode. Prepare
+// the replacement bytes once, independent of which name is enumerated first.
+fn moved_indexes(
+    files: &BTreeMap<PathBuf, Entry>,
+    source: &Path,
+    target: &Path,
+) -> Result<BTreeMap<(u64, u128), MovedIndex>> {
+    let mut result = BTreeMap::new();
+    for (rel, entry) in files {
+        let Some(tail) = rel
+            .strip_prefix("library/image-index")
+            .ok()
+            .and_then(Path::to_str)
+            .and_then(|s| s.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        let tail = tail.replace('\\', "/");
+        if studyapp_sync::validate_asset_key(&format!("assets/{tail}")).is_err() {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        plain_handle(&entry.source, false, true)?
+            .take(32769)
+            .read_to_end(&mut bytes)?;
+        ensure!(bytes.len() <= 32768, "图片索引过大");
+        let stored: PathBuf = serde_json::from_slice(&bytes)?;
+        if path_key(&stored) == path_key(&source.join("images").join(&tail)) {
+            let replacement = serde_json::to_vec(&target.join("library/images").join(tail))?;
+            result.insert(
+                entry.identity,
+                MovedIndex {
+                    source_digest: Sha256::digest(bytes).into(),
+                    bytes: replacement,
+                },
+            );
+        }
+    }
+    Ok(result)
+}
 fn digest(mut file: File, mut progress: impl FnMut(u64)) -> Result<[u8; 32]> {
     hash_stream(&mut file, |n| {
         progress(n);
@@ -473,7 +519,11 @@ pub struct Prepared {
     pub target_lock: File,
 }
 impl Prepared {
-    pub fn commit(&mut self) -> Result<()> {
+    pub fn publish(mut self) -> Result<(PathBuf, File, Vec<CopyRecord>)> {
+        self.commit()?;
+        Ok((self.database, self.target_lock, self.records))
+    }
+    fn commit(&mut self) -> Result<()> {
         if let Err(e) = check_cancel() {
             self.journal.phase = Phase::Aborted;
             atomic_json(&journal_file(&self.paths), &self.journal)?;
@@ -484,6 +534,22 @@ impl Prepared {
             read_optional(&self.paths.locator)? == self.journal.previous,
             "位置配置已变化，请重新迁移"
         );
+        // Nothing opens the final DB for writing until this locator is committed.
+        let final_db = plain_handle(&self.database, false, true)?;
+        ensure!(
+            Some(crate::app_usage::identity(&final_db)?) == self.journal.backup_identity
+                && Some(digest(final_db, |_| {})?) == self.journal.backup_digest,
+            "目标数据库已变化，已保留原文件"
+        );
+        for suffix in ["-wal", "-shm", "-journal"] {
+            ensure!(
+                !self
+                    .database
+                    .with_file_name(format!("studyapp.sqlite3{suffix}"))
+                    .try_exists()?,
+                "目标出现未知数据库文件"
+            );
+        }
         let receipt = self
             .journal
             .destination
@@ -512,7 +578,24 @@ pub fn prepare(
     paths: AppPaths,
     target: &Path,
     now: i64,
+    progress: impl FnMut(TransferProgress),
+) -> Result<Prepared> {
+    prepare_checked(
+        engine,
+        paths,
+        target,
+        now,
+        progress,
+        studyapp_core::verify_backup_file,
+    )
+}
+fn prepare_checked(
+    engine: &mut Engine,
+    paths: AppPaths,
+    target: &Path,
+    now: i64,
     mut progress: impl FnMut(TransferProgress),
+    probe: impl FnOnce(&Path) -> Result<()>,
 ) -> Result<Prepared> {
     let source = canon(
         Path::new(&engine.snapshot().data_path)
@@ -662,6 +745,17 @@ pub fn prepare(
         // Partial bytes never shadow a final file; each restart independently
         // verifies already-published files against the newly quiesced source.
 
+        let indexes = moved_indexes(&files, &source, &dest)?;
+        let mut representatives: BTreeMap<(u64, u128), PathBuf> = BTreeMap::new();
+        let mut destination_groups = BTreeMap::new();
+        let verify_total = files
+            .values()
+            .map(|f| {
+                indexes
+                    .get(&f.identity)
+                    .map_or(f.size, |i| i.bytes.len() as u64)
+            })
+            .sum();
         let mut copied = 0;
         let mut verified = 0;
         let mut records = Vec::new();
@@ -672,7 +766,33 @@ pub fn prepare(
             let _srcguards = guard_directories(entry.source.parent().unwrap(), false)?;
             let _guards = guard_directories(dst.parent().unwrap(), true)?;
             let input = plain_handle(&entry.source, false, true)?;
-            let expected = if dst.try_exists()? {
+            let rewrite = indexes.get(&entry.identity);
+            let first = representatives.get(&entry.identity);
+            if let Some(first) = first
+                && !dst.try_exists()?
+            {
+                fs::hard_link(first, &dst)
+                    .with_context(|| format!("目标文件系统未能保留硬链接：{}", dst.display()))?;
+            }
+            let expected = if let Some(rewrite) = rewrite {
+                ensure!(
+                    digest(input, |_| {})? == rewrite.source_digest,
+                    "图片索引已变化"
+                );
+                if !dst.try_exists()? {
+                    let temp = scratch.join(uuid::Uuid::new_v4().to_string());
+                    let mut output = OpenOptions::new()
+                        .create_new(true)
+                        .write(true)
+                        .open(&temp)?;
+                    output.write_all(&rewrite.bytes)?;
+                    output.sync_all()?;
+                    drop(output);
+                    publish_new(&temp, &dst)?;
+                }
+                copied += entry.size;
+                Sha256::digest(&rewrite.bytes).into()
+            } else if dst.try_exists()? {
                 copied += entry.size;
                 digest(input, |_| {})?
             } else {
@@ -708,10 +828,26 @@ pub fn prepare(
                 publish_new(&temp, &dst)?;
                 hash.finalize().into()
             };
-            let actual = hash_stream(&mut plain_handle(&dst, false, true)?, |n| {
+            let mut dest_file = plain_handle(&dst, false, true)?;
+            let dest_id = crate::app_usage::identity(&dest_file)?;
+            ensure!(
+                destination_groups
+                    .insert(dest_id, entry.identity)
+                    .is_none_or(|old| old == entry.identity),
+                "目标文件存在未登记的硬链接"
+            );
+            if let Some(first) = first {
+                ensure!(
+                    crate::app_usage::identity(&plain_handle(first, false, true)?)? == dest_id,
+                    "目标硬链接拓扑已变化"
+                );
+            } else {
+                representatives.insert(entry.identity, dst.clone());
+            }
+            let actual = hash_stream(&mut dest_file, |n| {
                 verified += n;
                 if throttle.elapsed().as_millis() >= 100 {
-                    progress(TransferProgress::bytes("正在校验", verified, total));
+                    progress(TransferProgress::bytes("正在校验", verified, verify_total));
                     throttle = std::time::Instant::now()
                 }
                 check_cancel()
@@ -722,42 +858,59 @@ pub fn prepare(
                 target: dst,
                 identity: entry.identity,
                 size: entry.size,
-                digest: actual,
+                digest: rewrite.map_or(actual, |r| r.source_digest),
+                target_digest: rewrite.map(|_| actual),
                 old_library: source.clone(),
             });
         }
         progress(TransferProgress::bytes(
             "已校验，正在备份资料库",
             verified,
-            total,
+            verify_total,
         ));
         let backup = scratch.join(format!("{}.sqlite3", uuid::Uuid::new_v4()));
         engine.apply(Command::Backup(backup.clone()), now)?;
+        progress("正在验证暂存数据库…".into());
+        probe(&backup)?;
         OpenOptions::new().write(true).open(&backup)?.sync_all()?;
         validate_path(&database)?;
-        let replacing = database.try_exists()?;
-        if replacing {
+        if database.try_exists()? {
             let existing = plain_handle(&database, false, true)?;
             ensure!(
                 Some(crate::app_usage::identity(&existing)?) == j.backup_identity
                     && Some(digest(existing, |_| {})?) == j.backup_digest,
                 "目标数据库已变化，已保留原文件"
             );
+            let prior = scratch.join(format!("prior-{}.sqlite3", uuid::Uuid::new_v4()));
+            publish_new(&database, &prior)?;
+            let saved = plain_handle(&prior, false, true)?;
+            if Some(crate::app_usage::identity(&saved)?) != j.backup_identity
+                || Some(digest(saved, |_| {})?) != j.backup_digest
+            {
+                publish_new(&prior, &database).with_context(|| {
+                    format!("目标文件发生冲突，原条目保存在 {}", prior.display())
+                })?;
+                anyhow::bail!("目标数据库已变化，已保留原文件");
+            }
         }
         let fresh = plain_handle(&backup, false, true)?;
         j.backup_identity = Some(crate::app_usage::identity(&fresh)?);
         j.backup_digest = Some(digest(fresh, |_| {})?);
         atomic_json(&journal_file(&paths), &j)?;
-        if replacing {
-            fs::rename(backup, &database)?
-        } else {
-            publish_new(&backup, &database)?
-        }
+        publish_new(&backup, &database)?;
         ensure!(
             manifest(&paths, &source, &dest, &external)? == files,
             "迁移期间源文件发生变化，原位置仍有效"
         );
         for record in &records {
+            let copy = plain_handle(&record.target, false, true)?;
+            ensure!(
+                destination_groups.get(&crate::app_usage::identity(&copy)?)
+                    == Some(&record.identity)
+                    && digest(copy, |_| {})? == record.target_digest.unwrap_or(record.digest),
+                "目标副本或硬链接发生变化：{}",
+                record.target.display()
+            );
             let mut file = plain_handle(&record.source, false, true)?;
             ensure!(
                 hash_stream(&mut file, |_| check_cancel())? == record.digest,
@@ -791,6 +944,7 @@ pub fn prepare(
             identity: crate::app_usage::identity(&old_file)?,
             size: old_file.metadata()?.len(),
             digest: digest(old_file, |_| {})?,
+            target_digest: None,
         });
         Ok((database, records, target_lock))
     })();
@@ -961,7 +1115,8 @@ pub fn cleanup(records: &[CopyRecord], snapshot: &studyapp_core::Snapshot) -> Re
                 }
             } else {
                 ensure!(
-                    digest(plain_handle(&record.target, false, true)?, |_| {})? == record.digest,
+                    digest(plain_handle(&record.target, false, true)?, |_| {})?
+                        == record.target_digest.unwrap_or(record.digest),
                     "新副本已变化"
                 );
             }
@@ -1017,44 +1172,21 @@ fn unlink_os(path: &Path, identity: (u64, u128), expected: &[u8; 32]) -> Result<
 }
 #[cfg(unix)]
 fn unlink_os(path: &Path, identity: (u64, u128), expected: &[u8; 32]) -> Result<()> {
-    use std::os::unix::{ffi::OsStrExt, fs::MetadataExt, io::AsRawFd};
     let dir = plain_handle(path.parent().context("源目录无效")?, true, false)?;
-    let meta = dir.metadata()?;
-    // Untrusted writers in a shared directory cannot be excluded by our library lease.
-    ensure!(
-        meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o022 == 0,
-        "共享目录中的旧文件已保留"
-    );
-    let name = std::ffi::CString::new(path.file_name().context("文件名无效")?.as_bytes())?;
     let file = plain_handle(path, false, true)?;
     ensure!(
-        crate::app_usage::identity(&file)? == identity && digest(file, |_| {})? == *expected,
-        "旧文件已变化"
-    );
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: dir stays open, name is a single component, and stat is valid on success.
-    if unsafe {
-        libc::fstatat(
-            dir.as_raw_fd(),
-            name.as_ptr(),
-            stat.as_mut_ptr(),
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    } != 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let stat = unsafe { stat.assume_init() };
-    ensure!(
-        (stat.st_dev as u64, stat.st_ino as u128) == identity,
+        crate::app_usage::identity(&file)? == identity,
         "旧文件身份已变化"
     );
-    if unsafe { libc::unlinkat(dir.as_raw_fd(), name.as_ptr(), 0) } != 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
+    let bytes = file.metadata()?.len();
+    let hash = expected
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let revision = format!("{}:{}:{hash}", identity.0, identity.1);
+    studyapp_sync::claim_unlink(&dir, path, &revision, &hash, bytes, None)?;
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1072,6 +1204,103 @@ mod tests {
                 .unwrap();
         let engine = Engine::open(&dirs.data.join("studyapp.sqlite3"), 1000).unwrap();
         (base, paths, engine)
+    }
+    #[test]
+    fn interrupted_live_database_probe_resumes_in_same_target() {
+        let (base, paths, mut engine) = fixture();
+        let target = base.join("dest");
+        let mut live_probe = None;
+        let crash = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = prepare_checked(
+                &mut engine,
+                paths.clone(),
+                &target,
+                1010,
+                |_| {},
+                |path| {
+                    live_probe = Some(Engine::open(path, 1010)?);
+                    assert!(
+                        path.with_file_name(format!(
+                            "{}-wal",
+                            path.file_name().unwrap().to_string_lossy()
+                        ))
+                        .exists()
+                    );
+                    panic!("interrupt while SQLite has live sidecars")
+                },
+            );
+        }));
+        assert!(crash.is_err() && live_probe.is_some());
+        assert!(!paths.locator.exists() && !target.join("library/studyapp.sqlite3").exists());
+        assert_eq!(pending(&paths).unwrap(), Some(canon(&target).unwrap()));
+        let prepared = prepare(&mut engine, paths, &target, 1011, |_| {}).unwrap();
+        let (db, _lock, _) = prepared.publish().unwrap();
+        Engine::open(&db, 1012).unwrap();
+    }
+    #[test]
+    fn resume_refuses_a_split_target_alias_with_identical_bytes() {
+        let (base, paths, mut engine) = fixture();
+        let src = &paths.effective.data;
+        fs::write(src.join("a"), b"same").unwrap();
+        fs::hard_link(src.join("a"), src.join("b")).unwrap();
+        let dest = base.join("new");
+        drop(prepare(&mut engine, paths.clone(), &dest, 1010, |_| {}).unwrap());
+        let b = dest.join("library/b");
+        fs::rename(&b, base.join("saved-link")).unwrap();
+        fs::write(&b, b"same").unwrap();
+        assert!(prepare(&mut engine, paths.clone(), &dest, 1011, |_| {}).is_err());
+        assert_eq!(fs::read(&b).unwrap(), b"same");
+        assert!(!paths.locator.exists());
+    }
+    #[test]
+    fn migrated_image_and_index_hardlinks_can_be_purged_without_touching_source() {
+        let (base, paths, mut engine) = fixture();
+        let id = uuid::Uuid::new_v4().to_string();
+        engine
+            .apply(
+                Command::CreateNoteWithId {
+                    note_id: id.clone(),
+                    title: "image".into(),
+                    content: format!("![asset](studyapp-media:{id}/one.gif)"),
+                    folder_id: None,
+                },
+                1010,
+            )
+            .unwrap();
+        let image = Path::new("images").join(&id).join("one.gif");
+        let index = Path::new("image-index").join(&id).join("one.gif.json");
+        let source = &paths.effective.data;
+        let pending = format!(".studyapp-image-{}.pending", uuid::Uuid::new_v4());
+        for rel in [&image, &index] {
+            let p = source.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            let content = if *rel == image {
+                b"gif".to_vec()
+            } else {
+                serde_json::to_vec(&source.join(&image)).unwrap()
+            };
+            fs::write(&p, content).unwrap();
+            fs::hard_link(&p, p.with_file_name(&pending)).unwrap();
+        }
+        let target = base.join("new");
+        let mut migration = prepare(&mut engine, paths.clone(), &target, 1011, |_| {}).unwrap();
+        migration.commit().unwrap();
+        let mut next = Engine::open(&migration.database, 1012).unwrap();
+        for rel in [&image, &index] {
+            let p = target.join("library").join(rel);
+            let identity = |p: &Path| crate::app_usage::identity(&File::open(p).unwrap()).unwrap();
+            assert_eq!(identity(&p), identity(&p.with_file_name(&pending)));
+            assert_ne!(identity(&p), identity(&source.join(rel)));
+        }
+        let plan = crate::storage_backend::purge::prepare(&next.snapshot(), &id).unwrap();
+        crate::storage_backend::purge::execute(&mut next, &plan, 1013).unwrap();
+        for rel in [&image, &index] {
+            let p = target.join("library").join(rel);
+            assert!(!p.exists() && !p.with_file_name(&pending).exists());
+            assert!(
+                source.join(rel).exists() && source.join(rel).with_file_name(&pending).exists()
+            );
+        }
     }
     #[test]
     fn staged_copy_and_publication_preserve_old_data_and_exclude_external_inputs() {
@@ -1103,8 +1332,8 @@ mod tests {
                 .count(),
             1
         );
-        let _next = Engine::open(&prepared.database, 1002).unwrap();
         prepared.commit().unwrap();
+        let _next = Engine::open(&prepared.database, 1002).unwrap();
         let after = AppPaths::from_defaults(paths.defaults, paths.locator).unwrap();
         assert_eq!(
             after.resolve_library(None).unwrap(),

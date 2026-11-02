@@ -1,5 +1,5 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod unix_removal;
+pub(crate) mod unix_removal;
 use crate::*;
 use std::{
     fs::{self, File, OpenOptions},
@@ -227,6 +227,16 @@ fn removal_identity(_: &File) -> Result<String> {
     ))
 }
 
+// Stream note hashes without an object-size cap. Assets retain their protocol limit.
+fn removal_hash(reader: &File, limit: u64) -> Result<(String, u64)> {
+    let mut hash = Sha256::new();
+
+    let bytes = std::io::copy(&mut reader.take(limit.saturating_add(1)), &mut hash)?;
+    if bytes > limit {
+        return Err(SyncError::LimitExceeded);
+    }
+    Ok((format!("{:x}", hash.finalize()), bytes))
+}
 impl LocalFolderProvider {
     fn removal_path(&self, target: &str, asset: bool) -> Result<PathBuf> {
         if asset {
@@ -262,18 +272,22 @@ impl LocalFolderProvider {
     fn inspect_removal_file(
         &self,
         target: &str,
-        _path: &Path,
+        asset: bool,
         file: &File,
     ) -> Result<RemoteRemoval> {
         let identity = removal_identity(file)?;
-        let bytes = bounded_bytes(file)?;
-        let hash = content_hash_bytes(&bytes);
+        let limit = if asset {
+            MAX_CONTENT_BYTES as u64
+        } else {
+            u64::MAX
+        };
+        let (hash, bytes) = removal_hash(file, limit)?;
         Ok(RemoteRemoval {
-            confirmed_retained: self.removal_retained(file)?,
+            confirmed_retained: self.removal_retained(file, limit)?,
             target: target.into(),
             revision: format!("{identity}:{hash}"),
             hash,
-            bytes: bytes.len() as u64,
+            bytes,
             provider_identity: content_hash(&self.root.to_string_lossy()),
             // Old random-named originals/pending files cannot safely be attributed.
             residual: RemovalResidual::RetainedCopies,
@@ -291,10 +305,10 @@ impl LocalFolderProvider {
             let (_notes, _lock) = self.locked_dir()?;
             let path = self.removal_path(target, asset)?;
             let file = Self::removal_open(&path, false)?;
-            self.inspect_removal_file(target, &path, &file)
+            self.inspect_removal_file(target, asset, &file)
         }
     }
-    fn removal_retained(&self, source: &File) -> Result<Vec<RetainedRemoval>> {
+    fn removal_retained(&self, source: &File, limit: u64) -> Result<Vec<RetainedRemoval>> {
         let dir = self.root.join("StudyApp/notes/.retained");
         let Some(meta) = checked_metadata(&dir)? else {
             return Ok(Vec::new());
@@ -324,13 +338,12 @@ impl LocalFolderProvider {
             if removal_identity(&file)? != source_identity {
                 continue;
             }
-            let bytes = bounded_bytes(&file)?;
-            let hash = content_hash_bytes(&bytes);
+            let (hash, bytes) = removal_hash(&file, limit)?;
             result.push(RetainedRemoval {
                 name,
                 revision: format!("{source_identity}:{hash}"),
                 hash,
-                bytes: bytes.len() as u64,
+                bytes,
             });
         }
         result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -348,7 +361,7 @@ impl LocalFolderProvider {
             let (_notes, _lock) = self.locked_dir()?;
             let path = self.removal_path(&plan.target, asset)?;
             let file = Self::removal_open(&path, false)?;
-            let mut current = self.inspect_removal_file(&plan.target, &path, &file)?;
+            let mut current = self.inspect_removal_file(&plan.target, asset, &file)?;
             if plan.confirmed_retained.iter().enumerate().any(|(i, e)| {
                 !current.confirmed_retained.contains(e) || plan.confirmed_retained[..i].contains(e)
             }) {
@@ -432,12 +445,8 @@ impl LocalFolderProvider {
         });
         let file = Self::removal_open(path, true)?;
         let identity = removal_identity(&file)?;
-        let content = bounded_bytes(&file)?;
-        let actual_hash = content_hash_bytes(&content);
-        if format!("{identity}:{actual_hash}") != revision
-            || actual_hash != hash
-            || content.len() as u64 != bytes
-        {
+        let (actual_hash, len) = removal_hash(&file, bytes)?;
+        if format!("{identity}:{actual_hash}") != revision || actual_hash != hash || len != bytes {
             return Err(SyncError::Conflict);
         }
         #[cfg(windows)]

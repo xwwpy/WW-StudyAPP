@@ -113,7 +113,7 @@ fn inspect_locked(
             "Unix file must be owned and not group/other writable",
         ));
     }
-    let plan = provider.inspect_removal_file(target, &path, &file)?;
+    let plan = provider.inspect_removal_file(target, asset, &file)?;
     if file.metadata()?.nlink() != 1 + plan.confirmed_retained.len() as u64 {
         return Err(SyncError::UnsupportedRemoval(
             "Unix object has external or unproven hard links; cannot exclude external writers",
@@ -154,20 +154,21 @@ fn restore(
     }
     syscall(unsafe { unlinkat(txn.as_raw_fd(), claimed.as_ptr(), 0) })
 }
-fn claim_delete(
-    provider: &LocalFolderProvider,
+/// Atomically claim a single directory entry under an already-pinned parent.
+pub fn claim_unlink(
+    dir: &File,
     path: &Path,
     revision: &str,
     hash: &str,
     bytes: u64,
-    links: u64,
+    links: Option<u64>,
 ) -> Result<()> {
-    let dir = parent(provider, path)?;
+    owned(dir)?;
     let original = name(path.file_name().ok_or(SyncError::InvalidPath)?)?;
     let transaction = format!(".studyapp-removal-{}", uuid::Uuid::new_v4());
     let txn_name = name(std::ffi::OsStr::new(&transaction))?;
     syscall(unsafe { mkdirat(dir.as_raw_fd(), txn_name.as_ptr(), 0o700) })?;
-    let txn = open_at(&dir, std::ffi::OsStr::new(&transaction), true)?;
+    let txn = open_at(dir, std::ffi::OsStr::new(&transaction), true)?;
     owned(&txn)?;
     if txn.metadata()?.mode() & 0o777 != 0o700 {
         return Err(SyncError::UnsupportedRemoval(
@@ -204,19 +205,19 @@ fn claim_delete(
         let file = open_at(&txn, std::ffi::OsStr::new("claimed"), false)?;
         let before = file.metadata()?;
         if !before.is_file()
-            || before.nlink() != links
+            || links.is_some_and(|links| before.nlink() != links)
+            || before.len() != bytes
             || before.uid() != unsafe { geteuid() }
             || before.mode() & 0o022 != 0
         {
             return Err(SyncError::Conflict);
         }
         let identity = removal_identity(&file)?;
-        let content = bounded_bytes(&file)?;
-        let actual = content_hash_bytes(&content);
+        let (actual, len) = removal_hash(&file, bytes)?;
         let after = file.metadata()?;
         if format!("{identity}:{actual}") != revision
             || actual != hash
-            || content.len() as u64 != bytes
+            || len != bytes
             || before.mtime() != after.mtime()
             || before.mtime_nsec() != after.mtime_nsec()
             || before.ctime() != after.ctime()
@@ -227,12 +228,12 @@ fn claim_delete(
         Ok(())
     })();
     if let Err(error) = verify {
-        restore(&dir, &original, &txn, &claimed, &recovery)?;
+        restore(dir, &original, &txn, &claimed, &recovery)?;
         return Err(error);
     }
     // Only the verified name inside the new private directory is unlinked.
     if let Err(error) = syscall(unsafe { unlinkat(txn.as_raw_fd(), claimed.as_ptr(), 0) }) {
-        restore(&dir, &original, &txn, &claimed, &recovery)?;
+        restore(dir, &original, &txn, &claimed, &recovery)?;
         return Err(error);
     }
     Ok(())
@@ -282,7 +283,9 @@ pub(super) fn execute(
         plan.bytes,
     ));
     for (index, (path, revision, hash, bytes)) in entries.iter().enumerate() {
-        if let Err(error) = claim_delete(provider, path, revision, hash, *bytes, links) {
+        let removed = parent(provider, path)
+            .and_then(|dir| claim_unlink(&dir, path, revision, hash, *bytes, Some(links)));
+        if let Err(error) = removed {
             if outcome.removed_retained == 0 {
                 return Err(error);
             }
@@ -372,6 +375,32 @@ mod tests {
             fs::read_to_string(root.join(format!("StudyApp/notes/{ID}.md"))).unwrap(),
             "new owner"
         );
+    }
+    #[test]
+    fn exact_claim_handles_large_note_and_restores_replacement_before_claim() {
+        let (root, _) = fixture();
+        let dir = File::open(&root).unwrap();
+        let path = root.join("large.md");
+        let data = vec![b'x'; MAX_CONTENT_BYTES + 4096];
+        fs::write(&path, &data).unwrap();
+        let file = File::open(&path).unwrap();
+        let id = removal_identity(&file).unwrap();
+        let hash = content_hash_bytes(&data);
+        let revision = format!("{id}:{hash}");
+        BEFORE_REMOVE.with(|h| {
+            *h.borrow_mut() = Some(Box::new(|path| {
+                fs::rename(path, path.with_extension("saved")).unwrap();
+                fs::write(path, "stranger").unwrap()
+            }))
+        });
+        assert!(matches!(
+            claim_unlink(&dir, &path, &revision, &hash, data.len() as u64, None),
+            Err(SyncError::Conflict)
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "stranger");
+        let saved = path.with_extension("saved");
+        claim_unlink(&dir, &saved, &revision, &hash, data.len() as u64, None).unwrap();
+        assert!(!saved.exists() && path.exists());
     }
     #[test]
     fn removal_unix_shared_inode_and_unprotected_directory_are_unsupported() {
