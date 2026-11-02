@@ -527,7 +527,63 @@ impl StudyApp {
             if let Some(response) = update.media_result {
                 self.accept_media_result(response, window, cx);
             }
-            let storage_finished = update.storage_event.is_some();
+            use crate::storage_backend::StorageEvent;
+            if let Some(StorageEvent::Progress(progress)) = &update.storage_event {
+                self.storage_ui.migration_progress = Some(progress.clone());
+                changed = true;
+                continue;
+            }
+            if let Some(StorageEvent::CleanupOffer(records)) = &update.storage_event {
+                self.storage_ui.cleanup = Some(records.clone());
+                self.storage_ui.reviewing_cleanup = false;
+                self.storage_ui.migration_healthy = false;
+                changed = true;
+                continue;
+            }
+            if self.storage_ui.migration_progress.is_some()
+                && (matches!(update.storage_event, Some(StorageEvent::Finished(_)))
+                    || self.snapshot.is_none()
+                        && update.snapshot.is_some()
+                        && !crate::app_migration::startup_pending())
+            {
+                self.storage_ui.migration_progress = None;
+                self.suspend_migration_hosts(false, cx);
+            }
+            let storage_finished = matches!(update.storage_event, Some(StorageEvent::Finished(_)));
+            if let Some(event) = &update.storage_event {
+                use crate::storage_backend::StorageEvent;
+                match event {
+                    StorageEvent::PurgePreview(result) => {
+                        self.storage_busy = false;
+                        self.folders
+                            .update(cx, |panel, cx| panel.set_busy(false, cx));
+                        match result {
+                            Ok(plan)
+                                if self.storage_confirm.as_ref() == Some(&plan.local.note_id)
+                                    && plan.local.library == self.last_library =>
+                            {
+                                self.storage_ui.purge = Some((plan.scope, Some(plan.clone())));
+                            }
+                            Err(e) => self.push_notice(Err(e.clone()), cx),
+                            _ => {}
+                        }
+                    }
+                    StorageEvent::PurgeDone(result) => {
+                        self.storage_busy = false;
+                        self.storage_confirm = None;
+                        self.storage_ui.purge = None;
+                        self.folders
+                            .update(cx, |panel, cx| panel.set_busy(false, cx));
+                        self.draft_loading = true;
+                        self.drafts.load(&self.last_library);
+                        match result {
+                            Ok(r) => self.storage_report = Some(r.clone()),
+                            Err(e) => self.push_notice(Err(e.clone()), cx),
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let preferences_finished = update.preferences_result.is_some();
             if let Some(crate::storage_backend::StorageEvent::Finished(result)) =
                 update.storage_event
@@ -606,6 +662,14 @@ impl StudyApp {
                     panel.set_editing_locked(false, cx);
                 });
             }
+            changed = true;
+        }
+        if self.storage_ui.cleanup.is_some()
+            && !self.storage_ui.migration_healthy
+            && self.storage_ui.migration_progress.is_none()
+            && self.note_content.read(cx).ready()
+        {
+            self.storage_ui.migration_healthy = true;
             changed = true;
         }
         if self.draft_deferred_work.is_some()
@@ -1124,6 +1188,7 @@ impl StudyApp {
         self.preferences_ui.reset_confirmation = false;
         self.confirmation = None;
         self.storage_confirm = None;
+        self.storage_ui.purge = None;
         self.folders.update(cx, |panel, cx| panel.cancel_action(cx));
         cx.notify();
     }
@@ -1283,7 +1348,23 @@ impl Render for StudyApp {
             Page::Stats => "学习统计",
             Page::Settings => "设置",
         };
-        let body = if let Some(snapshot) = self.snapshot.clone() {
+        let body = if let Some(progress) = &self.storage_ui.migration_progress {
+            let panel = progress.panel();
+            if self.preferences_ui.replacing && self.update_panel.read(cx).is_relocating()
+                || crate::app_migration::startup_pending()
+            {
+                panel
+                    .child(
+                        Button::new("cancel-active-migration")
+                            .small()
+                            .label("取消未提交的迁移")
+                            .on_click(|_, _, _| crate::app_migration::cancel()),
+                    )
+                    .into_any_element()
+            } else {
+                panel.into_any_element()
+            }
+        } else if let Some(snapshot) = self.snapshot.clone() {
             match self.page {
                 Page::Today => self.today(&snapshot, window, cx).into_any_element(),
                 Page::Notes => self.notes(&snapshot, window, cx).into_any_element(),

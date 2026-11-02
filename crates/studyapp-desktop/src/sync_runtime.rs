@@ -544,12 +544,13 @@ impl SyncRuntime {
                     test_only,
                 });
             }
-            let excluded: BTreeSet<_> = snapshot
+            let mut excluded: BTreeSet<_> = snapshot
                 .notes
                 .iter()
                 .filter(|note| note.detached)
                 .map(|note| note.id.clone())
                 .collect();
+            excluded.extend(crate::storage_backend::purge::suppressed(&snapshot)?);
             let notes: Vec<_> = snapshot
                 .notes
                 .iter()

@@ -120,10 +120,15 @@ pub enum Work {
     SwitchLibrary(PathBuf),
     RetryOpenLibrary,
     RefreshStorage,
+    RetryPurgeCleanup,
+    PreviewPurge(String, crate::storage_backend::purge::remote::Scope),
+    ConfirmPurge(Box<crate::storage_backend::purge::remote::Preview>),
     DeleteManagedCopy {
         note_id: String,
     },
     MigrateLibrary(PathBuf),
+    MigrateApplication(PathBuf),
+    CleanMigration(Arc<Vec<crate::app_migration::CopyRecord>>),
     Shutdown,
 }
 
@@ -231,6 +236,20 @@ fn open_library(
             }
         })
     )?;
+    open_locked_library(path, now, lock)
+}
+
+type OpenLibrary = (
+    std::fs::File,
+    Engine,
+    PreferencesStore,
+    crate::sync_runtime::SyncRuntime,
+);
+fn open_locked_library(
+    path: &std::path::Path,
+    now: i64,
+    lock: std::fs::File,
+) -> Result<OpenLibrary, StartupFailure> {
     let mut engine = startup_step!(
         result,
         Engine,
@@ -255,6 +274,29 @@ fn open_library(
     Ok((lock, engine, preferences, synchronization))
 }
 
+fn relocate(
+    engine: &mut Engine,
+    target: &std::path::Path,
+    updates: &mpsc::Sender<Update>,
+) -> anyhow::Result<(OpenLibrary, Vec<crate::app_migration::CopyRecord>)> {
+    let paths = crate::app_usage::runtime_paths()?;
+    let now = chrono::Utc::now().timestamp();
+    let mut migration = crate::app_migration::prepare(engine, paths, target, now, |message| {
+        let _ = updates.send(Update {
+            storage_event: Some(StorageEvent::Progress(message)),
+            ..Default::default()
+        });
+    })?;
+    let next = open_locked_library(&migration.database, now, migration.target_lock.try_clone()?)?;
+    migration.commit()?;
+    Ok((next, migration.records))
+}
+fn offer_cleanup(files: Vec<crate::app_migration::CopyRecord>, updates: &mpsc::Sender<Update>) {
+    let _ = updates.send(Update {
+        storage_event: Some(StorageEvent::CleanupOffer(Arc::new(files))),
+        ..Default::default()
+    });
+}
 fn save_scoped_settings(
     command: Command,
     preferences: &mut PreferencesStore,
@@ -296,7 +338,15 @@ fn save_scoped_settings(
 }
 
 impl Worker {
+    #[cfg(test)]
     pub fn start(path: PathBuf, location_config: Option<PathBuf>) -> Self {
+        Self::start_resuming(path, location_config, None)
+    }
+    pub fn start_resuming(
+        path: PathBuf,
+        location_config: Option<PathBuf>,
+        resume: Option<PathBuf>,
+    ) -> Self {
         let (sender, commands) = mpsc::channel();
         let (updates, receiver) = mpsc::channel();
         let command_sender = sender.clone();
@@ -316,7 +366,7 @@ impl Worker {
                             let directory = std::path::Path::new(&snapshot.data_path)
                                 .parent()
                                 .expect("opened database has a parent");
-                            crate::storage_backend::persist_location(config, directory).map_err(
+                            crate::app_migration::remember_library(config, directory).map_err(
                                 |error| {
                                     StartupFailure::from_error(
                                         &requested_path,
@@ -382,6 +432,35 @@ impl Worker {
                     }
                 }
             };
+            let mut startup_notice = None;
+            if let Some(target) = resume {
+                match relocate(&mut engine, &target, &updates) {
+                    Ok(((lock, next, prefs, sync), files)) => {
+                        engine = next;
+                        library_lock = lock;
+                        preferences = prefs;
+                        synchronization = sync;
+                        offer_cleanup(files, &updates);
+                        startup_notice = Some(Ok("应用位置迁移已恢复并完成".into()));
+                    }
+                    Err(error) => {
+                        startup_notice = Some(Err(format!("迁移未完成，已打开原资料库。{error:#}")))
+                    }
+                }
+                crate::app_migration::set_startup_pending(false);
+            }
+            if !cfg!(test) && location_config.is_some() {
+                let restored = crate::app_usage::runtime_paths().and_then(|paths| {
+                    crate::app_migration::remaining_cleanup(&paths, &engine.snapshot())
+                });
+                match restored {
+                    Ok(files) if !files.is_empty() => offer_cleanup(files, &updates),
+                    Err(e) => {
+                        startup_notice = Some(Err(format!("旧副本清单无法验证，文件已保留。{e:#}")))
+                    }
+                    _ => {}
+                }
+            }
             let mut generation = 0_u64;
             let mut read_model_cache = studyapp_desktop::read_models::ReadModelCache::default();
             let mut image_cloud_busy = false;
@@ -399,7 +478,7 @@ impl Worker {
                     startup_failure: None,
                     snapshot: Some(snapshot),
                     read_models: Some(read_models),
-                    notice: None,
+                    notice: startup_notice,
                     editor_result: false,
                     library_replaced: recovery_requested,
                     library_result: recovery_requested.then_some(Ok(())),
@@ -443,8 +522,13 @@ impl Worker {
                             let storage_event = matches!(
                                 work.as_ref(),
                                 Work::RefreshStorage
+                                    | Work::RetryPurgeCleanup
                                     | Work::DeleteManagedCopy { .. }
+                                    | Work::PreviewPurge(..)
+                                    | Work::ConfirmPurge(_)
                                     | Work::MigrateLibrary(_)
+                                    | Work::MigrateApplication(_)
+                                    | Work::CleanMigration(_)
                             )
                             .then(|| StorageEvent::Finished(Err(error.clone())));
                             let preferences_result =
@@ -773,7 +857,7 @@ impl Worker {
                                 let directory = std::path::Path::new(&snapshot.data_path)
                                     .parent()
                                     .ok_or_else(|| anyhow::anyhow!("资料库目录不存在"))?;
-                                crate::storage_backend::persist_location(config, directory)?;
+                                crate::app_migration::remember_library(config, directory)?;
                             }
                             engine = next;
                             preferences = next_preferences;
@@ -793,10 +877,61 @@ impl Worker {
                         notice = Some(result);
                         changed = true;
                     }
+                    Ok(Work::RetryPurgeCleanup) => {
+                        let snapshot = engine.snapshot();
+                        let result =
+                            crate::storage_backend::purge::retry_database_cleanup(&snapshot)
+                                .and_then(|_| crate::storage_backend::inspect(&snapshot))
+                                .map_err(|error| crate::storage_backend::user_message(&error));
+                        storage_event = Some(StorageEvent::Finished(result));
+                        changed = true;
+                    }
                     Ok(Work::RefreshStorage) => {
                         let result = crate::storage_backend::inspect(&engine.snapshot())
-                            .map_err(|error| crate::storage_backend::user_message(&error));
+                            .map_err(|e| crate::storage_backend::user_message(&e));
                         storage_event = Some(StorageEvent::Finished(result));
+                        changed = true;
+                    }
+                    Ok(Work::PreviewPurge(id, scope)) => {
+                        let result = (|| -> anyhow::Result<_> {
+                            anyhow::ensure!(
+                                !synchronization.status.busy && !image_cloud_busy,
+                                "请等待当前同步完成"
+                            );
+                            engine.checkpoint()?;
+                            crate::storage_backend::purge::remote::preview(
+                                &engine.snapshot(),
+                                &synchronization,
+                                &id,
+                                scope,
+                            )
+                        })()
+                        .map(Box::new)
+                        .map_err(|e| format!("{e:#}"));
+                        storage_event = Some(StorageEvent::PurgePreview(result));
+                        changed = true;
+                    }
+                    Ok(Work::ConfirmPurge(plan)) => {
+                        let result = (|| -> anyhow::Result<_> {
+                            anyhow::ensure!(
+                                !synchronization.status.busy && !image_cloud_busy,
+                                "请等待当前同步完成"
+                            );
+                            let message = crate::storage_backend::purge::remote::execute(
+                                &mut engine,
+                                &synchronization,
+                                &plan,
+                                now,
+                            )?;
+                            Ok(message)
+                        })()
+                        .map_err(|e| format!("删除尚未全部完成，可重新预览后重试。{e:#}"));
+                        crate::media::clear_preview_cache();
+                        notice = Some(result);
+                        storage_event = Some(StorageEvent::PurgeDone(
+                            crate::storage_backend::inspect(&engine.snapshot())
+                                .map_err(|error| format!("{error:#}")),
+                        ));
                         changed = true;
                     }
                     Ok(Work::DeleteManagedCopy { note_id }) => {
@@ -814,6 +949,46 @@ impl Worker {
                         storage_event = Some(StorageEvent::Finished(result));
                         changed = true;
                     }
+                    Ok(Work::CleanMigration(records)) => {
+                        notice = Some(
+                            crate::app_migration::cleanup(&records, &engine.snapshot())
+                                .map_err(|e| format!("{e:#}")),
+                        );
+                        storage_event = Some(StorageEvent::Finished(
+                            crate::storage_backend::inspect(&engine.snapshot())
+                                .map_err(|e| e.to_string()),
+                        ));
+                        changed = true;
+                    }
+                    Ok(Work::MigrateApplication(directory)) => {
+                        let result = (|| -> anyhow::Result<_> {
+                            anyhow::ensure!(
+                                location_config.is_some(),
+                                "隔离资料库不能更改应用位置"
+                            );
+                            anyhow::ensure!(
+                                !synchronization.status.busy && !image_cloud_busy,
+                                "请先等待同步完成"
+                            );
+                            let ((lock, next, prefs, sync), files) =
+                                relocate(&mut engine, &directory, &updates)?;
+                            engine = next;
+                            library_lock = lock;
+                            preferences = prefs;
+                            synchronization = sync;
+                            last_tick = Instant::now();
+                            generation += 1;
+                            last_sync_attempt = Instant::now();
+                            sync_changed = true;
+                            library_replaced = true;
+                            offer_cleanup(files, &updates);
+                            notice = Some(Ok("已切换至新应用目录，旧文件仍保留。".into()));
+                            crate::storage_backend::inspect(&engine.snapshot())
+                        })()
+                        .map_err(|e| format!("{e:#}"));
+                        storage_event = Some(StorageEvent::Finished(result));
+                        changed = true;
+                    }
                     Ok(Work::MigrateLibrary(directory)) => {
                         let result =
                             (|| -> anyhow::Result<crate::storage_backend::StorageReport> {
@@ -821,10 +996,16 @@ impl Worker {
                                     !synchronization.status.busy && !image_cloud_busy,
                                     "同步正在运行，请等待完成后再迁移资料库"
                                 );
-                                let database = crate::storage_backend::prepare_migration(
+                                let database = crate::storage_backend::migrate_library(
                                     &mut engine,
                                     &directory,
                                     now,
+                                    |p| {
+                                        let _ = updates.send(Update {
+                                            storage_event: Some(StorageEvent::Progress(p)),
+                                            ..Default::default()
+                                        });
+                                    },
                                 )?;
                                 let (next_lock, next, next_preferences, next_sync) =
                                     open_library(&database, now)?;
@@ -833,7 +1014,7 @@ impl Worker {
                                     let directory = database
                                         .parent()
                                         .ok_or_else(|| anyhow::anyhow!("迁移目录不存在"))?;
-                                    crate::storage_backend::persist_location(config, directory)?;
+                                    crate::app_migration::remember_library(config, directory)?;
                                 }
                                 engine = next;
                                 preferences = next_preferences;
@@ -1742,7 +1923,9 @@ mod tests {
                 .receiver
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .unwrap();
-            if update.notice.is_some() || update.storage_event.is_some() {
+            if update.notice.is_some()
+                || matches!(update.storage_event, Some(StorageEvent::Finished(_)))
+            {
                 return update;
             }
             assert!(!update.library_replaced);

@@ -1,3 +1,5 @@
+#[path = "storage_purge_ui.rs"]
+mod purge_ui;
 use crate::controls::Button;
 use crate::settings_components as form;
 use crate::storage_backend::viewmodel::{CopyOrder, ManagedCopyView, StoragePresentation};
@@ -27,9 +29,21 @@ struct CopySource {
 }
 
 pub struct StorageUi {
+    pub(crate) purge_page: usize,
+    pub(crate) purge: Option<(
+        crate::storage_backend::purge::remote::Scope,
+        Option<Box<crate::storage_backend::purge::remote::Preview>>,
+    )>,
     pub scroll: ListState,
     source: RefCell<Option<CopySource>>,
     pub order: CopyOrder,
+    pub migration_progress: Option<studyapp_ui::transfer_progress::TransferProgress>,
+    pub migration_target: Option<(String, std::path::PathBuf)>,
+    pub cleanup: Option<Arc<Vec<crate::app_migration::CopyRecord>>>,
+    pub reviewing_cleanup: bool,
+    pub migration_healthy: bool,
+    #[cfg(feature = "ui-test")]
+    pub test_migration_choice: Option<std::path::PathBuf>,
     expanded_copy: Option<String>,
     details_revision: u64,
     #[cfg(feature = "ui-test")]
@@ -45,9 +59,18 @@ pub struct StorageUi {
 impl Default for StorageUi {
     fn default() -> Self {
         Self {
+            purge: None,
+            purge_page: 0,
             scroll: ListState::new(0, ListAlignment::Top, px(48.)),
             source: RefCell::new(None),
             order: CopyOrder::default(),
+            migration_progress: None,
+            migration_target: None,
+            cleanup: None,
+            reviewing_cleanup: false,
+            migration_healthy: false,
+            #[cfg(feature = "ui-test")]
+            test_migration_choice: None,
             expanded_copy: None,
             details_revision: 0,
             #[cfg(feature = "ui-test")]
@@ -149,10 +172,24 @@ impl StudyApp {
     }
 
     pub fn storage_work(&mut self, work: Work, cx: &mut Context<Self>) {
-        let migrating = matches!(&work, Work::MigrateLibrary(_));
+        let application = matches!(&work, Work::MigrateApplication(_));
+        let migrating = matches!(&work, Work::MigrateLibrary(_) | Work::MigrateApplication(_));
+        if application && self.update_panel.read(cx).relocation_blocked() {
+            self.push_notice(
+                Err("请先完成更新下载、安装或恢复，再更改应用位置。".into()),
+                cx,
+            );
+            return;
+        }
         if self.storage_action_blocked(matches!(&work, Work::RefreshStorage), cx) {
             self.push_notice(Err("正在完成另一项资料操作，请稍后重试。".into()), cx);
             return;
+        }
+        if application {
+            crate::app_migration::reset_cancel();
+            self.storage_ui.migration_progress = Some("正在准备迁移…".into());
+            self.storage_ui.cleanup = None;
+            self.suspend_migration_hosts(true, cx);
         }
         self.storage_busy = true;
         self.folders
@@ -171,6 +208,10 @@ impl StudyApp {
             })
             .is_err()
         {
+            if application {
+                self.storage_ui.migration_progress = None;
+                self.suspend_migration_hosts(false, cx);
+            }
             self.storage_busy = false;
             self.folders
                 .update(cx, |panel, cx| panel.set_busy(false, cx));
@@ -184,12 +225,42 @@ impl StudyApp {
         cx.notify();
     }
 
+    pub fn suspend_migration_hosts(&mut self, value: bool, cx: &mut Context<Self>) {
+        self.note_content
+            .update(cx, |editor, cx| editor.suspend_for_migration(value, cx));
+        if let Some(preview) = &self.preferences_ui.appearance_preview {
+            preview.update(cx, |preview, cx| preview.suspend_for_migration(value, cx));
+        }
+        self.update_panel
+            .update(cx, |panel, _| panel.set_relocating(value));
+    }
+    pub fn choose_application_storage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose_storage_mode(true, window, cx)
+    }
     pub fn choose_storage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.choose_storage_mode(false, window, cx)
+    }
+    fn choose_storage_mode(
+        &mut self,
+        application: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.media_jobs_active() {
             self.push_notice(Err("正在处理图片，请稍候再迁移资料库。".into()), cx);
             return;
         }
-        if self.guard_settings(crate::settings_ui::SettingsContinuation::Migrate, cx) {
+        let continuation = if application {
+            crate::settings_ui::SettingsContinuation::MigrateApp
+        } else {
+            crate::settings_ui::SettingsContinuation::Migrate
+        };
+        let intent = if application {
+            NoteIntent::PrepareAppMigration
+        } else {
+            NoteIntent::PrepareMigration
+        };
+        if self.guard_settings(continuation, cx) {
             return;
         }
         if self.storage_busy
@@ -204,13 +275,18 @@ impl StudyApp {
             self.push_notice(Err("请先重试草稿保存，再迁移资料库。".into()), cx);
             cx.notify();
         } else if self.note_editor.is_some() {
-            self.request_note_action(NoteIntent::PrepareMigration, window, cx);
+            self.request_note_action(intent, window, cx);
         } else {
-            self.begin_draft_drain(NoteIntent::PrepareMigration, cx);
+            self.begin_draft_drain(intent, cx);
         }
     }
 
-    pub fn pick_migration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn pick_migration(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        application: bool,
+    ) {
         if self.storage_busy
             || self.preferences_ui.busy
             || self.preferences_ui.replacing
@@ -225,17 +301,32 @@ impl StudyApp {
             .update(cx, |panel, cx| panel.set_busy(true, cx));
         self.sync_panel
             .update(cx, |panel, cx| panel.set_editing_locked(true, cx));
+        #[cfg(feature = "ui-test")]
+        let fixture = if application {
+            self.storage_ui.test_migration_choice.take()
+        } else {
+            None
+        };
+        #[cfg(not(feature = "ui-test"))]
+        let fixture: Option<std::path::PathBuf> = None;
         cx.spawn_in(window, async move |this, cx| {
             let initial_directory = std::path::PathBuf::from(&library);
-            let path = cx
-                .background_executor()
-                .spawn(async move {
-                    crate::folder_picker::pick_folder(
-                        "选择新的空文件夹（迁移后保留原资料）",
-                        Some(initial_directory),
-                    )
-                })
-                .await;
+            let path = if fixture.is_some() {
+                fixture
+            } else {
+                cx.background_executor()
+                    .spawn(async move {
+                        crate::folder_picker::pick_folder(
+                            if application {
+                                "选择新的应用目录（空文件夹）"
+                            } else {
+                                "选择新的空文件夹（迁移后保留原资料）"
+                            },
+                            Some(initial_directory),
+                        )
+                    })
+                    .await
+            };
             let _ = this.update_in(cx, |this, _, cx| {
                 // A reply from another library must not release the new
                 // library's operation locks or migrate its data.
@@ -248,7 +339,11 @@ impl StudyApp {
                 this.sync_panel
                     .update(cx, |panel, cx| panel.set_editing_locked(false, cx));
                 if let Some(path) = path {
-                    this.accept_picker_result(library, Work::MigrateLibrary(path), cx);
+                    if application {
+                        this.storage_ui.migration_target = Some((library, path));
+                    } else {
+                        this.accept_picker_result(library, Work::MigrateLibrary(path), cx);
+                    }
                 }
                 cx.notify();
             });
@@ -292,6 +387,121 @@ impl StudyApp {
                         })),
                 ),
         );
+        if !copies_page {
+            let isolated = std::env::args_os().any(|a| a == "--data-dir");
+            view = view
+                .child(heading("应用位置"))
+                .child(muted(if isolated {
+                    "当前通过 --data-dir 指定资料库，应用位置设置不可用。"
+                } else {
+                    "复制当前资料库、应用配置和编辑器缓存。外部图片、程序和更新安装记录保留原位。"
+                }))
+                .child(
+                    Button::new("migrate-application")
+                        .small()
+                        .label("更改应用位置")
+                        .disabled(
+                            isolated
+                                || self.storage_action_blocked(false, cx)
+                                || self.update_panel.read(cx).relocation_blocked(),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.choose_application_storage(window, cx)
+                        })),
+                );
+            if cfg!(target_os = "macos") {
+                view = view.child(muted("WebKit 缓存由系统管理，不能迁至自定义目录。"));
+            }
+            if let Some((library, target)) = &self.storage_ui.migration_target
+                && library == &self.last_library
+            {
+                view = view
+                    .child(muted(format!(
+                        "将迁移到 {}。迁移期间暂停编辑，完成后可逐项查看旧副本并确认清理。",
+                        target.display()
+                    )))
+                    .child(
+                        Button::new("confirm-application-migration")
+                            .small()
+                            .label("开始迁移")
+                            .disabled(self.storage_action_blocked(false, cx))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if let Some((library, target)) =
+                                    this.storage_ui.migration_target.take()
+                                {
+                                    this.accept_picker_result(
+                                        library,
+                                        Work::MigrateApplication(target),
+                                        cx,
+                                    )
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("cancel-application-migration")
+                            .small()
+                            .ghost()
+                            .label("取消")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.storage_ui.migration_target = None;
+                                cx.notify()
+                            })),
+                    );
+            }
+            if let Some(records) = &self.storage_ui.cleanup
+                && !records.is_empty()
+            {
+                let bytes: u64 = records.iter().map(|r| r.size()).sum();
+                view = view.child(
+                    Button::new("review-migration-cleanup")
+                        .small()
+                        .label(format!(
+                            "查看可清理的旧副本（{} 个，共 {bytes} 字节）",
+                            records.len()
+                        ))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.storage_ui.reviewing_cleanup = !this.storage_ui.reviewing_cleanup;
+                            cx.notify()
+                        })),
+                );
+                if self.storage_ui.reviewing_cleanup {
+                    let rows = records.clone();
+                    view = view
+                        .child(muted(if self.storage_ui.migration_healthy {
+                            "以下旧文件将逐项验证后删除；外部文件及未列出的内容保留。"
+                        } else {
+                            "请先在新位置打开一篇笔记验证编辑器，然后可确认清理旧文件。"
+                        }))
+                        .child(
+                            uniform_list(
+                                "migration-cleanup-files",
+                                rows.len(),
+                                move |range, _, _| {
+                                    range
+                                        .map(|i| muted(rows[i].source().display().to_string()))
+                                        .collect()
+                                },
+                            )
+                            .h(px(180.)),
+                        )
+                        .child(
+                            Button::new("confirm-migration-cleanup")
+                                .small()
+                                .label("确认删除所列旧文件")
+                                .disabled(
+                                    !self.storage_ui.migration_healthy
+                                        || self.storage_action_blocked(false, cx),
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(records) = this.storage_ui.cleanup.take() {
+                                        this.storage_ui.reviewing_cleanup = false;
+                                        this.storage_work(Work::CleanMigration(records), cx)
+                                    }
+                                })),
+                        );
+                }
+            }
+        }
         let Some(report) = self
             .storage_report
             .as_ref()
@@ -300,6 +510,18 @@ impl StudyApp {
             return view.child(muted("尚未统计。点击刷新后查看占用与可管理的副本。"));
         };
         let presentation = report.presentation.clone();
+        if report.pending_purge_cleanup {
+            view =
+                view.child(
+                    Button::new("purge-retry-cleanup")
+                        .small()
+                        .label("重试数据库残留清理")
+                        .disabled(self.storage_action_blocked(false, cx))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.storage_work(Work::RetryPurgeCleanup, cx)
+                        })),
+                );
+        }
         if !copies_page {
             let total = presentation
                 .categories
@@ -506,6 +728,7 @@ impl StudyApp {
         let id = copy.note_id.clone();
         let details_id = id.clone();
         let history_id = id.clone();
+        let purge_id = id.clone();
         let reveal_path = copy.path.clone();
         let path_id = SharedString::from(format!("storage-copy-path-{id}"));
         // Mutable draft protection belongs to the current UI read model, never the scan.
@@ -594,6 +817,24 @@ impl StudyApp {
                             })),
                     )
                     .child(
+                        Button::new(SharedString::from(format!("purge-copy-{id}")))
+                            .small()
+                            .ghost()
+                            .label("彻底删除")
+                            .disabled(blocked)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if this.guard_settings(
+                                    crate::settings_ui::SettingsContinuation::ConfirmPurge(
+                                        purge_id.clone(),
+                                    ),
+                                    cx,
+                                ) {
+                                    return;
+                                }
+                                this.open_purge(purge_id.clone(), cx);
+                            })),
+                    )
+                    .child(
                         Button::new(SharedString::from(format!("delete-copy-{id}")))
                             .small()
                             .ghost()
@@ -610,6 +851,7 @@ impl StudyApp {
                                     return;
                                 }
                                 this.storage_confirm = Some(id.clone());
+                                this.storage_ui.purge = None;
                                 cx.notify();
                             })),
                     ),
@@ -663,6 +905,10 @@ impl StudyApp {
     }
 
     pub fn confirm_storage_copy(&mut self, cx: &mut Context<Self>) {
+        if self.storage_ui.purge.is_some() {
+            self.submit_purge(cx);
+            return;
+        }
         let Some(note_id) = self.storage_confirm.clone() else {
             return;
         };
@@ -681,6 +927,9 @@ impl StudyApp {
     /// A confirmation for exactly one managed copy, mounted in the root dialog.
     pub fn storage_confirmation_view(&self, cx: &mut Context<Self>) -> Option<Div> {
         let note_id = self.storage_confirm.as_ref()?;
+        if self.storage_ui.purge.is_some() {
+            return self.purge_view(note_id, cx);
+        }
         let copy = self
             .storage_report
             .as_ref()

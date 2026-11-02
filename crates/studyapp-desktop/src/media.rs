@@ -133,12 +133,17 @@ impl PreviewCache {
         );
     }
 }
+static CACHE: OnceLock<Mutex<PreviewCache>> = OnceLock::new();
+pub(crate) fn clear_preview_cache() {
+    if let Some(cache) = CACHE.get() {
+        *cache.lock().unwrap_or_else(|p| p.into_inner()) = PreviewCache::default();
+    }
+}
 fn cached_data_url(
     key: Option<&str>,
     control: Option<&ResolveControl>,
     load: impl FnOnce() -> Result<String>,
 ) -> Result<String> {
-    static CACHE: OnceLock<Mutex<PreviewCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(PreviewCache::default()));
     if let Some(key) = key
         && let Some(url) = cache

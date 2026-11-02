@@ -409,6 +409,218 @@ pub(crate) fn scroll_settings(window: &mut Window, delta: f32, cx: &mut App) {
     window.render_frame(cx);
 }
 
+/// Exercise the same settings buttons and WebView persistence contract on all
+/// three native runners. Only the blocking OS directory chooser is substituted.
+pub(crate) async fn application_migration(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    if !std::env::args().any(|s| s == "--smoke-app-dir") {
+        return;
+    }
+    let old = std::fs::canonicalize(database).unwrap();
+    let target = old
+        .parent()
+        .unwrap()
+        .with_file_name(format!("studyapp-application-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&target).unwrap();
+    let select_reader = |window: &mut Window, cx: &mut App| {
+        view.update(cx, |app, cx| {
+            app.page = Page::Notes;
+            app.selected_note = app
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .notes
+                .iter()
+                .find(|n| !n.detached)
+                .map(|n| n.id.clone());
+            app.history = false;
+            cx.notify();
+        });
+        window.render_frame(cx);
+    };
+    window.update(cx, |_, w, c| select_reader(w, c)).unwrap();
+    until_for(
+        window,
+        view,
+        "editor before relocation",
+        Duration::from_secs(30),
+        |a, c| a.note_content.read(c).ready(),
+        cx,
+    )
+    .await;
+    let marker =
+        |write: bool, window: AnyWindowHandle, view: &Entity<StudyApp>, cx: &mut AsyncApp| {
+            window
+                .update(cx, |_, _, cx| {
+                    let editor = view.read(cx).note_content.clone();
+                    editor.update(cx, |ed, _| {
+                        ed.test_results.remove("migration-profile-marker");
+                        ed.test_profile_marker(write).unwrap();
+                    });
+                })
+                .unwrap();
+        };
+    marker(true, window, view, cx);
+    until(
+        window,
+        view,
+        "old persistent WebView storage",
+        |a, c| {
+            a.note_content
+                .read(c)
+                .test_results
+                .get("migration-profile-marker")
+                == Some(&json!("persisted"))
+        },
+        cx,
+    )
+    .await;
+    let before = window
+        .update(cx, |_, w, c| {
+            let before = view
+                .read(c)
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .versions
+                .iter()
+                .map(|v| (v.note_id.clone(), v.hash.clone()))
+                .collect::<Vec<_>>();
+            view.update(c, |app, c| {
+                app.page = Page::Settings;
+                app.begin_settings(w, c);
+                app.select_settings_section(crate::settings_ui::SettingsSection::Storage, c);
+                app.select_storage_page(crate::settings_ui::StoragePage::Overview, c);
+                app.storage_ui.test_migration_choice = Some(target.clone());
+                c.notify();
+            });
+            w.render_frame(c);
+            before
+        })
+        .unwrap();
+    until_for(
+        window,
+        view,
+        "relocation action ready",
+        Duration::from_secs(30),
+        |a, c| {
+            !a.storage_busy
+                && !a.sync_panel.read(c).status.busy
+                && !a.media_jobs_active()
+                && !a.update_panel.read(c).relocation_blocked()
+        },
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, w, c| {
+            click_scrolled(
+                w,
+                "migrate-application".into(),
+                "settings-section-scroll",
+                c,
+            )
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "selected application directory",
+        |a, _| a.storage_ui.migration_target.is_some(),
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, w, c| {
+            click_scrolled(
+                w,
+                "confirm-application-migration".into(),
+                "settings-section-scroll",
+                c,
+            )
+        })
+        .unwrap();
+    until_for(
+        window,
+        view,
+        "application migrated",
+        Duration::from_secs(90),
+        |a, _| {
+            Path::new(&a.last_library).starts_with(&target) && !a.storage_busy && !a.draft_loading
+        },
+        cx,
+    )
+    .await;
+    let paths = crate::app_usage::runtime_paths().unwrap();
+    assert_eq!(paths.effective.cache, target.join("cache"));
+    if !cfg!(target_os = "macos") {
+        assert!(paths.effective.cache.join("editor").is_dir());
+    }
+    window
+        .update(cx, |_, w, c| {
+            let a = view.read(c);
+            assert_eq!(
+                before,
+                a.snapshot
+                    .as_ref()
+                    .unwrap()
+                    .versions
+                    .iter()
+                    .map(|v| (v.note_id.clone(), v.hash.clone()))
+                    .collect::<Vec<_>>()
+            );
+            assert!(old.exists());
+            select_reader(w, c);
+        })
+        .unwrap();
+    until_for(
+        window,
+        view,
+        "editor reopened in relocated profile",
+        Duration::from_secs(30),
+        |a, c| a.note_content.read(c).ready(),
+        cx,
+    )
+    .await;
+    marker(false, window, view, cx);
+    until(
+        window,
+        view,
+        "new WebView reads prior persistent value",
+        |a, c| {
+            a.note_content
+                .read(c)
+                .test_results
+                .get("migration-profile-marker")
+                == Some(&json!("persisted"))
+        },
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, _, c| {
+            view.read(c)
+                .worker
+                .sender
+                .send(Work::SwitchLibrary(old.parent().unwrap().into()))
+                .unwrap()
+        })
+        .unwrap();
+    until_for(
+        window,
+        view,
+        "return to original library",
+        Duration::from_secs(30),
+        |a, _| Path::new(&a.last_library) == old && !a.draft_loading,
+        cx,
+    )
+    .await;
+    std::fs::write(database.with_file_name("native-app-migration.txt"),"PASS: confirmed application migration, verified versions and WebView localStorage after relocation, returned to fixture library.").unwrap();
+}
 #[cfg(windows)]
 pub async fn exercise(
     window: AnyWindowHandle,
@@ -1139,6 +1351,81 @@ pub async fn exercise(
     assert_eq!(std::fs::read_to_string(&note.path).unwrap(), saved_content);
 
     settled(window, view, cx).await;
+    let purge_target = create_note(window, view, "彻底删除确认测试", parent_id.clone(), cx).await;
+    window
+        .update(cx, |_, window, cx| {
+            click_scrolled(window, "refresh-storage".into(), "page-scroll", cx);
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "permanent deletion fixture in scan",
+        |app, _| {
+            !app.storage_busy
+                && app
+                    .storage_report
+                    .as_ref()
+                    .is_some_and(|r| r.copies.iter().any(|c| c.note_id == purge_target.id))
+        },
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, window, cx| {
+            click_scrolled(
+                window,
+                format!("purge-copy-{}", purge_target.id).into(),
+                "storage-copy-list",
+                cx,
+            );
+            window.render_frame(cx);
+            window.click("purge-submit", cx);
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "prepared deletion awaiting final confirmation",
+        |app, _| {
+            !app.storage_busy
+                && app
+                    .storage_ui
+                    .purge
+                    .as_ref()
+                    .is_some_and(|(_, p)| p.is_some())
+        },
+        cx,
+    )
+    .await;
+    assert!(Path::new(&purge_target.path).is_file());
+    window
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            window
+                .render_to_image()
+                .unwrap()
+                .save(database.with_file_name("storage-permanent-delete-confirm.png"))
+                .unwrap();
+            window.click("purge-submit", cx);
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "confirmed purge removed note and snapshots",
+        |app, _| {
+            !app.storage_busy
+                && !app.draft_loading
+                && app.snapshot.as_ref().is_some_and(|s| {
+                    s.notes.iter().all(|n| n.id != purge_target.id)
+                        && s.versions.iter().all(|v| v.note_id != purge_target.id)
+                })
+        },
+        cx,
+    )
+    .await;
+    assert!(!Path::new(&purge_target.path).exists());
     window
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| {

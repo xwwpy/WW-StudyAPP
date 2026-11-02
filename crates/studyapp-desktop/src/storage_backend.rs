@@ -1,4 +1,6 @@
 //! Library storage inspection and explicit, single-file maintenance.
+#[path = "storage_purge.rs"]
+pub mod purge;
 #[path = "storage_viewmodel.rs"]
 pub mod viewmodel;
 
@@ -17,6 +19,7 @@ use studyapp_core::{Command, Engine, Note, Snapshot};
 
 #[derive(Clone, Debug, Default)]
 pub struct StorageReport {
+    pub pending_purge_cleanup: bool,
     pub data_path: String,
     pub application: crate::app_usage::ApplicationReport,
     pub database_bytes: u64,
@@ -116,6 +119,10 @@ pub struct ManagedCopy {
 
 #[derive(Clone, Debug)]
 pub enum StorageEvent {
+    PurgePreview(std::result::Result<Box<purge::remote::Preview>, String>),
+    PurgeDone(std::result::Result<StorageReport, String>),
+    Progress(studyapp_ui::transfer_progress::TransferProgress),
+    CleanupOffer(std::sync::Arc<Vec<crate::app_migration::CopyRecord>>),
     Finished(std::result::Result<StorageReport, String>),
 }
 
@@ -274,7 +281,7 @@ fn owned_path(snapshot: &Snapshot, note: &Note) -> Result<PathBuf> {
     Ok(expected)
 }
 
-fn visit_tree(
+pub(crate) fn visit_tree(
     root: &Path,
     relative: &Path,
     reject_links: bool,
@@ -315,7 +322,7 @@ fn visit_tree(
     Ok(())
 }
 
-fn live_database_file(relative: &Path, database: &Path) -> bool {
+pub(crate) fn live_database_file(relative: &Path, database: &Path) -> bool {
     let Some(name) = database.file_name() else {
         return false;
     };
@@ -330,7 +337,7 @@ fn live_database_file(relative: &Path, database: &Path) -> bool {
             .any(|suffix| relative == format!("{name}{suffix}"))
 }
 
-fn runtime_lock_file(relative: &Path, database: &Path) -> bool {
+pub(crate) fn runtime_lock_file(relative: &Path, database: &Path) -> bool {
     relative.components().count() == 1
         && relative.file_name() == database.with_extension("lock").file_name()
 }
@@ -555,6 +562,7 @@ fn indexed_images(snapshot: &Snapshot, relative: &Path, file: File) -> Result<Ve
 pub fn inspect(snapshot: &Snapshot) -> Result<StorageReport> {
     let directory = root(snapshot)?;
     let mut report = StorageReport {
+        pending_purge_cleanup: !purge::pending_cleanup(snapshot)?.is_empty(),
         data_path: snapshot.data_path.clone(),
         scanned_at: chrono::Utc::now().timestamp(),
         ..Default::default()
@@ -817,7 +825,18 @@ pub fn delete_managed_copy(engine: &mut Engine, note_id: &str, now: i64) -> Resu
     Ok(report)
 }
 
+#[cfg(test)]
 pub fn prepare_migration(engine: &mut Engine, target: &Path, now: i64) -> Result<PathBuf> {
+    migrate_library(engine, target, now, |_| {})
+}
+pub fn migrate_library(
+    engine: &mut Engine,
+    target: &Path,
+    now: i64,
+    mut progress: impl FnMut(studyapp_ui::transfer_progress::TransferProgress),
+) -> Result<PathBuf> {
+    use studyapp_ui::transfer_progress::TransferProgress;
+    progress("正在备份资料库…".into());
     let snapshot = engine.snapshot();
     let source = root(&snapshot)?;
     let _source_guards = guard_directories(source, false)?;
@@ -855,6 +874,23 @@ pub fn prepare_migration(engine: &mut Engine, target: &Path, now: i64) -> Result
         live_database_file(relative, Path::new(&snapshot.data_path))
             || runtime_lock_file(relative, Path::new(&snapshot.data_path))
     };
+    let mut total = 0u64;
+    visit_tree(
+        source,
+        Path::new(""),
+        true,
+        &skip,
+        &mut 0,
+        &mut |_, _, f| {
+            total = total
+                .checked_add(f.metadata()?.len())
+                .context("迁移大小溢出")?;
+            Ok(())
+        },
+    )?;
+    let mut copied_bytes_total = 0u64;
+    let mut verified = 0u64;
+    let mut throttle = std::time::Instant::now();
     visit_tree(
         source,
         Path::new(""),
@@ -869,7 +905,23 @@ pub fn prepare_migration(engine: &mut Engine, target: &Path, now: i64) -> Result
                 .create_new(true)
                 .open(&destination)?;
             file.rewind()?;
-            std::io::copy(&mut file, &mut output)?;
+            let mut buf = [0; 65536];
+            loop {
+                let n = file.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                output.write_all(&buf[..n])?;
+                copied_bytes_total += n as u64;
+                if throttle.elapsed().as_millis() >= 100 {
+                    progress(TransferProgress::bytes(
+                        "正在复制",
+                        copied_bytes_total,
+                        total,
+                    ));
+                    throttle = std::time::Instant::now()
+                }
+            }
             output.sync_all()?;
             drop(output);
             let mut copied = plain_handle(&destination, false, true)?;
@@ -886,6 +938,11 @@ pub fn prepare_migration(engine: &mut Engine, target: &Path, now: i64) -> Result
                     break;
                 }
                 copied.read_exact(&mut copied_bytes[..count])?;
+                verified += count as u64;
+                if throttle.elapsed().as_millis() >= 100 {
+                    progress(TransferProgress::bytes("正在校验", verified, total));
+                    throttle = std::time::Instant::now()
+                }
                 ensure!(
                     source_bytes[..count] == copied_bytes[..count],
                     "迁移文件校验失败"
@@ -894,6 +951,7 @@ pub fn prepare_migration(engine: &mut Engine, target: &Path, now: i64) -> Result
             Ok(())
         },
     )?;
+    progress(TransferProgress::bytes("已校验", verified, total));
     Ok(database)
 }
 

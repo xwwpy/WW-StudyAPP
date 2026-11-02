@@ -189,11 +189,13 @@ pub enum SettingsContinuation {
     NewNote,
     Picker(&'static str, Option<String>),
     Migrate,
+    MigrateApp,
     Close,
     InstallUpdate,
     InstallPackage,
     ViewNote(String),
     ConfirmDeleteCopy(String),
+    ConfirmPurge(String),
     Record(crate::app::EditorMode),
     PickedWork(String, Box<Work>),
 }
@@ -1138,6 +1140,7 @@ impl StudyApp {
             SettingsContinuation::NewNote => self.new_note(window, cx),
             SettingsContinuation::Picker(action, note) => self.picker(action, note),
             SettingsContinuation::Migrate => self.choose_storage(window, cx),
+            SettingsContinuation::MigrateApp => self.choose_application_storage(window, cx),
             SettingsContinuation::Close => {
                 if self.handle_close(window, cx) {
                     self.close_allowed = true;
@@ -1157,9 +1160,11 @@ impl StudyApp {
                 self.select_note_document(id, version, true, window, cx);
             }
             SettingsContinuation::ConfirmDeleteCopy(id) => {
+                self.storage_ui.purge = None;
                 self.storage_confirm = Some(id);
                 cx.notify();
             }
+            SettingsContinuation::ConfirmPurge(id) => self.open_purge(id, cx),
             SettingsContinuation::Record(mode) => self.open_editor(mode, window, cx),
             SettingsContinuation::PickedWork(library, work) => {
                 self.accept_picker_result(library, *work, cx)
@@ -1192,11 +1197,12 @@ impl StudyApp {
                 &work,
                 Work::SwitchLibrary(_)
                     | Work::MigrateLibrary(_)
+                    | Work::MigrateApplication(_)
                     | Work::Apply(studyapp_core::Command::Restore(_))
             )
         {
             self.draft_deferred_work = Some((library, work));
-        } else if matches!(&work, Work::MigrateLibrary(_)) {
+        } else if matches!(&work, Work::MigrateLibrary(_) | Work::MigrateApplication(_)) {
             self.storage_work(work, cx);
         } else {
             let replacing = matches!(

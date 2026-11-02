@@ -232,6 +232,19 @@ pub fn inspect(
             locations.push(location(&format!("{prefix}{label}"), path.clone(), true));
         }
     }
+    // On Windows ProjectDirs keeps separate data/config/cache subdirectories
+    // under two dedicated StudyApp/StudyApp roots. Also count sibling files.
+    #[cfg(windows)]
+    for parent in [&paths.defaults.data, &paths.defaults.local_data]
+        .into_iter()
+        .filter_map(|p| p.parent())
+    {
+        if parent.ends_with(Path::new("StudyApp").join("StudyApp")) {
+            let mut row = location("应用目录内其他文件", parent.into(), false);
+            row.reason = "包含应用专用目录内未单独分类的文件".into();
+            locations.push(row);
+        }
+    }
     for path in external {
         let mut row = location("已登记外置图片", path, false);
         row.file_only = true;
