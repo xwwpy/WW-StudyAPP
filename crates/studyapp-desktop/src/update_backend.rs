@@ -1648,6 +1648,7 @@ mod custom_root_regressions {
                 .is_empty()
         );
     }
+    #[cfg(windows)]
     #[test]
     fn update_and_repair_download_stages_use_effective_root() {
         let context = context();
