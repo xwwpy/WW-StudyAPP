@@ -150,6 +150,15 @@ struct Journal {
     stage_identity: Option<(u64, u128)>,
     #[serde(default)]
     cleanup_digest: Option<[u8; 32]>,
+    #[serde(default)]
+    profile_copies: Vec<ProfileCopy>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileCopy {
+    target: PathBuf,
+    identity: (u64, u128),
+    digest: [u8; 32],
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq)]
 enum Phase {
@@ -414,6 +423,78 @@ fn held(error: &anyhow::Error) -> bool {
                 || e.kind() == std::io::ErrorKind::WouldBlock
         })
 }
+// A destroyed WebView can checkpoint SQLite from its remaining WebKit process.
+// Wait before publishing any copy; compare bytes as well as the complete file set.
+// Only the closed editor profile may treat a disappearing file as transient.
+fn profile_busy() -> anyhow::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        "编辑器缓存仍在变化，请退出并重新打开应用以继续迁移",
+    )
+    .into()
+}
+fn profile_transient(error: anyhow::Error) -> anyhow::Error {
+    if error
+        .chain()
+        .filter_map(|e| e.downcast_ref::<std::io::Error>())
+        .any(|e| e.kind() == std::io::ErrorKind::NotFound)
+    {
+        std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            format!("编辑器缓存正在关闭：{error:#}"),
+        )
+        .into()
+    } else {
+        error
+    }
+}
+fn profile_revision(profile: &Path) -> Result<BTreeMap<PathBuf, (Entry, [u8; 32])>> {
+    let mut revision = BTreeMap::new();
+    if !profile.try_exists()? {
+        return Ok(revision);
+    }
+    crate::storage_backend::visit_migration_tree(
+        profile,
+        &|_| false,
+        &mut 0,
+        &mut |path, rel, file| {
+            let entry = Entry {
+                source: path.into(),
+                size: file.metadata()?.len(),
+                identity: crate::app_usage::identity(&file)?,
+            };
+            revision.insert(rel.into(), (entry, digest(file, |_| {})?));
+            check_cancel()
+        },
+    )
+    .map_err(profile_transient)?;
+    Ok(revision)
+}
+fn wait_profile_stable(profile: &Path, attempts: usize, mut settle: impl FnMut()) -> Result<()> {
+    for _ in 0..attempts {
+        check_cancel()?;
+        let before = match profile_revision(profile) {
+            Ok(revision) => revision,
+            Err(error) if held(&error) => {
+                settle();
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        settle();
+        match profile_revision(profile) {
+            Ok(after) if before == after => return Ok(()),
+            Ok(_) => {}
+            Err(error) if held(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::WouldBlock,
+        "编辑器缓存仍在变化，请退出并重新打开应用以继续迁移",
+    )
+    .into())
+}
 fn manifest(
     paths: &AppPaths,
     source: &Path,
@@ -421,6 +502,10 @@ fn manifest(
     external: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<BTreeMap<PathBuf, Entry>> {
     let mut roots = vec![
+        (
+            canon(&paths.effective.cache)?.join("editor"),
+            "cache/editor",
+        ),
         (canon(&paths.effective.cache)?, "cache"),
         (source.into(), "library"),
         (canon(&paths.effective.config)?, "config"),
@@ -481,7 +566,14 @@ fn manifest(
                 ensure!(result.insert(target, entry).is_none(), "迁移目标路径冲突");
                 Ok(())
             },
-        )?;
+        )
+        .map_err(|error| {
+            if *kind == "cache/editor" {
+                profile_transient(error)
+            } else {
+                error
+            }
+        })?;
     }
     // Preserve the absolute pointer to the old transaction across successive
     // custom-root moves; the signed transaction itself never changes location.
@@ -733,12 +825,12 @@ fn prepare_checked(
             backup_digest: None,
             stage_identity: Some(stage_id),
             cleanup_digest: None,
+            profile_copies: Vec::new(),
         };
         atomic_json(&journal_file(&paths), &j)?;
         j
     };
     let execute = (|| -> Result<_> {
-        progress("正在统计可迁移文件…".into());
         let scratch = dest.join(format!(".studyapp-migration-{}", j.id));
         let _scratch = guard_directories(&scratch, false)?;
         ensure!(
@@ -748,6 +840,28 @@ fn prepare_checked(
                 == j.stage_identity,
             "目标暂存目录已被替换"
         );
+        // Only verified copies recorded by this transaction may be refreshed.
+        // Exact identity and digest checks preserve any replacement/unknown file.
+        for copy in &j.profile_copies {
+            ensure!(
+                copy.target
+                    .strip_prefix(dest.join("cache/editor"))
+                    .is_ok_and(|rel| rel
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)))),
+                "编辑器副本记录无效"
+            );
+            if copy.target.try_exists()? {
+                unlink_exact(&copy.target, copy.identity, &copy.digest)?;
+            }
+        }
+        j.profile_copies.clear();
+        atomic_json(&journal_file(&paths), &j)?;
+        progress("正在等待编辑器释放缓存文件…".into());
+        wait_profile_stable(&paths.effective.cache.join("editor"), 16, || {
+            std::thread::sleep(std::time::Duration::from_millis(125));
+        })?;
+        progress("正在统计可迁移文件…".into());
         let snapshot = engine.snapshot();
         let mut external: std::collections::BTreeSet<_> = snapshot
             .notes
@@ -769,10 +883,8 @@ fn prepare_checked(
                 result => break result?,
             }
         };
-        crate::storage_backend::visit_tree(
+        crate::storage_backend::visit_migration_tree(
             &dest,
-            Path::new(""),
-            true,
             &|r| dest.join(r) == scratch || r == Path::new("library/studyapp.lock"),
             &mut 0,
             &mut |_, rel, _| {
@@ -827,13 +939,34 @@ fn prepare_checked(
         let mut copied = 0;
         let mut verified = 0;
         let mut records = Vec::new();
+        let profile = canon(&paths.effective.cache)?.join("editor");
         let mut throttle = std::time::Instant::now();
         for (rel, entry) in &files {
             check_cancel()?;
             let dst = dest.join(rel);
-            let _srcguards = guard_directories(entry.source.parent().unwrap(), false)?;
+            if nested(&entry.source, &profile) {
+                ensure!(
+                    !dst.try_exists()?,
+                    "目标出现未登记的编辑器缓存文件：{}",
+                    dst.display()
+                );
+            }
+            let _srcguards =
+                guard_directories(entry.source.parent().unwrap(), false).map_err(|error| {
+                    if nested(&entry.source, &profile) {
+                        profile_transient(error)
+                    } else {
+                        error
+                    }
+                })?;
             let _guards = guard_directories(dst.parent().unwrap(), true)?;
-            let input = plain_handle(&entry.source, false, true)?;
+            let input = plain_handle(&entry.source, false, true).map_err(|error| {
+                if nested(&entry.source, &profile) {
+                    profile_transient(error)
+                } else {
+                    error
+                }
+            })?;
             let rewrite = indexes.get(&entry.identity);
             let first = representatives.get(&entry.identity);
             if let Some(first) = first
@@ -920,7 +1053,18 @@ fn prepare_checked(
                 }
                 check_cancel()
             })?;
+            if expected != actual && nested(&entry.source, &profile) {
+                return Err(profile_busy());
+            }
             ensure!(expected == actual, "文件校验失败：{}", dst.display());
+            if nested(&entry.source, &profile) {
+                j.profile_copies.push(ProfileCopy {
+                    target: dst.clone(),
+                    identity: dest_id,
+                    digest: actual,
+                });
+                atomic_json(&journal_file(&paths), &j)?;
+            }
             records.push(CopyRecord {
                 source: entry.source.clone(),
                 target: dst,
@@ -966,10 +1110,21 @@ fn prepare_checked(
         j.backup_digest = Some(digest(fresh, |_| {})?);
         atomic_json(&journal_file(&paths), &j)?;
         publish_new(&backup, &database)?;
-        ensure!(
-            manifest(&paths, &source, &dest, &external)? == files,
-            "迁移期间源文件发生变化，原位置仍有效"
-        );
+        let after = manifest(&paths, &source, &dest, &external)?;
+        if after != files {
+            let outside_profile = |entries: &BTreeMap<PathBuf, Entry>| {
+                entries
+                    .iter()
+                    .filter(|(rel, _)| !rel.starts_with("cache/editor"))
+                    .map(|(rel, entry)| (rel.clone(), entry.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            };
+            ensure!(
+                outside_profile(&after) == outside_profile(&files),
+                "迁移期间源文件发生变化，原位置仍有效"
+            );
+            return Err(profile_busy());
+        }
         for record in &records {
             let copy = plain_handle(&record.target, false, true)?;
             ensure!(
@@ -979,9 +1134,19 @@ fn prepare_checked(
                 "目标副本或硬链接发生变化：{}",
                 record.target.display()
             );
-            let mut file = plain_handle(&record.source, false, true)?;
+            let mut file = plain_handle(&record.source, false, true).map_err(|error| {
+                if nested(&record.source, &profile) {
+                    profile_transient(error)
+                } else {
+                    error
+                }
+            })?;
+            let current = hash_stream(&mut file, |_| check_cancel())?;
+            if current != record.digest && nested(&record.source, &profile) {
+                return Err(profile_busy());
+            }
             ensure!(
-                hash_stream(&mut file, |_| check_cancel())? == record.digest,
+                current == record.digest,
                 "源文件已变化：{}",
                 record.source.display()
             );
@@ -1293,6 +1458,103 @@ mod tests {
         (base, paths, engine)
     }
     #[test]
+    fn checkpoint_after_copy_is_restartable_and_refreshes_only_owned_copies() {
+        let (base, paths, mut engine) = fixture();
+        let profile = paths.effective.cache.join("editor");
+        fs::create_dir_all(&profile).unwrap();
+        let database = profile.join("localstorage.db");
+        let wal = profile.join("localstorage.db-wal");
+        fs::write(&database, b"old bytes").unwrap();
+        fs::write(&wal, b"pending").unwrap();
+        let target = base.join("dest");
+        let mut changed = false;
+        let error = prepare(&mut engine, paths.clone(), &target, 1001, |p| {
+            if !changed && p.label.starts_with("已校验，正在备份资料库") {
+                changed = true;
+                fs::write(&database, b"new bytes").unwrap();
+                fs::remove_file(&wal).unwrap();
+            }
+        })
+        .err()
+        .unwrap();
+        assert!(held(&error), "{error:#}");
+        assert!(changed);
+        assert_eq!(pending(&paths).unwrap(), Some(canon(&target).unwrap()));
+        assert!(!paths.locator.exists());
+        let mut next = prepare(&mut engine, paths.clone(), &target, 1002, |_| {}).unwrap();
+        next.commit().unwrap();
+        assert_eq!(
+            fs::read(target.join("cache/editor/localstorage.db")).unwrap(),
+            b"new bytes"
+        );
+        assert!(!target.join("cache/editor/localstorage.db-wal").exists());
+        assert_eq!(fs::read(database).unwrap(), b"new bytes");
+    }
+    #[test]
+    fn replaced_profile_copy_is_never_deleted_during_resume() {
+        let (base, paths, mut engine) = fixture();
+        let profile = paths.effective.cache.join("editor");
+        fs::create_dir_all(&profile).unwrap();
+        let database = profile.join("localstorage.db");
+        fs::write(&database, b"old bytes").unwrap();
+        let target = base.join("dest");
+        let error = prepare(&mut engine, paths.clone(), &target, 1001, |p| {
+            if p.label.starts_with("已校验，正在备份资料库") {
+                fs::write(&database, b"new bytes").unwrap();
+            }
+        })
+        .err()
+        .unwrap();
+        assert!(held(&error), "{error:#}");
+        let copy = target.join("cache/editor/localstorage.db");
+        fs::write(&copy, b"user replacement").unwrap();
+        assert!(prepare(&mut engine, paths, &target, 1002, |_| {}).is_err());
+        assert_eq!(fs::read(copy).unwrap(), b"user replacement");
+    }
+    #[test]
+    fn closed_profile_waits_for_wal_checkpoint_and_hashes_main_database() {
+        let (base, paths, _) = fixture();
+        let profile = paths.effective.cache.join("editor");
+        fs::create_dir_all(&profile).unwrap();
+        let database = profile.join("localstorage.db");
+        let wal = profile.join("localstorage.db-wal");
+        fs::write(&database, b"old bytes").unwrap();
+        fs::write(&wal, b"pending bytes").unwrap();
+        let mut rounds = 0;
+        wait_profile_stable(&profile, 4, || {
+            rounds += 1;
+            if rounds == 1 {
+                fs::write(&database, b"new bytes").unwrap();
+                fs::remove_file(&wal).unwrap();
+            } else if rounds == 2 {
+                // Same inode and length: metadata comparison alone is insufficient.
+                fs::write(&database, b"end bytes").unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(rounds, 3);
+        assert_eq!(fs::read(database).unwrap(), b"end bytes");
+        assert!(!wal.exists());
+        assert!(base.exists());
+    }
+    #[test]
+    fn continuously_changing_profile_is_held_without_publishing() {
+        let (base, paths, _) = fixture();
+        let profile = paths.effective.cache.join("editor");
+        fs::create_dir_all(&profile).unwrap();
+        let database = profile.join("localstorage.db");
+        fs::write(&database, b"0").unwrap();
+        let mut rounds = 0;
+        let error = wait_profile_stable(&profile, 3, || {
+            rounds += 1;
+            fs::write(&database, rounds.to_string()).unwrap();
+        })
+        .unwrap_err();
+        assert!(held(&error));
+        assert_eq!(rounds, 3);
+        assert!(!base.join("dest").exists());
+    }
+    #[test]
     fn interrupted_live_database_probe_resumes_in_same_target() {
         let (base, paths, mut engine) = fixture();
         let target = base.join("dest");
@@ -1502,7 +1764,7 @@ mod tests {
         let error = prepare(&mut engine, paths.clone(), &target, 1001, |_| {})
             .err()
             .unwrap();
-        assert!(format!("{error:#}").contains("重新打开"));
+        assert!(format!("{error:#}").contains("重新打开"), "{error:#}");
         assert_eq!(pending(&paths).unwrap(), Some(canon(&target).unwrap()));
         drop(lock);
         let mut next = prepare(&mut engine, paths, &target, 1001, |_| {}).unwrap();

@@ -1,4 +1,8 @@
 """Check Unix smoke evidence validation without opening native windows."""
+import contextlib
+import io
+import subprocess
+from unittest import mock
 import importlib.util
 import json
 from pathlib import Path
@@ -35,11 +39,33 @@ class SmokeTests(unittest.TestCase):
                  "draft": {"content": "关闭窗口前的末次输入 🧠"}}
         path = data / "drafts" / f"{draft_id}.json"
         path.write_text(json.dumps(draft), encoding="utf-8")
+        with self.assertRaises((FileNotFoundError, ValueError)):
+            smoke.verify(data, interactive=True)
+        (data / "native-app-migration.txt").write_text("FAILED: profile relocation")
+        with self.assertRaises(ValueError):
+            smoke.verify(data, interactive=True)
+        (data / "native-app-migration.txt").write_text("PASS: profile relocation")
         smoke.verify(data, interactive=True)
         draft["draft"]["content"] = "stale content"
         path.write_text(json.dumps(draft), encoding="utf-8")
         with self.assertRaises(ValueError):
             smoke.verify(data, interactive=True)
+
+    def test_native_failure_prints_captured_stderr_and_still_fails(self):
+        root = Path(__file__).resolve().parents[1] / ".scratch/cross-platform-012"
+        root.mkdir(parents=True, exist_ok=True)
+        data = Path(tempfile.mkdtemp(dir=root, prefix="smoke-failure-")) / "native"
+        def fail(command, **kwargs):
+            kwargs["stderr"].write("panic: localstorage-wal vanished\n")
+            raise subprocess.CalledProcessError(101, command)
+        captured = io.StringIO()
+        with mock.patch.object(smoke.subprocess, "run", side_effect=fail) as run:
+            with contextlib.redirect_stderr(captured):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    smoke.run_native(Path(__file__), data, True)
+        self.assertIn("panic: localstorage-wal vanished", captured.getvalue())
+        self.assertIn("--smoke-app-dir", run.call_args.args[0])
+        self.assertTrue(data.with_suffix(".stderr.log").is_file())
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ import uuid
 
 def verify(data, interactive):
     reports = ["smoke-result.txt"]
+    if interactive:
+        reports.append("native-app-migration.txt")
     for report in reports:
         if not (data / report).read_text(encoding="utf-8").startswith("PASS:"):
             raise ValueError(f"Native smoke did not pass: {report}")
@@ -32,6 +34,18 @@ def verify(data, interactive):
             raise ValueError("Native close did not persist the final editor input")
 
 
+def run_native(binary, data, interactive):
+    stderr_path = data.with_suffix(".stderr.log")
+    try:
+        with data.with_suffix(".stdout.log").open("w") as stdout, stderr_path.open("w") as stderr:
+            subprocess.run([str(binary.resolve(strict=True)), "--smoke-test",
+                            "--smoke-app-dir" if interactive else "--data-dir", str(data)],
+                           stdout=stdout, stderr=stderr, timeout=480, check=True)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        print(stderr_path.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
@@ -44,9 +58,7 @@ def main():
     if data.exists():
         raise ValueError("Smoke data directory must be new")
     data.parent.mkdir(parents=True, exist_ok=True)
-    with data.with_suffix(".stdout.log").open("w") as stdout, data.with_suffix(".stderr.log").open("w") as stderr:
-        subprocess.run([str(args.binary.resolve(strict=True)), "--smoke-test", "--smoke-app-dir" if args.interactive else "--data-dir", str(data)],
-                       stdout=stdout, stderr=stderr, timeout=480, check=True)
+    run_native(args.binary, data, args.interactive)
     verify(data, args.interactive)
     print(f"Native startup and WebKit smoke passed: {data}")
 
