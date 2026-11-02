@@ -12,4 +12,4 @@ ui-test = ["gpui-kit/test-support"]
 gpui-kit = "=0.7.3"
 studyapp-core = { version = "0.2.1", path = "../studyapp-core" }
 serde_json = "1"
-pulldown-cmark = "0.13"
+pulldown-cmark = "0.13.6"

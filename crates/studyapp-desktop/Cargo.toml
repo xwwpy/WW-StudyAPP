@@ -33,10 +33,12 @@ chrono = "0.4"
 config = { version = "=0.15.27", default-features = false, features = ["json"] }
 directories = "6"
 gpui-kit = "=0.7.3"
-pulldown-cmark = "0.13"
+pulldown-cmark = "0.13.6"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 uuid = { version = "1", features = ["v4"] }
 percent-encoding = "2"
+icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
+unicase = "=2.10.0"
 base64 = "0.22"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls"] }
 rfd = "0.15"
