@@ -24,16 +24,17 @@ common = load("native_common", "native-update-acceptance.py")
 policy = load("native_policy", "assess-macos-update.py")
 
 
-def approval_pointer(downloaded, pid):
+def approval_pointer(downloaded, fixture):
     # The app resolves its locator and isolated acceptance profile. Never guess a
-    # system profile here: each scenario has a different runtime process/root.
+    # system profile here: each scenario owns one runtime shared across relaunch.
     package = Path(downloaded["path"])
     pointer = Path(downloaded["policy_probe_pointer"])
     if not package.is_absolute() or len(package.parents) < 3:
         raise ValueError("Expected an absolute acceptance download path")
-    runtime = package.parents[2].resolve()
+    runtime = fixture.resolve() / ".runtime"
     expected = runtime / "local/update-policy-probe.txt"
-    if (runtime.name != f"studyapp-runtime-test-{pid}"
+    if (package.parents[2].resolve() != runtime
+            or package.resolve().parents[2] != runtime
             or package.parent.parent.name != "updates"
             or not package.parent.name.startswith("studyapp-update-")
             or package.name != "package"
@@ -198,7 +199,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
             before = common.wait_file(fixture / "old-observation.json", 120, old)
             if scenario == "quarantine-refusal":
                 downloaded = common.wait_file(fixture / "download-metadata.json", 120, old)
-                pointer = approval_pointer(downloaded, old.pid)
+                pointer = approval_pointer(downloaded, fixture)
                 expected_probe = (Path(downloaded["path"]).parent / "approval").resolve()
                 deadline = time.monotonic() + 60
                 next_snapshot = time.monotonic()
@@ -260,7 +261,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
                 old.wait(timeout=15)
                 return
             downloaded = common.wait_file(fixture / "download-metadata.json", 120, old)
-            pointer = approval_pointer(downloaded, old.pid)
+            pointer = approval_pointer(downloaded, fixture)
             deadline = time.monotonic() + 180
             approved = False
             while old.poll() is None:

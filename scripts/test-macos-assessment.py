@@ -12,27 +12,34 @@ spec = importlib.util.spec_from_file_location("assessment", Path(__file__).with_
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 class LaunchEvidence(unittest.TestCase):
-    def test_approval_uses_reported_runtime_pointer_for_each_process(self):
+    def test_approval_uses_reported_runtime_pointer_bound_to_shared_fixture(self):
         native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
         native = importlib.util.module_from_spec(native_spec)
         native_spec.loader.exec_module(native)
         root = Path(tempfile.mkdtemp(prefix="macos-pointer-contract-"))
-        for pid in (38418, 45000):
-            pointer = root / f"studyapp-runtime-test-{pid}" / "local/update-policy-probe.txt"
+        for scenario in ("positive", "health-failure"):
+            fixture = root / scenario / "fixture"
+            pointer = fixture / ".runtime/local/update-policy-probe.txt"
             pointer.parent.mkdir(parents=True)
-            pointer.write_text(f"approval-{pid}")
+            pointer.write_text(f"approval-{scenario}")
             package = pointer.parents[1] / "updates/studyapp-update-fixture/package"
             downloaded = {"policy_probe_pointer": str(pointer), "path": str(package)}
-            self.assertEqual(native.approval_pointer(downloaded, pid), pointer)
-            self.assertEqual(native.approval_pointer(downloaded, pid).read_text(), f"approval-{pid}")
+            self.assertEqual(native.approval_pointer(downloaded, fixture), pointer)
+            self.assertEqual(native.approval_pointer(downloaded, fixture).read_text(), f"approval-{scenario}")
             for unrelated in (Path("update-policy-probe.txt"), root / "update-policy-probe.txt", pointer.with_name("other.txt")):
                 with self.assertRaises(ValueError):
-                    native.approval_pointer({**downloaded, "policy_probe_pointer": str(unrelated)}, pid)
+                    native.approval_pointer({**downloaded, "policy_probe_pointer": str(unrelated)}, fixture)
             with self.assertRaises(ValueError):
-                native.approval_pointer(downloaded, pid + 1)
+                native.approval_pointer(downloaded, root / "other-scenario/fixture")
+            # Old PID-scoped roots cannot silently substitute for shared context.
+            with self.assertRaises(ValueError):
+                native.approval_pointer({
+                    "path": str(root / "studyapp-runtime-test-38418/updates/studyapp-update-fixture/package"),
+                    "policy_probe_pointer": str(root / "studyapp-runtime-test-38418/local/update-policy-probe.txt"),
+                }, fixture)
         # A missing publication must never cause a fallback to the real profile.
         with self.assertRaises(KeyError):
-            native.approval_pointer({"path": "/fixture/package"}, 38418)
+            native.approval_pointer({"path": "/fixture/package"}, root / "fixture")
 
     def test_preparation_processes_only_reads_app_descendants_without_arguments(self):
         native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
