@@ -174,7 +174,176 @@ impl LocalFolderProvider {
     }
 }
 
+// File identity is independent of path/content; identical replacement bytes are stale.
+#[cfg(windows)]
+fn removal_identity(file: &File) -> Result<String> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct Id {
+        volume: u64,
+        id: [u8; 16],
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandleEx(
+            handle: *mut std::ffi::c_void,
+            class: i32,
+            info: *mut std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+    let mut id = Id {
+        volume: 0,
+        id: [0; 16],
+    };
+    // FileIdInfo supplies volume and the full 128-bit filesystem object ID.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            18,
+            (&mut id as *mut Id).cast(),
+            std::mem::size_of::<Id>() as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(format!("{}:{:x?}", id.volume, id.id))
+}
+#[cfg(unix)]
+fn removal_identity(file: &File) -> Result<String> {
+    use std::os::unix::fs::MetadataExt;
+    let m = file.metadata()?;
+    Ok(format!("{}:{}", m.dev(), m.ino()))
+}
+#[cfg(not(any(unix, windows)))]
+fn removal_identity(_: &File) -> Result<String> {
+    Err(SyncError::UnsupportedRemoval(
+        "filesystem identity unavailable",
+    ))
+}
+
+impl LocalFolderProvider {
+    fn removal_path(&self, target: &str, asset: bool) -> Result<PathBuf> {
+        if asset {
+            self.asset_path(target, false)
+        } else {
+            validate_id(target)?;
+            Ok(self.ensure_dirs()?.join(format!("{target}.md")))
+        }
+    }
+    fn removal_open(path: &Path, deleting: bool) -> Result<File> {
+        if !checked_metadata(path)?.is_some_and(|m| m.is_file()) {
+            return Err(SyncError::Conflict);
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            // Deny other writers/deleters, and never traverse a reparse point.
+            options.share_mode(1).custom_flags(0x00200000);
+            if deleting {
+                options.access_mode(0x80000000 | 0x00010000);
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = deleting;
+        let file = options.open(path)?;
+        if !checked_metadata(path)?.is_some_and(|m| m.is_file()) {
+            return Err(SyncError::InvalidPath);
+        }
+        Ok(file)
+    }
+    fn inspect_removal_file(
+        &self,
+        target: &str,
+        _path: &Path,
+        file: &File,
+    ) -> Result<RemoteRemoval> {
+        let identity = removal_identity(file)?;
+        let bytes = bounded_bytes(file)?;
+        let hash = content_hash_bytes(&bytes);
+        Ok(RemoteRemoval {
+            target: target.into(),
+            revision: format!("{identity}:{hash}"),
+            hash,
+            bytes: bytes.len() as u64,
+            provider_identity: content_hash(&self.root.to_string_lossy()),
+            // Old random-named originals/pending files cannot safely be attributed.
+            residual: RemovalResidual::RetainedCopies,
+        })
+    }
+    fn inspect_removal(&self, target: &str, asset: bool) -> Result<RemoteRemoval> {
+        let (_notes, _lock) = self.locked_dir()?;
+        let path = self.removal_path(target, asset)?;
+        let file = Self::removal_open(&path, false)?;
+        self.inspect_removal_file(target, &path, &file)
+    }
+    fn execute_removal(&self, plan: &RemoteRemoval, asset: bool) -> Result<RemovalOutcome> {
+        let (_notes, _lock) = self.locked_dir()?;
+        let path = self.removal_path(&plan.target, asset)?;
+        let file = Self::removal_open(&path, true)?;
+        let current = self.inspect_removal_file(&plan.target, &path, &file)?;
+        if &current != plan {
+            return Err(SyncError::Conflict);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn SetFileInformationByHandle(
+                    handle: *mut std::ffi::c_void,
+                    class: i32,
+                    info: *const std::ffi::c_void,
+                    size: u32,
+                ) -> i32;
+            }
+            let delete: u8 = 1;
+            // Delete the verified handle, never a path that another process replaced.
+            if unsafe {
+                SetFileInformationByHandle(
+                    file.as_raw_handle(),
+                    4,
+                    (&delete as *const u8).cast(),
+                    1,
+                )
+            } == 0
+            {
+                return Err(std::io::Error::last_os_error().into());
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            // Same nonblocking app lock as writes; recheck immediately before unlink.
+            let check = Self::removal_open(&path, false)?;
+            if removal_identity(&check)? != removal_identity(&file)? {
+                return Err(SyncError::Conflict);
+            }
+            fs::remove_file(&path)?;
+        }
+        drop(file);
+        Ok(RemovalOutcome {
+            residual: current.residual,
+        })
+    }
+}
+
 impl Provider for LocalFolderProvider {
+    fn inspect_note(&self, id: &str) -> Result<RemoteRemoval> {
+        self.inspect_removal(id, false)
+    }
+    fn delete_note(&self, plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        self.execute_removal(plan, false)
+    }
+    fn inspect_asset(&self, key: &str) -> Result<RemoteRemoval> {
+        self.inspect_removal(key, true)
+    }
+    fn delete_asset(&self, plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        self.execute_removal(plan, true)
+    }
+
     fn read_asset(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let (_notes, _lock) = self.locked_dir()?;
         let path = self.asset_path(key, false)?;

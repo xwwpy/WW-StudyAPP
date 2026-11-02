@@ -1,6 +1,9 @@
-//! Generic S3 compatible, image-only object storage. No remote deletion API.
+//! Generic S3 compatible image storage with separately prepared conditional removal.
 
-use crate::{AssetProvider, Result, SyncError, validate_asset_key};
+use crate::{
+    AssetProvider, RemoteRemoval, RemovalOutcome, RemovalResidual, Result, SyncError,
+    validate_asset_key,
+};
 use hmac::{Hmac, Mac};
 use reqwest::{
     Method, Url,
@@ -220,8 +223,23 @@ impl ObjectStoreProvider {
                 )
             })
             .collect::<String>();
+        let mut query = url
+            .query_pairs()
+            .map(|(k, v)| {
+                (
+                    encode_key(&k).replace('/', "%2F"),
+                    encode_key(&v).replace('/', "%2F"),
+                )
+            })
+            .collect::<Vec<_>>();
+        query.sort();
+        let query = query
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("&");
         let canonical = format!(
-            "{method}\n{}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}",
+            "{method}\n{}\n{query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}",
             url.path()
         );
         let date = &datetime[..8];
@@ -256,6 +274,15 @@ impl ObjectStoreProvider {
         } else {
             BTreeMap::new()
         };
+        self.request_headers(method, url, payload, headers)
+    }
+    fn request_headers(
+        &self,
+        method: Method,
+        url: Url,
+        payload: &[u8],
+        headers: BTreeMap<String, String>,
+    ) -> Result<Response> {
         let date = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
         let signature = self.sign(method.as_str(), &url, payload, &date, headers)?;
         let mut request = self
@@ -272,7 +299,143 @@ impl ObjectStoreProvider {
     }
 }
 
+impl ObjectStoreProvider {
+    fn require_unversioned(&self) -> Result<()> {
+        let unsupported = || {
+            SyncError::UnsupportedRemoval(
+                "bucket version retention is enabled, suspended or unverified",
+            )
+        };
+        let mut url = self.bucket_url()?;
+        url.set_query(Some("versioning="));
+        let response = self.request(Method::GET, url, &[], false)?;
+        if response.status().as_u16() != 200 {
+            return Err(unsupported());
+        }
+        let xml = crate::bounded_read(response, crate::MAX_XML_BYTES)?;
+        let mut reader = quick_xml::Reader::from_str(&xml);
+        let mut seen = false;
+        let mut depth = 0;
+        // Only the documented empty VersioningConfiguration proves never-versioned.
+        // Any status, unknown child, malformed XML or unsupported API fails closed.
+        loop {
+            use quick_xml::events::Event;
+            match reader.read_event().map_err(|_| unsupported())? {
+                Event::Start(e)
+                    if !seen
+                        && depth == 0
+                        && e.local_name().as_ref() == b"VersioningConfiguration" =>
+                {
+                    seen = true;
+                    depth = 1;
+                }
+                Event::Empty(e)
+                    if !seen
+                        && depth == 0
+                        && e.local_name().as_ref() == b"VersioningConfiguration" =>
+                {
+                    seen = true;
+                }
+                Event::End(e)
+                    if depth == 1 && e.local_name().as_ref() == b"VersioningConfiguration" =>
+                {
+                    depth = 0;
+                }
+                Event::Text(e) if e.as_ref().iter().all(u8::is_ascii_whitespace) => {}
+                Event::Decl(_) | Event::Comment(_) => {}
+                Event::Eof if seen && depth == 0 => return Ok(()),
+                _ => return Err(unsupported()),
+            }
+        }
+    }
+    fn inspect_removal_object(&self, key: &str) -> Result<RemoteRemoval> {
+        let response = self.request(Method::GET, self.asset_url(key)?, &[], false)?;
+        match response.status().as_u16() {
+            200 => {}
+            404 => return Err(SyncError::Conflict),
+            status => return Err(SyncError::Http(status)),
+        }
+        if response
+            .headers()
+            .get("x-amz-version-id")
+            .is_some_and(|v| v != "null")
+        {
+            return Err(SyncError::UnsupportedRemoval(
+                "object has a retained version",
+            ));
+        }
+        let revision = response
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| {
+                v.len() >= 2
+                    && v.starts_with('"')
+                    && v.ends_with('"')
+                    && !v[1..v.len() - 1].contains('"')
+            })
+            .ok_or(SyncError::MissingRevision)?
+            .to_owned();
+        let bytes = crate::bounded_bytes(response)?;
+        Ok(RemoteRemoval {
+            target: key.into(),
+            revision,
+            hash: hash(&bytes),
+            bytes: bytes.len() as u64,
+            provider_identity: self.identity().ok_or(SyncError::InvalidUrl)?,
+            residual: RemovalResidual::ProviderBackupsUnknown,
+        })
+    }
+}
 impl AssetProvider for ObjectStoreProvider {
+    fn inspect_asset(&self, key: &str) -> Result<RemoteRemoval> {
+        validate_asset_key(key)?;
+        self.require_unversioned()?;
+        self.inspect_removal_object(key)
+    }
+    fn delete_asset(&self, plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        validate_asset_key(&plan.target)?;
+        if self.identity().as_deref() != Some(plan.provider_identity.as_str()) {
+            return Err(SyncError::Conflict);
+        }
+        self.require_unversioned()?;
+        if &self.inspect_removal_object(&plan.target)? != plan {
+            return Err(SyncError::Conflict);
+        }
+        let response = self.request_headers(
+            Method::DELETE,
+            self.asset_url(&plan.target)?,
+            &[],
+            BTreeMap::from([("if-match".into(), plan.revision.clone())]),
+        )?;
+        match response.status().as_u16() {
+            204 => {}
+            404 | 412 => return Err(SyncError::Conflict),
+            status => return Err(SyncError::Http(status)),
+        }
+        if response
+            .headers()
+            .get("x-amz-delete-marker")
+            .is_some_and(|v| v == "true")
+            || response
+                .headers()
+                .get("x-amz-version-id")
+                .is_some_and(|v| v != "null")
+        {
+            return Err(SyncError::UnsupportedRemoval(
+                "versioning changed during deletion; retained versions may remain",
+            ));
+        }
+        let verify = self.request(Method::GET, self.asset_url(&plan.target)?, &[], false)?;
+        match verify.status().as_u16() {
+            404 => Ok(RemovalOutcome {
+                residual: RemovalResidual::ProviderBackupsUnknown,
+            }),
+            200 => Err(SyncError::Conflict),
+            status => Err(SyncError::Http(status)),
+        }
+    }
+
     fn get_asset(&self, key: &str) -> Result<Option<Vec<u8>>> {
         let response = self.request(Method::GET, self.asset_url(key)?, &[], false)?;
         match response.status().as_u16() {
@@ -535,5 +698,154 @@ mod tests {
             Err(crate::SyncError::Http(307))
         ));
         assert_eq!(server.join().unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use super::*;
+    use crate::{RemovalResidual, removal_tests::removal_server};
+    const KEY: &str = "assets/123e4567-e89b-42d3-a456-426614174000/a.png";
+    fn provider(url: &str) -> ObjectStoreProvider {
+        ObjectStoreProvider::for_loopback_test(
+            ObjectStoreConfig {
+                endpoint: url.into(),
+                bucket: "bucket".into(),
+                region: "us-east-1".into(),
+                prefix: String::new(),
+                addressing: ObjectAddressing::Path,
+            },
+            "testkey",
+            "testsecret",
+        )
+        .unwrap()
+    }
+    const UNVERSIONED: &str =
+        "<VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"/>";
+    #[test]
+    fn removal_object_signed_conditional_delete() {
+        let (url, server) = removal_server(vec![
+            (200, "", UNVERSIONED),
+            (200, "ETag: \"v1\"\r\n", "image"),
+            (200, "", UNVERSIONED),
+            (200, "ETag: \"v1\"\r\n", "image"),
+            (204, "", ""),
+            (404, "", ""),
+        ]);
+        let p = provider(&url);
+        let plan = p.inspect_asset(KEY).unwrap();
+        assert_eq!(plan.hash, crate::content_hash("image"));
+        assert_eq!(
+            p.delete_asset(&plan).unwrap().residual,
+            RemovalResidual::ProviderBackupsUnknown
+        );
+        let calls = server.join().unwrap();
+        assert!(calls[0].starts_with("GET /bucket/?versioning="));
+        let delete = calls[4].to_lowercase();
+        assert!(delete.starts_with("delete /bucket/assets/"));
+        assert!(delete.contains("if-match: \"v1\""));
+        assert!(delete.contains("signedheaders=host;if-match;x-amz-content-sha256;x-amz-date"));
+    }
+    #[test]
+    fn removal_object_versioned_unknown_denied_without_mutation() {
+        for body in [
+            "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+            "<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>",
+            "<Unknown/>",
+            "<VersioningConfiguration><Status>Unknown</Status></VersioningConfiguration>",
+            "<VersioningConfiguration><Status/></VersioningConfiguration>",
+        ] {
+            let (url, server) = removal_server(vec![(200, "", body)]);
+            let p = provider(&url);
+            assert!(matches!(
+                p.inspect_asset(KEY),
+                Err(SyncError::UnsupportedRemoval(_))
+            ));
+            assert_eq!(server.join().unwrap().len(), 1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod removal_guards_tests {
+    use super::*;
+    use crate::removal_tests::removal_server;
+    const KEY: &str = "assets/123e4567-e89b-42d3-a456-426614174000/a.png";
+    const EMPTY: &str = "<VersioningConfiguration/>";
+    fn provider(url: &str) -> ObjectStoreProvider {
+        ObjectStoreProvider::for_loopback_test(
+            ObjectStoreConfig {
+                endpoint: url.into(),
+                bucket: "bucket".into(),
+                region: "us-east-1".into(),
+                prefix: String::new(),
+                addressing: ObjectAddressing::Path,
+            },
+            "testkey",
+            "testsecret",
+        )
+        .unwrap()
+    }
+    #[test]
+    fn removal_object_rechecks_version_state_before_delete() {
+        let (url, server) = removal_server(vec![
+            (200, "", EMPTY),
+            (200, "ETag: \"v\"\r\n", "x"),
+            (
+                200,
+                "",
+                "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+            ),
+        ]);
+        let p = provider(&url);
+        let plan = p.inspect_asset(KEY).unwrap();
+        assert!(matches!(
+            p.delete_asset(&plan),
+            Err(SyncError::UnsupportedRemoval(_))
+        ));
+        assert!(server.join().unwrap().iter().all(|r| r.starts_with("GET ")));
+    }
+    #[test]
+    fn removal_object_missing_etag_auth_lock_conflict_and_redirect_fail_closed() {
+        for headers in [
+            "",
+            "ETag: W/\"weak\"\r\n",
+            "ETag: \"v\"\r\nx-amz-version-id: version1\r\n",
+        ] {
+            let (url, server) = removal_server(vec![(200, "", EMPTY), (200, headers, "x")]);
+            assert!(provider(&url).inspect_asset(KEY).is_err());
+            assert_eq!(server.join().unwrap().len(), 2);
+        }
+        for status in [403, 412, 302, 404, 500] {
+            let (url, server) = removal_server(vec![
+                (200, "", EMPTY),
+                (200, "ETag: \"v\"\r\n", "x"),
+                (200, "", EMPTY),
+                (200, "ETag: \"v\"\r\n", "x"),
+                (status, "", ""),
+            ]);
+            let p = provider(&url);
+            let plan = p.inspect_asset(KEY).unwrap();
+            assert!(p.delete_asset(&plan).is_err());
+            assert_eq!(server.join().unwrap().len(), 5);
+        }
+    }
+    #[test]
+    fn removal_object_sigv4_canonical_query_is_sorted_encoded_and_signed() {
+        let p = provider("http://127.0.0.1:1/");
+        let sign = |query: &str| {
+            p.sign(
+                "GET",
+                &Url::parse(&format!("http://127.0.0.1:1/bucket/?{query}")).unwrap(),
+                &[],
+                "20260101T000000Z",
+                BTreeMap::new(),
+            )
+            .unwrap()
+            .authorization
+        };
+        assert_eq!(sign("b=two%20words&a=%2F"), sign("a=%2F&b=two+words"));
+        assert_ne!(sign("versioning="), sign(""));
+        assert_ne!(sign("a=%2F"), sign("a=%252F"));
     }
 }

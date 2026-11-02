@@ -33,10 +33,12 @@ pub enum SyncError {
     Transport,
     Io(std::io::ErrorKind),
     LockBusy,
+    UnsupportedRemoval(&'static str),
 }
 impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::UnsupportedRemoval(reason) => write!(f, "无法永久删除此目标：{reason}"),
             Self::MissingRevision => write!(f, "WebDAV 未提供强 ETag，已拒绝覆盖现有笔记"),
             Self::Conflict => write!(f, "远端内容已更改，请重新同步；未覆盖未知版本"),
             Self::LockBusy => write!(f, "同步目录正在被其他 StudyApp 使用，请稍后重试"),
@@ -77,20 +79,74 @@ pub struct RemoteNote {
 }
 
 /// `None` means create-only. Existing objects require a previously read revision.
-/// Implementations deliberately expose no deletion operation.
+/// Removal requires a separate preparation and conditional execution.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RemovalResidual {
+    /// Local retained/aliased copies are preserved because ownership is unproven.
+    RetainedCopies,
+    /// The exact API resource was removed; provider-managed backups remain unverified.
+    ProviderBackupsUnknown,
+    /// No residual copies are known within the explicitly inspected scope.
+    NoneKnown,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoteRemoval {
+    pub target: String,
+    pub revision: String,
+    pub hash: String,
+    pub bytes: u64,
+    pub provider_identity: String,
+    pub residual: RemovalResidual,
+}
+pub type AssetRevision = RemoteRemoval;
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemovalOutcome {
+    pub residual: RemovalResidual,
+}
+
 pub trait Provider: Send + Sync {
+    fn inspect_note(&self, _id: &str) -> Result<RemoteRemoval> {
+        Err(SyncError::UnsupportedRemoval(
+            "provider has no conditional note removal",
+        ))
+    }
+    fn delete_note(&self, _plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        Err(SyncError::UnsupportedRemoval(
+            "provider has no conditional note removal",
+        ))
+    }
+    fn inspect_asset(&self, _key: &str) -> Result<RemoteRemoval> {
+        Err(SyncError::UnsupportedRemoval(
+            "provider has no conditional asset removal",
+        ))
+    }
+    fn delete_asset(&self, _plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        Err(SyncError::UnsupportedRemoval(
+            "provider has no conditional asset removal",
+        ))
+    }
     fn list(&self) -> Result<Vec<String>>;
     fn read(&self, id: &str) -> Result<Option<RemoteNote>>;
     fn write(&self, id: &str, content: &str, expected_revision: Option<&str>)
     -> Result<RemoteNote>;
     fn test_connection(&self) -> Result<()>;
-    /// Immutable assets have no overwrite or deletion operation and never enter note listings.
+    /// Asset writes remain create-only and assets never enter note listings.
     fn read_asset(&self, key: &str) -> Result<Option<Vec<u8>>>;
     fn write_asset(&self, key: &str, bytes: &[u8]) -> Result<()>;
 }
 
-/// Image-only storage; implementations never need note revisions or deletion.
+/// Image-only storage, with conservative defaults for conditional removal.
 pub trait AssetProvider: Send + Sync {
+    fn inspect_asset(&self, _key: &str) -> Result<RemoteRemoval> {
+        Err(SyncError::UnsupportedRemoval(
+            "provider has no conditional asset removal",
+        ))
+    }
+    fn delete_asset(&self, _plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        Err(SyncError::UnsupportedRemoval(
+            "provider has no conditional asset removal",
+        ))
+    }
     fn get_asset(&self, key: &str) -> Result<Option<Vec<u8>>>;
     fn put_asset(&self, key: &str, bytes: &[u8]) -> Result<()>;
     fn check_connection(&self) -> Result<()>;
@@ -100,6 +156,12 @@ pub trait AssetProvider: Send + Sync {
 }
 
 impl<T: Provider> AssetProvider for T {
+    fn inspect_asset(&self, key: &str) -> Result<RemoteRemoval> {
+        Provider::inspect_asset(self, key)
+    }
+    fn delete_asset(&self, plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        Provider::delete_asset(self, plan)
+    }
     fn get_asset(&self, key: &str) -> Result<Option<Vec<u8>>> {
         Provider::read_asset(self, key)
     }
@@ -121,6 +183,12 @@ impl NoteAssets {
     }
 }
 impl AssetProvider for NoteAssets {
+    fn inspect_asset(&self, key: &str) -> Result<RemoteRemoval> {
+        self.provider.inspect_asset(key)
+    }
+    fn delete_asset(&self, plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        self.provider.delete_asset(plan)
+    }
     fn get_asset(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.provider.read_asset(key)
     }
@@ -248,3 +316,6 @@ fn read_note(mut reader: impl Read) -> Result<String> {
     reader.read_to_end(&mut bytes)?;
     String::from_utf8(bytes).map_err(|_| SyncError::InvalidContent)
 }
+
+#[cfg(test)]
+mod removal_tests;

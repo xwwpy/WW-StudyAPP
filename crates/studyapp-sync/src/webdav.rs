@@ -235,7 +235,76 @@ impl WebDavProvider {
     }
 }
 
+impl WebDavProvider {
+    fn removal_url(&self, target: &str, asset: bool) -> Result<Url> {
+        if !asset {
+            return self.object_url(target);
+        }
+        validate_asset_key(target)?;
+        self.base
+            .join(&format!("StudyApp/{target}"))
+            .map_err(|_| SyncError::InvalidUrl)
+    }
+    fn removal_identity(&self) -> String {
+        content_hash(&format!("{}|{}", self.base, self.username.as_str()))
+    }
+    fn inspect_removal(&self, target: &str, asset: bool) -> Result<RemoteRemoval> {
+        let response = Self::send(self.request(Method::GET, self.removal_url(target, asset)?))?;
+        match response.status().as_u16() {
+            200 => {}
+            404 => return Err(SyncError::Conflict),
+            status => return Err(SyncError::Http(status)),
+        }
+        let revision = Self::strong_etag(&response).ok_or(SyncError::MissingRevision)?;
+        let bytes = bounded_bytes(response)?;
+        Ok(RemoteRemoval {
+            target: target.into(),
+            revision,
+            hash: content_hash_bytes(&bytes),
+            bytes: bytes.len() as u64,
+            provider_identity: self.removal_identity(),
+            residual: RemovalResidual::ProviderBackupsUnknown,
+        })
+    }
+    fn execute_removal(&self, plan: &RemoteRemoval, asset: bool) -> Result<RemovalOutcome> {
+        let current = self.inspect_removal(&plan.target, asset)?;
+        if &current != plan {
+            return Err(SyncError::Conflict);
+        }
+        let url = self.removal_url(&plan.target, asset)?;
+        let response = Self::send(
+            self.request(Method::DELETE, url.clone())
+                .header(IF_MATCH, &plan.revision),
+        )?;
+        match response.status().as_u16() {
+            200 | 204 => {}
+            404 | 412 => return Err(SyncError::Conflict),
+            status => return Err(SyncError::Http(status)),
+        }
+        let verify = Self::send(self.request(Method::GET, url))?;
+        match verify.status().as_u16() {
+            404 => Ok(RemovalOutcome {
+                residual: RemovalResidual::ProviderBackupsUnknown,
+            }),
+            200 => Err(SyncError::Conflict),
+            status => Err(SyncError::Http(status)),
+        }
+    }
+}
 impl Provider for WebDavProvider {
+    fn inspect_note(&self, id: &str) -> Result<RemoteRemoval> {
+        self.inspect_removal(id, false)
+    }
+    fn delete_note(&self, plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        self.execute_removal(plan, false)
+    }
+    fn inspect_asset(&self, key: &str) -> Result<RemoteRemoval> {
+        self.inspect_removal(key, true)
+    }
+    fn delete_asset(&self, plan: &RemoteRemoval) -> Result<RemovalOutcome> {
+        self.execute_removal(plan, true)
+    }
+
     fn read_asset(&self, key: &str) -> Result<Option<Vec<u8>>> {
         validate_asset_key(key)?;
         let url = self
