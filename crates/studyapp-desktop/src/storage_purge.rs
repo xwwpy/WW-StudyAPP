@@ -33,6 +33,7 @@ pub struct Plan {
     pub drafts: usize,
     pub unresolved: BTreeSet<PathBuf>,
     evidence: [u8; 32],
+    live_notes: BTreeMap<PathBuf, Stamp>,
 }
 impl Plan {
     pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
@@ -45,6 +46,30 @@ impl Plan {
     }
     pub fn backup_count(&self) -> usize {
         self.backups.len()
+    }
+    fn guard_live_references(&self) -> Result<Vec<fs::File>> {
+        let mut handles = Vec::new();
+        if self.keys.is_empty() {
+            return Ok(handles);
+        }
+        for (path, expected) in &self.live_notes {
+            let mut file = plain_handle(path, false, true)?;
+            let mut digest = Sha256::new();
+            let bytes = std::io::copy(&mut file, &mut digest)?;
+            ensure!(
+                crate::app_usage::identity(&file)? == expected.identity
+                    && bytes == expected.bytes
+                    && <[u8; 32]>::from(digest.finalize()) == expected.hash,
+                "跟踪笔记 {} 已改变，请重新预览",
+                path.display()
+            );
+            // Deny replacement and writes for this batch on Windows. Other
+            // platforms re-observe the sources at each destructive batch.
+            if cfg!(windows) {
+                handles.push(file);
+            }
+        }
+        Ok(handles)
     }
 }
 
@@ -99,6 +124,20 @@ fn key_from(dest: &str) -> Option<String> {
     studyapp_sync::validate_asset_key(&key).ok()?;
     Some(key)
 }
+// Used exclusively to protect possible aliases. Ownership always requires the
+// original, validated key and independently verified paths.
+fn folded(text: &str) -> String {
+    let normalizer = icu_normalizer::ComposingNormalizer::new_nfkc();
+    let normalized = normalizer.normalize(text);
+    let case_folded = unicase::UniCase::unicode(normalized.as_ref()).to_folded_case();
+    normalizer.normalize(&case_folded).into_owned()
+}
+fn protected_keys(text: &str) -> BTreeSet<String> {
+    if !text.contains("studyapp-media:") {
+        return BTreeSet::new();
+    }
+    keys_in(&folded(text))
+}
 #[derive(Default)]
 struct Refs {
     mine: BTreeSet<String>,
@@ -106,6 +145,7 @@ struct Refs {
     hashes: BTreeSet<String>,
     other_hashes: BTreeSet<String>,
     other_paths: BTreeSet<PathBuf>,
+    protected_keys: BTreeSet<String>,
 }
 impl Refs {
     fn snapshot(&mut self, s: &Snapshot, id: &str) {
@@ -135,8 +175,10 @@ impl Refs {
                 let Ok(raw) = percent_encoding::percent_decode_str(&dest_url).decode_utf8() else {
                     continue;
                 };
+                let local_extended = matches!(Path::new(raw.as_ref()).components().next(),
+                    Some(std::path::Component::Prefix(prefix)) if matches!(prefix.kind(),std::path::Prefix::VerbatimDisk(_)));
                 if raw.starts_with("//")
-                    || raw.starts_with(r"\\")
+                    || (raw.starts_with(r"\\") && !local_extended)
                     || raw.contains("://")
                     || raw.starts_with("studyapp-media:")
                 {
@@ -150,13 +192,14 @@ impl Refs {
                 } else {
                     continue;
                 };
-                if let Ok(canonical) = path.canonicalize() {
-                    self.other_paths.insert(canonical);
-                }
+                self.other_paths.insert(path);
             }
         }
     }
     fn text(&mut self, mine: bool, text: &str) {
+        if !mine {
+            self.protected_keys.extend(protected_keys(text));
+        }
         if mine {
             &mut self.mine
         } else {
@@ -164,6 +207,31 @@ impl Refs {
         }
         .extend(keys_in(text))
     }
+}
+
+fn read_tracked(path: &Path) -> Result<(String, Stamp)> {
+    let _dirs = guard_directories(path.parent().context("笔记目录无效")?, false)?;
+    let mut file = plain_handle(path, false, true)?;
+    let mut body = String::new();
+    file.read_to_string(&mut body)?;
+    let observed = stamp(path)?;
+    ensure!(
+        observed.identity == crate::app_usage::identity(&file)?
+            && observed.hash == <[u8; 32]>::from(Sha256::digest(body.as_bytes())),
+        "跟踪文件已改变"
+    );
+    Ok((body, observed))
+}
+
+fn image_identity(path: &Path) -> Result<Option<(u64, u128)>> {
+    let path = match path.canonicalize() {
+        Ok(path) => path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    Ok(Some(crate::app_usage::identity(&plain_handle(
+        &path, false, false,
+    )?)?))
 }
 fn draft_files(s: &Snapshot, plan: &mut Plan, refs: &mut Refs) -> Result<BTreeSet<String>> {
     let mut groups = BTreeSet::from([plan.note_id.clone()]);
@@ -231,6 +299,11 @@ fn draft_files(s: &Snapshot, plan: &mut Plan, refs: &mut Refs) -> Result<BTreeSe
             &mut refs.shared
         };
         set.extend(bindings.values().filter_map(|v| key_from(v)));
+        if !owned {
+            for binding in bindings.values() {
+                refs.protected_keys.extend(protected_keys(binding));
+            }
+        }
         if owned {
             groups.insert(draft.asset_group);
             plan.files.insert(path.clone(), saved);
@@ -319,6 +392,7 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
         shared: 0,
         versions: s.versions.iter().filter(|v| v.note_id == id).count(),
         drafts: 0,
+        live_notes: BTreeMap::new(),
         unresolved: BTreeSet::new(),
         evidence: Sha256::digest(serde_json::to_vec(&(
             &s.settings,
@@ -332,6 +406,25 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
     };
     let mut refs = Refs::default();
     refs.snapshot(s, id);
+    let mut unreadable = None;
+    for other in s.notes.iter().filter(|n| n.id != id && !n.detached) {
+        let path = Path::new(&other.path);
+        match read_tracked(path) {
+            Ok((body, stamp)) => {
+                refs.text(false, &body);
+                refs.local_paths(&body, Some(path));
+                refs.other_hashes
+                    .insert(format!("{:x}", Sha256::digest(body.as_bytes())));
+                plan.live_notes.insert(path.to_owned(), stamp);
+            }
+            Err(e) => {
+                unreadable = Some(e.context(format!(
+                    "无法核对跟踪笔记 {} 的当前内容，不能安全删除图片",
+                    path.display()
+                )));
+            }
+        }
+    }
     let groups = draft_files(s, &mut plan, &mut refs)?;
     for p in entries(dir)? {
         if !auto_backup(&p) || p == Path::new(&s.data_path) {
@@ -383,7 +476,9 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
     for (p, s) in pending {
         let hash = format!("{:x}", sha2::digest::Output::<Sha256>::from(s.hash));
         if identities.contains(&s.identity)
-            || (refs.hashes.contains(&hash) && !refs.other_hashes.contains(&hash))
+            || (unreadable.is_none()
+                && refs.hashes.contains(&hash)
+                && !refs.other_hashes.contains(&hash))
         {
             plan.files.insert(p, s);
         } else if refs.hashes.contains(&hash) || !refs.other_hashes.contains(&hash) {
@@ -417,6 +512,9 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
                         .trim_end_matches(".json")
                         .replace('\\', "/");
                     let key = format!("assets/{tail}");
+                    if refs.protected_keys.contains(&folded(&key)) {
+                        refs.other_paths.extend(paths.iter().cloned());
+                    }
                     if groups.contains(key.split('/').nth(1).unwrap_or(""))
                         || refs.mine.contains(&key)
                     {
@@ -461,18 +559,30 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
         }
     }
     let mut parents = BTreeSet::new();
+    if !assets.is_empty()
+        && let Some(error) = unreadable
+    {
+        return Err(error);
+    }
+    for key in &refs.shared {
+        refs.other_paths
+            .insert(image_root.join(key.trim_start_matches("assets/")));
+    }
+    let mut protected_ids = BTreeSet::new();
+    for p in &refs.other_paths {
+        if let Some(identity) = image_identity(p)? {
+            protected_ids.insert(identity);
+        }
+    }
     for (key, paths) in assets {
-        if refs.shared.contains(&key)
-            || (cfg!(windows)
-                && refs
-                    .shared
-                    .iter()
-                    .any(|other| other.eq_ignore_ascii_case(&key)))
-            || paths.iter().any(|p| {
-                p.canonicalize()
-                    .is_ok_and(|c| refs.other_paths.contains(&c))
-            })
-        {
+        let mut shared = refs.protected_keys.contains(&folded(&key));
+        for path in &paths {
+            if image_identity(path)?.is_some_and(|id| protected_ids.contains(&id)) {
+                shared = true;
+                break;
+            }
+        }
+        if shared {
             plan.shared += 1;
             continue;
         }
@@ -658,6 +768,7 @@ pub fn execute(engine: &mut Engine, plan: &Plan, now: i64) -> Result<()> {
         ensure!(stamp(p)? == *s, "备份已变化，请重新确认");
         studyapp_core::scrub_confirmed_backup(p, &plan.note_id, plan.backup_revisions[p])?;
     }
+    let _live_refs = plan.guard_live_references()?;
     // Remove data while its ownership evidence still exists for a later retry.
     let mut files: Vec<_> = plan.files.iter().collect();
     let db_root = root(&engine.snapshot())?.canonicalize()?;
@@ -693,6 +804,60 @@ pub fn execute(engine: &mut Engine, plan: &Plan, now: i64) -> Result<()> {
 mod tests {
     use super::*;
     use studyapp_core::Command;
+    #[test]
+    fn live_external_markdown_invalidates_preview_and_protects_an_image_alias() {
+        let dir = tempfile::tempdir().unwrap().keep();
+        let mut engine = Engine::open(&dir.join("learn.sqlite3"), 10).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        engine
+            .apply(
+                Command::CreateNoteWithId {
+                    note_id: id.clone(),
+                    title: "target".into(),
+                    content: format!("![target](studyapp-media:{id}/photo.gif)"),
+                    folder_id: None,
+                },
+                11,
+            )
+            .unwrap();
+        let source = dir.join("external.md");
+        fs::write(&source, "unrelated").unwrap();
+        engine
+            .apply(Command::Import(vec![source.clone()]), 12)
+            .unwrap();
+        let group = dir.join("images").join(&id);
+        fs::create_dir_all(&group).unwrap();
+        let target = group.join("photo.gif");
+        fs::write(&target, "image").unwrap();
+        fs::hard_link(&target, group.join("other.gif")).unwrap();
+        let snapshot = engine.snapshot();
+        let original = prepare(&snapshot, &id).unwrap();
+        assert!(original.files.contains_key(&target.canonicalize().unwrap()));
+        // Disk changes before the file watcher has published a new version.
+        fs::write(&source, format!("![other](images/{id}/other.gif)")).unwrap();
+        assert!(execute(&mut engine, &original, 13).is_err());
+        let fresh = prepare(&snapshot, &id).unwrap();
+        assert_eq!(fresh.shared, 1);
+        assert!(!fresh.files.contains_key(&target.canonicalize().unwrap()));
+        fs::write(&source, format!("![other](studyapp-media:{id}/other.gif)")).unwrap();
+        assert_eq!(prepare(&snapshot, &id).unwrap().shared, 1);
+        fs::write(&source, [0xff]).unwrap();
+        assert!(
+            prepare(&snapshot, &id)
+                .unwrap_err()
+                .to_string()
+                .contains("无法核对跟踪笔记")
+        );
+    }
+
+    #[test]
+    fn shared_unicode_names_preserve_composition_and_case_aliases() {
+        let id = uuid::Uuid::new_v4().to_string();
+        let protected = protected_keys(&format!(
+            "![shared](studyapp-media:{id}/CAFE\u{301}-Straße.GIF)"
+        ));
+        assert!(protected.contains(&folded(&format!("assets/{id}/café-strasse.gif"))));
+    }
     #[test]
     fn shared_image_survives_and_changed_file_invalidates_confirmation() {
         let root = tempfile::tempdir().unwrap().keep();

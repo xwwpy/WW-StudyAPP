@@ -1,4 +1,4 @@
-use super::{Plan, keys_in};
+use super::{Plan, folded, protected_keys};
 use crate::sync_runtime::SyncRuntime;
 use anyhow::{Context, Result, ensure};
 use studyapp_core::{Engine, Snapshot};
@@ -46,12 +46,12 @@ pub fn preview(s: &Snapshot, runtime: &SyncRuntime, id: &str, scope: Scope) -> R
                     if (other != id || !scope.sync)
                         && let Some(note) = p.read(&other)?
                     {
-                        protected.extend(keys_in(&note.content));
+                        protected.extend(protected_keys(&note.content));
                     }
                 }
             }
             for key in &local.keys {
-                if protected.contains(key) {
+                if protected.contains(&folded(key)) {
                     remote_shared += 1;
                     continue;
                 }
@@ -90,6 +90,7 @@ pub fn execute(
     if !expected.remote_images.is_empty() {
         let p = runtime.image_provider_factory(&snapshot.settings.images)()?
             .context("云端图片目标已改变")?;
+        let _live_refs = expected.local.guard_live_references()?;
         for image in &expected.remote_images {
             let result = p.delete_asset(image).with_context(|| {
                 format!("已有 {} 个远端项目完成删除，本机尚未清理", results.len())
