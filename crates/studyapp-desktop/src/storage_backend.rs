@@ -289,6 +289,66 @@ pub(crate) fn visit_tree(
     count: &mut usize,
     visitor: &mut impl FnMut(&Path, &Path, File) -> Result<()>,
 ) -> Result<()> {
+    visit_filtered(
+        root,
+        relative,
+        reject_links,
+        &|p| Ok(skip(p)),
+        count,
+        visitor,
+    )
+}
+pub(crate) fn visit_migration_tree(
+    root: &Path,
+    skip: &impl Fn(&Path) -> bool,
+    count: &mut usize,
+    visitor: &mut impl FnMut(&Path, &Path, File) -> Result<()>,
+) -> Result<()> {
+    visit_filtered(
+        root,
+        Path::new(""),
+        true,
+        &|rel| {
+            if skip(rel) {
+                return Ok(true);
+            }
+            let name = rel.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name == ".studyapp-removal-v1"
+                || name
+                    .strip_prefix(".studyapp-removal-")
+                    .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok())
+            {
+                let path = root.join(rel);
+                let _pin = plain_handle(&path, true, false)?;
+                for item in std::fs::read_dir(&path)? {
+                    let item = item?;
+                    let name = item.file_name();
+                    let name = name.to_string_lossy();
+                    ensure!(
+                        name == "receipt.json"
+                            || name
+                                .strip_prefix("receipt-")
+                                .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok()),
+                        "请先核对未完成的删除，再迁移：{}",
+                        item.path().display()
+                    );
+                }
+                return Ok(true);
+            }
+            Ok(false)
+        },
+        count,
+        visitor,
+    )
+}
+fn visit_filtered(
+    root: &Path,
+    relative: &Path,
+    reject_links: bool,
+    skip: &impl Fn(&Path) -> Result<bool>,
+    count: &mut usize,
+    visitor: &mut impl FnMut(&Path, &Path, File) -> Result<()>,
+) -> Result<()> {
     ensure!(relative.components().count() <= 64, "资料库目录层数过深");
     let directory = root.join(relative);
     let _guard = plain_handle(&directory, true, false)?;
@@ -298,7 +358,7 @@ pub(crate) fn visit_tree(
         ensure!(*count <= 100_000, "资料库文件数量超过统计限制");
         let path = entry.path();
         let relative = relative.join(entry.file_name());
-        if skip(&relative) {
+        if skip(&relative)? {
             continue;
         }
         let metadata = std::fs::symlink_metadata(&path)?;
@@ -311,7 +371,7 @@ pub(crate) fn visit_tree(
             continue;
         }
         if metadata.is_dir() {
-            visit_tree(root, &relative, reject_links, skip, count, visitor)?;
+            visit_filtered(root, &relative, reject_links, skip, count, visitor)?;
         } else if metadata.is_file() {
             let file = plain_handle(&path, false, reject_links)?;
             visitor(&path, &relative, file)?;
@@ -747,6 +807,7 @@ pub fn inspect(snapshot: &Snapshot) -> Result<StorageReport> {
                 directory,
                 image_paths,
                 !cfg!(test) && !cfg!(feature = "ui-test"),
+                crate::app_migration::inventory_paths(&paths, snapshot),
             )
         }
         Err(error) => {
@@ -875,31 +936,24 @@ pub fn migrate_library(
             || runtime_lock_file(relative, Path::new(&snapshot.data_path))
     };
     let mut total = 0u64;
-    visit_tree(
-        source,
-        Path::new(""),
-        true,
-        &skip,
-        &mut 0,
-        &mut |_, _, f| {
-            total = total
-                .checked_add(f.metadata()?.len())
-                .context("迁移大小溢出")?;
-            Ok(())
-        },
-    )?;
+    visit_migration_tree(source, &skip, &mut 0, &mut |_, _, f| {
+        total = total
+            .checked_add(f.metadata()?.len())
+            .context("迁移大小溢出")?;
+        Ok(())
+    })?;
+    let mut representatives = BTreeMap::new();
     let mut copied_bytes_total = 0u64;
     let mut verified = 0u64;
     let mut throttle = std::time::Instant::now();
-    visit_tree(
-        source,
-        Path::new(""),
-        true,
-        &skip,
-        &mut 0,
-        &mut |_, relative, mut file| {
-            let destination = resolved.join(relative);
-            let _guards = guard_directories(destination.parent().context("迁移目录无效")?, true)?;
+    visit_migration_tree(source, &skip, &mut 0, &mut |_, relative, mut file| {
+        let destination = resolved.join(relative);
+        let _guards = guard_directories(destination.parent().context("迁移目录无效")?, true)?;
+        let identity = crate::app_usage::identity(&file)?;
+        if let Some(first) = representatives.get(&identity) {
+            std::fs::hard_link(first, &destination).context("目标目录不能保留资料库硬链接")?;
+            copied_bytes_total += file.metadata()?.len();
+        } else {
             let mut output = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -924,33 +978,34 @@ pub fn migrate_library(
             }
             output.sync_all()?;
             drop(output);
-            let mut copied = plain_handle(&destination, false, true)?;
-            file.rewind()?;
-            let mut source_bytes = [0; 64 * 1024];
-            let mut copied_bytes = [0; 64 * 1024];
-            loop {
-                let count = file.read(&mut source_bytes)?;
-                if count == 0 {
-                    ensure!(
-                        copied.read(&mut copied_bytes[..1])? == 0,
-                        "迁移文件校验失败"
-                    );
-                    break;
-                }
-                copied.read_exact(&mut copied_bytes[..count])?;
-                verified += count as u64;
-                if throttle.elapsed().as_millis() >= 100 {
-                    progress(TransferProgress::bytes("正在校验", verified, total));
-                    throttle = std::time::Instant::now()
-                }
+            representatives.insert(identity, destination.clone());
+        }
+        let mut copied = plain_handle(&destination, false, true)?;
+        file.rewind()?;
+        let mut source_bytes = [0; 64 * 1024];
+        let mut copied_bytes = [0; 64 * 1024];
+        loop {
+            let count = file.read(&mut source_bytes)?;
+            if count == 0 {
                 ensure!(
-                    source_bytes[..count] == copied_bytes[..count],
+                    copied.read(&mut copied_bytes[..1])? == 0,
                     "迁移文件校验失败"
                 );
+                break;
             }
-            Ok(())
-        },
-    )?;
+            copied.read_exact(&mut copied_bytes[..count])?;
+            verified += count as u64;
+            if throttle.elapsed().as_millis() >= 100 {
+                progress(TransferProgress::bytes("正在校验", verified, total));
+                throttle = std::time::Instant::now()
+            }
+            ensure!(
+                source_bytes[..count] == copied_bytes[..count],
+                "迁移文件校验失败"
+            );
+        }
+        Ok(())
+    })?;
     progress(TransferProgress::bytes("已校验", verified, total));
     Ok(database)
 }

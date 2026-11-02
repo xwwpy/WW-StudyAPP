@@ -32,6 +32,18 @@ pub struct ApplicationReport {
     pub issues: Vec<ApplicationIssue>,
     pub incomplete: bool,
 }
+impl ApplicationReport {
+    fn record_issue(&mut self, issue: ApplicationIssue) {
+        if self.issues.len() < 128 {
+            self.issues.push(issue);
+        } else if self.issues.len() == 128 {
+            self.issues.push(ApplicationIssue {
+                path: issue.path,
+                message: "还有其他位置无法统计，未逐一列出。".into(),
+            });
+        }
+    }
+}
 #[derive(Clone, Debug)]
 pub struct ApplicationLocation {
     pub label: String,
@@ -41,6 +53,7 @@ pub struct ApplicationLocation {
     pub movable: bool,
     pub reason: String,
     file_only: bool,
+    members: Vec<PathBuf>,
 }
 #[derive(Clone, Debug)]
 pub struct ApplicationIssue {
@@ -50,6 +63,7 @@ pub struct ApplicationIssue {
 fn location(label: &str, path: PathBuf, movable: bool) -> ApplicationLocation {
     ApplicationLocation {
         file_only: false,
+        members: Vec::new(),
         label: label.into(),
         path,
         bytes: 0,
@@ -139,7 +153,7 @@ fn visit(
             // Check before advancing ReadDir, including siblings whose inspection fails.
             if seen.entries >= seen.budget {
                 seen.exhausted = true;
-                report.issues.push(ApplicationIssue {
+                report.record_issue(ApplicationIssue {
                     path: path.into(),
                     message: "统计文件数量超过上限".into(),
                 });
@@ -151,7 +165,7 @@ fn visit(
             match entry {
                 Ok(e) => {
                     if let Err(error) = visit(&e.path(), depth + 1, row, report, seen) {
-                        report.issues.push(ApplicationIssue {
+                        report.record_issue(ApplicationIssue {
                             path: e.path(),
                             message: format!("{error:#}"),
                         });
@@ -159,7 +173,7 @@ fn visit(
                 }
                 Err(error) => {
                     seen.entries += 1;
-                    report.issues.push(ApplicationIssue {
+                    report.record_issue(ApplicationIssue {
                         path: path.into(),
                         message: error.to_string(),
                     });
@@ -190,24 +204,33 @@ fn scan_with_budget(
     issues: Vec<ApplicationIssue>,
     budget: usize,
 ) -> ApplicationReport {
-    let mut report = ApplicationReport {
-        issues,
-        ..Default::default()
-    };
+    let mut report = ApplicationReport::default();
+    for issue in issues {
+        report.record_issue(issue);
+    }
     let mut seen = Seen {
         budget,
         ..Seen::default()
     };
     for mut row in locations {
         let path = row.path.clone();
-        if !seen.exhausted
-            && let Err(error) = studyapp_desktop::app_paths::validate_path(&path)
-                .and_then(|_| visit(&path, 0, &mut row, &mut report, &mut seen))
-        {
-            report.issues.push(ApplicationIssue {
-                path: row.path.clone(),
-                message: format!("{error:#}"),
-            });
+        let members = if row.members.is_empty() {
+            vec![path]
+        } else {
+            std::mem::take(&mut row.members)
+        };
+        for file in members {
+            if seen.exhausted {
+                break;
+            }
+            if let Err(error) = studyapp_desktop::app_paths::validate_path(&file)
+                .and_then(|_| visit(&file, 0, &mut row, &mut report, &mut seen))
+            {
+                report.record_issue(ApplicationIssue {
+                    path: file,
+                    message: format!("{error:#}"),
+                });
+            }
         }
         report.locations.push(row);
     }
@@ -219,6 +242,7 @@ pub fn inspect(
     library: &Path,
     external: impl IntoIterator<Item = PathBuf>,
     native: bool,
+    migration: Result<(Option<PathBuf>, Vec<PathBuf>)>,
 ) -> ApplicationReport {
     let mut locations = vec![location("当前资料库", library.into(), true)];
     for (prefix, d) in [("当前", &paths.effective), ("默认/遗留", &paths.defaults)] {
@@ -245,12 +269,42 @@ pub fn inspect(
             locations.push(row);
         }
     }
-    for path in external {
-        let mut row = location("已登记外置图片", path, false);
+    let mut image_groups = std::collections::BTreeMap::<PathBuf, Vec<PathBuf>>::new();
+    for file in external {
+        if let Some(parent) = file.parent() {
+            image_groups
+                .entry(parent.parent().unwrap_or(parent).to_owned())
+                .or_default()
+                .push(file);
+        }
+    }
+    for (root, files) in image_groups {
+        let mut row = location("已登记外置图片", root, false);
         row.file_only = true;
+        row.members = files;
+        row.reason = "仅统计图片索引登记的文件".into();
         locations.push(row);
     }
     let mut issues = vec![];
+    match migration {
+        Ok((Some(stage), files)) => {
+            let mut tx = location("迁移记录", stage.clone(), false);
+            tx.reason = "可恢复迁移所用的位置".into();
+            locations.push(tx);
+            if !files.is_empty() {
+                let mut old = location("迁移保留的旧文件", stage.join("cleanup.json"), false);
+                old.reason = "只统计已登记且未重复计入的文件，可在应用位置中查看清单".into();
+                old.file_only = true;
+                old.members = files;
+                locations.push(old);
+            }
+        }
+        Err(e) => issues.push(ApplicationIssue {
+            path: paths.locator.clone(),
+            message: format!("无法完整核对迁移文件：{e:#}"),
+        }),
+        Ok((None, _)) => {}
+    }
     if native {
         discover_runtime(&mut locations, &mut issues);
     }
@@ -514,6 +568,39 @@ mod tests {
 mod safety_tests {
     use super::*;
     #[test]
+    fn migration_usage_counts_only_registered_source_files_and_transaction_data() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: root.join("library"),
+            config: root.join("config"),
+            local_data: root.join("local"),
+            cache: root.join("cache"),
+            updates: root.join("updates"),
+        };
+        let paths = studyapp_desktop::app_paths::AppPaths::from_defaults(
+            dirs,
+            root.join("config/location.json"),
+        )
+        .unwrap();
+        let old = root.join("old");
+        let stage = root.join("transaction");
+        std::fs::create_dir(&old).unwrap();
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::write(old.join("registered"), b"note").unwrap();
+        std::fs::write(old.join("unrelated"), b"user content").unwrap();
+        std::fs::write(stage.join("cleanup.json"), b"123").unwrap();
+        let report = inspect(
+            &paths,
+            &root.join("library"),
+            [],
+            false,
+            Ok((Some(stage), vec![old.join("registered")])),
+        );
+        assert!(!report.incomplete);
+        assert_eq!(report.logical_bytes, 7);
+        assert_eq!(report.distinct_file_bytes, 7);
+    }
+    #[test]
     fn indexed_external_file_does_not_scan_sibling() {
         let root = tempfile::tempdir().unwrap().keep();
         std::fs::write(root.join("indexed"), b"123").unwrap();
@@ -538,7 +625,13 @@ mod safety_tests {
         let indexed = root.join("external/old-image.png");
         std::fs::create_dir_all(&indexed).unwrap();
         std::fs::write(indexed.join("unrelated"), b"secret").unwrap();
-        let report = inspect(&paths, &root.join("library"), [indexed], false);
+        let report = inspect(
+            &paths,
+            &root.join("library"),
+            [indexed],
+            false,
+            Ok((None, vec![])),
+        );
         assert_eq!(report.logical_bytes, 0);
         assert!(report.incomplete);
     }
