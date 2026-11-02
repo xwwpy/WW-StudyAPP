@@ -113,9 +113,19 @@ impl StudyApp {
             }
         } else {
             content=content.child(muted("本机托管文件、历史快照、关联草稿和专用图片将一并清除。外部原文件及其他笔记仍使用的图片会保留。"));
-            for (index, (selected, label)) in [
-                (scope.sync, "同时删除同步目标中的笔记"),
-                (scope.cloud, "同时删除云端图片"),
+            let sync_configured = !matches!(
+                self.sync_panel.read(cx).status.settings.target,
+                crate::sync_runtime::SyncTarget::Disabled
+            );
+            let cloud_configured = match &self.snapshot.as_ref()?.settings.images.cloud {
+                studyapp_core::media_settings::ImageCloudTarget::NoteSync => sync_configured,
+                studyapp_core::media_settings::ImageCloudTarget::ObjectStore(target) => {
+                    target.validate().is_ok()
+                }
+            };
+            for (index, (selected, configured, label)) in [
+                (scope.sync, sync_configured, "同时删除同步目标中的笔记"),
+                (scope.cloud, cloud_configured, "同时删除云端图片"),
             ]
             .into_iter()
             .enumerate()
@@ -124,8 +134,12 @@ impl StudyApp {
                     Button::new(("purge-scope", index))
                         .small()
                         .ghost()
-                        .label(format!("{} {label}", if selected { "☑" } else { "☐" }))
-                        .disabled(self.storage_busy)
+                        .label(format!(
+                            "{} {label}{}",
+                            if selected { "☑" } else { "☐" },
+                            if configured { "" } else { "（未配置）" }
+                        ))
+                        .disabled(self.storage_busy || !configured)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some((scope, p)) = &mut this.storage_ui.purge {
                                 if index == 0 {
