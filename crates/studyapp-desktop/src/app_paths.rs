@@ -29,6 +29,7 @@ pub struct AppPaths {
     pub locator: PathBuf,
     pub custom_root: Option<PathBuf>,
     library: Option<PathBuf>,
+    portable_editor: Option<PathBuf>,
 }
 impl AppPaths {
     pub fn current() -> Result<Self> {
@@ -42,7 +43,15 @@ impl AppPaths {
             updates: std::env::temp_dir().join("WW-StudyApp-updates"),
         };
         let locator = defaults.config.join("storage-location.json");
-        Self::from_defaults(defaults, locator)
+        let paths = Self::from_defaults(defaults, locator)?;
+        if cfg!(windows)
+            && std::env::var_os("WW_STUDYAPP_PORTABLE_LAUNCHER").as_deref()
+                == Some(std::ffi::OsStr::new("1"))
+        {
+            paths.with_portable_executable(&std::env::current_exe()?)
+        } else {
+            Ok(paths)
+        }
     }
     /// Isolated native test profile; never reads the real user's locator.
     pub fn runtime() -> Result<Self> {
@@ -89,7 +98,29 @@ impl AppPaths {
             locator,
             custom_root: config.as_ref().map(|c| c.root.clone()),
             library: config.and_then(|c| c.library),
+            portable_editor: None,
         })
+    }
+    pub fn with_portable_executable(mut self, executable: &Path) -> Result<Self> {
+        let profile = executable
+            .parent()
+            .context("便携程序目录无效")?
+            .join("webview-data");
+        validate_path(&profile)?;
+        self.portable_editor = Some(profile);
+        Ok(self)
+    }
+    pub fn default_editor_profile(&self) -> PathBuf {
+        self.portable_editor
+            .clone()
+            .unwrap_or_else(|| self.defaults.cache.join("editor"))
+    }
+    pub fn editor_profile(&self) -> PathBuf {
+        if self.custom_root.is_some() {
+            self.effective.cache.join("editor")
+        } else {
+            self.default_editor_profile()
+        }
     }
     pub fn storage_locator(&self) -> &Path {
         &self.locator

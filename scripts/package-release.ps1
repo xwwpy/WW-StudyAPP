@@ -77,8 +77,7 @@ set "ROOT=%~dp0"
 set "TEMP=%ROOT%temp"
 set "TMP=%ROOT%temp"
 if not exist "%TEMP%" mkdir "%TEMP%"
-if not exist "%ROOT%webview-data" mkdir "%ROOT%webview-data"
-set "WEBVIEW2_USER_DATA_FOLDER=%ROOT%webview-data"
+set "WW_STUDYAPP_PORTABLE_LAUNCHER=1"
 start "" "%ROOT%WW-StudyApp.exe" %*
 timeout /t 2 /nobreak >nul
 tasklist /fi "imagename eq WW-StudyApp.exe" | find /i "WW-StudyApp.exe" >nul

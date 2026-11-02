@@ -256,6 +256,12 @@ pub fn inspect(
             locations.push(location(&format!("{prefix}{label}"), path.clone(), true));
         }
     }
+    let portable = paths.default_editor_profile();
+    if !portable.starts_with(&paths.defaults.cache) {
+        let mut row = location("便携版编辑器缓存", portable, paths.custom_root.is_none());
+        row.reason = "便携启动器登记的编辑器文件".into();
+        locations.push(row);
+    }
     // On Windows ProjectDirs keeps separate data/config/cache subdirectories
     // under two dedicated StudyApp/StudyApp roots. Also count sibling files.
     #[cfg(windows)]

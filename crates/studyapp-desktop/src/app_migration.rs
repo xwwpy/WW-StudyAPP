@@ -333,14 +333,14 @@ fn recorded_inventory(
     );
     let records: Vec<CopyRecord> = serde_json::from_slice(&bytes)?;
     ensure!(records.len() <= 100_001, "旧副本清单条目过多");
-    let old_cache = match j.previous {
-        None => paths.defaults.cache.clone(),
+    let old_profile = match j.previous {
+        None => paths.default_editor_profile(),
         Some(raw) => {
             let config = validate_config(&serde_json::from_slice(&raw)?)?;
-            config.root.join("cache")
+            config.root.join("cache/editor")
         }
     };
-    let old_profile = canon(&old_cache)?.join("editor");
+    let old_profile = canon(&old_profile)?;
     let owned_notes: std::collections::BTreeSet<_> = snapshot
         .notes
         .iter()
@@ -502,10 +502,7 @@ fn manifest(
     external: &std::collections::BTreeSet<PathBuf>,
 ) -> Result<BTreeMap<PathBuf, Entry>> {
     let mut roots = vec![
-        (
-            canon(&paths.effective.cache)?.join("editor"),
-            "cache/editor",
-        ),
+        (canon(&paths.editor_profile())?, "cache/editor"),
         (canon(&paths.effective.cache)?, "cache"),
         (source.into(), "library"),
         (canon(&paths.effective.config)?, "config"),
@@ -794,6 +791,7 @@ fn prepare_checked(
         for p in [
             &source,
             &paths.effective.cache,
+            &paths.editor_profile(),
             &paths.effective.config,
             &paths.effective.local_data,
             &paths.effective.data,
@@ -858,7 +856,7 @@ fn prepare_checked(
         j.profile_copies.clear();
         atomic_json(&journal_file(&paths), &j)?;
         progress("正在等待编辑器释放缓存文件…".into());
-        wait_profile_stable(&paths.effective.cache.join("editor"), 16, || {
+        wait_profile_stable(&paths.editor_profile(), 16, || {
             std::thread::sleep(std::time::Duration::from_millis(125));
         })?;
         progress("正在统计可迁移文件…".into());
@@ -939,7 +937,7 @@ fn prepare_checked(
         let mut copied = 0;
         let mut verified = 0;
         let mut records = Vec::new();
-        let profile = canon(&paths.effective.cache)?.join("editor");
+        let profile = canon(&paths.editor_profile())?;
         let mut throttle = std::time::Instant::now();
         for (rel, entry) in &files {
             check_cancel()?;
@@ -1160,7 +1158,7 @@ fn prepare_checked(
             .filter(|n| n.managed)
             .map(|n| source.join("notes").join(format!("{}.md", n.id)))
             .collect();
-        let profile = canon(&paths.effective.cache)?.join("editor");
+        let profile = canon(&paths.editor_profile())?;
         records.retain(|r| {
             known_notes.contains(&r.source)
                 || nested(&r.source, &profile)
@@ -1456,6 +1454,31 @@ mod tests {
                 .unwrap();
         let engine = Engine::open(&dirs.data.join("studyapp.sqlite3"), 1000).unwrap();
         (base, paths, engine)
+    }
+    #[test]
+    fn portable_launcher_profile_moves_to_custom_cache() {
+        let (base, paths, mut engine) = fixture();
+        let paths = paths
+            .with_portable_executable(&base.join("portable/WW-StudyApp.exe"))
+            .unwrap();
+        let profile = paths.editor_profile();
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(profile.join("browser-marker"), "portable profile").unwrap();
+        let target = base.join("migrated");
+        let prepared = prepare(&mut engine, paths.clone(), &target, 1010, |_| {}).unwrap();
+        prepared.publish().unwrap();
+        let after = AppPaths::from_defaults(paths.defaults.clone(), paths.locator.clone())
+            .unwrap()
+            .with_portable_executable(&base.join("portable/WW-StudyApp.exe"))
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(after.editor_profile().join("browser-marker")).unwrap(),
+            "portable profile"
+        );
+        assert_ne!(
+            canon(&after.editor_profile()).unwrap(),
+            canon(&profile).unwrap()
+        );
     }
     #[test]
     fn checkpoint_after_copy_is_restartable_and_refreshes_only_owned_copies() {
