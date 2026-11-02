@@ -140,7 +140,7 @@ fn schedule_editor_profile(
     executor: &BackgroundExecutor,
     resolve: impl FnOnce() -> anyhow::Result<studyapp_desktop::app_paths::AppPaths> + Send + 'static,
 ) -> Task<anyhow::Result<PathBuf>> {
-    executor.spawn(async move { resolve().map(|paths| paths.effective.cache.join("editor")) })
+    executor.spawn(async move { resolve().map(|paths| paths.editor_profile()) })
 }
 
 impl MarkdownEditor {
@@ -800,7 +800,18 @@ impl MarkdownEditor {
             };
             #[cfg(feature = "ui-test")]
             eprintln!("native editor: creating WebView");
+            #[cfg(all(windows, feature = "update-acceptance"))]
+            crate::update_acceptance::editor_profile(&profile);
+            #[cfg(all(windows, feature = "update-acceptance"))]
+            let diagnostic_profile = profile.clone();
             let result = crate::web_editor_host::HostedEditor::new(parent, sender, profile);
+            #[cfg(all(windows, feature = "update-acceptance"))]
+            if let Err(error) = &result {
+                crate::update_acceptance::editor_creation_failed(
+                    &diagnostic_profile,
+                    &format!("{error:#}"),
+                );
+            }
             #[cfg(feature = "ui-test")]
             eprintln!("native editor: constructor finished");
             let _ = this.update(cx, |this, cx| {

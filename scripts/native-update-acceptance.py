@@ -115,6 +115,18 @@ def collect_diagnostics(root):
                 (target / "copy-error.txt").write_text(str(error), encoding="utf-8")
 
 
+def editor_profile_paths(root):
+    """Never let diagnostic records redirect inspection into a real user profile."""
+    temp = (root / "temp").resolve()
+    profiles = []
+    for record in sorted((root / "fixture").glob("editor-profile-*.json")):
+        profile = Path(json.loads(record.read_text(encoding="utf-8"))["profile"]).resolve()
+        if not profile.is_relative_to(temp):
+            raise ValueError("Editor diagnostic profile is outside fixture temp")
+        profiles.append(profile)
+    return profiles
+
+
 def authorization_denied(root, packages, binaries, source_sha, old_version, candidate_version, user):
     """Exercise actual polkit denial and application-owned ordinary-user recovery."""
     root.mkdir()

@@ -58,6 +58,25 @@ def require(value):
         raise c.WinError(c.get_last_error())
 
 
+def path_owner(path):
+    """Read the owner SID without granting access or rewriting the ACL."""
+    kernel, security = apis()
+    security.GetNamedSecurityInfoW.argtypes = [w.LPWSTR, c.c_int, w.DWORD, c.POINTER(c.c_void_p),
+                                              c.c_void_p, c.c_void_p, c.c_void_p, c.POINTER(c.c_void_p)]
+    owner, descriptor = c.c_void_p(), c.c_void_p()
+    error = security.GetNamedSecurityInfoW(str(path), 1, 1, c.byref(owner), None, None, None, c.byref(descriptor))
+    if error:
+        raise c.WinError(error)
+    text = w.LPWSTR()
+    try:
+        require(security.ConvertSidToStringSidW(owner, c.byref(text)))
+        return text.value
+    finally:
+        if text:
+            kernel.LocalFree(c.cast(text, c.c_void_p))
+        kernel.LocalFree(descriptor)
+
+
 def elevated(security, token):
     value, size = w.DWORD(), w.DWORD()
     require(security.GetTokenInformation(token, 20, c.byref(value), c.sizeof(value), c.byref(size)))

@@ -107,6 +107,9 @@ def main():
     if rejected.returncode != 1:
         raise RuntimeError("Feature-off production binary did not reject fixture trust")
     child_env["STUDYAPP_UPDATE_ACCEPTANCE_DIR"] = str(fixture)
+    # Preserve browser startup failures without disabling any Chromium sandbox.
+    child_env["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS"] = (
+        '--enable-logging --log-file="' + str(fixture / "webview2.log") + '"')
     installed_dir = root / "installed"
     installer = windows.launch(packages["old"], ["/S", f"/D={installed_dir}"], child_env)
     if installer.wait(120) != 0:
@@ -160,6 +163,26 @@ def main():
         (root / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     finally:
         common.collect_diagnostics(root)
+        collect_editor_diagnostics(root)
+
+
+def collect_editor_diagnostics(root):
+    records = []
+    try:
+        for profile in common.editor_profile_paths(root):
+            for path in (profile, *profile.parents):
+                if not path.is_relative_to((root / "temp").resolve()):
+                    break
+                acl = subprocess.run(["icacls", str(path)], capture_output=True, text=True, timeout=10)
+                try:
+                    owner = windows.path_owner(path)
+                except OSError as error:
+                    owner = str(error)
+                records.append({"path": str(path), "exists": path.exists(),
+                                "owner": owner, "acl_exit": acl.returncode, "acl": acl.stdout, "error": acl.stderr})
+    except Exception as error:
+        records.append({"collection_error": str(error)})
+    (root / "fixture" / "editor-acl.json").write_text(json.dumps(records, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -72,6 +72,7 @@ jobs:
             ${{ runner.temp }}/update-token-preflight/token-preflight.json
             ${{ runner.temp }}/native-update-windows/fixture/*.json
             ${{ runner.temp }}/native-update-windows/fixture/*.png
+            ${{ runner.temp }}/native-update-windows/fixture/*.log
             ${{ runner.temp }}/native-update-windows/transaction-evidence/**
           if-no-files-found: warn
           retention-days: 30

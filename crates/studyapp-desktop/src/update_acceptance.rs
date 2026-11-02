@@ -126,6 +126,39 @@ fn save(name: &str, value: Value) {
     std::fs::write(&temporary, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     std::fs::rename(temporary, dir.join(name)).unwrap();
 }
+/// Called outside GPUI update/render borrows, before WebView creates the profile.
+#[cfg(windows)]
+pub(crate) fn editor_profile(profile: &Path) {
+    if active() {
+        let metadata = std::fs::symlink_metadata(profile);
+        save(
+            &format!("editor-profile-{}.json", std::process::id()),
+            json!({"pid":std::process::id(),"profile":profile,
+                "existed_before_creation":metadata.is_ok(),
+                "metadata_error":metadata.err().map(|error|error.to_string())}),
+        );
+    }
+}
+#[cfg(windows)]
+pub(crate) fn editor_creation_failed(profile: &Path, error: &str) {
+    if !active() {
+        return;
+    }
+    let probe = profile.join(format!("acceptance-write-probe-{}", uuid::Uuid::new_v4()));
+    let writable = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .and_then(|file| {
+            drop(file);
+            std::fs::remove_file(&probe)
+        });
+    save(
+        &format!("editor-creation-failure-{}.json", std::process::id()),
+        json!({"profile":profile,"error":error,"writable":writable.is_ok(),
+            "probe_error":writable.err().map(|error|error.to_string())}),
+    );
+}
 fn capture(window: &mut Window, name: &str) {
     let path = directory().unwrap().join(name);
     #[cfg(any(windows, target_os = "macos"))]

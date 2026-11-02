@@ -9,6 +9,18 @@ acceptance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(acceptance)
 
 class FixtureTests(unittest.TestCase):
+    def test_editor_diagnostics_only_inspect_profiles_inside_fixture_temp(self):
+        root = Path(tempfile.mkdtemp(prefix="native-update-profile-test-"))
+        fixture = root / "fixture"
+        fixture.mkdir()
+        profile = root / "temp" / "studyapp-runtime-test-123" / "cache" / "editor"
+        (fixture / "editor-profile-123.json").write_text(json.dumps({"profile": str(profile)}))
+        self.assertEqual(acceptance.editor_profile_paths(root), [profile.resolve()])
+        outside = root.parent / "outside-user-profile"
+        (fixture / "editor-profile-456.json").write_text(json.dumps({"profile": str(outside)}))
+        with self.assertRaisesRegex(ValueError, "outside fixture temp"):
+            acceptance.editor_profile_paths(root)
+
     def test_next_fixture_version_and_snapshot_leave_external_versions_unchanged(self):
         import io, tarfile
         self.assertEqual(acceptance.next_patch("2.8.19"), "2.8.20")
