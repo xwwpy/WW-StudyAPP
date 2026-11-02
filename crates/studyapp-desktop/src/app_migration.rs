@@ -150,7 +150,7 @@ struct Journal {
     stage_identity: Option<(u64, u128)>,
     #[serde(default)]
     cleanup_digest: Option<[u8; 32]>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     profile_copies: Vec<ProfileCopy>,
 }
 #[derive(Clone, Serialize, Deserialize)]
@@ -495,6 +495,130 @@ fn wait_profile_stable(profile: &Path, attempts: usize, mut settle: impl FnMut()
     )
     .into())
 }
+// Receipts are individually bounded and durable before create-only publication.
+// The fixed journal remains small even for profiles with many thousands of files.
+fn save_profile_receipt(scratch: &Path, copy: &ProfileCopy) -> Result<()> {
+    let bytes = serde_json::to_vec(copy)?;
+    ensure!(bytes.len() <= 65536, "编辑器副本记录过大");
+    let receipt = scratch.join(format!("profile-{}.json", uuid::Uuid::new_v4()));
+    let mut options = OpenOptions::new();
+    options.create_new(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let temporary = scratch.join(format!("profile-receipt-{}.next", uuid::Uuid::new_v4()));
+    let mut file = options.open(&temporary)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    drop(file);
+    publish_new(&temporary, &receipt)
+}
+fn restore_profile_copies(journal: &mut Journal, scratch: &Path) -> Result<()> {
+    recover_removal_parent(scratch)?;
+    let mut copies = journal
+        .profile_copies
+        .iter()
+        .cloned()
+        .map(|copy| (copy, None))
+        .collect::<Vec<_>>();
+    for entry in fs::read_dir(scratch)? {
+        let path = entry?.path();
+        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        let Some(id) = name
+            .strip_prefix("profile-")
+            .and_then(|s| s.strip_suffix(".json"))
+        else {
+            continue;
+        };
+        ensure!(uuid::Uuid::parse_str(id).is_ok(), "编辑器副本记录名称无效");
+        ensure!(copies.len() < 100_000, "编辑器副本记录数量超过限制");
+        let bytes = read_optional(&path)?.context("编辑器副本记录已消失")?;
+        let identity = crate::app_usage::identity(&plain_handle(&path, false, true)?)?;
+        let copy: ProfileCopy = serde_json::from_slice(&bytes)?;
+        copies.push((copy, Some((path, identity, Sha256::digest(bytes).into()))));
+    }
+    for (copy, receipt) in copies {
+        ensure!(
+            copy.target
+                .strip_prefix(journal.destination.join("cache/editor"))
+                .is_ok_and(|rel| !rel.as_os_str().is_empty()
+                    && rel
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_)))),
+            "编辑器副本记录无效"
+        );
+        validate_path(&copy.target)?;
+        let parent = copy.target.parent().context("编辑器副本目录无效")?;
+        recover_removal_parent(parent)?;
+        if copy.target.try_exists()? {
+            unlink_exact(&copy.target, copy.identity, &copy.digest)?;
+        }
+        if let Some((path, identity, hash)) = receipt {
+            unlink_exact(&path, identity, &hash)?;
+        }
+    }
+    journal.profile_copies.clear();
+    Ok(())
+}
+fn publish_profile_copy(
+    mut input: File,
+    first: Option<&PathBuf>,
+    scratch: &Path,
+    target: &Path,
+    mut progress: impl FnMut(u64),
+) -> Result<[u8; 32]> {
+    ensure!(
+        !target.try_exists()?,
+        "目标出现未登记的编辑器缓存文件：{}",
+        target.display()
+    );
+    let temp = scratch.join(uuid::Uuid::new_v4().to_string());
+    let expected = if let Some(first) = first {
+        let expected = digest(input, &mut progress)?;
+        fs::hard_link(first, &temp)?;
+        expected
+    } else {
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut output = options.open(&temp)?;
+        let mut hash = Sha256::new();
+        let mut bytes = [0; 65536];
+        loop {
+            check_cancel()?;
+            let n = input.read(&mut bytes)?;
+            if n == 0 {
+                break;
+            }
+            output.write_all(&bytes[..n])?;
+            hash.update(&bytes[..n]);
+            progress(n as u64);
+        }
+        output.sync_all()?;
+        hash.finalize().into()
+    };
+    let pinned = plain_handle(&temp, false, true)?;
+    let identity = crate::app_usage::identity(&pinned)?;
+    ensure!(digest(pinned, |_| {})? == expected, "编辑器暂存副本已变化");
+    save_profile_receipt(
+        scratch,
+        &ProfileCopy {
+            target: target.into(),
+            identity,
+            digest: expected,
+        },
+    )?;
+    // If interrupted, the durable receipt pins only our private staged inode.
+    // An unrelated same-byte file at target has a different identity and survives.
+    publish_new(&temp, target)?;
+    Ok(expected)
+}
 fn manifest(
     paths: &AppPaths,
     source: &Path,
@@ -838,22 +962,7 @@ fn prepare_checked(
                 == j.stage_identity,
             "目标暂存目录已被替换"
         );
-        // Only verified copies recorded by this transaction may be refreshed.
-        // Exact identity and digest checks preserve any replacement/unknown file.
-        for copy in &j.profile_copies {
-            ensure!(
-                copy.target
-                    .strip_prefix(dest.join("cache/editor"))
-                    .is_ok_and(|rel| rel
-                        .components()
-                        .all(|c| matches!(c, std::path::Component::Normal(_)))),
-                "编辑器副本记录无效"
-            );
-            if copy.target.try_exists()? {
-                unlink_exact(&copy.target, copy.identity, &copy.digest)?;
-            }
-        }
-        j.profile_copies.clear();
+        restore_profile_copies(&mut j, &scratch)?;
         atomic_json(&journal_file(&paths), &j)?;
         progress("正在等待编辑器释放缓存文件…".into());
         wait_profile_stable(&paths.editor_profile(), 16, || {
@@ -968,12 +1077,21 @@ fn prepare_checked(
             let rewrite = indexes.get(&entry.identity);
             let first = representatives.get(&entry.identity);
             if let Some(first) = first
+                && !nested(&entry.source, &profile)
                 && !dst.try_exists()?
             {
                 fs::hard_link(first, &dst)
                     .with_context(|| format!("目标文件系统未能保留硬链接：{}", dst.display()))?;
             }
-            let expected = if let Some(rewrite) = rewrite {
+            let expected = if nested(&entry.source, &profile) {
+                publish_profile_copy(input, first, &scratch, &dst, |n| {
+                    copied += n;
+                    if throttle.elapsed().as_millis() >= 100 {
+                        progress(TransferProgress::bytes("正在复制", copied, total));
+                        throttle = std::time::Instant::now();
+                    }
+                })?
+            } else if let Some(rewrite) = rewrite {
                 ensure!(
                     digest(input, |_| {})? == rewrite.source_digest,
                     "图片索引已变化"
@@ -1055,14 +1173,6 @@ fn prepare_checked(
                 return Err(profile_busy());
             }
             ensure!(expected == actual, "文件校验失败：{}", dst.display());
-            if nested(&entry.source, &profile) {
-                j.profile_copies.push(ProfileCopy {
-                    target: dst.clone(),
-                    identity: dest_id,
-                    digest: actual,
-                });
-                atomic_json(&journal_file(&paths), &j)?;
-            }
             records.push(CopyRecord {
                 source: entry.source.clone(),
                 target: dst,
@@ -1440,6 +1550,9 @@ pub(crate) fn simulate_interrupted_claim(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    mod direct_regression {
+        include!("app_migration_direct_test.rs");
+    }
     fn fixture() -> (PathBuf, AppPaths, Engine) {
         let base = tempfile::tempdir().unwrap().keep();
         let dirs = studyapp_desktop::app_paths::AppDirectories {
@@ -1454,6 +1567,139 @@ mod tests {
                 .unwrap();
         let engine = Engine::open(&dirs.data.join("studyapp.sqlite3"), 1000).unwrap();
         (base, paths, engine)
+    }
+    #[test]
+    fn foreign_profile_race_after_staging_is_never_adopted() {
+        let (base, paths, _) = fixture();
+        let source = base.join("input.db");
+        fs::write(&source, b"same bytes").unwrap();
+        let target = base.join("dest/cache/editor/raced.db");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let scratch = base.join("stage");
+        fs::create_dir(&scratch).unwrap();
+        let error = publish_profile_copy(
+            plain_handle(&source, false, true).unwrap(),
+            None,
+            &scratch,
+            &target,
+            |_| {
+                fs::write(&target, b"same bytes").unwrap();
+            },
+        );
+        assert!(error.is_err());
+        fs::remove_file(&source).unwrap();
+        let mut j = Journal {
+            schema: 1,
+            id: uuid::Uuid::new_v4().to_string(),
+            source: paths.effective.data.clone(),
+            destination: base.join("dest"),
+            previous: None,
+            phase: Phase::AwaitingRestart,
+            backup_identity: None,
+            backup_digest: None,
+            stage_identity: None,
+            cleanup_digest: None,
+            profile_copies: Vec::new(),
+        };
+        assert!(restore_profile_copies(&mut j, &scratch).is_err());
+        assert_eq!(fs::read(target).unwrap(), b"same bytes");
+    }
+    #[test]
+    fn large_profile_receipts_keep_journal_bounded_and_resume() {
+        let (base, paths, mut engine) = fixture();
+        let profile = paths.editor_profile();
+        fs::create_dir_all(&profile).unwrap();
+        for i in 0..350 {
+            fs::write(
+                profile.join(format!("{i:04}-{}.db", "x".repeat(140))),
+                b"stable",
+            )
+            .unwrap();
+        }
+        let changing = profile.join("changing.db");
+        fs::write(&changing, b"before").unwrap();
+        let target = base.join("dest");
+        let error = prepare(&mut engine, paths.clone(), &target, 1001, |p| {
+            if p.label.starts_with("已校验，正在备份资料库") {
+                fs::write(&changing, b"after!").unwrap();
+            }
+        })
+        .err()
+        .unwrap();
+        assert!(held(&error), "{error:#}");
+        assert!(fs::metadata(journal_file(&paths)).unwrap().len() < 65536);
+        let j = journal(&paths).unwrap().unwrap();
+        let stage = target.join(format!(".studyapp-migration-{}", j.id));
+        let receipts: u64 = fs::read_dir(stage)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .map(|path| fs::metadata(path).unwrap().len())
+            .sum();
+        assert!(receipts > 65536);
+        assert!(pending(&paths).unwrap().is_some());
+        let mut next = prepare(&mut engine, paths.clone(), &target, 1002, |_| {}).unwrap();
+        next.commit().unwrap();
+        drop(next);
+        let reopened =
+            AppPaths::from_defaults(paths.defaults.clone(), paths.locator.clone()).unwrap();
+        assert!(pending(&reopened).unwrap().is_none());
+        let reopened_engine = Engine::open(&target.join("library/studyapp.sqlite3"), 1003).unwrap();
+        let (_, inventory) = recorded_inventory(&reopened, &reopened_engine.snapshot()).unwrap();
+        assert!(inventory.len() >= 351);
+        assert_eq!(
+            fs::read(target.join("cache/editor/changing.db")).unwrap(),
+            b"after!"
+        );
+    }
+    #[test]
+    fn same_bytes_foreign_profile_file_is_preserved() {
+        let (base, paths, mut engine) = fixture();
+        let profile = paths.editor_profile();
+        fs::create_dir_all(&profile).unwrap();
+        let source = profile.join("foreign.db");
+        fs::write(&source, b"same bytes").unwrap();
+        let target = base.join("dest");
+        let foreign = target.join("cache/editor/foreign.db");
+        let mut inserted = false;
+        assert!(
+            prepare(&mut engine, paths.clone(), &target, 1001, |p| {
+                if !inserted && p.label == "正在统计可迁移文件…" {
+                    inserted = true;
+                    fs::create_dir_all(foreign.parent().unwrap()).unwrap();
+                    fs::write(&foreign, b"same bytes").unwrap();
+                }
+            })
+            .is_err()
+        );
+        fs::remove_file(source).unwrap();
+        let _ = prepare(&mut engine, paths, &target, 1002, |_| {});
+        assert_eq!(fs::read(foreign).unwrap(), b"same bytes");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn profile_retry_recovers_a_claim_before_testing_original_name() {
+        let (base, paths, mut engine) = fixture();
+        let profile = paths.editor_profile();
+        fs::create_dir_all(&profile).unwrap();
+        let source = profile.join("checkpoint.db");
+        fs::write(&source, b"before").unwrap();
+        let target = base.join("dest");
+        assert!(
+            prepare(&mut engine, paths.clone(), &target, 1001, |p| {
+                if p.label.starts_with("已校验，正在备份资料库") {
+                    fs::write(&source, b"after!").unwrap();
+                }
+            })
+            .is_err()
+        );
+        let copied = target.join("cache/editor/checkpoint.db");
+        let claim = simulate_interrupted_claim(&copied);
+        assert!(!copied.exists() && claim.exists());
+        let mut next = prepare(&mut engine, paths, &target, 1002, |_| {}).unwrap();
+        next.commit().unwrap();
+        assert!(!claim.exists());
+        assert_eq!(fs::read(copied).unwrap(), b"after!");
     }
     #[test]
     fn portable_launcher_profile_moves_to_custom_cache() {
