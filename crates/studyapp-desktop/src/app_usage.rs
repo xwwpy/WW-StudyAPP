@@ -8,6 +8,10 @@ use std::{
 use studyapp_desktop::app_paths::AppPaths;
 /// Resolve binary runtime paths without consulting real profiles in CLI unit tests.
 pub(crate) fn runtime_paths() -> Result<AppPaths> {
+    #[cfg(feature = "update-acceptance")]
+    if let Some(fixture) = crate::update_acceptance::launch_directory() {
+        return acceptance_runtime_paths(&fixture);
+    }
     if cfg!(test) {
         let root =
             std::env::temp_dir().join(format!("studyapp-runtime-test-{}", std::process::id()));
@@ -21,6 +25,73 @@ pub(crate) fn runtime_paths() -> Result<AppPaths> {
         AppPaths::from_defaults(dirs, root.join("config/storage-location.json"))
     } else {
         AppPaths::runtime()
+    }
+}
+#[cfg(feature = "update-acceptance")]
+fn acceptance_runtime_paths(fixture: &Path) -> Result<AppPaths> {
+    // The fixture is transported in the authenticated launch context on macOS,
+    // and the explicit runner environment elsewhere. Its identity outlives PIDs.
+    let root = std::fs::canonicalize(fixture)?.join(".runtime");
+    let dirs = studyapp_desktop::app_paths::AppDirectories {
+        data: root.join("library"),
+        config: root.join("config"),
+        local_data: root.join("local"),
+        cache: root.join("cache"),
+        updates: root.join("updates"),
+    };
+    AppPaths::from_defaults(dirs, root.join("config/storage-location.json"))
+}
+#[cfg(all(test, feature = "update-acceptance"))]
+mod acceptance_paths_tests {
+    use super::*;
+    #[test]
+    fn relaunch_child_reads_original_transaction_pointer() {
+        let Some(probe) = std::env::var_os("STUDYAPP_PATH_PROBE_FILE") else {
+            return;
+        };
+        let paths = runtime_paths().unwrap();
+        let pointer = paths.update_pointer().unwrap();
+        std::fs::write(
+            probe,
+            serde_json::to_vec(&serde_json::json!({
+                "pid":std::process::id(), "pointer":pointer,
+                "value":std::fs::read_to_string(pointer).unwrap(),
+                "profile":paths.editor_profile(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn acceptance_process_restarts_share_isolated_paths_and_status_evidence() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(fixture.path().join("fixture.json"), b"{}").unwrap();
+        let paths = acceptance_runtime_paths(fixture.path()).unwrap();
+        let pointer = paths.update_pointer().unwrap();
+        std::fs::create_dir_all(pointer.parent().unwrap()).unwrap();
+        std::fs::write(&pointer, "original-denied-transaction").unwrap();
+        let mut observed = Vec::new();
+        for index in 0..2 {
+            let probe = fixture.path().join(format!("probe-{index}.json"));
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "app_usage::acceptance_paths_tests::relaunch_child_reads_original_transaction_pointer"])
+                .env("GITHUB_ACTIONS", "true")
+                .env("STUDYAPP_UPDATE_ACCEPTANCE_DIR", fixture.path())
+                .env("STUDYAPP_PATH_PROBE_FILE", &probe).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(probe).unwrap()).unwrap();
+            assert_eq!(value["pointer"], serde_json::json!(pointer));
+            assert_eq!(value["profile"], serde_json::json!(paths.editor_profile()));
+            assert_eq!(value["value"], "original-denied-transaction");
+            observed.push(value);
+        }
+        assert_ne!(observed[0]["pid"], observed[1]["pid"]);
+        assert!(pointer.starts_with(std::fs::canonicalize(fixture.path()).unwrap()));
     }
 }
 #[derive(Clone, Debug, Default)]

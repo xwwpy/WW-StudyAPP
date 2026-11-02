@@ -118,10 +118,11 @@ def collect_diagnostics(root):
 def editor_profile_paths(root):
     """Never let diagnostic records redirect inspection into a real user profile."""
     temp = (root / "temp").resolve()
+    stable = (root / "fixture" / ".runtime" / "cache" / "editor").resolve()
     profiles = []
     for record in sorted((root / "fixture").glob("editor-profile-*.json")):
         profile = Path(json.loads(record.read_text(encoding="utf-8"))["profile"]).resolve()
-        if not profile.is_relative_to(temp):
+        if profile != stable and not profile.is_relative_to(temp):
             raise ValueError("Editor diagnostic profile is outside fixture temp")
         profiles.append(profile)
     return profiles

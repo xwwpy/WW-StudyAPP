@@ -777,11 +777,9 @@ impl MarkdownEditor {
                 return;
             }
             // Resolve the locator on a worker. Render only schedules this work.
-            let profile = schedule_editor_profile(
-                cx.background_executor(),
-                studyapp_desktop::app_paths::AppPaths::runtime,
-            )
-            .await;
+            let profile =
+                schedule_editor_profile(cx.background_executor(), crate::app_usage::runtime_paths)
+                    .await;
             if this
                 .update(cx, |this, _| this.suspended || this.host_epoch != epoch)
                 .unwrap_or(true)

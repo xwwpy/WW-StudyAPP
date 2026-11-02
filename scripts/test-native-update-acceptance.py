@@ -21,6 +21,18 @@ class FixtureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "outside fixture temp"):
             acceptance.editor_profile_paths(root)
 
+    def test_editor_diagnostics_accept_stable_runtime_profile_only(self):
+        root = Path(tempfile.mkdtemp(prefix="native-update-stable-profile-test-"))
+        fixture = root / "fixture"
+        fixture.mkdir()
+        record = fixture / "editor-profile-123.json"
+        profile = fixture / ".runtime" / "cache" / "editor"
+        record.write_text(json.dumps({"profile": str(profile)}))
+        self.assertEqual(acceptance.editor_profile_paths(root), [profile.resolve()])
+        record.write_text(json.dumps({"profile": str(fixture / ".runtime" / "unrelated")}))
+        with self.assertRaises(ValueError):
+            acceptance.editor_profile_paths(root)
+
     def test_next_fixture_version_and_snapshot_leave_external_versions_unchanged(self):
         import io, tarfile
         self.assertEqual(acceptance.next_patch("2.8.19"), "2.8.20")
