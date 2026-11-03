@@ -218,8 +218,11 @@ impl Render for PointerBubble {
         let border = px(1.)
             .min(available_width * 0.25)
             .min(available_height * 0.25);
-        let body = div()
-            .id("sidebar-tooltip-content")
+        let scroll = window
+            .use_keyed_state("sidebar-tooltip-scroll", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let body = crate::components::scroll_body("sidebar-tooltip-content", &scroll)
             .test_support()
             .min_w(px(120.).min(available_width))
             .max_w(px(320.).min(available_width))

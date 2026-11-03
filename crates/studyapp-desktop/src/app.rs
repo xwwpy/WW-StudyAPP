@@ -1542,6 +1542,7 @@ impl Render for StudyApp {
                                     .id("page-scroll")
                                     .relative()
                                     .track_scroll(&self.page_scroll)
+                                    .restrict_scroll_to_axis()
                                     .when(!continuous && self.page != Page::Settings, |c| {
                                         use gpui_kit::component::scroll::ScrollableElement;
                                         c.vertical_scrollbar(&self.page_scroll)

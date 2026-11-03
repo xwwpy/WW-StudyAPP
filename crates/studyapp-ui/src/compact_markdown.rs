@@ -1,6 +1,6 @@
 //! Compact Markdown authoring with a native input and an offline preview.
 use crate::{
-    components::{BORDER, column, muted, row},
+    components::{BORDER, column, muted, row, scroll_body},
     controls::Button,
     markdown_content::markdown_preview,
     markdown_format::{MarkdownFormat, format_markdown},
@@ -23,6 +23,7 @@ pub fn summary_markdown_style() -> TextViewStyle {
 pub struct CompactMarkdown {
     input: Entity<TextareaState>,
     preview: bool,
+    preview_scroll: ScrollHandle,
     preview_source: String,
     _input_observer: Subscription,
 }
@@ -39,6 +40,7 @@ impl CompactMarkdown {
         Self {
             input,
             preview: true,
+            preview_scroll: ScrollHandle::new(),
             preview_source,
             _input_observer: observer,
         }
@@ -46,12 +48,18 @@ impl CompactMarkdown {
 
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.preview = true;
+        self.preview_scroll.set_offset(point(px(0.), px(0.)));
         self.preview_source = markdown_preview(&self.input.read(cx).value());
         cx.notify();
     }
 
     pub fn is_preview(&self) -> bool {
         self.preview
+    }
+
+    #[cfg(all(test, feature = "ui-test"))]
+    pub(crate) fn preview_scroll_handle(&self) -> ScrollHandle {
+        self.preview_scroll.clone()
     }
 
     fn format(&mut self, kind: MarkdownFormat, window: &mut Window, cx: &mut Context<Self>) {
@@ -135,6 +143,11 @@ impl Render for CompactMarkdown {
                             .flex_1()
                             .flex_basis(px(300.))
                             .min_w_0()
+                            .on_scroll_wheel(|event, window, cx| {
+                                if event.delta.pixel_delta(window.line_height()).y != px(0.) {
+                                    cx.stop_propagation();
+                                }
+                            })
                             .child(
                                 Textarea::new(&self.input)
                                     .h(px(150.))
@@ -143,26 +156,26 @@ impl Render for CompactMarkdown {
                     )
                     .when(self.preview, |layout| {
                         layout.child(
-                            div()
-                                .id("summary-markdown-preview")
+                            scroll_body("summary-markdown-preview", &self.preview_scroll)
                                 .test_support()
                                 .flex_1()
                                 .flex_basis(px(300.))
                                 .h(px(150.))
                                 .min_w_0()
-                                .overflow_y_scroll()
                                 .border_1()
                                 .border_color(crate::theme::color(BORDER))
                                 .rounded_md()
                                 .p_3()
                                 .child(
-                                    TextView::markdown(
-                                        "summary-markdown-content",
-                                        self.preview_source.clone(),
-                                    )
-                                    .style(summary_markdown_style())
-                                    .on_link_click(|_, _, _, _| {})
-                                    .scrollable(false),
+                                    div().flex_shrink_0().min_w_0().child(
+                                        TextView::markdown(
+                                            "summary-markdown-content",
+                                            self.preview_source.clone(),
+                                        )
+                                        .style(summary_markdown_style())
+                                        .on_link_click(|_, _, _, _| {})
+                                        .scrollable(false),
+                                    ),
                                 ),
                         )
                     }),

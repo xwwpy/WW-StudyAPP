@@ -68,8 +68,11 @@ impl Render for ResultView {
                 "恢复只处理此事务记录的应用文件，不会清理配置、数据库或原始笔记。",
             ),
         };
-        let mut content = column()
-            .id("maintenance-result-content")
+        let scroll = window
+            .use_keyed_state("maintenance-result-scroll", cx, |_, _| ScrollHandle::new())
+            .read(cx)
+            .clone();
+        let mut content = crate::components::scroll_body("maintenance-result-content", &scroll)
             .p(px(26.))
             .gap(px(16.))
             .flex_1()

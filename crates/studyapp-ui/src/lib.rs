@@ -19,3 +19,6 @@ pub mod update_available;
 pub mod update_dialog;
 pub mod virtual_list_scrollbar;
 pub mod window_chrome;
+
+#[cfg(all(test, feature = "ui-test"))]
+mod scroll_regression;

@@ -1,10 +1,11 @@
-use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{InteractiveElementExt, scroll::ScrollableElement};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 /// Shared bounded scroll surface. The original ID remains the actual viewport,
 /// so wheel containment, reveal and native clipping use the same rectangle.
 pub fn scroll_body(id: impl Into<ElementId>, handle: &ScrollHandle) -> Stateful<Div> {
+    let wheel_handle = handle.clone();
     column()
         .id(id)
         .relative()
@@ -13,6 +14,17 @@ pub fn scroll_body(id: impl Into<ElementId>, handle: &ScrollHandle) -> Stateful<
         .overflow_y_scroll()
         .track_scroll(handle)
         .vertical_scrollbar(handle)
+        .lock_scroll_axis()
+        .on_scroll_wheel(move |event, window, cx| {
+            // Children (including text inputs and horizontal tables) run first.
+            // An overflowing pane stays independent even at its first/last row.
+            // Fitting content can still pass vertical wheels to its parent.
+            if event.delta.pixel_delta(window.line_height()).y != px(0.)
+                && wheel_handle.max_offset().y > px(0.)
+            {
+                cx.stop_propagation();
+            }
+        })
 }
 
 pub const INK: u32 = 0x233631;

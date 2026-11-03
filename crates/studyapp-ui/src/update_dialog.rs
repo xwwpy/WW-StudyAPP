@@ -252,7 +252,10 @@ impl RenderOnce for UpdateDialog {
                     .border_1()
                     .border_color(rgb(colors.border))
                     .bg(rgb(colors.inset))
-                    .max_h(px(240.))
+                    .flex()
+                    .flex_col()
+                    .min_h_0()
+                    .max_h((window.viewport_size().height * 0.35).min(px(240.)))
                     .overflow_hidden()
                     .child(
                         scroll_body("update-dialog-notes", &self.notes_scroll)
@@ -260,12 +263,18 @@ impl RenderOnce for UpdateDialog {
                             .p_3()
                             .child(
                                 gpui_kit::div()
+                                    .flex_shrink_0()
+                                    .min_w_0()
                                     .text_size(px(13.))
                                     .text_color(rgb(colors.text))
-                                    .child(TextView::markdown(
-                                        "update-dialog-markdown",
-                                        crate::markdown_content::release_notes(&notes),
-                                    )),
+                                    .child(
+                                        TextView::markdown(
+                                            "update-dialog-markdown",
+                                            crate::markdown_content::release_notes(&notes),
+                                        )
+                                        .style(crate::compact_markdown::summary_markdown_style())
+                                        .scrollable(false),
+                                    ),
                             ),
                     ),
             );

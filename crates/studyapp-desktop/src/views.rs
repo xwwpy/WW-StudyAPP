@@ -550,8 +550,8 @@ impl StudyApp {
                 ))
                 .child(
                     scroll_body("learning-versions", &self.learning_versions_scroll)
+                        .test_support()
                         .max_h(px(220.))
-                        .overflow_y_scroll()
                         .children(
                             self.read_models
                                 .selected_version_positions(&self.chosen_notes)
@@ -970,6 +970,7 @@ impl StudyApp {
                             .track_scroll(&self.statistics_scroll)
                             .horizontal_scrollbar(&self.statistics_scroll)
                             .overflow_x_scroll()
+                            .restrict_scroll_to_axis()
                             .pb(space(palette.spacing, 1.5))
                             .items_end()
                             .gap(space(palette.spacing, 1.))

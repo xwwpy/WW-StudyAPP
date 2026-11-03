@@ -1695,15 +1695,15 @@ test("outline parses headings and navigates duplicate Unicode headings", async (
  const text="# 中文\n\n```md\n# hidden\n```\n\n中文\n---\n\n# 中文";
  const {page}=await setup(text);
  await page.locator("#outline-toggle").click();
- assert.equal(await page.locator("#note-outline button").count(),3);
- await page.locator("#note-outline button").last().click();
+ assert.equal(await page.locator("#note-outline .outline-label").count(),3);
+ await page.locator("#note-outline .outline-label").last().click();
  assert.equal((await state(page)).selection.anchor,text.lastIndexOf("# 中文"));
  await page.evaluate(() => window.studyappEditor.load({generation:42,text:"# 新笔记",readonly:false}));
  await page.waitForTimeout(400);
- assert.equal(await page.locator("#note-outline button").count(),1);
+ assert.equal(await page.locator("#note-outline .outline-label").count(),1);
  await action(page,{type:"replace",from:0,text:"## 新标题\n\n"});
  await page.waitForTimeout(400);
- assert.equal(await page.locator("#note-outline button").count(),2);
+ assert.equal(await page.locator("#note-outline .outline-label").count(),2);
 
  await page.locator("#outline-toggle").click();
  assert.equal(await page.locator("#note-outline").isVisible(),false);
@@ -1860,7 +1860,7 @@ test("outline invalidates stale entries immediately and remains usable in readon
  const {page,errors}=await setup("# First\n\n"+"body\n".repeat(40)+"# Last");
  await page.locator("#outline-toggle").click();
  const result=await page.evaluate(async()=>{
-   const old=document.querySelector("#note-outline button:last-child");
+   const old=document.querySelector("#note-outline .outline-label:last-child");
    await window.studyappEditor.load({generation:43,text:"# 短",readonly:true});
    const disabled=old.disabled;
    old.click();
@@ -1868,7 +1868,7 @@ test("outline invalidates stale entries immediately and remains usable in readon
  });
  assert.deepEqual(result,{disabled:true,toggleDisabled:false});
  await page.waitForTimeout(400);
- await page.locator("#note-outline button").click();
+ await page.locator("#note-outline .outline-label").click();
  assert.equal((await state(page)).selection.anchor,0);
  assert.deepEqual(errors,[]);
  await page.close();
@@ -1883,6 +1883,62 @@ test("outline stays hidden in appearance preview and returns for notes", async (
  assert.equal(await page.locator("#outline-toggle").isVisible(),true);
  assert.equal(await page.locator("#note-outline").isVisible(),false);
  await page.locator("#outline-toggle").click();
- assert.equal(await page.locator("#note-outline button").innerText(),"Note");
+ assert.equal(await page.locator("#note-outline .outline-label").innerText(),"Note");
  await page.close();
+});
+
+test("outline branches fold independently, preserve duplicate headings and support keyboard navigation", async () => {
+  const text = "# 根\n\n## 子章\n\n#### 跳级\n\n## 子章\n\n# 第二章\n\n正文";
+  const { page, errors } = await setup(text);
+  await page.locator("#outline-toggle").click();
+  const roots = page.locator('.outline-tree > [role="treeitem"]');
+  assert.equal(await roots.count(), 2);
+  assert.equal(await page.locator('.outline-tree [role="treeitem"]').count(), 5);
+  const first = roots.first();
+  await first.locator(':scope > .outline-row .outline-disclosure').click();
+  assert.equal(await first.getAttribute('aria-expanded'), 'false');
+  assert.equal(await page.locator('.outline-label:visible').count(), 2);
+  assert.equal((await state(page)).selection.anchor, 0, 'folding never moves the document caret');
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await first.getAttribute('aria-expanded'), 'true');
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-label')), '子章');
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.evaluate(() => document.activeElement.getAttribute('aria-level')), '3', 'skipped levels still form a real tree');
+  await page.keyboard.press('Enter');
+  assert.equal((await state(page)).selection.anchor, text.indexOf('####'));
+  await page.getByRole('button', { name: '全部收起', exact: true }).click();
+  assert.equal(await page.locator('.outline-label:visible').count(), 2);
+  await page.getByRole('button', { name: '全部展开', exact: true }).click();
+  await page.locator('.outline-label').nth(3).click();
+  assert.equal((await state(page)).selection.anchor, text.lastIndexOf('## 子章'));
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test("long outline has its own scroll viewport without moving the document or page", async () => {
+  const text = Array.from({ length: 90 }, (_, i) => `# 章节 ${i}\n\n${'正文内容。'.repeat(12)}\n`).join('\n');
+  const { page, errors } = await setup(text);
+  await page.setViewportSize({ width: 460, height: 600 });
+  await page.locator('#outline-toggle').click();
+  const tree = page.locator('.outline-tree');
+  const bounds = await tree.boundingBox();
+  assert.ok(bounds.height > 50 && bounds.height < 210);
+  const before = await page.locator('.cm-scroller').evaluate(node => node.scrollTop);
+  await tree.hover();
+  await page.mouse.wheel(0, 400);
+  await page.waitForTimeout(100);
+  assert.ok(await tree.evaluate(node => node.scrollTop) > 0);
+  assert.equal(await page.locator('.cm-scroller').evaluate(node => node.scrollTop), before);
+  await tree.evaluate(node => { node.scrollTop = node.scrollHeight; });
+  await page.mouse.wheel(0, 400);
+  await page.waitForTimeout(100);
+  assert.equal(await page.locator('.cm-scroller').evaluate(node => node.scrollTop), before);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollTop), 0);
+  await page.locator('.outline-label').last().click();
+  await page.waitForTimeout(100);
+  assert.ok(await page.locator('.cm-scroller').evaluate(node => node.scrollTop) > 100);
+  assert.equal(await page.locator('[aria-current="location"] > .outline-row .outline-label').innerText(), '章节 89');
+  assert.deepEqual(errors, []);
+  await page.close();
 });

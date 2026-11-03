@@ -21,8 +21,57 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn metadata_retries_only_one_transient_network_failure() {
+        for kind in [
+            UpdateErrorKind::Network,
+            UpdateErrorKind::Verification,
+            UpdateErrorKind::RateLimited,
+            UpdateErrorKind::InvalidRelease,
+        ] {
+            let mut attempts = 0;
+            let result = retry_metadata(|| {
+                attempts += 1;
+                Err::<(), _>(failure(kind))
+            });
+            assert_eq!(result.unwrap_err().kind, kind);
+            assert_eq!(
+                attempts,
+                if kind == UpdateErrorKind::Network {
+                    2
+                } else {
+                    1
+                }
+            );
+        }
+        let mut attempts = 0;
+        assert_eq!(
+            retry_metadata(|| {
+                attempts += 1;
+                if attempts == 1 {
+                    Err(failure(UpdateErrorKind::Network))
+                } else {
+                    Ok(42)
+                }
+            })
+            .unwrap(),
+            42
+        );
+        assert_eq!(attempts, 2);
+    }
+
+    #[cfg(not(feature = "update-acceptance"))]
+    #[test]
+    #[ignore = "requires access to the official GitHub release service"]
+    fn live_signed_manifest_uses_system_network_configuration() {
+        let text = fetch_latest_manifest_text().expect("official update service is reachable");
+        crate::update_manifest::parse_latest_json(&text)
+            .expect("official release signature is valid");
+    }
+
+    #[test]
     fn update_download_writer_bounds_fixture_and_network_streams_identically() {
-        let path = std::env::temp_dir().join(format!("studyapp-download-{}", uuid::Uuid::new_v4()));
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("download");
         let mut progress = Vec::new();
         write_setup_stream(
             Cursor::new(b"signed bytes"),
@@ -841,9 +890,20 @@ pub(crate) fn fetch_latest_manifest_text() -> UpdateResult<String> {
     }
     let transport = RepairTransport::Live;
     let client = client(Duration::from_secs(30), &transport)?;
-    let response = download_response(&client, LATEST_MANIFEST_URL, &transport)?;
-    let bytes = read_bounded(response, 262_144)?;
-    String::from_utf8(bytes).map_err(|_| failure(UpdateErrorKind::InvalidRelease))
+    retry_metadata(|| {
+        let response = download_response(&client, LATEST_MANIFEST_URL, &transport)?;
+        let bytes = read_bounded(response, 262_144)?;
+        String::from_utf8(bytes).map_err(|_| failure(UpdateErrorKind::InvalidRelease))
+    })
+}
+
+/// Replaying read-only metadata is safe; package writes and trust failures are
+/// intentionally not retried. Each attempt retains the same timeout/allowlist.
+fn retry_metadata<T>(mut request: impl FnMut() -> UpdateResult<T>) -> UpdateResult<T> {
+    match request() {
+        Err(error) if error.kind == UpdateErrorKind::Network => request(),
+        result => result,
+    }
 }
 
 /// Streams one installer into `path`, reporting progress and refusing to grow

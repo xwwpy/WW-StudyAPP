@@ -12,7 +12,7 @@ fn release(version: &str) -> String {
     let url = format!("https://github.com/xwwpy/WW-StudyAPP/releases/download/v{version}/{name}");
     serde_json::json!({
         "tag_name": format!("v{version}"), "draft": false, "prerelease": false,
-        "body": "# Update fixture\n\n- **Formatting** and `code`\n\n[Help](https://example.com/help)", "html_url": format!("https://github.com/xwwpy/WW-StudyAPP/releases/tag/v{version}"),
+        "body": format!("# Update fixture\n\n{}[Help](https://example.com/help)", "- **Formatting** and `code`\n\n".repeat(60)), "html_url": format!("https://github.com/xwwpy/WW-StudyAPP/releases/tag/v{version}"),
         "assets": [
             {"name": name, "browser_download_url": url, "state": "uploaded", "size": 1024, "digest": format!("sha256:{}", "a".repeat(64))},
             {"name": format!("{name}.sha256"), "browser_download_url": format!("{url}.sha256"), "state": "uploaded", "size": 112, "digest": format!("sha256:{}", "b".repeat(64))}
@@ -114,6 +114,23 @@ pub(crate) async fn exercise(
                 studyapp_ui::update_dialog::UpdateDialogPhase::Ready
             ));
             assert!(window.try_find("update-dialog-notes").is_some());
+            let scroll = panel.read(cx).dialog_notes_scroll();
+            let page_offset = view.read(cx).page_scroll.offset();
+            let settings_offset = view.read(cx).settings_scroll.offset();
+            let action_bounds = window.find("update-dialog-install").bounds();
+            assert!(scroll.max_offset().y > px(240.));
+            for _ in 0..3 {
+                window.scroll(
+                    "update-dialog-notes",
+                    ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                assert!(scroll.offset().y < px(0.));
+                assert_eq!(window.find("update-dialog-install").bounds(), action_bounds);
+                assert_eq!(view.read(cx).page_scroll.offset(), page_offset);
+                assert_eq!(view.read(cx).settings_scroll.offset(), settings_offset);
+            }
             assert!(window.try_find("update-dialog-install").is_some());
             window
                 .render_to_image()

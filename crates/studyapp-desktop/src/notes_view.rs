@@ -1087,38 +1087,34 @@ impl StudyApp {
                         .map(|error| pill_tone(error.clone(), Tone::Danger).truncate()),
                 );
             if self.history {
-                use gpui_kit::component::scroll::ScrollableElement;
                 // Reserve a gutter so the vertical scrollbar stays clear of dates.
-                let timeline = column()
-                    .id("history-versions-scroll")
-                    .test_support()
-                    .relative()
-                    .track_scroll(&self.history_versions_scroll)
-                    .vertical_scrollbar(&self.history_versions_scroll)
-                    .w(px(196.))
-                    .pr(px(16.))
-                    .h_full()
-                    .overflow_y_scroll()
-                    .flex_shrink_0()
-                    .min_h_0()
-                    .gap_2()
-                    .children(versions.iter().rev().map(|v| {
-                        let id = v.id.clone();
-                        let chosen = version.is_some_and(|selected| selected.id == id);
-                        Button::new(SharedString::from(format!("version-{id}")))
-                            .small()
-                            .flex_shrink_0()
-                            .selected(chosen)
-                            .label(format!(
-                                "{}{}",
-                                stamp(v.captured_at),
-                                if v.offline { " · 离线" } else { "" }
-                            ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.selected_version = Some(id.clone());
-                                cx.notify();
-                            }))
-                    }));
+                let timeline =
+                    scroll_body("history-versions-scroll", &self.history_versions_scroll)
+                        .test_support()
+                        .w(px(196.))
+                        .pr(px(16.))
+                        .h_full()
+                        .overflow_y_scroll()
+                        .flex_shrink_0()
+                        .min_h_0()
+                        .gap_2()
+                        .children(versions.iter().rev().map(|v| {
+                            let id = v.id.clone();
+                            let chosen = version.is_some_and(|selected| selected.id == id);
+                            Button::new(SharedString::from(format!("version-{id}")))
+                                .small()
+                                .flex_shrink_0()
+                                .selected(chosen)
+                                .label(format!(
+                                    "{}{}",
+                                    stamp(v.captured_at),
+                                    if v.offline { " · 离线" } else { "" }
+                                ))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.selected_version = Some(id.clone());
+                                    cx.notify();
+                                }))
+                        }));
                 let mut diff = column()
                     .flex_1()
                     .h_full()

@@ -73,6 +73,7 @@ pub struct UpdatePanel {
     install_prepared: Option<(String, crate::update_install::PreparedPackage)>,
     nsis_error: Option<String>,
     notes_scroll: ScrollHandle,
+    settings_notes_scroll: ScrollHandle,
     receiver: mpsc::Receiver<UpdateReply>,
     sender: mpsc::Sender<UpdateReply>,
     _poll: Task<()>,
@@ -206,6 +207,7 @@ impl UpdatePanel {
             install_prepared: None,
             nsis_error: None,
             notes_scroll: ScrollHandle::new(),
+            settings_notes_scroll: ScrollHandle::new(),
             receiver,
             sender,
             _poll: poll,
@@ -330,6 +332,8 @@ impl UpdatePanel {
                 }) {
                     self.cancel_install_preparation();
                     self.nsis_setup = None;
+                    self.notes_scroll.set_offset(point(px(0.), px(0.)));
+                    self.settings_notes_scroll.set_offset(point(px(0.), px(0.)));
                 }
                 self.error = None;
                 self.nsis_error = None;
@@ -613,6 +617,8 @@ impl UpdatePanel {
                     .is_none_or(|old| !old.same_artifacts(&release))
                 {
                     self.prepared = None;
+                    self.notes_scroll.set_offset(point(px(0.), px(0.)));
+                    self.settings_notes_scroll.set_offset(point(px(0.), px(0.)));
                 }
                 self.status = format!(
                     "发现新版本 {} · {:.1} MB",
@@ -827,8 +833,10 @@ impl Render for UpdatePanel {
                 .child(Button::new("open-releases").ghost().label("发布页面")
                     .on_click(move |_, _, cx| cx.open_url(&release_url))))
             .children(self.settings_notes().map(|notes|
-                scroll_body("update-release-notes", &self.notes_scroll).max_h(px(180.)).pr_3()
-                    .child(gpui_kit::component::text::TextView::markdown("update-settings-markdown", studyapp_ui::markdown_content::release_notes(notes)))))
+                scroll_body("update-release-notes", &self.settings_notes_scroll).test_support().max_h(px(180.)).pr_3()
+                    .child(div().flex_shrink_0().min_w_0().child(
+                        gpui_kit::component::text::TextView::markdown("update-settings-markdown", studyapp_ui::markdown_content::release_notes(notes))
+                            .style(studyapp_ui::compact_markdown::summary_markdown_style()).scrollable(false)))))
             .children(self.prepared.as_ref().map(|(_, update)| {
                 let status = update.status_path.clone();
                 column().gap_1().child(muted(format!("安装位置：{}", studyapp_desktop::presentation::display_path(&update.installation_directory.to_string_lossy()))))
@@ -978,6 +986,20 @@ mod tests {
     use studyapp_desktop::update_policy::CheckOrigin;
 
     #[::core::prelude::v1::test]
+    fn settings_and_dialog_release_notes_have_independent_scroll_state() {
+        let panel = panel();
+        panel.notes_scroll.set_offset(point(px(0.), px(-80.)));
+        assert_eq!(panel.settings_notes_scroll.offset(), point(px(0.), px(0.)));
+        panel
+            .settings_notes_scroll
+            .set_offset(point(px(0.), px(-120.)));
+        assert_eq!(
+            panel.dialog_notes_scroll().offset(),
+            point(px(0.), px(-80.))
+        );
+    }
+
+    #[::core::prelude::v1::test]
     fn signed_check_failure_remains_a_failure() {
         let reply = signed_check_reply(
             CheckOrigin::Manual,
@@ -1015,6 +1037,7 @@ mod tests {
             install_prepared: None,
             nsis_error: None,
             notes_scroll: ScrollHandle::new(),
+            settings_notes_scroll: ScrollHandle::new(),
             receiver,
             sender,
             check_policy: Default::default(),
