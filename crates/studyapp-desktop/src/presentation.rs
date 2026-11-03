@@ -17,6 +17,11 @@ pub fn display_path(path: &str) -> String {
     path.to_owned()
 }
 
+/// A user-facing filesystem label; never use the result as a path identity.
+pub fn path_label(path: impl AsRef<std::path::Path>) -> String {
+    display_path(&path.as_ref().to_string_lossy())
+}
+
 /// Bound each visual diff row without dropping any content. CJK/emoji receive
 /// two columns, and tabs become four spaces. Cached by the view, not each frame.
 pub fn diff_rows(diff: &str, columns: usize) -> Vec<(String, char)> {
@@ -68,6 +73,17 @@ mod path_and_diff_tests {
         ] {
             assert_eq!(display_path(path), path);
         }
+    }
+    #[test]
+    fn path_labels_keep_internal_paths_and_unc_names_unchanged() {
+        let original = std::path::PathBuf::from(r"\\?\C:\学习 目录\笔记.md");
+        let copy = original.clone();
+        assert_eq!(path_label(&original), r"C:\学习 目录\笔记.md");
+        assert_eq!(original, copy);
+        assert_eq!(
+            path_label(std::path::Path::new(r"\\?\UNC\nas\共享\笔记.md")),
+            r"\\nas\共享\笔记.md"
+        );
     }
     #[test]
     fn long_diffs_keep_all_rows_and_unicode_without_truncation() {

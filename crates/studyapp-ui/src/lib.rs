@@ -21,4 +21,6 @@ pub mod virtual_list_scrollbar;
 pub mod window_chrome;
 
 #[cfg(all(test, feature = "ui-test"))]
+mod modal_selection_regression;
+#[cfg(all(test, feature = "ui-test"))]
 mod scroll_regression;

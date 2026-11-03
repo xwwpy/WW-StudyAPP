@@ -1465,7 +1465,7 @@ impl Render for StudyApp {
         }
         let window_title = format!("WW-StudyApp  ·  {title}");
         let close_owner = cx.weak_entity();
-        column()
+        let background = column()
             .relative()
             .on_drag_move::<ExternalPaths>(cx.listener(
                 |this, event: &DragMoveEvent<ExternalPaths>, _, cx| {
@@ -1581,7 +1581,14 @@ impl Render for StudyApp {
             })
             .child(self.external_drop_event_layer(cx))
             .child(self.notifications.clone())
-            .child(self.resize_event_layer(cx))
+            .child(self.resize_event_layer(cx));
+        div()
+            .relative()
+            .size_full()
+            .text_color(crate::theme::color(INK))
+            .font_family(crate::design::UI_FONT)
+            .text_size(px(crate::theme::palette().font_size as f32))
+            .child(self.modal_focus.background(background))
             .children(modal)
             .map(|root| {
                 #[cfg(feature = "ui-test")]

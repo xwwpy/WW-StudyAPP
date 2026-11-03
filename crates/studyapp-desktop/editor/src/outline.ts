@@ -25,7 +25,15 @@ export function installOutline(view: EditorView): void {
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.id = "outline-toggle";
-  toggle.textContent = "目录⌄";
+  // Inline SVG uses the editor's own colors and works entirely offline.
+  const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  icon.setAttribute("viewBox", "0 0 20 20");
+  icon.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(icon.namespaceURI, "path");
+  path.setAttribute("d", "M3 4h14v12H3z M8 4v12 M11 8h3 M11 11h3");
+  icon.append(path);
+  const toggleLabel = document.createElement("span");
+  toggle.append(icon, toggleLabel);
   toggle.setAttribute("aria-label", "笔记目录");
   toggle.setAttribute("aria-expanded", "false");
   toggle.setAttribute("aria-controls", "note-outline");
@@ -45,13 +53,65 @@ export function installOutline(view: EditorView): void {
   const collapse = document.createElement("button");
   collapse.type = "button";
   collapse.textContent = "全部收起";
-  header.append(caption, expand, collapse);
+  const position = document.createElement("select");
+  position.id = "outline-position";
+  position.setAttribute("aria-label", "目录位置");
+  for (const [value, label] of [["auto", "自动"], ["left", "左侧"], ["right", "右侧"], ["top", "上方"], ["floating", "浮层"]]) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    position.append(option);
+  }
+  const hide = document.createElement("button");
+  hide.type = "button";
+  hide.className = "outline-hide";
+  hide.setAttribute("aria-label", "隐藏目录");
+  hide.title = "隐藏目录";
+  const hideIcon = icon.cloneNode(true) as SVGElement;
+  hideIcon.querySelector("path")!.setAttribute("d", "M3 4h14v12H3z M8 4v12 M6 8l-2 2 2 2");
+  hide.append(hideIcon);
+  header.append(caption, position, hide);
+  const actions = document.createElement("div");
+  actions.className = "outline-actions";
+  actions.append(expand, collapse);
   const tree = document.createElement("div");
   tree.className = "outline-tree";
   tree.setAttribute("role", "tree");
   tree.setAttribute("aria-label", "章节");
-  panel.append(header, tree);
-  document.querySelector("#editor")!.before(panel);
+  panel.append(header, actions, tree);
+  const editor = document.querySelector<HTMLElement>("#editor")!;
+  const workspace = document.createElement("div");
+  workspace.id = "editor-workspace";
+  editor.before(workspace);
+  workspace.append(panel, editor);
+  const storageKey = "studyapp.outline.v1";
+  let preference = "auto";
+  let shown = false;
+  try {
+    const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
+    if (["auto", "left", "right", "top", "floating"].includes(saved?.position)) preference = saved.position;
+    shown = saved?.shown === true;
+  } catch { /* A blocked/empty profile still has a usable default layout. */ }
+  position.value = preference;
+  const persist = () => {
+    try { localStorage.setItem(storageKey, JSON.stringify({ position: preference, shown })); } catch { /* Optional viewer preference. */ }
+  };
+  function layout(): void {
+    const { width, height } = workspace.getBoundingClientRect();
+    // Observe the actual editor pane, not the app/screen: split panes and
+    // sidebars can change its size without a browser resize event.
+    const automatic = width >= 900 && height >= 320 ? "left" : height >= 440 ? "top" : "floating";
+    // Never let a manual sidebar consume the entire document at tiny widths.
+    const resolved = (preference === "left" || preference === "right") && width < 480 ? "floating" : preference === "auto" ? automatic : preference;
+    workspace.dataset.outlinePosition = resolved;
+    workspace.dataset.outlineShown = String(!panel.hidden);
+    toggle.setAttribute("aria-expanded", String(!panel.hidden));
+    toggle.setAttribute("aria-label", panel.hidden ? "显示目录" : "隐藏目录");
+    toggle.title = panel.hidden ? "显示目录" : "隐藏目录";
+    toggleLabel.textContent = panel.hidden ? "目录" : "收起";
+  }
+  new ResizeObserver(layout).observe(workspace);
+  position.onchange = () => { preference = position.value; persist(); layout(); };
 
   let timer: ReturnType<typeof setTimeout>;
   let frame = 0;
@@ -147,6 +207,7 @@ export function installOutline(view: EditorView): void {
       headings.push(heading);
       stack.push(headings.length - 1);
       item.onkeydown = event => {
+        if (event.key === "Escape") return; // The panel handles hiding/focus.
         if (source !== view.state.doc.toString()) return;
         event.stopPropagation();
         const items = visible();
@@ -228,11 +289,12 @@ export function installOutline(view: EditorView): void {
     enabled = value;
     clearTimeout(timer);
     toggle.hidden = !value;
-    panel.hidden = true;
-    toggle.setAttribute("aria-expanded", "false");
+    panel.hidden = !value || !shown;
+    layout();
     tree.replaceChildren();
     headings = [];
     folded.clear();
+    render();
   };
   scheduleRefresh = (reset = false) => {
     clearTimeout(timer);
@@ -240,10 +302,21 @@ export function installOutline(view: EditorView): void {
     for (const button of tree.querySelectorAll<HTMLButtonElement>("button")) button.disabled = true;
     if (!panel.hidden) timer = setTimeout(render, 180);
   };
-  toggle.onclick = () => {
+  function show(value: boolean): void {
     clearTimeout(timer);
-    panel.hidden = !panel.hidden;
-    toggle.setAttribute("aria-expanded", String(!panel.hidden));
+    shown = value;
+    panel.hidden = !enabled || !shown;
+    persist();
+    layout();
     render();
-  };
+    if (!value) toggle.focus();
+  }
+  toggle.onclick = () => show(Boolean(panel.hidden));
+  hide.onclick = () => show(false);
+  panel.addEventListener("keydown", event => {
+    if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); show(false); }
+  });
+  panel.hidden = !shown;
+  layout();
+  render();
 }

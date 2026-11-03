@@ -132,7 +132,11 @@ pub(crate) struct StorageAccessPath(pub PathBuf);
 
 impl std::fmt::Display for StorageAccessPath {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "无法访问文件或目录：{}", self.0.display())
+        write!(
+            formatter,
+            "无法访问文件或目录：{}",
+            studyapp_desktop::presentation::path_label(&self.0)
+        )
     }
 }
 
@@ -158,7 +162,7 @@ pub(crate) fn plain_handle(path: &Path, directory: bool, exclusive_read: bool) -
     ensure!(
         !reparse(&before),
         "拒绝访问链接或重解析点：{}",
-        path.display()
+        studyapp_desktop::presentation::path_label(path)
     );
     let mut options = OpenOptions::new();
     options.read(true);
@@ -195,7 +199,7 @@ pub(crate) fn plain_handle(path: &Path, directory: bool, exclusive_read: bool) -
     ensure!(
         !reparse(&metadata),
         "拒绝访问链接或重解析点：{}",
-        path.display()
+        studyapp_desktop::presentation::path_label(path)
     );
     ensure!(
         if directory {
@@ -204,7 +208,7 @@ pub(crate) fn plain_handle(path: &Path, directory: bool, exclusive_read: bool) -
             metadata.is_file()
         },
         "路径类型不正确：{}",
-        path.display()
+        studyapp_desktop::presentation::path_label(path)
     );
     Ok(file)
 }
@@ -330,7 +334,7 @@ pub(crate) fn visit_migration_tree(
                                 .strip_prefix("receipt-")
                                 .is_some_and(|s| uuid::Uuid::parse_str(s).is_ok()),
                         "请先核对未完成的删除，再迁移：{}",
-                        item.path().display()
+                        studyapp_desktop::presentation::path_label(item.path())
                     );
                 }
                 return Ok(true);
@@ -366,7 +370,7 @@ fn visit_filtered(
             ensure!(
                 !reject_links,
                 "资料库含有链接或重解析点，未迁移：{}",
-                path.display()
+                studyapp_desktop::presentation::path_label(&path)
             );
             continue;
         }

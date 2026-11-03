@@ -14,7 +14,8 @@ use windows_sys::Win32::{
     System::{
         Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW},
         Threading::{
-            GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken, WaitForSingleObject,
+            GetCurrentProcess, GetProcessTimes, OpenProcess, OpenProcessToken,
+            QueryFullProcessImageNameW, WaitForSingleObject,
         },
     },
 };
@@ -26,6 +27,15 @@ struct WindowsTransaction {
     transaction: InstallTransaction,
     executable: PathBuf,
     old_hash: String,
+    #[serde(default)]
+    mode: WindowsInstallMode,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WindowsInstallMode {
+    #[default]
+    Installed,
+    Portable,
 }
 fn io<T>(r: std::io::Result<T>) -> Result<T> {
     r.map_err(|e| e.to_string())
@@ -135,10 +145,52 @@ fn safe_path(path: &Path) -> Result<()> {
     }
     Ok(())
 }
+// NSIS requires ordinary local DOS paths, not canonical verbatim spellings.
+// Library paths and filesystem identity are deliberately not rewritten.
+fn local_dos_path(path: &Path) -> Result<PathBuf> {
+    let text = path
+        .to_str()
+        .ok_or("Windows update path is not valid Unicode")?;
+    let text = text.strip_prefix(r"\\?\").unwrap_or(text);
+    let bytes = text.as_bytes();
+    if bytes.len() < 3
+        || !bytes[0].is_ascii_alphabetic()
+        || bytes[1] != b':'
+        || bytes[2] != b'\\'
+        || text[3..]
+            .split('\\')
+            .any(|part| part.ends_with(['.', ' ']) || part == "..")
+    {
+        return Err("自动更新需要普通本地磁盘路径；请从本地目录重新启动应用。".into());
+    }
+    Ok(PathBuf::from(text))
+}
 fn installed() -> Result<PathBuf> {
     let directory = PathBuf::from(registry("InstallLocation")?);
     safe_path(&directory)?;
-    io(fs::canonicalize(directory.join("WW-StudyApp.exe")))
+    local_dos_path(&io(fs::canonicalize(directory.join("WW-StudyApp.exe")))?)
+}
+fn install_mode(executable: &Path) -> Result<WindowsInstallMode> {
+    safe_path(executable)?;
+    if installed().is_ok_and(|path| path == executable) {
+        return Ok(WindowsInstallMode::Installed);
+    }
+    let root = executable.parent().ok_or("Missing executable directory")?;
+    if executable.file_name() != Some(std::ffi::OsStr::new("WW-StudyApp.exe"))
+        || root.join("Uninstall.exe").exists()
+    {
+        return Err(
+            "安装信息与当前程序不一致。请使用安装包修复，或从完整的免安装版目录启动。".into(),
+        );
+    }
+    for name in ["vcruntime140.dll", "vcruntime140_1.dll"] {
+        let path = root.join(name);
+        safe_path(&path)?;
+        if !io(fs::metadata(&path))?.is_file() {
+            return Err("免安装版运行文件不完整，请重新解压完整发行包。".into());
+        }
+    }
+    Ok(WindowsInstallMode::Portable)
 }
 fn version() -> Result<String> {
     registry("Version")?
@@ -168,14 +220,15 @@ fn pointer() -> Result<PathBuf> {
 }
 fn read_transaction(dir: &Path) -> Result<WindowsTransaction> {
     safe_path(dir)?;
-    let tx: WindowsTransaction =
+    let mut tx: WindowsTransaction =
         serde_json::from_slice(&read_bounded(&dir.join("transaction.json"), 16384)?)
             .map_err(|e| e.to_string())?;
+    tx.executable = local_dos_path(&tx.executable)?;
     if tx.transaction.schema != 1
         || !valid_id(&tx.transaction.id)
         || tx.transaction.old_pid == 0
         || tx.transaction.old_start == 0
-        || tx.executable != installed()?
+        || install_mode(&tx.executable)? != tx.mode
     {
         return Err("Invalid installed update transaction".into());
     }
@@ -184,10 +237,10 @@ fn read_transaction(dir: &Path) -> Result<WindowsTransaction> {
 pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathBuf> {
     ordinary_user()?;
     package.reverify()?;
-    let executable = io(std::env::current_exe())?;
-    if io(fs::canonicalize(&executable))? != installed()? {
-        return Err("Automatic installation requires the registered installed application".into());
-    }
+    let original = io(std::env::current_exe())?;
+    safe_path(&original)?;
+    let executable = local_dos_path(&io(fs::canonicalize(&original))?)?;
+    let mode = install_mode(&executable)?;
     let dir = package
         .directory
         .with_file_name(format!("studyapp-install-{}", uuid::Uuid::new_v4()));
@@ -215,7 +268,8 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
             target_version: package.version.clone(),
             data_directory: data,
         },
-        executable: installed()?,
+        executable: executable.clone(),
+        mode,
         old_hash: format!(
             "{:x}",
             Sha256::digest(read_bounded(&executable, 512 * 1024 * 1024)?)
@@ -229,7 +283,7 @@ pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathB
     crate::app_usage::runtime_paths()
         .and_then(|paths| paths.publish_update_pointer(&dir))
         .map_err(|error| error.to_string())?;
-    Ok(dir)
+    local_dos_path(&dir)
 }
 fn stage_supervisor(executable: &Path, dir: &Path) -> Result<()> {
     let source = executable
@@ -250,36 +304,44 @@ pub fn spawn(dir: &Path) -> Result<()> {
         return Err("Prepare a fresh update attempt".into());
     }
     write_new(&dir.join("launch-claimed"), tx.transaction.id.as_bytes())?;
-    let mut child = io(Command::new(dir.join("supervisor.exe"))
-        .arg("--update-supervisor")
-        .arg(dir)
-        .creation_flags(NO_WINDOW)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn())?;
-    let started = Instant::now();
-    loop {
-        if io(child.try_wait())?.is_some() {
-            return Err("Update supervisor exited before readiness".into());
-        }
-        if let Ok(bytes) = read_bounded(&dir.join("ready"), 36) {
-            if bytes == tx.transaction.id.as_bytes() {
-                return Ok(());
+    let result: Result<()> = (|| {
+        let mut child = io(Command::new(dir.join("supervisor.exe"))
+            .arg("--update-supervisor")
+            .arg(dir)
+            .current_dir(dir)
+            .creation_flags(NO_WINDOW)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn())?;
+        let started = Instant::now();
+        loop {
+            if io(child.try_wait())?.is_some() {
+                return Err("Update supervisor exited before readiness".into());
             }
-            let _ = child.kill();
-            return Err("Readiness identity mismatch".into());
+            if let Ok(bytes) = read_bounded(&dir.join("ready"), 36) {
+                if bytes == tx.transaction.id.as_bytes() {
+                    return Ok(());
+                }
+                let _ = child.kill();
+                return Err("Readiness identity mismatch".into());
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                return Err("Update supervisor readiness timeout".into());
+            }
+            std::thread::sleep(Duration::from_millis(50));
         }
-        if started.elapsed() > Duration::from_secs(10) {
-            let _ = child.kill();
-            return Err("Update supervisor readiness timeout".into());
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    })();
+    if let Err(error) = &result {
+        record(dir, "failed", error)?;
     }
+    result
 }
 fn restart(tx: &WindowsTransaction, health: Option<&Path>) -> Result<std::process::Child> {
     ordinary_user()?;
     let mut command = Command::new(&tx.executable);
+    command.current_dir(tx.executable.parent().ok_or("Missing restart directory")?);
     command.env_remove("STUDYAPP_UPDATE_TRANSACTION");
     if let Some(dir) = health {
         command.env("STUDYAPP_UPDATE_TRANSACTION", dir);
@@ -313,6 +375,15 @@ fn supervise_inner(dir: &Path) -> Result<()> {
     if created != tx.transaction.old_start {
         return Err("Original process identity changed".into());
     }
+    let mut name = vec![0u16; 32768];
+    let mut size = name.len() as u32;
+    if unsafe { QueryFullProcessImageNameW(old.0, 0, name.as_mut_ptr(), &mut size) } == 0 {
+        return Err(std::io::Error::last_os_error().to_string());
+    }
+    let running = PathBuf::from(OsString::from_wide(&name[..size as usize]));
+    if local_dos_path(&io(fs::canonicalize(running))?)? != tx.executable {
+        return Err("Original process executable does not match update destination".into());
+    }
     atomic(dir, "ready", tx.transaction.id.as_bytes())?;
     record(dir, "waiting", "Waiting for original application exit")?;
     if unsafe { WaitForSingleObject(old.0, 120000) } != WAIT_OBJECT_0 {
@@ -321,8 +392,27 @@ fn supervise_inner(dir: &Path) -> Result<()> {
     package.reverify()?;
     record(dir, "installing", "Running verified NSIS installer")?;
     // /UPDATED remains supported for legacy clients. This supervisor owns restart/data context.
-    let status = io(Command::new(dir.join("package.exe"))
-        .arg("/S")
+    if format!(
+        "{:x}",
+        Sha256::digest(read_bounded(&tx.executable, 512 * 1024 * 1024)?)
+    ) != tx.old_hash
+    {
+        return Err("Original application changed before installation".into());
+    }
+    let mut installer = Command::new(dir.join("package.exe"));
+    installer.arg("/S").current_dir(dir);
+    if tx.mode == WindowsInstallMode::Portable {
+        installer.arg("/PORTABLEUPDATE");
+    }
+    // NSIS requires /D= to be the last unquoted remainder. No shell is used.
+    installer.raw_arg(format!(
+        "/D={}",
+        tx.executable
+            .parent()
+            .ok_or("Missing install directory")?
+            .display()
+    ));
+    let status = io(installer
         .creation_flags(NO_WINDOW)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -337,7 +427,9 @@ fn supervise_inner(dir: &Path) -> Result<()> {
         }
         return Err(message);
     }
-    if installed()? != tx.executable || version()? != tx.transaction.target_version {
+    if install_mode(&tx.executable)? != tx.mode
+        || (tx.mode == WindowsInstallMode::Installed && version()? != tx.transaction.target_version)
+    {
         return Err("Installed destination/version mismatch".into());
     }
     record(dir, "installed", &package.version)?;
@@ -378,7 +470,7 @@ pub fn acknowledge_health() -> Result<()> {
     ordinary_user()?;
     let dir = PathBuf::from(dir);
     let tx = read_transaction(&dir)?;
-    if io(fs::canonicalize(io(std::env::current_exe())?))? != tx.executable
+    if local_dos_path(&io(fs::canonicalize(io(std::env::current_exe())?))?)? != tx.executable
         || tx.transaction.target_version != env!("CARGO_PKG_VERSION")
     {
         return Err("Health target mismatch".into());
@@ -435,5 +527,60 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_slice(&fs::read(dir.join("health.json")).unwrap()).unwrap();
         assert_eq!(value["ready"], true);
+    }
+    #[test]
+    fn update_shell_paths_accept_unicode_and_verbatim_local_disks_only() {
+        for text in [r"C:\学习 软件\WW-StudyApp.exe", r"D:\a & b\应用.exe"] {
+            assert_eq!(
+                local_dos_path(Path::new(text)).unwrap(),
+                PathBuf::from(text)
+            );
+            assert_eq!(
+                local_dos_path(Path::new(&format!(r"\\?\{text}"))).unwrap(),
+                PathBuf::from(text)
+            );
+        }
+        for text in [
+            r"\\?\UNC\server\share\app.exe",
+            r"\\server\share\app.exe",
+            r"\\?\GLOBALROOT\Device\app.exe",
+            r"\\?\Volume{abc}\app.exe",
+            r"C:\folder.\app.exe",
+            r"C:\folder \app.exe",
+            r"C:\a\..\app.exe",
+            "relative.exe",
+            "",
+        ] {
+            assert!(local_dos_path(Path::new(text)).is_err(), "{text}");
+        }
+    }
+    #[test]
+    fn portable_mode_requires_complete_bundle_without_an_uninstaller() {
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("WW-StudyApp.exe");
+        fs::write(&executable, b"portable fixture").unwrap();
+        let executable = local_dos_path(&fs::canonicalize(executable).unwrap()).unwrap();
+        assert!(install_mode(&executable).is_err());
+        for name in ["vcruntime140.dll", "vcruntime140_1.dll"] {
+            fs::write(root.path().join(name), b"runtime").unwrap();
+        }
+        assert_eq!(
+            install_mode(&executable).unwrap(),
+            WindowsInstallMode::Portable
+        );
+        fs::write(root.path().join("Uninstall.exe"), b"installed owner").unwrap();
+        assert!(install_mode(&executable).is_err());
+    }
+    #[test]
+    fn legacy_update_transaction_defaults_to_registered_installation() {
+        let value = serde_json::json!({"transaction":{"schema":1,"id":uuid::Uuid::new_v4(),
+            "old_pid":1,"old_start":1,"uid":0,"target_version":"0.2.3","data_directory":null},
+            "executable":r"\\?\C:\App\WW-StudyApp.exe","old_hash":"a".repeat(64)});
+        let tx: WindowsTransaction = serde_json::from_value(value).unwrap();
+        assert_eq!(tx.mode, WindowsInstallMode::Installed);
+        assert_eq!(
+            local_dos_path(&tx.executable).unwrap(),
+            Path::new(r"C:\App\WW-StudyApp.exe")
+        );
     }
 }

@@ -207,7 +207,10 @@ fn catalog(library: &str) -> (Vec<DraftRecord>, Vec<String>) {
             for path in paths {
                 match read_record(&path) {
                     Ok(record) => records.push(record),
-                    Err(error) => errors.push(format!("{}：{error:#}", path.display())),
+                    Err(error) => errors.push(format!(
+                        "{}：{error:#}",
+                        studyapp_desktop::presentation::path_label(&path)
+                    )),
                 }
             }
         }

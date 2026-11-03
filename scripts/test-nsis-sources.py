@@ -6,6 +6,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class NsisSources(unittest.TestCase):
+    def test_portable_destination_is_guarded_before_writes(self):
+        source = (ROOT / "installer/studyapp.nsi").read_text(encoding="utf-8")
+        validation = source.split('validate_portable:', 1)[1].split('validate_registered:', 1)[0]
+        for marker in ('StrCmp $0 $1 portable_invalid', 'Uninstall.exe', 'WW-StudyApp.exe',
+                       'vcruntime140.dll', 'vcruntime140_1.dll', 'SetErrorLevel 7'):
+            self.assertIn(marker, validation)
+        section = source.split('Section "Install"', 1)[1].split('SectionEnd', 1)[0]
+        self.assertLess(section.index('Call ValidateInstallLocation'), section.index('SetOutPath'))
+        self.assertLess(section.index('Goto install_finished'), section.index('WriteUninstaller'))
+        self.assertLess(section.index('WriteRegStr'), section.index('install_finished:'))
+
+    def test_update_wait_is_scoped_to_destination_not_process_name(self):
+        source = (ROOT / "installer/studyapp.nsi").read_text(encoding="utf-8")
+        self.assertIn('CreateFileW', source)
+        self.assertIn('Call ValidateInstallLocation', source.split('Function .onInit', 1)[1])
+        self.assertNotIn('tasklist', source)
+        supervisor = (ROOT / "crates/studyapp-desktop/src/update_install_windows.rs").read_text(encoding="utf-8")
+        for marker in ('local_dos_path', 'raw_arg', 'WindowsInstallMode::Portable',
+                       'WaitForSingleObject', 'package.reverify()', 'health_matches'):
+            self.assertIn(marker, supervisor)
+
     def test_registered_install_cannot_be_relocated_before_any_writes(self):
         source = (ROOT / "installer/studyapp.nsi").read_text(encoding="utf-8")
         self.assertIn('ReadRegStr $PreviousInstall HKCU "${INSTALL_KEY}" "InstallLocation"', source)

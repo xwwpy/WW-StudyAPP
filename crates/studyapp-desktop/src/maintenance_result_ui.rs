@@ -87,7 +87,11 @@ impl Render for ResultView {
             .child(div().text_color(rgb(MUTED)).child(description));
         if let Mode::Result(status) = &self.mode {
             for path in &status.retained_paths {
-                content = content.child(div().text_size(px(13.)).child(path.display().to_string()));
+                content = content.child(
+                    div()
+                        .text_size(px(13.))
+                        .child(studyapp_desktop::presentation::path_label(path)),
+                );
             }
         }
         if self.error {

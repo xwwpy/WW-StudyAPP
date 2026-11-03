@@ -1,6 +1,6 @@
 use crate::components::*;
 use gpui_kit::{
-    base::{Dialog, DialogPopup},
+    base::{Dialog, DialogPopup, ElementExt, TextSelection, TextSelectionScopeId},
     *,
 };
 
@@ -11,6 +11,7 @@ pub struct ModalFocus {
     previous: Option<WeakFocusHandle>,
     active: bool,
     scroll: ScrollHandle,
+    background_scope: TextSelectionScopeId,
 }
 
 impl ModalFocus {
@@ -20,6 +21,7 @@ impl ModalFocus {
             previous: None,
             active: false,
             scroll: ScrollHandle::new(),
+            background_scope: TextSelectionScopeId::new(),
         }
     }
 
@@ -29,6 +31,23 @@ impl ModalFocus {
 
     pub fn scroll(&self) -> &ScrollHandle {
         &self.scroll
+    }
+
+    /// Background renderers are ineligible while a blocking app dialog is
+    /// open. Keep the modal in the root's normal scope, so component root
+    /// redraws cannot reset an ongoing drag-selection.
+    pub fn background(&self, content: impl IntoElement) -> impl IntoElement {
+        div()
+            // A distinct semantic boundary also invalidates cached prepaint
+            // registrations once per transition, not on every modal frame.
+            .id(("modal-background", usize::from(self.active)))
+            .size_full()
+            .child(content)
+            .text_selection_scope(if self.active {
+                self.background_scope
+            } else {
+                TextSelectionScopeId::default()
+            })
     }
 
     #[cfg(all(test, feature = "ui-test"))]
@@ -53,6 +72,8 @@ impl ModalFocus {
             return;
         }
         self.active = active;
+        // Drop stale page/drag selection on modal transitions only.
+        TextSelection::clear(window, cx);
         if active {
             self.previous = window.focused(cx).map(|handle| handle.downgrade());
             initial.as_ref().unwrap_or(&self.handle).focus(window, cx);
@@ -97,7 +118,8 @@ pub fn modal_shell(
                         .max_h((viewport.height - px(112.)).max(px(120.)))
                         .overflow_y_scroll()
                         .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                        .child(content),
+                        .child(content)
+                        .text_selection_scope(TextSelectionScopeId::default()),
                 ),
         )
 }
@@ -134,7 +156,11 @@ pub fn modal_frame_shell(
                 .border_color(rgb(crate::theme::palette().border))
                 .bg(rgb(crate::theme::palette().surface_raised))
                 .text_color(rgb(crate::theme::palette().text))
-                .child(content),
+                .child(
+                    div()
+                        .child(content)
+                        .text_selection_scope(TextSelectionScopeId::default()),
+                ),
         )
 }
 

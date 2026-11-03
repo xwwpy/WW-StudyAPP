@@ -57,7 +57,7 @@ jobs:
         run: |
           cargo build --locked -p studyapp-desktop --bin studyapp
           if ($LASTEXITCODE -ne 0) { throw 'Production verifier build failed' }
-      - name: Verify actual NSIS update and ordinary-user restart
+      - name: Verify installed and portable NSIS updates and ordinary-user restart
         run: |
           python scripts/native-update-windows.py --work-dir "$env:RUNNER_TEMP/native-update-windows" --production-binary target/debug/studyapp.exe
           if ($LASTEXITCODE -ne 0) { throw 'Installed Windows transition failed' }
@@ -68,6 +68,11 @@ jobs:
           name: native-update-windows-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/native-update-windows/transition-result.json
+            ${{ runner.temp }}/native-update-windows/portable-case/transition-result.json
+            ${{ runner.temp }}/native-update-windows/portable-case/fixture/*.json
+            ${{ runner.temp }}/native-update-windows/portable-case/fixture/*.png
+            ${{ runner.temp }}/native-update-windows/portable-case/fixture/*.log
+            ${{ runner.temp }}/native-update-windows/portable-case/transaction-evidence/**
             ${{ runner.temp }}/native-update-windows/token-preflight.json
             ${{ runner.temp }}/update-token-preflight/token-preflight.json
             ${{ runner.temp }}/native-update-windows/fixture/*.json

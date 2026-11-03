@@ -230,10 +230,14 @@ pub fn validate_path(path: &Path) -> Result<()> {
                 };
                 #[cfg(not(windows))]
                 let link = m.file_type().is_symlink();
-                ensure!(!link, "路径包含链接或重解析点：{}", p.display());
+                ensure!(
+                    !link,
+                    "路径包含链接或重解析点：{}",
+                    crate::presentation::path_label(p)
+                );
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| p.display().to_string()),
+            Err(e) => return Err(e).with_context(|| crate::presentation::path_label(p)),
         }
     }
     Ok(())

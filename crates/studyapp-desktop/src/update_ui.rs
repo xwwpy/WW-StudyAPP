@@ -428,6 +428,9 @@ impl UpdatePanel {
     }
 
     pub fn install_failed(&mut self, message: String, cx: &mut Context<Self>) {
+        self.busy = false;
+        self.install_prepared = None;
+        self.status = "更新安装未完成，可重试；原有资料保留。".into();
         self.nsis_error = Some(message.clone());
         self.error = Some(message);
         cx.notify();

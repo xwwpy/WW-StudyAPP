@@ -1942,3 +1942,91 @@ test("long outline has its own scroll viewport without moving the document or pa
   assert.deepEqual(errors, []);
   await page.close();
 });
+
+test("outline automatically follows editor pane geometry rather than screen width", async () => {
+  const { page, errors } = await setup("# 第一章\n\n正文\n\n## 第二节\n\n正文");
+  await page.locator("#outline-toggle").click();
+  const placement = () => page.locator("#editor-workspace").getAttribute("data-outline-position");
+  assert.equal(await placement(), "left");
+  const wide = await page.locator("#editor").boundingBox();
+  const outline = await page.locator("#note-outline").boundingBox();
+  assert.ok(outline.x + outline.width <= wide.x + 1);
+  // Resize only the embedded pane, just as native splitters/sidebar changes do.
+  await page.evaluate(() => { const main = document.querySelector("main"); main.style.width = "650px"; main.style.height = "680px"; });
+  await page.waitForFunction(() => document.querySelector("#editor-workspace").dataset.outlinePosition === "top");
+  const top = await page.locator("#note-outline").boundingBox();
+  const document = await page.locator("#editor").boundingBox();
+  assert.ok(top.y + top.height <= document.y + 1);
+  await page.evaluate(() => { document.querySelector("main").style.height = "340px"; });
+  await page.waitForFunction(() => document.querySelector("#editor-workspace").dataset.outlinePosition === "floating");
+  assert.ok((await page.locator("#editor").boundingBox()).height > 220);
+  assert.equal(await page.locator(".outline-label").count(), 2);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test("outline manual placement and visibility survive reload without editing the note", async () => {
+  const { page, errors } = await setup("# 我的目录\n\n## 子章节\n\n正文");
+  const initial = await state(page);
+  await page.locator("#outline-toggle").click();
+  for (const value of ["right", "top", "left", "floating"]) {
+    await page.locator("#outline-position").selectOption(value);
+    assert.equal(await page.locator("#editor-workspace").getAttribute("data-outline-position"), value);
+  }
+  await page.locator("#outline-position").selectOption("right");
+  await page.reload();
+  await page.evaluate(() => window.studyappEditor.load({ generation: 42, text: "# 我的目录\n\n## 子章节\n\n正文", readonly: false }));
+  assert.equal(await page.locator("#note-outline").isVisible(), true);
+  assert.equal(await page.locator("#outline-position").inputValue(), "right");
+  assert.equal(await page.locator("#outline-toggle svg").count(), 1);
+  assert.equal(await page.locator("#outline-toggle").getAttribute("aria-label"), "隐藏目录");
+  await page.getByRole("button", { name: "隐藏目录", exact: true }).last().click();
+  assert.equal(await page.locator("#note-outline").isVisible(), false);
+  assert.equal(await page.locator("#outline-toggle").getAttribute("aria-label"), "显示目录");
+  await page.locator("#outline-toggle").click();
+  await page.getByRole("treeitem").first().focus();
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#note-outline").isVisible(), false);
+  assert.equal((await state(page)).text, initial.text);
+  assert.equal((await state(page)).revision, 0);
+  await page.reload();
+  assert.equal(await page.locator("#note-outline").isVisible(), false);
+  await page.locator("#outline-toggle").click();
+  await page.locator("#outline-position").focus();
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#note-outline").isVisible(), false);
+  assert.equal(await page.locator("#outline-toggle").evaluate(element => element === document.activeElement), true);
+  assert.equal(initial.revision, 0);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test("manual outline sidebars preserve document space in narrow panes and restore on growth", async () => {
+  const { page, errors } = await setup("# Chapter\n\nText");
+  await page.locator("#outline-toggle").click();
+  await page.locator("#outline-position").selectOption("left");
+  await page.setViewportSize({ width: 340, height: 600 });
+  await page.waitForFunction(() => document.querySelector("#editor-workspace").dataset.outlinePosition === "floating");
+  assert.ok((await page.locator("#editor").boundingBox()).width >= 330);
+  const panel = await page.locator("#note-outline").boundingBox();
+  assert.ok(panel.x >= 0 && panel.x + panel.width <= 340);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await page.waitForFunction(() => document.querySelector("#editor-workspace").dataset.outlinePosition === "left");
+  assert.equal(await page.locator("#outline-position").inputValue(), "left");
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test("outline remains usable when browser preference storage is unavailable", async () => {
+  const { page } = await setup("# Storage independent");
+  await page.addInitScript(() => { Object.defineProperty(window, "localStorage", { get() { throw new DOMException("blocked", "SecurityError"); } }); });
+  await page.reload();
+  await page.evaluate(() => window.studyappEditor.load({ generation: 42, text: "# Safe", readonly: false }));
+  await page.locator("#outline-toggle").click();
+  await page.locator("#outline-position").selectOption("right");
+  assert.equal(await page.locator(".outline-label").innerText(), "Safe");
+  await page.locator(".outline-label").click();
+  assert.equal((await state(page)).text, "# Safe");
+  await page.close();
+});

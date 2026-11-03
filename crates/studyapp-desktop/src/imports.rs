@@ -25,9 +25,10 @@ pub fn collect(paths: Vec<PathBuf>) -> ImportSelection {
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
             Err(_) => {
-                output
-                    .warnings
-                    .push(format!("无法读取：{}", path.display()));
+                output.warnings.push(format!(
+                    "无法读取：{}",
+                    studyapp_desktop::presentation::path_label(&path)
+                ));
                 continue;
             }
         };
@@ -38,16 +39,18 @@ pub fn collect(paths: Vec<PathBuf>) -> ImportSelection {
             is_link || metadata.file_attributes() & 0x400 != 0
         };
         if is_link {
-            output
-                .warnings
-                .push(format!("跳过链接：{}", path.display()));
+            output.warnings.push(format!(
+                "跳过链接：{}",
+                studyapp_desktop::presentation::path_label(&path)
+            ));
             continue;
         }
         if metadata.is_dir() {
             if depth >= 8 {
-                output
-                    .warnings
-                    .push(format!("目录超过 8 层，已跳过：{}", path.display()));
+                output.warnings.push(format!(
+                    "目录超过 8 层，已跳过：{}",
+                    studyapp_desktop::presentation::path_label(&path)
+                ));
                 continue;
             }
             match std::fs::read_dir(&path) {
@@ -56,17 +59,19 @@ pub fn collect(paths: Vec<PathBuf>) -> ImportSelection {
                     for entry in entries.take(10_001) {
                         match entry {
                             Ok(entry) => children.push(entry.path()),
-                            Err(_) => output
-                                .warnings
-                                .push(format!("目录中有无法读取的项目：{}", path.display())),
+                            Err(_) => output.warnings.push(format!(
+                                "目录中有无法读取的项目：{}",
+                                studyapp_desktop::presentation::path_label(&path)
+                            )),
                         }
                     }
                     children.sort();
                     stack.extend(children.into_iter().rev().map(|path| (path, depth + 1)));
                 }
-                Err(_) => output
-                    .warnings
-                    .push(format!("无法读取目录：{}", path.display())),
+                Err(_) => output.warnings.push(format!(
+                    "无法读取目录：{}",
+                    studyapp_desktop::presentation::path_label(&path)
+                )),
             }
         } else if metadata.is_file()
             && path
@@ -86,14 +91,16 @@ pub fn collect(paths: Vec<PathBuf>) -> ImportSelection {
                         output.files.push(canonical);
                     }
                 }
-                Err(_) => output
-                    .warnings
-                    .push(format!("无法定位文件：{}", path.display())),
+                Err(_) => output.warnings.push(format!(
+                    "无法定位文件：{}",
+                    studyapp_desktop::presentation::path_label(&path)
+                )),
             }
         } else if depth == 0 {
-            output
-                .warnings
-                .push(format!("仅支持 Markdown 文件或目录：{}", path.display()));
+            output.warnings.push(format!(
+                "仅支持 Markdown 文件或目录：{}",
+                studyapp_desktop::presentation::path_label(&path)
+            ));
         }
     }
     output.warnings.truncate(20);

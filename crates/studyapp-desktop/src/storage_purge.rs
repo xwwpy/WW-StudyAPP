@@ -61,7 +61,7 @@ impl Plan {
                     && bytes == expected.bytes
                     && <[u8; 32]>::from(digest.finalize()) == expected.hash,
                 "跟踪笔记 {} 已改变，请重新预览",
-                path.display()
+                studyapp_desktop::presentation::path_label(path)
             );
             // Deny replacement and writes for this batch on Windows. Other
             // platforms re-observe the sources at each destructive batch.
@@ -447,7 +447,7 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
             Err(e) => {
                 unreadable = Some(e.context(format!(
                     "无法核对跟踪笔记 {} 的当前内容，不能安全删除图片",
-                    path.display()
+                    studyapp_desktop::presentation::path_label(path)
                 )));
             }
         }
@@ -460,7 +460,7 @@ pub fn prepare(s: &Snapshot, id: &str) -> Result<Plan> {
         let _lease = crate::maintenance_runtime::no_delete_file_handle(&p).with_context(|| {
             format!(
                 "自动备份正被占用、存在额外链接或无法验证，请先核对 {}",
-                p.display()
+                studyapp_desktop::presentation::path_label(&p)
             )
         })?;
         let saved = stamp(&p)?;
@@ -847,8 +847,12 @@ pub fn execute(engine: &mut Engine, plan: &Plan, now: i64) -> Result<()> {
         }
     });
     for (p, s) in files {
-        crate::app_migration::unlink_exact(p, s.identity, &s.hash)
-            .with_context(|| format!("未能清除 {}，可重新预览后重试", p.display()))?;
+        crate::app_migration::unlink_exact(p, s.identity, &s.hash).with_context(|| {
+            format!(
+                "未能清除 {}，可重新预览后重试",
+                studyapp_desktop::presentation::path_label(p)
+            )
+        })?;
     }
     engine.purge_managed_note(&plan.note_id, plan.revision, now)?;
     finish_marker(&marker)?;

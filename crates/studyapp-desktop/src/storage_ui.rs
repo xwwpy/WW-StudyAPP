@@ -418,7 +418,7 @@ impl StudyApp {
                 view = view
                     .child(muted(format!(
                         "将迁移到 {}。迁移期间暂停编辑，完成后可逐项查看旧副本并确认清理。",
-                        target.display()
+                        studyapp_desktop::presentation::path_label(target)
                     )))
                     .child(
                         Button::new("confirm-application-migration")
@@ -478,7 +478,11 @@ impl StudyApp {
                                 rows.len(),
                                 move |range, _, _| {
                                     range
-                                        .map(|i| muted(rows[i].source().display().to_string()))
+                                        .map(|i| {
+                                            muted(studyapp_desktop::presentation::path_label(
+                                                rows[i].source(),
+                                            ))
+                                        })
                                         .collect()
                                 },
                             )
@@ -858,7 +862,7 @@ impl StudyApp {
             )
             .when(show_paths || expanded, |v| {
                 v.child(
-                    muted(copy.path.clone())
+                    muted(studyapp_desktop::presentation::display_path(&copy.path))
                         .id(path_id)
                         .test_support()
                         .text_xs()
@@ -950,7 +954,9 @@ impl StudyApp {
                 .as_ref()
                 .is_some_and(|snapshot| snapshot.settings.show_file_paths)
             {
-                content = content.child(muted(copy.path.clone()));
+                content = content.child(muted(studyapp_desktop::presentation::display_path(
+                    &copy.path,
+                )));
             }
         }
         if !allowed {

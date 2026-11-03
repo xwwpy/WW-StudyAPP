@@ -161,9 +161,86 @@ def main():
                   "real_nsis": True, "app_owned_restart": True, "draft_preserved": True,
                   "production_rejected_fixture_key": True}
         (root / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        # Keep the restored installed app running: a different bundle must not
+        # block portable installation or have its registration/shortcuts changed.
+        result["portable"] = portable_transition(root, binaries, packages["candidate"], source_sha,
+                                                 candidate_version, child_env, installed, after["pid"])
+        (root / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     finally:
         common.collect_diagnostics(root)
         collect_editor_diagnostics(root)
+
+
+def portable_transition(root, binaries, package, source_sha, target_version, child_env, installed, unrelated_pid):
+    case = root / "portable-case"
+    case.mkdir()
+    fixture = case / "fixture"
+    fixture.mkdir()
+    (case / "temp").mkdir()
+    config = common.sign_fixture(fixture, package, source_sha, target_version, "windows-x86_64")
+    env = dict(child_env, STUDYAPP_UPDATE_ACCEPTANCE_DIR=str(fixture),
+               TEMP=str(case / "temp"), TMP=str(case / "temp"))
+    # Exercise the final unquoted NSIS /D= remainder: Unicode, spaces and '&'.
+    bundle = case / "免安装 程序 & notes"
+    shutil.copytree(root / "old-packages" / f"WW-StudyApp-{common.workspace_version(common.ROOT)}-windows-x86_64", bundle)
+    executable = bundle / "WW-StudyApp.exe"
+    data = case / "学习 资料库"
+    # The data path intentionally retains its canonical prefix across restart.
+    prefixed_data = chr(92) * 2 + "?" + chr(92) + str(data)
+    def registration():
+        result = {}
+        for name in (r"Software\WW-StudyApp\Installer", r"Software\Microsoft\Windows\CurrentVersion\Uninstall\WW-StudyApp"):
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, name) as key:
+                result[name] = [winreg.EnumValue(key, ix) for ix in range(winreg.QueryInfoKey(key)[1])]
+        return result
+    registered_before = registration()
+    installed_before = common.sha(installed)
+    uninstaller_before = common.sha(installed.parent / "Uninstall.exe")
+    try:
+        old = windows.launch(executable, ["--data-dir", prefixed_data], env)
+        before = common.wait_file(fixture / "old-observation.json", 120, old)
+        assert old.wait(180) == 0
+        after = common.wait_file(fixture / "new-observation.json", 180)
+        transaction = Path(after["transaction"])
+        outer = json.loads((transaction / "transaction.json").read_text(encoding="utf-8"))
+        assert outer["mode"] == "portable"
+        assert not outer["executable"].startswith(chr(92) * 2 + "?" + chr(92))
+        assert outer["transaction"]["data_directory"] == prefixed_data
+        health = common.wait_file(transaction / "health.json", 30)
+        deadline = time.monotonic() + 30
+        while not list(transaction.glob("status-healthy-*.json")):
+            if time.monotonic() > deadline:
+                raise TimeoutError("Portable supervisor did not confirm restored app health")
+            time.sleep(.2)
+        assert health["version"] == after["version"] == target_version
+        assert health["pid"] == after["pid"] != before["pid"]
+        assert common.sha(executable) == common.sha(binaries["candidate"])
+        assert after["live_text"] == config["draft_marker"]
+        draft = json.loads((data / "drafts" / f'{before["draft_id"]}.json').read_text(encoding="utf-8"))
+        assert draft["draft"]["content"] == config["draft_marker"]
+        pending = json.loads((fixture / "close-pending.json").read_text(encoding="utf-8"))
+        ack = json.loads((fixture / "close-ack.json").read_text(encoding="utf-8"))
+        handoff = json.loads((fixture / "helper-handoff.json").read_text(encoding="utf-8"))
+        assert pending["id"] == ack["id"] == before["draft_id"]
+        assert ack["revision"] >= pending["revision"] and handoff["ack"] == ack
+        assert pending["timestamp"] <= ack["timestamp"] <= handoff["timestamp"]
+        assert registration() == registered_before
+        assert common.sha(installed) == installed_before
+        assert common.sha(installed.parent / "Uninstall.exe") == uninstaller_before
+        assert windows.inspect_process(unrelated_pid)["executable"]
+        assert not (bundle / "Uninstall.exe").exists()
+        new_context = windows.inspect_process(after["pid"])
+        assert not new_context["elevated"]
+        assert Path(new_context["executable"]).resolve() == executable.resolve()
+        result = {"real_nsis": True, "mode": "portable", "health": health,
+                  "draft_preserved": True, "prefixed_library_preserved": True,
+                  "registered_install_untouched": True, "unrelated_app_remains_running": True,
+                  "unicode_space_ampersand_destination": True, "new_process": new_context}
+        (case / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        return result
+    finally:
+        common.collect_diagnostics(case)
+        collect_editor_diagnostics(case)
 
 
 def collect_editor_diagnostics(root):

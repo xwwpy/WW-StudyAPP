@@ -66,11 +66,49 @@ VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 
 Var Updated
 Var PreviousInstall
+Var PortableUpdate
+
+; Accept Rust's canonical spelling only for local drive paths. Keep UNC/device
+; namespaces unchanged so normal destination checks still reject them.
+Function NormalizeLocalPath
+  Exch $0
+  Push $1
+  StrCpy $1 $0 4
+  StrCmp $1 "\\?\" 0 normalize_done
+  StrCpy $1 $0 1 5
+  StrCmp $1 ":" 0 normalize_done
+  StrCpy $0 $0 "" 4
+normalize_done:
+  Pop $1
+  Exch $0
+FunctionEnd
 
 ; A second directory would leave an old uninstaller able to remove the shared
 ; shortcuts and registration. Require uninstall first; uninstall retains data.
 ; Appending a dot normalizes trailing separators as well as relative segments.
 Function ValidateInstallLocation
+  ; Portable updates have an equivalent destination guard: only an existing
+  ; complete portable bundle, never a registered root or an uninstaller owner.
+  StrCmp $PortableUpdate 1 validate_portable
+  Goto validate_registered
+validate_portable:
+  GetFullPathName $1 "$INSTDIR\."
+  StrCpy $2 $1 2
+  StrCmp $2 "\\" portable_invalid
+  StrCmp $PreviousInstall "" portable_files
+  GetFullPathName $0 "$PreviousInstall\."
+  StrCmp $0 $1 portable_invalid
+portable_files:
+  IfFileExists "$1\Uninstall.exe" portable_invalid 0
+  IfFileExists "$1\WW-StudyApp.exe" 0 portable_invalid
+  IfFileExists "$1\vcruntime140.dll" 0 portable_invalid
+  IfFileExists "$1\vcruntime140_1.dll" 0 portable_invalid
+  StrCpy $INSTDIR $1
+  Goto location_valid
+portable_invalid:
+  SetErrorLevel 7
+  Quit
+validate_registered:
   StrCmp $PreviousInstall "" location_valid
   GetFullPathName $0 "$PreviousInstall\."
   GetFullPathName $1 "$INSTDIR\."
@@ -91,38 +129,55 @@ FunctionEnd
 ; ask the user to close the running application.
 Function .onInit
   ReadRegStr $PreviousInstall HKCU "${INSTALL_KEY}" "InstallLocation"
+  Push $PreviousInstall
+  Call NormalizeLocalPath
+  Pop $PreviousInstall
+  Push $INSTDIR
+  Call NormalizeLocalPath
+  Pop $INSTDIR
   StrCpy $Updated 0
+  StrCpy $PortableUpdate 0
   ${GetParameters} $R0
+  ${GetOptions} $R0 "/PORTABLEUPDATE" $R1
+  ${IfNot} ${Errors}
+    ${IfNot} ${Silent}
+      SetErrorLevel 7
+      Quit
+    ${EndIf}
+    StrCpy $PortableUpdate 1
+  ${EndIf}
+  ClearErrors
   ${GetOptions} $R0 "/UPDATED" $R1
   ${IfNot} ${Errors}
     StrCpy $Updated 1
   ${EndIf}
 
+  ; Reject invalid destinations before waiting or touching any file.
   ${If} ${Silent}
-    StrCpy $0 0
-    ${Do}
-      nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq WW-StudyApp.exe" /NH | find /i "WW-StudyApp.exe"'
-      Pop $1
-      Pop $2
-      ${If} $2 == ""
-        ${ExitDo}
-      ${EndIf}
-      Sleep 500
-      IntOp $0 $0 + 1
-      ${If} $0 >= 120
-        SetErrorLevel 5
-        Abort
-      ${EndIf}
-    ${Loop}
-  ${Else}
-    nsExec::ExecToStack 'cmd /c tasklist /FI "IMAGENAME eq WW-StudyApp.exe" /NH | find /i "WW-StudyApp.exe"'
-    Pop $0
-    Pop $1
-    ${If} $1 != ""
-      MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "WW-StudyApp 正在运行。请先退出应用，再继续安装。" IDOK 0
-      Abort
-    ${EndIf}
+    Call ValidateInstallLocation
   ${EndIf}
+  ; Only wait for this target, not copies running in unrelated directories.
+  StrCpy $0 0
+wait_for_target:
+  IfFileExists "$INSTDIR\WW-StudyApp.exe" 0 target_available
+  System::Call 'kernel32::CreateFileW(w "$INSTDIR\WW-StudyApp.exe", i 0x40000000, i 7, p 0, i 3, i 0x80, p 0) p.r1'
+  StrCmp $1 -1 target_busy
+  System::Call 'kernel32::CloseHandle(p r1)'
+  Goto target_available
+target_busy:
+  ${If} ${Silent}
+    Sleep 500
+    IntOp $0 $0 + 1
+    ${If} $0 < 120
+      Goto wait_for_target
+    ${EndIf}
+    SetErrorLevel 5
+    Abort
+  ${Else}
+    MessageBox MB_OK|MB_ICONEXCLAMATION "此安装目录中的 WW-StudyApp 正在运行或无法写入。请退出该目录中的应用并检查权限后重试。"
+    Abort
+  ${EndIf}
+target_available:
 FunctionEnd
 
 Function un.onInit
@@ -142,6 +197,10 @@ Section "Install"
   File "${PAYLOAD}\LICENSE"
   File "${PAYLOAD}\RELEASE-NOTES.md"
   File "${PAYLOAD}\THIRD-PARTY-NOTICES.txt"
+
+  ${If} $PortableUpdate == 1
+    Goto install_finished
+  ${EndIf}
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
@@ -163,6 +222,7 @@ Section "Install"
   WriteRegStr HKCU "${INSTALL_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${INSTALL_KEY}" "Version" "${VERSION}"
 
+install_finished:
   ; Only the updater asks for an automatic restart; a plain /S install stays
   ; closed so unattended fixtures can inspect the files.
   ${If} $Updated == 1
