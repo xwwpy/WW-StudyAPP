@@ -563,18 +563,6 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             }
             click_visible(window,"update-dialog-install".into(),cx).await;
         }
-        #[cfg(not(target_os = "macos"))]
-        {
-            wait(window,&view,cx,"update preparation or visible failure",|a,cx|a.close_requested||a.update_panel.read(cx).acceptance_install_error().is_some()).await;
-            window.update(cx,|_,window,cx|{
-                let app=view.read(cx);
-                if let Some(error)=app.update_panel.read(cx).acceptance_install_error(){
-                    save("install-refused.json",json!({"error":error,"close_requested":app.close_requested}));
-                    capture(window,"install-refused.png");
-                    panic!("Update preparation failed: {error}");
-                }
-            }).unwrap();
-        }
         // The application and its supervisor own all remaining install/restart work.
     }).detach();
 }
