@@ -108,8 +108,10 @@ fn gesture(raw: usize, start: POINT, dx: i32, dy: i32, expected: u32) {
 fn pixel(point: POINT) -> u32 {
     unsafe {
         let dc = GetDC(None);
+        assert!(!dc.is_invalid(), "screen DC must be available");
         let color = GetPixel(dc, point.x, point.y).0;
         ReleaseDC(None, dc);
+        assert_ne!(color, u32::MAX, "screen pixel must be readable");
         color
     }
 }
@@ -300,10 +302,22 @@ pub async fn exercise(
     // Compare a clear padding pixel with the exact same underlying desktop
     // pixel while only this widget is hidden. No wallpaper or desktop setting
     // is changed, and the timer's opaque text remains unaffected.
-    let clear = POINT {
-        x: resized.left + 5,
-        y: resized.top + 18,
-    };
+    // GetWindowRect includes invisible resize borders. Sample the actual
+    // client padding, not the DWM shadow outside the painted client surface.
+    let clear = widget
+        .update(cx, |_, window, _| {
+            let mut client = RECT::default();
+            unsafe {
+                GetClientRect(HWND(handle as *mut _), &mut client).unwrap();
+            }
+            let mut point = POINT {
+                x: (client.right - client.left) / 2,
+                y: (4. * window.scale_factor()).round() as i32,
+            };
+            assert!(unsafe { ClientToScreen(HWND(handle as *mut _), &mut point) }.as_bool());
+            point
+        })
+        .unwrap();
     unsafe {
         let _ = ShowWindow(HWND(handle as *mut _), SW_HIDE);
     }

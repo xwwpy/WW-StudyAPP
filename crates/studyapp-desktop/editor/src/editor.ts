@@ -1,4 +1,4 @@
-import { previewCaret } from "./preview";
+import { previewCaret, previewMouseSelection } from "./preview";
 import { renderedSelection, copyMenuUpdates, installCopyMenu } from "./selection";
 import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled } from "./outline";
 import { applyEditorTheme } from "./theme";
@@ -306,7 +306,7 @@ function extensions(readonly: boolean, rawText = ""): Extension[] {
     themeMode.of(EditorView.theme({})), rawUrlWrapping,
     documentLimits(rawText, warning, clearWarning),
     markdown({ base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
-    syntaxHighlighting(codeHighlighting), history(), renderedSelection, copyMenuUpdates, EditorView.lineWrapping,
+    syntaxHighlighting(codeHighlighting), history(), renderedSelection, previewMouseSelection, copyMenuUpdates, EditorView.lineWrapping,
     EditorState.allowMultipleSelections.of(true),
     placeholder("从这里开始记录，支持 Markdown…"),
     EditorView.contentAttributes.of({ "aria-label": "笔记正文", spellcheck: "false", tabindex: "0" }),
@@ -620,7 +620,15 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
   bridge.test = async (action: TestAction) => {
     let result: unknown;
     const position = (value: number | undefined) => Math.max(0, Math.min(view.state.doc.length, value ?? 0));
-    if (action.type === "snapshot") result = snapshot();
+    if (action.type === "unavailablePreviewGeometry") {
+      const original=view.posAndSideAtCoords.bind(view);
+      view.posAndSideAtCoords=coords => {
+        if(view.state.readOnly) throw new TypeError("Cannot read properties of null (reading 'length')");
+        return original(coords,false);
+      };
+      result={guarded:true};
+    }
+    else if (action.type === "snapshot") result = snapshot();
     else if (action.type === "layout") {
       // Setup only: acknowledge the host's actual viewport and a completed CM
       // measurement (including its scroll target/anchor corrections). Ordinary

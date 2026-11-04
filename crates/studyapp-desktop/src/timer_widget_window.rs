@@ -82,7 +82,7 @@ impl WidgetWindowState {
 }
 
 pub fn decorate(window: &mut gpui_kit::Window, pinned: bool) -> Result<()> {
-    #[cfg(windows)]
+    #[cfg(all(windows, not(test)))]
     {
         use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::*};
         use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -109,7 +109,7 @@ pub fn decorate(window: &mut gpui_kit::Window, pinned: bool) -> Result<()> {
             )?;
         }
     }
-    #[cfg(not(windows))]
+    #[cfg(any(not(windows), test))]
     {
         let _ = (window, pinned);
     }

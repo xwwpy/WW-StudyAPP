@@ -152,3 +152,56 @@ fn manual_finish_after_clock_rollback_never_precedes_the_last_active_span() {
     engine.apply(Command::FinishTimer, 1005).unwrap();
     assert_eq!(engine.snapshot().timer.finished_at, Some(1010));
 }
+
+#[test]
+fn notes_from_a_generic_timer_do_not_leak_into_the_next_study_segment() {
+    let (_, mut engine) = fixture();
+    start(&mut engine, TimerKind::CountUp, None);
+    engine
+        .apply(
+            Command::CreateNote {
+                title: "通用计时笔记".into(),
+                content: "# 通用计时内容".into(),
+            },
+            1001,
+        )
+        .unwrap();
+    let generic_version = engine.snapshot().versions.last().unwrap().id.clone();
+    for second in 1..=120 {
+        engine.tick(1000 + second, 1).unwrap();
+    }
+    engine.apply(Command::FinishTimer, 1120).unwrap();
+    assert!(engine.snapshot().sessions.is_empty());
+    let mut settings = engine.snapshot().settings;
+    settings.interval_minutes = 5;
+    engine.apply(Command::SaveSettings(settings), 1120).unwrap();
+    engine
+        .apply(
+            Command::StartTimer {
+                kind: TimerKind::Study,
+                target_seconds: None,
+                label: String::new(),
+            },
+            1121,
+        )
+        .unwrap();
+    engine
+        .apply(
+            Command::CreateNote {
+                title: "专注学习笔记".into(),
+                content: "# 专注学习内容".into(),
+            },
+            1122,
+        )
+        .unwrap();
+    let study_version = engine.snapshot().versions.last().unwrap().id.clone();
+    for second in 1..=300 {
+        engine.tick(1121 + second, 1).unwrap();
+    }
+    let snapshot = engine.snapshot();
+    assert_eq!(snapshot.sessions.len(), 1);
+    assert_eq!(snapshot.sessions[0].version_ids, vec![study_version]);
+    assert!(!snapshot.sessions[0].version_ids.contains(&generic_version));
+    assert_eq!(snapshot.timer.kind, TimerKind::Study);
+    assert_eq!(snapshot.timer.active_seconds, 0);
+}

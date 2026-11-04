@@ -15,12 +15,45 @@ use studyapp_ui::timer_card::{
     TimerCardAction, TimerCardModel, TimerCardStyle, TimerCardVariant, timer_card,
 };
 
+#[derive(Clone)]
+struct WidgetPresentation {
+    model: TimerCardModel,
+    settings: TimerWidgetSettings,
+    bindings: std::collections::BTreeMap<String, String>,
+}
+impl WidgetPresentation {
+    fn from_app(app: &StudyApp) -> Self {
+        let fallback = studyapp_core::TimerState::default();
+        let timer = app
+            .snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.timer)
+            .unwrap_or(&fallback);
+        let segment = app
+            .read_models
+            .record_positions(&chrono::Local::now().format("%Y-%m-%d").to_string(), 0)
+            .len()
+            + 1;
+        Self {
+            model: TimerCardModel::from_timer(timer, segment),
+            settings: app.effective_widget_settings(),
+            bindings: app
+                .preferences_ui
+                .saved
+                .as_ref()
+                .map(|p| p.shortcuts.clone())
+                .unwrap_or_else(crate::shortcuts::default_bindings),
+        }
+    }
+}
+
 pub struct TimerWidget {
     app: Entity<StudyApp>,
     state: WidgetWindowState,
     path: PathBuf,
     save_task: Option<Task<()>>,
     pinned: Option<bool>,
+    presentation: WidgetPresentation,
 }
 
 fn forward(app: WeakEntity<StudyApp>, action: TimerCardAction, cx: &mut App) {
@@ -42,10 +75,15 @@ impl TimerWidget {
         app: Entity<StudyApp>,
         state: WidgetWindowState,
         path: PathBuf,
+        presentation: WidgetPresentation,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe(&app, |_, _, cx| cx.notify()).detach();
+        cx.observe(&app, |this, app, cx| {
+            this.presentation = WidgetPresentation::from_app(app.read(cx));
+            cx.notify();
+        })
+        .detach();
         cx.observe_window_bounds(window, |this, window, cx| {
             this.state.capture(window.window_bounds().get_bounds());
             this.state.open = true;
@@ -76,6 +114,7 @@ impl TimerWidget {
             path,
             save_task: None,
             pinned: None,
+            presentation,
         }
     }
     fn persist(&self, cx: &mut Context<Self>) {
@@ -89,24 +128,13 @@ impl TimerWidget {
     }
 }
 impl Render for TimerWidget {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (model, settings) = {
-            let app = self.app.read(cx);
-            let timer = app
-                .snapshot
-                .as_ref()
-                .map(|s| s.timer.clone())
-                .unwrap_or_default();
-            let segment = app
-                .read_models
-                .record_positions(&chrono::Local::now().format("%Y-%m-%d").to_string(), 0)
-                .len()
-                + 1;
-            (
-                TimerCardModel::from_timer(&timer, segment),
-                app.effective_widget_settings(),
-            )
-        };
+    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // open_window renders synchronously while the StudyApp update lease is
+        // still held. Render only the supplied/observed value snapshot; never
+        // read the owner from this new window's render path.
+        let model = self.presentation.model.clone();
+        let settings = self.presentation.settings.clone();
+        let bindings = self.presentation.bindings.clone();
         if self.pinned != Some(settings.pinned)
             && crate::timer_widget_window::decorate(window, settings.pinned).is_ok()
         {
@@ -148,13 +176,7 @@ impl Render for TimerWidget {
                 let Some(owner) = keys_owner.upgrade() else {
                     return;
                 };
-                let bindings = owner
-                    .read(cx)
-                    .preferences_ui
-                    .saved
-                    .as_ref()
-                    .map(|p| p.shortcuts.clone())
-                    .unwrap_or_else(crate::shortcuts::default_bindings);
+                let _ = owner;
                 let key = &event.keystroke;
                 let combination = crate::shortcuts::key_combination(
                     &key.key,
@@ -273,8 +295,9 @@ impl StudyApp {
         };
         let app = cx.entity();
         let initial = state.clone();
+        let presentation = WidgetPresentation::from_app(self);
         match open_window(options, cx, move |window, cx| {
-            cx.new(|cx| TimerWidget::new(app, initial, path, window, cx))
+            cx.new(|cx| TimerWidget::new(app, initial, path, presentation, window, cx))
         }) {
             Ok((handle, _)) => {
                 self.timer_widget = Some(handle);

@@ -2191,6 +2191,9 @@ test("preview caret activation survives rendered widgets, wrapping and host mode
   const {page,errors}=await setup(text);
   const stacks=[];
   page.on('pageerror',error=>stacks.push(error.stack));
+  // A missing measured line must never be consulted by readonly mousedown.
+  // This deterministic fault is test-build-only and leaves DOM caret APIs real.
+  await action(page,{type:"unavailablePreviewGeometry"});
   // Model the host's asynchronous requestEdit acknowledgement, including the
   // readonly compartment change and UTF-16 selection restoration.
   await page.evaluate(()=>{window.ipc={postMessage:message=>{
@@ -2220,5 +2223,45 @@ test("preview caret activation survives rendered widgets, wrapping and host mode
   assert.ok(requests.length>40);
   assert.ok(requests.every(r=>r.generation===51&&Number.isInteger(r.position)&&r.position>=0&&r.position<=text.length));
   assert.deepEqual(errors,[]);
+  await page.close();
+});
+
+test("readonly DOM hit testing preserves word, line, forward and reverse drag selections", async () => {
+  const text="Alpha beta gamma\n\nDelta epsilon zeta\n\nLast paragraph";
+  const {page,errors}=await setup(text);
+  await page.evaluate(text=>window.studyappEditor.load({generation:52,text,readonly:true}),text);
+  await action(page,{type:"unavailablePreviewGeometry"});
+  const point=async(word,end=false)=>page.locator('.cm-content').evaluate((content,{word,end})=>{
+    const walker=document.createTreeWalker(content,NodeFilter.SHOW_TEXT);
+    for(let node;node=walker.nextNode();){
+      const index=node.nodeValue.indexOf(word);
+      if(index<0)continue;
+      const range=document.createRange();range.setStart(node,index+(end?word.length:0));range.collapse(true);
+      const box=range.getBoundingClientRect();return{x:box.left+.1,y:box.top+box.height/2};
+    }
+    throw new Error('missing rendered word');
+  },{word,end});
+  const selected=async()=>{const s=await state(page);return text.slice(Math.min(s.selection.anchor,s.selection.head),Math.max(s.selection.anchor,s.selection.head));};
+  const beta=await point('beta');
+  await page.mouse.click(beta.x+4,beta.y,{clickCount:2});
+  assert.equal(await selected(),'beta');
+  await page.mouse.click(beta.x+4,beta.y,{clickCount:3});
+  assert.equal(await selected(),'Alpha beta gamma\n');
+  const start=await point('Alpha'),end=await point('zeta',true);
+  await select(page,0);
+  await page.mouse.move(start.x,start.y);await page.mouse.down();
+  await page.mouse.move(end.x,end.y,{steps:12});await page.mouse.up();
+  const forward=await selected();assert.ok(forward.includes('beta gamma\n\nDelta epsilon'));
+  await select(page,0);
+  await page.mouse.move(end.x,end.y);await page.mouse.down();
+  await page.mouse.move(start.x,start.y,{steps:12});await page.mouse.up();
+  assert.equal(await selected(),forward);
+  await select(page,0);
+  await page.mouse.move(start.x,start.y);await page.mouse.down();
+  await page.mouse.move(end.x,799,{steps:12});await page.mouse.up();
+  assert.ok((await selected()).includes('Last paragraph'));
+  assert.equal((await state(page)).text,text);
+  assert.deepEqual(errors,[]);
+  assert.equal(await page.evaluate(()=>window.messages.filter(m=>m.type==='requestEdit').length),0);
   await page.close();
 });

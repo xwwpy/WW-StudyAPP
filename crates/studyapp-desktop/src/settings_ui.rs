@@ -3980,6 +3980,42 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
+    fn widget_opens_and_renders_without_reentering_the_owner_update(cx: &mut TestAppContext) {
+        let (app, visual) = fixture(cx);
+        visual.update(|_, cx| app.update(cx, |app, cx| app.open_widget(cx)));
+        let widget = app.read_with(visual, |app, _| {
+            app.timer_widget.expect("virtual widget opens")
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            widget
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find("timer-widget-card").is_some());
+                    assert!(window.try_find("widget-pause").is_some());
+                })
+                .unwrap();
+            app.update(cx, |app, cx| {
+                app.preferences_ui
+                    .draft
+                    .as_mut()
+                    .unwrap()
+                    .timer_widget
+                    .opacity = 55;
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            widget
+                .update(cx, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            app.update(cx, |app, cx| app.close_widget(false, cx));
+            assert!(app.read(cx).timer_widget.is_none());
+        });
+    }
+
+    #[gpui_kit::test]
     fn widget_draft_preview_and_invalid_inputs_are_discardable(cx: &mut TestAppContext) {
         let (app, visual) = fixture(cx);
         visual.update(|window, cx| {
