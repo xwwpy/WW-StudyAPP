@@ -113,7 +113,8 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         #[cfg(all(windows, feature = "ui-test"))]
         if std::env::var("WW_STUDYAPP_SMOKE_SCENARIO").as_deref() == Ok("timer-widget") {
             Box::pin(crate::smoke_timer_widget::exercise(window, &view, &database, cx)).await;
-            cx.update(|cx| cx.quit());
+            // The widget probe finishes through the real durable-close path.
+            // Forcing quit here would bypass the very lifecycle it verifies.
             return;
         }
         #[cfg(all(windows, feature = "ui-test"))]

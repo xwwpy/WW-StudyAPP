@@ -200,6 +200,9 @@ impl Render for TimerWidget {
                 row()
                     .gap_1()
                     .flex_shrink_0()
+                    .rounded_md()
+                    .bg(rgb(crate::theme::palette().surface))
+                    .px_2()
                     .child(drag)
                     .child(button(
                         "widget-open-main",
@@ -227,11 +230,14 @@ impl Render for TimerWidget {
                         move |action, _, cx| forward(card_owner.clone(), action, cx),
                     )),
             )
-            .child(row().flex_shrink_0().justify_end().child(button(
-                "widget-exit",
-                "退出应用",
-                TimerCardAction::ExitApp,
-            )))
+            .child(
+                row().flex_shrink_0().justify_end().child(
+                    div()
+                        .rounded_md()
+                        .bg(rgb(crate::theme::palette().surface))
+                        .child(button("widget-exit", "退出应用", TimerCardAction::ExitApp)),
+                ),
+            )
     }
 }
 
@@ -296,11 +302,14 @@ impl StudyApp {
         let app = cx.entity();
         let initial = state.clone();
         let presentation = WidgetPresentation::from_app(self);
-        match open_window(options, cx, move |window, cx| {
-            cx.new(|cx| TimerWidget::new(app, initial, path, presentation, window, cx))
+        // Component roots supply an opaque theme surface by default. Override
+        // only this window's root; a transparent child cannot erase its parent.
+        match cx.open_window(options, move |window, cx| {
+            let view = cx.new(|cx| TimerWidget::new(app, initial, path, presentation, window, cx));
+            cx.new(|cx| base::Root::new(view, window, cx).bg(rgba(0)))
         }) {
-            Ok((handle, _)) => {
-                self.timer_widget = Some(handle);
+            Ok(handle) => {
+                self.timer_widget = Some(handle.into());
                 self.widget_state = state;
                 if let Some(path) = Self::widget_state_path()
                     && let Err(error) = self.widget_state.save(&path)

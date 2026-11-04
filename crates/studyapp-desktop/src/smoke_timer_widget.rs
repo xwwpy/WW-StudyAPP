@@ -328,10 +328,6 @@ pub async fn exercise(
     }
     settle(cx).await;
     let through = pixel(clear);
-    assert_eq!(
-        through, behind,
-        "transparent widget padding must expose the underlying desktop"
-    );
     widget
         .update(cx, |_, window, cx| {
             window.activate_window();
@@ -346,6 +342,20 @@ pub async fn exercise(
             );
         })
         .unwrap();
+    std::fs::write(
+        database
+            .parent()
+            .unwrap()
+            .join("timer-widget-transparency.json"),
+        serde_json::to_vec_pretty(&json!({"behind":behind,"through":through,
+            "point":{"x":clear.x,"y":clear.y}}))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        through, behind,
+        "transparent widget padding must expose the underlying desktop"
+    );
     widget
         .update(cx, |_, window, _| {
             let center = window.find("widget-pause").bounds().center();
@@ -438,16 +448,73 @@ pub async fn exercise(
         (state.x, state.y, state.width, state.height),
         (reopened.x, reopened.y, reopened.width, reopened.height)
     );
-    main.update(cx, |_, _, cx| {
-        app.update(cx, |app, cx| app.close_widget(false, cx))
+    // End through the real explicit-exit path, not cx.quit: it must drain the
+    // current native editor, then remove both windows and retain restore state.
+    main.update(cx, |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.page = crate::app::Page::Notes;
+            app.start_new_draft(None, window, cx);
+        })
     })
     .unwrap();
+    until(
+        main,
+        app,
+        "exit draft editor",
+        |app, cx| {
+            app.note_editor.is_some() && !app.draft_loading && app.note_content.read(cx).ready()
+        },
+        cx,
+    )
+    .await;
+    let editor = app.read_with(cx, |app, _| app.note_content.clone());
+    let marker = "Widget explicit exit keeps this draft: 计时草稿";
+    crate::smoke_editor::bridge(
+        main,
+        &editor,
+        json!({"type":"replace","from":0,"to":0,"text":marker}),
+        cx,
+    )
+    .await;
+    let live = crate::smoke_editor::bridge(main, &editor, json!({"type":"snapshot"}), cx).await;
+    assert_eq!(live["text"], marker);
+    let disk = app.read_with(cx, |app, _| {
+        crate::drafts::DraftStore::record_path(
+            &app.last_library,
+            app.active_draft_id.as_ref().expect("active exit draft"),
+        )
+        .unwrap()
+    });
+    let report_path = database.parent().unwrap().join("timer-widget-result.json");
+    let owner = app.clone();
     let report = json!({"pass":true,"singleTimer":true,"nativeDrag":true,"nativeResize":true,"resizeEdges":hits,
         "topmostTogglesWithoutRecreate":true,"toolWindow":true,"transparentPixel":{"behind":behind,"through":through},
-        "minimizedMainKeepsTicking":true,"geometryRestored":true});
-    std::fs::write(
-        database.parent().unwrap().join("timer-widget-result.json"),
-        serde_json::to_vec_pretty(&report).unwrap(),
-    )
+        "minimizedMainKeepsTicking":true,"geometryRestored":true,
+        "explicitExitClosesBothWindows":true,"exitDraftDurable":true,"restoreAfterExit":true});
+    cx.update(|cx| {
+        cx.on_window_closed(move |cx, _| {
+            if !cx.windows().is_empty() {
+                return;
+            }
+            let app = owner.read(cx);
+            assert!(app.close_allowed && app.timer_widget.is_none());
+            assert!(app.draft_close_drain.is_none());
+            assert!(
+                crate::timer_widget_window::WidgetWindowState::load(&path)
+                    .unwrap()
+                    .open
+            );
+            let stored: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&disk).unwrap()).unwrap();
+            assert_eq!(stored["draft"]["content"], marker);
+            std::fs::write(&report_path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        })
+        .detach()
+    });
+    main.update(cx, |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.timer_action(TimerCardAction::ExitApp, window, cx)
+        });
+    })
     .unwrap();
 }

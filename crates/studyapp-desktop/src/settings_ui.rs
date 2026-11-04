@@ -3993,22 +3993,27 @@ mod scoped_tests {
                     window.render_frame(cx);
                     assert!(window.try_find("timer-widget-card").is_some());
                     assert!(window.try_find("widget-pause").is_some());
+                    let root = window.root::<gpui_kit::base::Root>().unwrap().unwrap();
+                    root.update(cx, |root, _| {
+                        assert_eq!(root.style().background, Some(gpui_kit::rgba(0).into()));
+                    });
                 })
                 .unwrap();
             app.update(cx, |app, cx| {
-                app.preferences_ui
-                    .draft
-                    .as_mut()
-                    .unwrap()
-                    .timer_widget
-                    .opacity = 55;
+                let settings = &mut app.preferences_ui.draft.as_mut().unwrap().timer_widget;
+                settings.opacity = 55;
+                settings.show_controls = false;
                 cx.notify();
             });
         });
         visual.run_until_parked();
         visual.update(|_, cx| {
             widget
-                .update(cx, |_, window, cx| window.render_frame(cx))
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find("timer-widget-card").is_some());
+                    assert!(window.try_find("widget-pause").is_none());
+                })
                 .unwrap();
             app.update(cx, |app, cx| app.close_widget(false, cx));
             assert!(app.read(cx).timer_widget.is_none());
