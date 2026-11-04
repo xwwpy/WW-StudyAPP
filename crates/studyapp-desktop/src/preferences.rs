@@ -80,6 +80,10 @@ struct AppearanceFile {
     appearance: studyapp_core::AppearanceSettings,
 }
 #[derive(Serialize, Deserialize)]
+struct TimerWidgetFile {
+    timer_widget: Box<studyapp_core::TimerWidgetSettings>,
+}
+#[derive(Serialize, Deserialize)]
 struct ImagesFile {
     images: studyapp_core::ImageSettings,
 }
@@ -191,6 +195,12 @@ fn category_files(snapshot: &PreferenceSnapshot) -> Result<Vec<(&'static str, Ve
             "appearance.json",
             serde_json::to_vec_pretty(&AppearanceFile {
                 appearance: settings.appearance.clone(),
+            })?,
+        ),
+        (
+            "timer-widget.json",
+            serde_json::to_vec_pretty(&TimerWidgetFile {
+                timer_widget: settings.timer_widget.clone(),
             })?,
         ),
         (
@@ -458,6 +468,11 @@ impl PreferencesStore {
         } else {
             studyapp_core::ImageSettings::default()
         };
+        let timer_widget = if directory.join("timer-widget.json").try_exists()? {
+            read_category::<TimerWidgetFile>(&directory.join("timer-widget.json"))?.timer_widget
+        } else {
+            Box::default()
+        };
         let shortcuts: ShortcutsFile = read_category(&directory.join("shortcuts.json"))?;
         let sync: SyncFile = read_category(&directory.join("sync.json"))?;
         let credentials: CredentialPayload = read_json(&directory.join("credentials.json"))?;
@@ -471,6 +486,7 @@ impl PreferencesStore {
                 layout: interface.interface.layout,
                 appearance,
                 images,
+                timer_widget,
             },
             shortcuts: crate::shortcuts::resolved_bindings(&shortcuts.shortcuts),
             sync: sync.sync,
@@ -608,6 +624,7 @@ impl PreferencesStore {
                 "learning.json",
                 "interface.json",
                 "appearance.json",
+                "timer-widget.json",
                 "images.json",
                 "shortcuts.json",
                 "sync.json",
@@ -1164,6 +1181,66 @@ mod tests {
         proposal.settings.answer_minutes = 9;
         store.save(proposal, &mut engine, &mut runtime).unwrap();
         assert_eq!(store.snapshot().settings.answer_minutes, 9);
+    }
+
+    #[test]
+    fn widget_appearance_is_atomic_and_round_trips_without_changing_learning() {
+        let (root, mut engine, mut runtime, mut store) = library();
+        let baseline = store.snapshot();
+        let mut proposal = request(&store);
+        proposal.settings.timer_widget.opacity = 65;
+        proposal.settings.timer_widget.layout = studyapp_core::WidgetLayout::Expanded;
+        proposal.settings.timer_widget.accent = Some("#227799".into());
+        let prepared = store.prepare(proposal, &engine, &runtime).unwrap();
+        assert_eq!(store.snapshot().revision, baseline.revision);
+        assert_eq!(
+            engine.snapshot().settings.timer_widget,
+            baseline.settings.timer_widget
+        );
+        let (settings, synchronization) = store.publish(prepared).unwrap();
+        engine.install_prepared_settings(settings);
+        runtime.install_configuration(synchronization);
+        let (reopened, _) =
+            PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+        assert_eq!(reopened.snapshot().settings.timer_widget.opacity, 65);
+        assert_eq!(
+            reopened.snapshot().settings.interval_minutes,
+            baseline.settings.interval_minutes
+        );
+        assert!(
+            reopened
+                .current_directory()
+                .join("timer-widget.json")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn existing_generation_without_widget_category_uses_defaults_without_rewriting() {
+        let (root, mut engine, _, store) = library();
+        let manifest = root.join("settings/manifest.json");
+        let before = std::fs::read(&manifest).unwrap();
+        let category = store.current_directory().join("timer-widget.json");
+        std::fs::remove_file(&category).unwrap();
+        let (reopened, _) =
+            PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+        assert_eq!(
+            *reopened.snapshot().settings.timer_widget,
+            studyapp_core::TimerWidgetSettings::default()
+        );
+        assert!(!category.exists());
+        assert_eq!(std::fs::read(manifest).unwrap(), before);
+    }
+
+    #[test]
+    fn malformed_or_invalid_widget_category_is_preserved_and_rejected() {
+        let (root, mut engine, _, store) = library();
+        let category = store.current_directory().join("timer-widget.json");
+        for contents in ["{ damaged widget", r#"{"timer_widget":{"opacity":0}}"#] {
+            std::fs::write(&category, contents).unwrap();
+            assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
+            assert_eq!(std::fs::read_to_string(&category).unwrap(), contents);
+        }
     }
 
     #[test]

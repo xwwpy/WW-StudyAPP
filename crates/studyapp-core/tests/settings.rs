@@ -341,6 +341,7 @@ fn rapid_updates(learning_first: bool) {
             layout: Default::default(),
             appearance: Default::default(),
             images: Default::default(),
+            timer_widget: Default::default(),
         };
         assert_eq!(
             engine.snapshot().settings,

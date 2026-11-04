@@ -2349,6 +2349,9 @@ mod ui_tests {
             reviews: Vec::new(),
             review_events: Vec::new(),
             timer: studyapp_core::TimerState {
+                kind: studyapp_core::TimerKind::Study,
+                label: String::new(),
+                finished_at: None,
                 paused: true,
                 active_seconds: 0,
                 target_seconds: 60,

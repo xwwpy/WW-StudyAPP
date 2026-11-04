@@ -3,6 +3,7 @@
 本地优先的学习笔记应用，支持 Windows、Linux 和 macOS。
 
 - Markdown 笔记编辑、可自适应布局和手动定位的分层目录、当前章节高亮、标题跳转、文件夹管理、搜索与自动保存。
+- 专注、正计时与倒计时，共享今日页和可拖动、缩放的桌面计时小组件，支持外观预览。
 - 学习记录与复习摘要以 Markdown 显示，支持选中文字后右键复制、定时提醒、间隔复习与学习统计。
 - 图片管理、备份恢复，以及 WebDAV、本地文件夹和 NAS 同步。
 - 空间管理显示资料库、缓存、更新文件及安装文件的占用，支持更改应用数据位置并查看后台迁移进度。
@@ -20,8 +21,8 @@
 支持 Ubuntu 24.04 及兼容系统的 x86_64 桌面，需要 X11 或 XWayland，以及可用的 Vulkan 驱动。下载 `.deb` 和同名 `.sha256` 文件，在下载目录运行：
 
 ```bash
-sha256sum --check WW-StudyApp-0.2.4-linux-x86_64.deb.sha256
-sudo apt install ./WW-StudyApp-0.2.4-linux-x86_64.deb
+sha256sum --check WW-StudyApp-0.2.5-linux-x86_64.deb.sha256
+sudo apt install ./WW-StudyApp-0.2.5-linux-x86_64.deb
 studyapp
 ```
 
@@ -34,8 +35,8 @@ studyapp
 也可在下载目录使用命令安装（以下为 Apple 芯片版本）：
 
 ```bash
-shasum -a 256 --check WW-StudyApp-0.2.4-macos-arm64.dmg.sha256
-hdiutil attach WW-StudyApp-0.2.4-macos-arm64.dmg
+shasum -a 256 --check WW-StudyApp-0.2.5-macos-arm64.dmg.sha256
+hdiutil attach WW-StudyApp-0.2.5-macos-arm64.dmg
 sudo ditto /Volumes/WW-StudyApp/WW-StudyApp.app /Applications/WW-StudyApp.app
 hdiutil detach /Volumes/WW-StudyApp
 open /Applications/WW-StudyApp.app

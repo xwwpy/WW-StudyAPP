@@ -51,6 +51,7 @@ impl Default for Settings {
             layout: Default::default(),
             appearance: Default::default(),
             images: Default::default(),
+            timer_widget: Default::default(),
         }
     }
 }
@@ -58,6 +59,7 @@ impl Settings {
     pub fn validate(&self) -> Result<()> {
         self.layout.validate()?;
         self.appearance.validate()?;
+        self.timer_widget.validate()?;
         crate::media_settings::validate_images(&self.images)?;
         ensure!(
             (5..=240).contains(&self.interval_minutes),
@@ -101,6 +103,7 @@ impl State {
                 target_seconds: 3600,
                 started_at: now,
                 spans: vec![],
+                ..TimerState::default()
             },
             undo: vec![],
             active_versions: vec![],
@@ -136,9 +139,31 @@ impl State {
     pub fn validate(&self) -> Result<()> {
         self.settings.validate()?;
         crate::folders::validate(self)?;
+        let timer = &self.timer;
+        let valid = match timer.kind {
+            TimerKind::Study => {
+                (300..=14400).contains(&timer.target_seconds)
+                    && timer.active_seconds < timer.target_seconds
+                    && timer.finished_at.is_none()
+            }
+            TimerKind::CountDown => {
+                (60..=10800).contains(&timer.target_seconds)
+                    && timer.active_seconds <= timer.target_seconds
+                    && (timer.active_seconds < timer.target_seconds || timer.finished_at.is_some())
+            }
+            TimerKind::CountUp => {
+                timer.target_seconds == 0
+                    && timer.active_seconds <= 86400
+                    && (timer.active_seconds < 86400 || timer.finished_at.is_some())
+            }
+        };
         ensure!(
-            (300..=14400).contains(&self.timer.target_seconds)
-                && self.timer.active_seconds < self.timer.target_seconds,
+            valid
+                && timer.label.chars().count() <= 80
+                && !timer.label.chars().any(char::is_control)
+                && timer.finished_at.is_none_or(|end| timer.paused
+                    && end >= timer.started_at
+                    && end <= self.last_tick),
             "备份计时状态无效"
         );
         ensure!(

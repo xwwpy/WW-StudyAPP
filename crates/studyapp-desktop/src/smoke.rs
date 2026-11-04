@@ -111,6 +111,12 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             return;
         }
         #[cfg(all(windows, feature = "ui-test"))]
+        if std::env::var("WW_STUDYAPP_SMOKE_SCENARIO").as_deref() == Ok("timer-widget") {
+            Box::pin(crate::smoke_timer_widget::exercise(window, &view, &database, cx)).await;
+            cx.update(|cx| cx.quit());
+            return;
+        }
+        #[cfg(all(windows, feature = "ui-test"))]
         Box::pin(crate::smoke_visibility::first_open(window, &view, &database, cx)).await;
         for (index, page) in [Page::Today, Page::Notes, Page::Reviews, Page::Stats, Page::Settings].into_iter().enumerate() {
             let result = window.update(cx, |_, window, cx| {

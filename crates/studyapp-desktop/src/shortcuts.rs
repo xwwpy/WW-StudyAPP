@@ -18,6 +18,12 @@ macro_rules! actions {
 }
 
 actions![
+    (
+        "app.timer-widget",
+        "显示或隐藏计时小组件",
+        "应用",
+        "Ctrl+Shift+T"
+    ),
     ("app.new", "新建笔记", "应用", "Ctrl+N"),
     ("app.import", "导入 Markdown", "应用", "Ctrl+O"),
     ("app.settings", "打开设置", "应用", "Ctrl+Comma"),

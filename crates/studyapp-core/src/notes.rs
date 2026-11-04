@@ -111,6 +111,7 @@ pub(crate) fn append_version(
         && !offline
         && !state.notes[index].detached
         && !state.timer.paused
+        && state.timer.kind == crate::TimerKind::Study
         && !state.unattributed_notes.contains(&state.notes[index].id)
     {
         state.active_versions.push(version_id);

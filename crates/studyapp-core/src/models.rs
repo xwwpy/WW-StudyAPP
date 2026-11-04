@@ -48,6 +48,8 @@ pub struct Settings {
     pub appearance: crate::AppearanceSettings,
     #[serde(default)]
     pub images: crate::media_settings::ImageSettings,
+    #[serde(default)]
+    pub timer_widget: Box<crate::TimerWidgetSettings>,
 }
 /// Validated configuration, ready to install without another storage operation.
 pub struct PreparedSettings {
@@ -140,6 +142,12 @@ pub struct ReviewEvent {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TimerState {
+    #[serde(default)]
+    pub kind: crate::TimerKind,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
     pub paused: bool,
     pub active_seconds: u64,
     pub target_seconds: u64,
@@ -238,6 +246,13 @@ pub enum Command {
     SetShowFilePaths(bool),
     SaveLayout(LayoutSettings),
     SetPaused(bool),
+    StartTimer {
+        kind: crate::TimerKind,
+        target_seconds: Option<u64>,
+        label: String,
+    },
+    FinishTimer,
+    ResetTimer,
     Submit {
         session_id: String,
         summary: String,
@@ -281,4 +296,19 @@ pub struct DayStat {
     pub learned_count: usize,
     pub missed_count: usize,
     pub review_count: usize,
+}
+
+impl Default for TimerState {
+    fn default() -> Self {
+        Self {
+            kind: crate::TimerKind::Study,
+            label: String::new(),
+            finished_at: None,
+            paused: false,
+            active_seconds: 0,
+            target_seconds: 3600,
+            started_at: 0,
+            spans: vec![],
+        }
+    }
 }

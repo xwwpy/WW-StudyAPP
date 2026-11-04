@@ -2159,3 +2159,66 @@ test("native primary selection retains secondary CodeMirror carets and multiple 
   assert.equal((await state(page)).text,expected);
   await page.close();
 });
+
+test("Markdown content stays within the remaining pane with wide tables and a sidebar", async () => {
+  const columns = 25;
+  const text = '# Layout\n\n| ' + 'cell | '.repeat(columns) + '\n|' + ' --- |'.repeat(columns) + '\n|' + '内容 |'.repeat(columns) + '\n\nOrdinary prose remains in the configured reading column.';
+  const {page, errors} = await setup(text);
+  await page.evaluate(text => window.studyappEditor.load({generation:50,text,readonly:true}), text);
+  await page.locator('#outline-toggle').click();
+  for (const width of [1600, 1100, 770, 600, 380, 1100]) {
+    await page.setViewportSize({width,height:800});
+    for (const position of ['left','right','top','floating']) {
+      await page.locator('#outline-position').selectOption(position);
+      await page.waitForTimeout(45);
+      const geometry = await page.evaluate(() => {
+        const pane=document.querySelector('#editor'), content=document.querySelector('.cm-content');
+        const prose=[...document.querySelectorAll('.cm-line')].find(line=>line.textContent.startsWith('Ordinary'));
+        return {pane:pane.clientWidth,content:content.getBoundingClientRect().width,prose:prose.getBoundingClientRect().width};
+      });
+      assert.ok(Math.abs(geometry.content-geometry.pane)<=1, JSON.stringify({width,position,geometry}));
+      const expected=Math.min(720,geometry.pane-(geometry.pane<=600?36:52));
+      assert.ok(Math.abs(geometry.prose-expected)<=2, JSON.stringify({width,position,geometry,expected}));
+    }
+  }
+  assert.deepEqual(errors,[]);
+  assert.equal((await state(page)).text,text);
+  await page.close();
+});
+
+test("preview caret activation survives rendered widgets, wrapping and host mode changes", async () => {
+  const text = '# 标题 😀\n\n**粗体** *斜体* ~~删除~~ `inline code`\n\n- 项目 **加粗**\n- [ ] 任务\n\n> 引用\n\n---\n\n![图片](missing.png)\n\n| 表头一 | 表头二 |\n| --- | --- |\n| 数据😀 | 内容 |\n\n```js\nconst x = null;\n```\n\n末尾段落';
+  const {page,errors}=await setup(text);
+  const stacks=[];
+  page.on('pageerror',error=>stacks.push(error.stack));
+  // Model the host's asynchronous requestEdit acknowledgement, including the
+  // readonly compartment change and UTF-16 selection restoration.
+  await page.evaluate(()=>{window.ipc={postMessage:message=>{
+    const value=JSON.parse(message);window.messages.push(value);
+    if(value.type==='requestEdit') setTimeout(()=>{
+      window.studyappEditor.setReadonly(false);
+      window.studyappEditor.restoreSelection(value.position);
+    },0);
+  }};});
+  for(const width of [1100,570,380,900]){
+    await page.setViewportSize({width,height:800});
+    await page.evaluate(text=>window.studyappEditor.load({generation:51,text,readonly:true,canRequestEdit:true}),text);
+    await page.waitForTimeout(30);
+    const points=await page.locator('.cm-line').evaluateAll(lines=>lines.flatMap(line=>{
+      const r=line.getBoundingClientRect();
+      return [2,Math.min(65,r.width/2),r.width-2].map(x=>({x:r.left+x,y:r.top+r.height/2}));
+    }).filter(p=>p.y>70&&p.y<740));
+    for(const point of points){
+      await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+      await page.mouse.click(point.x,point.y);
+      await page.waitForTimeout(5);
+      assert.deepEqual(stacks,[],JSON.stringify({width,point}));
+    }
+    assert.equal((await state(page)).text,text);
+  }
+  const requests=await page.evaluate(()=>window.messages.filter(m=>m.type==='requestEdit'));
+  assert.ok(requests.length>40);
+  assert.ok(requests.every(r=>r.generation===51&&Number.isInteger(r.position)&&r.position>=0&&r.position<=text.length));
+  assert.deepEqual(errors,[]);
+  await page.close();
+});

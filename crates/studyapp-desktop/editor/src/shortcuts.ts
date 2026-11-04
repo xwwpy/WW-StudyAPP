@@ -3,6 +3,7 @@ import type { KeyBinding } from "@codemirror/view";
 
 // Kept in sync with the native allowlist by the registry parity test.
 export const shortcutDefaults: Readonly<Record<string, string>> = Object.freeze({
+  "app.timer-widget": "Ctrl+Shift+T",
   "app.new": "Ctrl+N",
   "app.import": "Ctrl+O",
   "app.settings": "Ctrl+Comma",

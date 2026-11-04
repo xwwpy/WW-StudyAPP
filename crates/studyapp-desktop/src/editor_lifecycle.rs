@@ -427,6 +427,18 @@ impl StudyApp {
         if self.close_allowed {
             return true;
         }
+        // This is a hide operation, not a close: the worker, draft editor and
+        // settings draft remain alive and must not enter a durable-close freeze.
+        let explicit_exit = std::mem::take(&mut self.timer_exit_requested);
+        if self.timer_widget.is_some()
+            && !explicit_exit
+            && !self.close_requested
+            && self.pending_update.is_none()
+            && self.pending_nsis_update.is_none()
+        {
+            window.minimize_window();
+            return false;
+        }
         if self.guard_settings(crate::settings_ui::SettingsContinuation::Close, cx) {
             return false;
         }

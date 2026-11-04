@@ -1,3 +1,4 @@
+import { previewCaret } from "./preview";
 import { renderedSelection, copyMenuUpdates, installCopyMenu } from "./selection";
 import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled } from "./outline";
 import { applyEditorTheme } from "./theme";
@@ -317,7 +318,7 @@ function extensions(readonly: boolean, rawText = ""): Extension[] {
         if (!loaded || !canRequestEdit || !editor.state.readOnly || pendingFlush || event.button !== 0 ||
             (event.target as Element).closest("button,input,select,a,.md-language-control,.cm-panels,.cm-tooltip")) return false;
         if (!(event.target as Element).closest(".cm-content")) return false;
-        const position = editor.posAtCoords({x:event.clientX,y:event.clientY});
+        const position = previewCaret(editor, event);
         if (position !== null) post({type:"requestEdit",generation,position});
         return false;
       },

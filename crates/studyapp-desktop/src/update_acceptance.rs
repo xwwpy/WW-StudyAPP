@@ -10,8 +10,7 @@ use std::{
 };
 static HOLD_AUTOSAVE: AtomicBool = AtomicBool::new(false);
 #[cfg(any(windows, target_os = "macos"))]
-#[path = "update_acceptance_pointer.rs"]
-mod pointer;
+use crate::native_test_pointer as pointer;
 pub fn hold_autosave() -> bool {
     HOLD_AUTOSAVE.load(Ordering::Relaxed)
 }

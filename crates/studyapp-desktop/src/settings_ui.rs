@@ -82,6 +82,7 @@ pub enum AppearancePage {
     Overview,
     ThemeEditor,
     Workspace,
+    Widget,
 }
 
 impl AppearancePage {
@@ -90,6 +91,7 @@ impl AppearancePage {
             Self::Overview => &[0],
             Self::ThemeEditor => &[1, 3],
             Self::Workspace => &[4],
+            Self::Widget => &[],
         }
     }
 }
@@ -109,6 +111,7 @@ enum SettingsResetScope {
     Appearance,
     ThemeEditor,
     Workspace,
+    Widget,
     Shortcuts,
     Images,
     Sync,
@@ -121,6 +124,7 @@ impl SettingsResetScope {
             Self::Appearance => "外观 · 主题与阅读",
             Self::ThemeEditor => "外观 · 主题编辑器",
             Self::Workspace => "外观 · 工作区",
+            Self::Widget => "外观 · 计时小组件",
             Self::Shortcuts => "快捷键",
             Self::Images => "存储 · 图片存储",
             Self::Sync => "同步",
@@ -236,6 +240,7 @@ pub struct PreferencesUi {
     #[cfg(feature = "ui-test")]
     shortcut_frame_rows: std::cell::Cell<u64>,
     pub shortcut_search: Option<Entity<InputState>>,
+    pub widget_fields: BTreeMap<&'static str, Entity<InputState>>,
     pub appearance_fields: BTreeMap<&'static str, Entity<InputState>>,
     pub appearance_colors: BTreeMap<&'static str, Entity<crate::settings_color::ColorSetting>>,
     markdown_preview: InputCache<AppearanceInputKey, MarkdownPreview>,
@@ -293,6 +298,7 @@ impl StudyApp {
                 AppearancePage::Overview => SettingsResetScope::Appearance,
                 AppearancePage::ThemeEditor => SettingsResetScope::ThemeEditor,
                 AppearancePage::Workspace => SettingsResetScope::Workspace,
+                AppearancePage::Widget => SettingsResetScope::Widget,
             },
             SettingsSection::Shortcuts => SettingsResetScope::Shortcuts,
             SettingsSection::Storage if self.preferences_ui.storage_page == StoragePage::Images => {
@@ -356,6 +362,11 @@ impl StudyApp {
                 self.fill_appearance_fields(&defaults.settings.appearance, window, cx);
                 self.preferences_ui.editing_preset = editing;
                 self.preferences_ui.appearance_touched = true;
+            }
+            SettingsResetScope::Widget => {
+                let value = defaults.settings.timer_widget;
+                draft.timer_widget = value.clone();
+                self.fill_widget_fields(&value, window, cx);
             }
             SettingsResetScope::Workspace => {
                 draft.show_file_paths = defaults.settings.show_file_paths;
@@ -868,6 +879,11 @@ impl StudyApp {
             return false;
         }
         match action {
+            "app.timer-widget" => self.timer_action(
+                studyapp_ui::timer_card::TimerCardAction::ShowOnDesktop,
+                window,
+                cx,
+            ),
             "app.new" => self.new_note(window, cx),
             "app.import" => self.settings_picker("import", None, cx),
             "app.settings" => self.navigate(Page::Settings, window, cx),
@@ -907,6 +923,7 @@ impl StudyApp {
                     input.read(cx).value().trim()
                         != baseline.settings.images.root.as_deref().unwrap_or("")
                 })
+            || self.widget_fields_dirty(&baseline.settings.timer_widget, cx)
             || self.preferences_ui.draft.as_ref() != Some(&baseline.settings)
             || self.interval.read(cx).value().trim()
                 != baseline.settings.interval_minutes.to_string()
@@ -938,6 +955,7 @@ impl StudyApp {
     ) {
         self.preferences_ui.recording = None;
         self.preferences_ui.recording_error = None;
+        self.fill_widget_fields(&value.settings.timer_widget, window, cx);
         if self.preferences_ui.search.is_none() {
             let input = cx
                 .new(|cx| InputState::new(window, cx).placeholder("搜索设置，如字号、同步、备份…"));
@@ -1149,6 +1167,7 @@ impl StudyApp {
             SettingsContinuation::Migrate => self.choose_storage(window, cx),
             SettingsContinuation::MigrateApp => self.choose_application_storage(window, cx),
             SettingsContinuation::Close => {
+                self.timer_exit_requested = true;
                 if self.handle_close(window, cx) {
                     self.close_allowed = true;
                     window.remove_window();
@@ -1286,6 +1305,8 @@ impl StudyApp {
                 .draft
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("配置尚未加载"))?;
+            settings.timer_widget =
+                Box::new(self.widget_settings_value((*settings.timer_widget).clone(), cx)?);
             settings.interval_minutes = self
                 .interval
                 .read(cx)
@@ -1619,6 +1640,7 @@ impl StudyApp {
                     "主题编辑",
                 ),
                 (AppearancePage::Workspace, "appearance-workspace", "工作区"),
+                (AppearancePage::Widget, "appearance-widget", "计时小组件"),
             ] {
                 let mut button = Button::new(id)
                     .small()
@@ -2235,6 +2257,16 @@ impl StudyApp {
         _window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        if self.preferences_ui.appearance_page == AppearancePage::Widget {
+            return div().flex().flex_1().min_h_0().min_w_0().child(
+                scroll_body("timer-widget-settings-scroll", &self.settings_scroll)
+                    .flex_1()
+                    .min_h_0()
+                    .pr_4()
+                    .pb_4()
+                    .child(self.widget_settings_controls(cx)),
+            );
+        }
         // Keep programmatic field changes reflected even when the sample is
         // outside the viewport; cached resolution is independent of row layout.
         let _ = self.markdown_preview(cx);
@@ -3892,6 +3924,118 @@ mod scoped_tests {
             SettingsFixture { app: entity }
         });
         (app.unwrap(), visual)
+    }
+
+    struct TimerModalFixture {
+        app: Entity<StudyApp>,
+    }
+    impl Render for TimerModalFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                div().size_full().children(app.timer_modal(cx))
+            })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn changing_a_progressed_timer_waits_for_explicit_confirmation_and_cancel_keeps_progress(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        let root = tempfile::tempdir().unwrap().keep();
+        let engine = studyapp_core::Engine::open(&root.join("timer.sqlite"), 1000).unwrap();
+        app.update(visual, |app, cx| {
+            let mut snapshot = engine.snapshot();
+            snapshot.timer.active_seconds = 90;
+            app.snapshot = Some(snapshot.into());
+            app.request_timer_change(
+                studyapp_core::Command::StartTimer {
+                    kind: studyapp_core::TimerKind::CountDown,
+                    target_seconds: Some(60),
+                    label: String::new(),
+                },
+                cx,
+            );
+            assert!(app.timer_pending.is_some());
+            assert_eq!(
+                app.snapshot.as_ref().unwrap().timer.kind,
+                studyapp_core::TimerKind::Study
+            );
+        });
+        visual.replace_root_view(|_, _| TimerModalFixture { app: app.clone() });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("timer-cancel-change", cx);
+            assert!(app.read(cx).timer_pending.is_none());
+            assert_eq!(
+                app.read(cx).snapshot.as_ref().unwrap().timer.active_seconds,
+                90
+            );
+            assert_eq!(
+                app.read(cx).snapshot.as_ref().unwrap().timer.kind,
+                studyapp_core::TimerKind::Study
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn widget_draft_preview_and_invalid_inputs_are_discardable(cx: &mut TestAppContext) {
+        let (app, visual) = fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let baseline = app.effective_widget_settings();
+                app.preferences_ui
+                    .draft
+                    .as_mut()
+                    .unwrap()
+                    .timer_widget
+                    .opacity = 55;
+                assert_eq!(app.effective_widget_settings().opacity, 55);
+                assert!(app.settings_dirty(cx));
+                app.preferences_ui.widget_fields["widget-presets"]
+                    .update(cx, |input, cx| input.set_value("0, 181", window, cx));
+                assert!(
+                    app.widget_settings_value(app.effective_widget_settings(), cx)
+                        .is_err()
+                );
+                assert!(app.widget_fields_dirty(&baseline, cx));
+                app.discard_settings(window, cx);
+                assert_eq!(app.effective_widget_settings(), baseline);
+                assert!(!app.settings_dirty(cx));
+                assert!(
+                    app.preferences_ui
+                        .appearance_preview
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .editor()
+                        .is_none()
+                );
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn widget_reset_only_resets_its_own_discardable_category(cx: &mut TestAppContext) {
+        let (app, visual) = fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                draft.timer_widget.opacity = 55;
+                draft.show_file_paths = false;
+                app.interval.update(cx, |input, cx| {
+                    input.set_value("invalid learning", window, cx)
+                });
+                app.reset_settings_page(SettingsResetScope::Widget, window, cx);
+                assert_eq!(
+                    app.effective_widget_settings(),
+                    studyapp_core::TimerWidgetSettings::default()
+                );
+                assert!(!app.preferences_ui.draft.as_ref().unwrap().show_file_paths);
+                assert_eq!(app.interval.read(cx).value(), "invalid learning");
+            })
+        });
     }
 
     #[gpui_kit::test]

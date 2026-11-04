@@ -34,6 +34,15 @@ pub enum EditorMode {
 }
 
 pub struct StudyApp {
+    pub main_window: AnyWindowHandle,
+    pub timer_widget: Option<AnyWindowHandle>,
+    pub widget_state: crate::timer_widget_window::WidgetWindowState,
+    pub widget_restore_pending: bool,
+    pub timer_exit_requested: bool,
+    pub timer_setup: Option<studyapp_core::TimerKind>,
+    pub timer_pending: Option<Command>,
+    pub timer_name: Entity<InputState>,
+    pub timer_duration: Entity<InputState>,
     // Drain queued recovery snapshots before Worker releases the library lock.
     pub drafts: DraftStore,
     pub worker: Worker,
@@ -443,6 +452,17 @@ impl StudyApp {
             draft_dirty_since: None,
             close_requested: false,
             close_allowed: false,
+            main_window: window.window_handle(),
+            timer_widget: None,
+            widget_state: Self::widget_state_path()
+                .and_then(|p| crate::timer_widget_window::WidgetWindowState::load(&p).ok())
+                .unwrap_or_default(),
+            widget_restore_pending: !cfg!(test),
+            timer_exit_requested: false,
+            timer_setup: None,
+            timer_pending: None,
+            timer_name: input("计时名称（可选）", "", window, cx),
+            timer_duration: input("1–180 分钟", "25", window, cx),
             worker,
             snapshot: None,
             startup_failure: None,
@@ -695,6 +715,7 @@ impl StudyApp {
         if let Some(snapshot) = self.snapshot.clone() {
             self.reconcile_draft_folders(&snapshot);
         }
+        self.restore_widget(cx);
         self.continue_close(window, cx);
         if changed {
             cx.notify();
@@ -900,6 +921,26 @@ impl StudyApp {
         }
         self.reconcile_draft_folders(&snapshot);
         self.read_models = read_models;
+        let just_finished = self.snapshot.as_ref().is_some_and(|previous| {
+            previous.data_path == snapshot.data_path
+                && previous.timer.kind == snapshot.timer.kind
+                && previous.timer.started_at == snapshot.timer.started_at
+                && previous.timer.finished_at.is_none()
+                && snapshot.timer.finished_at.is_some()
+                && ((snapshot.timer.kind == studyapp_core::TimerKind::CountDown
+                    && snapshot.timer.active_seconds == snapshot.timer.target_seconds)
+                    || (snapshot.timer.kind == studyapp_core::TimerKind::CountUp
+                        && snapshot.timer.active_seconds == 86400))
+        });
+        if just_finished {
+            self.push_notice(
+                Ok(format!(
+                    "{}已到点，可选择记录这段收获",
+                    snapshot.timer.kind.label()
+                )),
+                cx,
+            );
+        }
         self.snapshot = Some(snapshot);
     }
 
@@ -1169,7 +1210,9 @@ impl StudyApp {
     }
 
     pub fn has_modal(&self, cx: &App) -> bool {
-        self.confirmation.is_some()
+        self.timer_setup.is_some()
+            || self.timer_pending.is_some()
+            || self.confirmation.is_some()
             || self.storage_confirm.is_some()
             || self.folders.read(cx).modal_open()
             || self.preferences_ui.leave.is_some()
@@ -1186,6 +1229,8 @@ impl StudyApp {
                 .update(cx, |panel, cx| panel.dismiss_dialog(cx));
             return;
         }
+        self.timer_setup = None;
+        self.timer_pending = None;
         self.preferences_ui.leave = None;
         self.preferences_ui.reset_confirmation = false;
         self.confirmation = None;
@@ -1205,6 +1250,8 @@ impl StudyApp {
             self.save_preferences(cx);
         } else if self.preferences_ui.reset_confirmation {
             // Reset is deliberately activated by its explicit dialog button.
+        } else if self.timer_setup.is_some() || self.timer_pending.is_some() {
+            // Timer changes use their explicit confirmation button.
         } else if self.confirmation.is_some() || self.storage_confirm.is_some() {
             // Destructive actions require activation of their explicit button.
             // Enter on the dialog scope itself must never remove user content.
@@ -1379,6 +1426,8 @@ impl Render for StudyApp {
         };
         let modal_content = if let Some(settings) = self.settings_modal(cx) {
             Some(settings)
+        } else if let Some(timer) = self.timer_modal(cx) {
+            Some(timer)
         } else if self.confirmation.is_some() {
             Some(self.confirmation_view(cx).into_any_element())
         } else if self.storage_confirm.is_some() {

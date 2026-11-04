@@ -23,6 +23,7 @@ fn short(engine: &mut Engine, now: i64) {
                 layout: Default::default(),
                 appearance: Default::default(),
                 images: Default::default(),
+                timer_widget: Default::default(),
             }),
             now,
         )
@@ -435,6 +436,7 @@ fn failed_sql_write_rolls_back_memory_and_database() {
                     layout: Default::default(),
                     appearance: Default::default(),
                     images: Default::default(),
+                    timer_widget: Default::default(),
                 }),
                 1000
             )
@@ -528,6 +530,7 @@ fn activity_ten_second_tick_splits_boundary_and_settings_take_next_cycle() {
                 layout: Default::default(),
                 appearance: Default::default(),
                 images: Default::default(),
+                timer_widget: Default::default(),
             }),
             1299,
         )

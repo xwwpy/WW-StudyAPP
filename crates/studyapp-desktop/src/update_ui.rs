@@ -919,6 +919,9 @@ impl crate::app::StudyApp {
                 preview.update(cx, |preview, cx| preview.close_native_host(cx));
             }
         }
+        if self.timer_widget.is_some() {
+            self.close_widget(true, cx);
+        }
         self.close_allowed = true;
         window.remove_window();
     }

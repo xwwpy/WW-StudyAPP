@@ -82,6 +82,9 @@ fn snapshot() -> Snapshot {
         reviews: vec![],
         review_events: vec![],
         timer: TimerState {
+            kind: studyapp_core::TimerKind::Study,
+            label: String::new(),
+            finished_at: None,
             paused: true,
             active_seconds: 0,
             target_seconds: 60,

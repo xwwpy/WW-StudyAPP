@@ -6,12 +6,12 @@ use crate::{
 };
 use chrono::{Local, TimeZone, Utc};
 use gpui_kit::component::{
-    Disableable, IconName, Selectable, Sizable, button::ButtonVariants, input::Input,
+    Disableable, Selectable, Sizable, button::ButtonVariants, input::Input,
     scroll::ScrollableElement,
 };
 use gpui_kit::{prelude::FluentBuilder, *};
 use studyapp_core::{Command, Review, SessionStatus, Snapshot};
-use studyapp_desktop::presentation::{duration, stamp};
+use studyapp_desktop::presentation::stamp;
 use studyapp_ui::markdown_view;
 
 fn review_text(title: String, metadata: String) -> Div {
@@ -72,7 +72,7 @@ fn review_tip(review: &Review) -> String {
 
 impl StudyApp {
     pub fn today(&self, snapshot: &Snapshot, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        use crate::design::{MONO_FONT, TypeRole, space};
+        use crate::design::space;
         use chrono::{Datelike, Timelike};
         let local = Local::now();
         let now = local.timestamp();
@@ -244,95 +244,19 @@ impl StudyApp {
                     ),
             );
         }
-        let remaining = snapshot
-            .timer
-            .target_seconds
-            .saturating_sub(snapshot.timer.active_seconds);
-        let ratio = (snapshot.timer.active_seconds as f32
-            / snapshot.timer.target_seconds.max(1) as f32)
-            .clamp(0., 1.);
-        let paused = snapshot.timer.paused;
-        let timer_color = if paused {
-            palette.warning
-        } else {
-            palette.accent
-        };
+        let timer_owner = cx.weak_entity();
         let segment = self.read_models.record_positions(&today_date(), 0).len() + 1;
-        let timer = card()
-            .id("today-timer")
-            .test_support()
-            .min_w_0()
-            .child(
-                row()
-                    .flex_wrap()
-                    .child(
-                        column()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(heading(if paused {
-                                "Ⅱ 计时已暂停"
-                            } else {
-                                "▶ 专注当下，稍后回顾"
-                            }))
-                            .child(muted(format!(
-                                "第 {segment} 段 · {} 开始",
-                                Local
-                                    .timestamp_opt(snapshot.timer.started_at, 0)
-                                    .single()
-                                    .map(|time| time.format("%H:%M").to_string())
-                                    .unwrap_or_default()
-                            ))),
-                    )
-                    .child(
-                        Button::new("pause")
-                            .label(if paused { "继续计时" } else { "暂停" })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.send(Command::SetPaused(!paused), cx)
-                            })),
-                    ),
-            )
-            .child(
-                typography(TypeRole::Display)
-                    .font_family(MONO_FONT)
-                    .text_color(rgb(timer_color))
-                    .font_features(FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
-                    .child(duration(remaining)),
-            )
-            .child(
-                div()
-                    .id("today-timer-progress")
-                    .test_support()
-                    .w_full()
-                    .h(px(8.))
-                    .bg(rgb(palette.inset))
-                    .rounded_full()
-                    .child(
-                        div()
-                            .w(relative(ratio))
-                            .h_full()
-                            .bg(rgb(timer_color))
-                            .rounded_full(),
-                    ),
-            )
-            .child(
-                row()
-                    .flex_wrap()
-                    .child(muted(format!(
-                        "本段 {} 分钟 · 到时将邀请你确认收获",
-                        snapshot.timer.target_seconds / 60
-                    )))
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("manual-top")
-                            .ghost()
-                            .icon(IconName::Plus)
-                            .label("记录本段")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_editor(EditorMode::Manual, window, cx)
-                            })),
-                    ),
-            );
+        let timer = studyapp_ui::timer_card::timer_card(
+            studyapp_ui::timer_card::TimerCardModel::from_timer(&snapshot.timer, segment),
+            studyapp_ui::timer_card::TimerCardStyle::from_widget_settings(
+                &snapshot.settings.timer_widget,
+                palette,
+            ),
+            studyapp_ui::timer_card::TimerCardVariant::Inline,
+            move |action, window, cx| {
+                let _ = timer_owner.update(cx, |app, cx| app.timer_action(action, window, cx));
+            },
+        );
         let mut recent = card().min_w_0().child(
             row()
                 .child(heading("最近的学习记录"))

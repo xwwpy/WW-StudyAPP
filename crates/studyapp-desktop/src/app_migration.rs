@@ -33,7 +33,7 @@ pub fn set_startup_pending(value: bool) {
     STARTUP_PENDING.store(value, Ordering::Release);
 }
 
-fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
+pub(crate) fn atomic_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let folder = path.parent().context("配置目录无效")?;
     let _guards = guard_directories(folder, true)?;
     validate_path(path)?;

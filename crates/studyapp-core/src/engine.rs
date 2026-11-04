@@ -172,7 +172,7 @@ impl Engine {
                 settings: self.state.settings.clone(),
                 target_seconds: self.state.timer.target_seconds,
             });
-        if self.state.timer.active_seconds == 0 {
+        if self.state.timer.kind == TimerKind::Study && self.state.timer.active_seconds == 0 {
             self.state.timer.target_seconds = u64::from(prepared.settings.interval_minutes) * 60;
         }
         self.state.settings = prepared.settings;
@@ -364,7 +364,61 @@ impl Engine {
                 next.settings.layout = layout;
                 "布局已保存".into()
             }
+            Command::StartTimer {
+                kind,
+                target_seconds,
+                label,
+            } => {
+                ensure!(
+                    label.chars().count() <= 80 && !label.chars().any(char::is_control),
+                    "计时名称须为 80 字以内的单行文字"
+                );
+                let target = match kind {
+                    TimerKind::Study => u64::from(next.settings.interval_minutes) * 60,
+                    TimerKind::CountUp => {
+                        ensure!(target_seconds.is_none_or(|n| n == 0), "正计时无需目标时长");
+                        0
+                    }
+                    TimerKind::CountDown => {
+                        let target = target_seconds.context("请设置倒计时时长")?;
+                        ensure!((60..=10800).contains(&target), "倒计时应为 1–180 分钟");
+                        target
+                    }
+                };
+                Self::reset_timer(&mut next, kind, target, label.trim().to_owned(), now);
+                "计时已开始".into()
+            }
+            Command::FinishTimer => {
+                ensure!(
+                    next.timer.kind != TimerKind::Study,
+                    "专注计时到点后会自动记录"
+                );
+                if next.timer.finished_at.is_none() {
+                    next.timer.paused = true;
+                    next.timer.finished_at =
+                        Some(now.max(next.last_tick).max(next.timer.started_at));
+                }
+                next.last_tick = next.last_tick.max(now).max(next.timer.started_at);
+                next.candidates.clear();
+                "计时已结束，可记录这段收获".into()
+            }
+            Command::ResetTimer => {
+                let timer = &next.timer;
+                let target = if timer.kind == TimerKind::Study {
+                    u64::from(next.settings.interval_minutes) * 60
+                } else {
+                    timer.target_seconds
+                };
+                let kind = timer.kind;
+                let label = timer.label.clone();
+                Self::reset_timer(&mut next, kind, target, label, now);
+                "计时已重新开始".into()
+            }
             Command::SetPaused(paused) => {
+                ensure!(
+                    paused || next.timer.finished_at.is_none(),
+                    "计时已结束，请重新开始"
+                );
                 if next.timer.paused && !paused {
                     // Reconcile every source before admitting new activity. Candidates may
                     // have been observed while paused, or not observed at all.
@@ -616,7 +670,7 @@ impl Engine {
     }
     fn save_settings(state: &mut State, settings: Settings) -> Result<()> {
         settings.validate()?;
-        if state.timer.active_seconds == 0 {
+        if state.timer.kind == TimerKind::Study && state.timer.active_seconds == 0 {
             state.timer.target_seconds = u64::from(settings.interval_minutes) * 60;
         }
         state.settings = settings;
@@ -634,7 +688,15 @@ impl Engine {
             let mut cursor = now.saturating_sub(elapsed as i64);
             let mut remaining = elapsed;
             while remaining > 0 {
-                let part = remaining.min(next.timer.target_seconds - next.timer.active_seconds);
+                let limit = if next.timer.kind == TimerKind::CountUp {
+                    86400
+                } else {
+                    next.timer.target_seconds
+                };
+                let part = remaining.min(limit.saturating_sub(next.timer.active_seconds));
+                if part == 0 {
+                    break;
+                }
                 let end = cursor + part as i64;
                 if let Some(span) = next.timer.spans.last_mut().filter(|s| s.end == cursor) {
                     span.end = end;
@@ -644,8 +706,15 @@ impl Engine {
                 next.timer.active_seconds += part;
                 cursor = end;
                 remaining -= part;
-                if next.timer.active_seconds == next.timer.target_seconds {
-                    Self::finish_segment(&mut next, end)?;
+                if next.timer.active_seconds == limit {
+                    if next.timer.kind == TimerKind::Study {
+                        Self::finish_segment(&mut next, end)?;
+                    } else {
+                        next.timer.paused = true;
+                        next.timer.finished_at = Some(end);
+                        next.candidates.clear();
+                        break;
+                    }
                 }
             }
         }
@@ -760,7 +829,33 @@ impl Engine {
         }
         Ok(())
     }
+    fn reset_timer(state: &mut State, kind: TimerKind, target: u64, label: String, now: i64) {
+        let now = now.max(state.last_tick);
+        state.timer = TimerState {
+            kind,
+            target_seconds: target,
+            label,
+            started_at: now,
+            ..TimerState::default()
+        };
+        state.last_tick = now;
+        state.active_versions.clear();
+        state.candidates.clear();
+        state.unattributed_notes.extend(
+            state
+                .notes
+                .iter()
+                .filter(|n| !n.detached)
+                .map(|n| n.id.clone()),
+        );
+        crate::notes::scan(state, false, now);
+    }
+
     fn finish_segment(state: &mut State, end: i64) -> Result<()> {
+        ensure!(
+            state.timer.kind == TimerKind::Study,
+            "仅专注计时自动生成学习记录"
+        );
         let versions: Vec<&NoteVersion> = state
             .versions
             .iter()
@@ -810,6 +905,8 @@ impl Engine {
                 .iter()
                 .any(|v| v.id == *id && v.captured_at > end)
         });
+        state.timer.kind = TimerKind::Study;
+        state.timer.finished_at = None;
         state.timer.active_seconds = 0;
         state.timer.target_seconds = u64::from(state.settings.interval_minutes) * 60;
         state.timer.started_at = end;

@@ -88,7 +88,7 @@ def suite_input(path, group, migration=False):
         return suite_input(path, 'desktop', migration) or suite_input(path, 'maintenance-policy', migration)
     if group == 'desktop':
         desktop_scripts = ('scripts/run-dev.ps1', 'scripts/smoke.ps1', 'scripts/smoke-settings.ps1',
-                           'scripts/smoke-window-drag.ps1', 'scripts/smoke-clipboard.ps1',
+                           'scripts/smoke-window-drag.ps1', 'scripts/smoke-timer-widget.ps1', 'scripts/smoke-clipboard.ps1',
                            'scripts/smoke-inputs.ps1', 'scripts/smoke-updates.ps1',
                            'scripts/smoke-note-rename.ps1', 'scripts/maintenance-legacy-native.ps1')
         return common or path.startswith(('crates/', 'vendor/', 'assets/')) or path in desktop_scripts or path == 'run-dev.cmd'

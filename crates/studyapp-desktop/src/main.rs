@@ -30,6 +30,12 @@ mod markdown_editor;
 mod media;
 mod media_ui;
 mod native_shortcuts;
+#[cfg(any(
+    all(windows, feature = "ui-test"),
+    all(target_os = "macos", feature = "update-acceptance")
+))]
+#[path = "update_acceptance_pointer.rs"]
+mod native_test_pointer;
 mod note_actions;
 mod note_commands;
 mod note_editor;
@@ -64,6 +70,8 @@ mod smoke_statistics;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_storage_performance;
 #[cfg(all(windows, feature = "ui-test"))]
+mod smoke_timer_widget;
+#[cfg(all(windows, feature = "ui-test"))]
 mod smoke_updates;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_visibility;
@@ -77,6 +85,9 @@ mod storage_ui;
 mod sync_runtime;
 mod sync_ui;
 mod theme;
+mod timer_widget;
+mod timer_widget_ui;
+mod timer_widget_window;
 #[cfg(feature = "update-acceptance")]
 mod update_acceptance;
 mod update_backend;
