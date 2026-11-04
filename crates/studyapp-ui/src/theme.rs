@@ -33,7 +33,7 @@ pub struct ResolvedTheme {
     pub chart: [u32; 4],
     pub font_size: u16,
     pub spacing: u16,
-    pub markdown_colors: [u32; 24],
+    pub markdown_colors: [u32; 26],
     pub markdown_layout: MarkdownLayout,
 }
 
@@ -199,7 +199,7 @@ impl ResolvedTheme {
             "codeBorder": hex(self.markdown_colors[14]), "inlineCodeBackground": hex(self.inset),
             "quoteBackground": hex(self.markdown_colors[5]), "tableHeader": hex(self.surface_raised), "grid": hex(self.markdown_colors[13]),
             "muted": hex(self.muted), "border": hex(self.border),
-            "selection": hex(self.accent_soft), "fontSize": self.font_size,
+            "selection": hex(self.markdown_colors[24]), "selectionText": hex(self.markdown_colors[25]), "fontSize": self.font_size,
             "spacing": 1.75 + (self.spacing as f64 - 8.) * 0.05,
             "markdown": markdown,
         })
@@ -300,7 +300,7 @@ pub fn apply(settings: &AppearanceSettings, system_dark: bool, cx: &mut App) -> 
         c.muted_foreground = rgb(p.muted).into();
         c.ring = rgb(p.focus).into();
         c.caret = rgb(p.accent).into();
-        c.selection = rgb(p.accent_soft).into();
+        c.selection = rgb(p.markdown_colors[24]).into();
         c.popover = rgb(p.surface_raised).into();
         c.popover_foreground = rgb(p.text).into();
         c.list = rgb(p.surface).into();

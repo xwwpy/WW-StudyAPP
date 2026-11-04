@@ -266,3 +266,41 @@ fn never_learned_changes_use_original_hash_without_implying_recorded() {
         StudyStatus::Added
     );
 }
+
+#[test]
+fn external_tree_names_and_sorting_follow_the_original_filename() {
+    use studyapp_desktop::library_tree::note_label;
+    let mut external = note("a", None, false);
+    external.title = "与文件名不同的正文标题".into();
+    for path in ["/资料/原始 文件名.md", r"C:\资料\原始 文件名.md"] {
+        external.path = path.into();
+        assert_eq!(note_label(&external), "原始 文件名.md");
+    }
+    external.path = "/a.md".into();
+    external.title = "Z heading".into();
+    let mut managed = note("b", None, true);
+    managed.title = "B custom name".into();
+    assert_eq!(note_label(&managed), "B custom name");
+    let mut snapshot = snapshot();
+    snapshot.notes = vec![managed, external];
+    let index = LibraryIndex::build(&snapshot);
+    assert_eq!(index.ordered_notes(LibrarySort::NameAscending), &[1, 0]);
+    assert_eq!(
+        snapshot.notes[1].title, "Z heading",
+        "directory naming must not rewrite note metadata"
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn unix_external_filenames_preserve_literal_backslashes() {
+    let mut external = note("unicode", None, false);
+    external.path = r"/资料/part
+ame.md"
+        .into();
+    assert_eq!(
+        studyapp_desktop::library_tree::note_label(&external),
+        r"part
+ame.md"
+    );
+}

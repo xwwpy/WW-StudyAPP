@@ -67,6 +67,8 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: python scripts/check-user-docs.py
       - run: python scripts/test-nsis-sources.py
+      - run: python scripts/test-update-manifest.py
+      - run: python scripts/test-update-signature.py
       - run: python scripts/app-icon.py
 
   editor:

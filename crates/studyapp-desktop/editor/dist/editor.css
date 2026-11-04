@@ -1,4 +1,4 @@
-:root { --editor-background:#ffffff; --editor-surface:#f7f8fa; --editor-text:#263344; --editor-muted:#758395; --editor-border:#e0e6eb; --editor-accent:#177f80; --editor-selection:#cee7e5; --editor-code-background:#f1f4f7; --editor-font-size:15px; --editor-line-height:1.75; --editor-reading-width:720px; --editor-toolbar-height:44px; --editor-control-size:28px; --editor-control-radius:8px; --editor-code-padding:16px; --editor-h1-size:1.85em; --editor-h2-size:1.5em; --editor-h3-size:1.25em; --editor-body-font:"Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif; --editor-mono-font:"Cascadia Mono", Consolas, monospace; color-scheme: light; font-family: var(--editor-body-font); color: var(--editor-ui-text,var(--editor-text)); background: var(--editor-surface); }
+:root { --editor-background:#ffffff; --editor-surface:#f7f8fa; --editor-text:#263344; --editor-muted:#758395; --editor-border:#e0e6eb; --editor-accent:#177f80; --editor-selection:#a3c9ee; --editor-selection-text:#263344; --editor-code-background:#f1f4f7; --editor-font-size:15px; --editor-line-height:1.75; --editor-reading-width:720px; --editor-toolbar-height:44px; --editor-control-size:28px; --editor-control-radius:8px; --editor-code-padding:16px; --editor-h1-size:1.85em; --editor-h2-size:1.5em; --editor-h3-size:1.25em; --editor-body-font:"Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif; --editor-mono-font:"Cascadia Mono", Consolas, monospace; color-scheme: light; font-family: var(--editor-body-font); color: var(--editor-ui-text,var(--editor-text)); background: var(--editor-surface); }
 * { box-sizing: border-box; }
 html, body, main { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 main { display: flex; flex-direction: column; }
@@ -155,3 +155,14 @@ main { display: flex; flex-direction: column; }
 #editor .cm-scroller, #format-menu { overscroll-behavior:contain; }
 #format-menu { scrollbar-width:thin; }
 @media(prefers-reduced-motion:reduce) { #note-outline .outline-disclosure { transition:none; } }
+
+/* Native primary selection covers rendered glyphs, including opaque blocks. */
+#editor .cm-content::selection, #editor .cm-content ::selection { background:var(--editor-selection); color:var(--editor-selection-text); }
+.cm-secondary-cursor { border-left:1.5px solid var(--editor-accent); }
+.cm-editor:not(.cm-focused) .cm-secondary-cursor { display:none; }
+#editor-copy-menu { position:fixed; z-index:1000; min-width:140px; padding:4px; border:1px solid var(--editor-border); border-radius:8px; box-shadow:0 5px 20px #0002; color:var(--editor-text); background:var(--editor-background); }
+#editor-copy-menu[hidden] { display:none; }
+#editor-copy-menu button { display:block; width:100%; border:0; border-radius:4px; padding:7px 14px; text-align:left; font:inherit; color:inherit; background:transparent; cursor:pointer; }
+#editor-copy-menu button:hover:not(:disabled) { background:var(--editor-selection); }
+#editor-copy-menu button:disabled { opacity:.5; cursor:default; }
+#editor .cm-secondary-selected-text { background:var(--editor-selection) !important; color:var(--editor-selection-text) !important; }

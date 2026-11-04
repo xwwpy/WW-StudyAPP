@@ -86,5 +86,42 @@ class UpdateManifest(unittest.TestCase):
         )
 
 
+class HistoryTests(unittest.TestCase):
+    def test_published_stable_history_is_semver_sorted_and_paginated(self):
+        collector = load("release_history", "scripts/release-history.py")
+        def row(tag, **options):
+            return dict(tag_name=tag, body=tag + " notes", published_at="2026-11-04T00:00:00Z", **options)
+        entries = collector.published_history([
+            [row("v0.2.3"), row("v0.2.2"), row("v0.2.5"), row("v0.3.0-beta.1")],
+            [row("v0.1.9"), row("v0.1.8", draft=True), row("v0.1.7", prerelease=True)]
+        ], "0.2.4")
+        self.assertEqual([entry["version"] for entry in entries], ["0.2.3", "0.2.2", "0.1.9"])
+        with self.assertRaises(ValueError):
+            collector.published_history([[row("v0.2.3")], [row("v0.2.3")]], "0.2.4")
+
+    def test_history_and_legacy_cumulative_notes_are_inside_the_signature(self):
+        seed = bytes.fromhex("11" * 32)
+        with fixture_directory() as directory:
+            setup = Path(directory) / manifest.setup_asset_name("0.2.4")
+            setup.write_bytes(b"setup")
+            entries = [{"version":"0.2.2", "notes":"early"}, {"version":"0.2.3", "notes":"middle"}]
+            result = manifest.signed_manifest("0.2.4", "v0.2.4", setup, seed, "latest", "date", history=entries)
+            payload = base64.b64decode(result["signed_payload"])
+            body = json.loads(payload)
+            self.assertEqual([entry["version"] for entry in body["history"]], ["0.2.4", "0.2.3", "0.2.2"])
+            self.assertEqual(body["history"], result["history"])
+            for value in ("latest", "middle", "early"):
+                self.assertIn(value, body["notes"])
+            self.assertEqual(body["notes"], result["notes"])
+            domain = b"WW-StudyApp update manifest v1" + bytes([0])
+            public = signature.public_key(seed)
+            signed = base64.b64decode(result["manifest_signature"])
+            self.assertTrue(signature.verify(public, domain + payload, signed))
+            self.assertFalse(signature.verify(public, domain + payload.replace(b"middle", b"tampered"), signed))
+            for invalid in [entries + entries, [{"version":"0.2.5","notes":"future"}], [{"version":"0.2.3-beta.1","notes":"pre"}]]:
+                with self.assertRaises(ValueError):
+                    manifest.signed_manifest("0.2.4", "v0.2.4", setup, seed, "latest", "date", history=invalid)
+
+
 if __name__ == "__main__":
     unittest.main()

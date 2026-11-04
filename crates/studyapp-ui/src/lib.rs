@@ -7,6 +7,7 @@ pub mod design;
 pub mod feedback;
 pub mod markdown_content;
 pub mod markdown_format;
+pub mod markdown_view;
 pub mod modal_frame;
 pub mod notice_queue;
 pub mod notifications;

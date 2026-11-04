@@ -19,6 +19,8 @@ use windows_sys::Win32::{
         },
     },
 };
+#[path = "update_user_windows.rs"]
+mod user_launch;
 type Result<T> = std::result::Result<T, String>;
 const NO_WINDOW: u32 = 0x08000000;
 #[derive(Serialize, Deserialize)]
@@ -235,7 +237,7 @@ fn read_transaction(dir: &Path) -> Result<WindowsTransaction> {
     Ok(tx)
 }
 pub fn prepare(package: &VerifiedPackage, data: Option<PathBuf>) -> Result<PathBuf> {
-    ordinary_user()?;
+    user_launch::ensure_available()?;
     package.reverify()?;
     let original = io(std::env::current_exe())?;
     safe_path(&original)?;
@@ -298,36 +300,27 @@ fn stage_supervisor(executable: &Path, dir: &Path) -> Result<()> {
     Ok(())
 }
 pub fn spawn(dir: &Path) -> Result<()> {
-    ordinary_user()?;
     let tx = read_transaction(dir)?;
     if dir.join("ready").exists() {
         return Err("Prepare a fresh update attempt".into());
     }
     write_new(&dir.join("launch-claimed"), tx.transaction.id.as_bytes())?;
     let result: Result<()> = (|| {
-        let mut child = io(Command::new(dir.join("supervisor.exe"))
-            .arg("--update-supervisor")
-            .arg(dir)
-            .current_dir(dir)
-            .creation_flags(NO_WINDOW)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn())?;
+        let mut child = user_launch::spawn(dir)?;
         let started = Instant::now();
         loop {
-            if io(child.try_wait())?.is_some() {
+            if child.exited()? {
                 return Err("Update supervisor exited before readiness".into());
             }
             if let Ok(bytes) = read_bounded(&dir.join("ready"), 36) {
                 if bytes == tx.transaction.id.as_bytes() {
                     return Ok(());
                 }
-                let _ = child.kill();
+                child.kill();
                 return Err("Readiness identity mismatch".into());
             }
             if started.elapsed() > Duration::from_secs(10) {
-                let _ = child.kill();
+                child.kill();
                 return Err("Update supervisor readiness timeout".into());
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -366,6 +359,8 @@ pub fn supervise(dir: &Path) -> Result<()> {
 }
 fn supervise_inner(dir: &Path) -> Result<()> {
     ordinary_user()?;
+    #[cfg(feature = "update-acceptance")]
+    user_launch::record_process(dir, "supervisor", std::process::id())?;
     let tx = read_transaction(dir)?;
     let package = VerifiedPackage::verify(dir)?;
     if package.version != tx.transaction.target_version {
@@ -412,12 +407,15 @@ fn supervise_inner(dir: &Path) -> Result<()> {
             .ok_or("Missing install directory")?
             .display()
     ));
-    let status = io(installer
+    let mut installer_child = io(installer
         .creation_flags(NO_WINDOW)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status())?;
+        .spawn())?;
+    #[cfg(feature = "update-acceptance")]
+    user_launch::record_process(dir, "installer", installer_child.id())?;
+    let status = io(installer_child.wait())?;
     if !status.success() {
         let message = format!("NSIS installation failed ({status}); no rollback is claimed");
         if read_bounded(&tx.executable, 512 * 1024 * 1024)

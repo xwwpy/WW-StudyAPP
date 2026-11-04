@@ -21,8 +21,9 @@ const SETUP_LIMIT: u64 = 256 * 1024 * 1024;
 /// Returns the offered release only when it is newer than the running version.
 pub fn check(current_version: &str) -> UpdateResult<Option<UpdateManifest>> {
     let text = fetch_latest_manifest_text()?;
-    let manifest =
+    let mut manifest =
         parse_latest_json(&text).map_err(|_| failure(UpdateErrorKind::InvalidRelease))?;
+    manifest.notes = manifest.notes_since(current_version);
     Ok(manifest.is_newer_than(current_version).then_some(manifest))
 }
 

@@ -165,14 +165,16 @@ def main():
         # block portable installation or have its registration/shortcuts changed.
         result["portable"] = portable_transition(root, binaries, packages["candidate"], source_sha,
                                                  candidate_version, child_env, installed, after["pid"])
+        result["elevated"] = portable_transition(root, binaries, packages["candidate"], source_sha,
+                                                 candidate_version, child_env, installed, after["pid"], elevated=True)
         (root / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
     finally:
         common.collect_diagnostics(root)
         collect_editor_diagnostics(root)
 
 
-def portable_transition(root, binaries, package, source_sha, target_version, child_env, installed, unrelated_pid):
-    case = root / "portable-case"
+def portable_transition(root, binaries, package, source_sha, target_version, child_env, installed, unrelated_pid, elevated=False):
+    case = root / ("elevated-case" if elevated else "portable-case")
     case.mkdir()
     fixture = case / "fixture"
     fixture.mkdir()
@@ -197,7 +199,14 @@ def portable_transition(root, binaries, package, source_sha, target_version, chi
     installed_before = common.sha(installed)
     uninstaller_before = common.sha(installed.parent / "Uninstall.exe")
     try:
-        old = windows.launch(executable, ["--data-dir", prefixed_data], env)
+        if elevated:
+            assert windows.inspect_process(os.getpid())["elevated"], "Elevated acceptance needs an elevated CI harness"
+            old = subprocess.Popen([str(executable), "--data-dir", prefixed_data], env=env)
+        else:
+            old = windows.launch(executable, ["--data-dir", prefixed_data], env)
+        old_context = windows.inspect_process(old.pid)
+        assert old_context["elevated"] == elevated
+
         before = common.wait_file(fixture / "old-observation.json", 120, old)
         assert old.wait(180) == 0
         after = common.wait_file(fixture / "new-observation.json", 180)
@@ -232,10 +241,20 @@ def portable_transition(root, binaries, package, source_sha, target_version, chi
         new_context = windows.inspect_process(after["pid"])
         assert not new_context["elevated"]
         assert Path(new_context["executable"]).resolve() == executable.resolve()
+        assert new_context["user_sid"] == old_context["user_sid"]
+        assert int(new_context["integrity_sid"].rsplit("-",1)[1]) <= 8192
+        tokens = {}
+        for role in ("supervisor", "installer"):
+            token = json.loads((transaction / f"{role}-token.json").read_text(encoding="utf-8"))
+            assert not token["elevated"] and token["integrity_level"] <= 8192
+            assert token["user_sid"] == old_context["user_sid"]
+            tokens[role] = token
+
         result = {"real_nsis": True, "mode": "portable", "health": health,
                   "draft_preserved": True, "prefixed_library_preserved": True,
                   "registered_install_untouched": True, "unrelated_app_remains_running": True,
-                  "unicode_space_ampersand_destination": True, "new_process": new_context}
+                  "unicode_space_ampersand_destination": True, "new_process": new_context,
+                  "old_process":old_context,"elevated_start":elevated,"ordinary_tokens":tokens}
         (case / "transition-result.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
         return result
     finally:

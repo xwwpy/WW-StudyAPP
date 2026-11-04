@@ -59,7 +59,7 @@ impl NoteDrag {
         Self {
             note_id: note.id.clone(),
             library_path: snapshot.data_path.clone(),
-            title: note.title.clone(),
+            title: studyapp_desktop::library_tree::note_label(note),
         }
     }
 

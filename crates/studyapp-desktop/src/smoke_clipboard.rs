@@ -300,6 +300,10 @@ pub async fn exercise(
     )
     .await;
 
+    // Real browser copy permission is tested only on the disposable runner.
+    copy_from_context_menu(window, &editor, cx).await;
+    backup.record_write();
+
     let image = image::RgbaImage::from_pixel(40, 40, image::Rgba([30, 120, 200, 255]));
     let mut png = Vec::new();
     image
@@ -436,5 +440,75 @@ pub async fn exercise(
     let fallback_used = evidence
         .iter()
         .any(|item| item["nativePngFallback"] == true);
-    std::fs::write(database.with_file_name("clipboard-evidence.json"), serde_json::to_vec_pretty(&json!({"input":"WIN32_SENDINPUT_CTRL_V", "plainText":true, "images":evidence, "savedNote":saved, "nativeRendered":true, "fallbackUsed":fallback_used, "restartVerified":false})).unwrap()).unwrap();
+    std::fs::write(database.with_file_name("clipboard-evidence.json"), serde_json::to_vec_pretty(&json!({"input":"WIN32_SENDINPUT_CTRL_V", "plainText":true, "copyMenuRealKeyboard":true, "images":evidence, "savedNote":saved, "nativeRendered":true, "fallbackUsed":fallback_used, "restartVerified":false})).unwrap()).unwrap();
+}
+
+async fn copy_from_context_menu(
+    window: AnyWindowHandle,
+    editor: &Entity<MarkdownEditor>,
+    cx: &mut AsyncApp,
+) {
+    crate::smoke_visibility::focus_body(window, editor, cx).await;
+    let native = crate::smoke_visibility::visible(window, editor, cx).await;
+    assert_eq!(
+        unsafe { GetForegroundWindow() },
+        HWND(native["parentHwnd"].as_u64().unwrap() as usize as *mut _)
+    );
+    let before = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+    let source = before["text"].as_str().unwrap();
+    let expected = "剪贴板纯文本 fixture";
+    let at = source.find(expected).unwrap();
+    let start = source[..at].encode_utf16().count();
+    bridge(
+        window,
+        editor,
+        json!({"type":"select","anchor":start,"head":start+expected.encode_utf16().count()}),
+        cx,
+    )
+    .await;
+    let key = |value| {
+        let inputs = [KEYBD_EVENT_FLAGS(0), KEYEVENTF_KEYUP].map(|flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: value,
+                    dwFlags: flags,
+                    ..Default::default()
+                },
+            },
+        });
+        assert_eq!(
+            unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) },
+            inputs.len() as u32
+        );
+    };
+    key(VK_APPS);
+    cx.background_executor()
+        .timer(Duration::from_millis(150))
+        .await;
+    key(VK_RETURN);
+    let mut copied = false;
+    for _ in 0..100 {
+        copied = window
+            .update(cx, |_, _, cx| {
+                cx.read_from_clipboard()
+                    .and_then(|item| item.text())
+                    .as_deref()
+                    == Some(expected)
+            })
+            .unwrap();
+        if copied {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+    assert!(
+        copied,
+        "native context-menu copy did not reach the clipboard"
+    );
+    let after = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+    assert_eq!(after["text"], before["text"]);
+    assert_eq!(after["revision"], before["revision"]);
 }

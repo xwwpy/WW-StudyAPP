@@ -42,6 +42,22 @@ impl StudyStatus {
         }
     }
 }
+/// Directory labels follow external filenames, never a heading in their body.
+pub fn note_label(note: &Note) -> String {
+    let windows_path = cfg!(windows)
+        || note.path.as_bytes().get(1) == Some(&b':')
+        || note.path.starts_with("\\\\");
+    if !note.managed
+        && let Some(name) = note
+            .path
+            .rsplit(|ch| ch == '/' || (windows_path && ch == '\\'))
+            .find(|part| !part.is_empty())
+    {
+        return name.to_owned();
+    }
+    note.title.clone()
+}
+
 pub fn source_label(note: &Note) -> &'static str {
     if note.detached {
         "已取消管理"
@@ -305,7 +321,7 @@ impl LibraryIndex {
                     position,
                     updated_stamp: crate::presentation::stamp(note.updated_at),
                     ancestors: ancestors.clone(),
-                    title_key: note.title.to_lowercase(),
+                    title_key: note_label(note).to_lowercase(),
                     version_count: counts.get(note.id.as_str()).copied().unwrap_or(0),
                     status,
                     tip: format!(

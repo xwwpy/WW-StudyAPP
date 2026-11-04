@@ -1,7 +1,8 @@
+import { renderedSelection, copyMenuUpdates, installCopyMenu } from "./selection";
 import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled } from "./outline";
 import { applyEditorTheme } from "./theme";
 import { ChangeSet, Compartment, EditorSelection, EditorState, Extension, Text, Transaction } from "@codemirror/state";
-import { drawSelection, EditorView, keymap, placeholder, ViewUpdate } from "@codemirror/view";
+import { EditorView, keymap, placeholder, ViewUpdate } from "@codemirror/view";
 import {
   addCursorAbove, addCursorBelow, copyLineDown, copyLineUp, cursorMatchingBracket,
   deleteGroupBackward, deleteGroupForward, deleteLine, history,
@@ -304,7 +305,7 @@ function extensions(readonly: boolean, rawText = ""): Extension[] {
     themeMode.of(EditorView.theme({})), rawUrlWrapping,
     documentLimits(rawText, warning, clearWarning),
     markdown({ base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
-    syntaxHighlighting(codeHighlighting), history(), drawSelection(), EditorView.lineWrapping,
+    syntaxHighlighting(codeHighlighting), history(), renderedSelection, copyMenuUpdates, EditorView.lineWrapping,
     EditorState.allowMultipleSelections.of(true),
     placeholder("从这里开始记录，支持 Markdown…"),
     EditorView.contentAttributes.of({ "aria-label": "笔记正文", spellcheck: "false", tabindex: "0" }),
@@ -609,6 +610,7 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
     images: view.contentDOM.querySelectorAll("img.md-image").length,
     imagePlaceholders: view.contentDOM.querySelectorAll(".md-image-placeholder").length,
     selection: { anchor: view.state.selection.main.anchor, head: view.state.selection.main.head },
+    selections: view.state.selection.ranges.map(range => ({anchor:range.anchor,head:range.head})),
     renderedLines: view.contentDOM.querySelectorAll(".cm-line").length,
     domNodes: view.dom.querySelectorAll("*").length,
     headings: view.contentDOM.querySelectorAll(".md-heading").length,
@@ -677,3 +679,4 @@ updateToolbar();
 post({ type: "ready" });
 
 installOutline(view);
+installCopyMenu(view, warning);

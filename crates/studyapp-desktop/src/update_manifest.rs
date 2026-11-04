@@ -5,6 +5,9 @@
 #![allow(dead_code)]
 use base64::Engine;
 use semver::Version;
+#[path = "update_history.rs"]
+mod history;
+pub use history::ReleaseNotes;
 
 const RELEASE_PREFIX: &str = "https://github.com/xwwpy/WW-StudyAPP/releases/download/";
 pub fn current_platform() -> Result<&'static str, String> {
@@ -31,6 +34,7 @@ pub fn asset_name(version: &Version, platform: &str) -> Result<String, String> {
 pub struct UpdateManifest {
     pub version: Version,
     pub notes: String,
+    pub history: Vec<ReleaseNotes>,
     pub pub_date: Option<String>,
     pub setup_url: String,
     pub signature: String,
@@ -40,6 +44,10 @@ pub struct UpdateManifest {
 }
 
 impl UpdateManifest {
+    pub fn notes_since(&self, current: &str) -> String {
+        history::notes_since(&self.history, &self.notes, current, &self.version)
+    }
+
     pub fn is_newer_than(&self, current: &str) -> bool {
         Version::parse(current).is_ok_and(|value| self.version > value)
     }
@@ -127,9 +135,11 @@ fn parse_with_key(
     {
         return Err("Invalid package size or digest".into());
     }
+    let history = history::parse(&root, &version)?;
     Ok(UpdateManifest {
         version,
         notes,
+        history,
         pub_date,
         setup_url: setup_url.to_owned(),
         signature,

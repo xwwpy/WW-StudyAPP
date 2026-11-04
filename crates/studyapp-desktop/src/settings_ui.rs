@@ -20,7 +20,7 @@ use gpui_kit::{
 };
 use std::{collections::BTreeMap, rc::Rc, time::Instant};
 
-const MARKDOWN_FIELDS: [(&str, &str, &str, u8); 24] = [
+const MARKDOWN_FIELDS: [(&str, &str, &str, u8); 26] = [
     ("md-body", "body", "正文", 0),
     ("md-heading", "heading", "标题", 0),
     ("md-link", "link", "链接", 0),
@@ -45,6 +45,13 @@ const MARKDOWN_FIELDS: [(&str, &str, &str, u8); 24] = [
     ("md-tag", "syntax_tag", "标签", 3),
     ("md-function", "syntax_function", "函数", 3),
     ("md-punctuation", "syntax_punctuation", "标点", 3),
+    (
+        "md-selection-background",
+        "selection_background",
+        "选区背景",
+        0,
+    ),
+    ("md-selection-text", "selection_text", "编辑器选中文字", 0),
 ];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -170,7 +177,7 @@ impl Render for AppearanceView {
 
 struct MarkdownPreview {
     preset: studyapp_core::ThemePreset,
-    colors: [u32; 24],
+    colors: [u32; 26],
     palette_warnings: Vec<String>,
     markdown_warnings: Vec<studyapp_core::ContrastWarning>,
 }

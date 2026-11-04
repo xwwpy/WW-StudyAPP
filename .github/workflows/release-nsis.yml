@@ -160,6 +160,11 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: release
+      - name: Collect published stable release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: python3 scripts/release-history.py --target-version "${RELEASE_TAG#v}" --output release/history.json
       - name: Sign complete platform metadata
         env:
           STUDYAPP_SIGNING_KEY: ${{ secrets.STUDYAPP_SIGNING_KEY }}
@@ -176,8 +181,9 @@ jobs:
           tag = os.environ["RELEASE_TAG"]
           version = tag.removeprefix("v")
           root = pathlib.Path("release")
-          body = module.signed_manifest(version, tag, root / module.setup_asset_name(version), seed, pathlib.Path("docs/release-notes.md").read_text(encoding="utf-8").strip(), datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), packages_directory=root)
+          body = module.signed_manifest(version, tag, root / module.setup_asset_name(version), seed, pathlib.Path("docs/release-notes.md").read_text(encoding="utf-8").strip(), datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), packages_directory=root, history=__import__("json").loads((root / "history.json").read_text(encoding="utf-8")))
           module.write_manifest(body, root / "latest.json")
+          (root / "history.json").unlink()
           PY
       - name: Verify complete release publication logic
         run: python3 scripts/test-publish-release.py

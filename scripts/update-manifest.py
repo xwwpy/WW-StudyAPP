@@ -41,6 +41,7 @@ def signed_manifest(
     pub_date: str,
     repository: str = "xwwpy/WW-StudyAPP",
     packages_directory: Path | None = None,
+    history: list | None = None,
 ) -> dict:
     version = version.lstrip("v")
     if tag != f"v{version}" or repository != "xwwpy/WW-StudyAPP":
@@ -64,14 +65,37 @@ def signed_manifest(
             "sha256": hashlib.sha256(payload).hexdigest(),
         }
     body = {"schema": 1, "version": version, "notes": notes, "pub_date": pub_date, "platforms": platforms}
+    if history is not None:
+        body["history"] = release_history(version, notes, pub_date, history)
+        body["notes"] = "\n\n---\n\n".join("## v{}\n\n{}".format(row["version"], row["notes"]) for row in body["history"])
     encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return {**body, "signed_payload": base64.b64encode(encoded).decode("ascii"),
             "manifest_signature": base64.b64encode(signature_tool.sign(seed, b"WW-StudyApp update manifest v1\0" + encoded)).decode("ascii")}
 
 
 
+def release_history(version, notes, pub_date, history):
+    import re
+    def stable(value):
+        if not isinstance(value, str) or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", value):
+            raise ValueError("Invalid history version")
+        return tuple(map(int, value.split(".")))
+    seen = set()
+    for row in history:
+        if not isinstance(row, dict) or stable(row.get("version")) >= stable(version) or row["version"] in seen or not isinstance(row.get("notes"), str):
+            raise ValueError("Invalid or duplicate release history")
+        seen.add(row["version"])
+    entries = [{"version": version, "notes": notes, "pub_date": pub_date}] + sorted(history, key=lambda row: stable(row["version"]), reverse=True)
+    if len(entries) > 512:
+        raise ValueError("History too large; refusing partial notes")
+    return entries
+
+
 def write_manifest(manifest: dict, target: Path) -> None:
-    target.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    text = json.dumps(manifest, indent=2, ensure_ascii=False) + chr(10)
+    if len(text.encode("utf-8")) > 262144:
+        raise ValueError("Manifest exceeds legacy metadata limit")
+    target.write_text(text, encoding="utf-8")
 
 
 def main() -> int:
@@ -82,6 +106,7 @@ def main() -> int:
     parser.add_argument("--private", required=True)
     parser.add_argument("--packages-directory", type=Path)
     parser.add_argument("--notes-file", required=True)
+    parser.add_argument("--history-file", type=Path)
     parser.add_argument("--output", required=True)
     parser.add_argument("--repository", default="xwwpy/WW-StudyAPP")
     parser.add_argument("--pub-date")
@@ -101,6 +126,7 @@ def main() -> int:
         pub_date,
         arguments.repository,
         packages_directory=arguments.packages_directory,
+        history=json.loads(arguments.history_file.read_text(encoding="utf-8")) if arguments.history_file else None,
     )
     write_manifest(manifest, Path(arguments.output))
     print(manifest["platforms"][PLATFORM]["url"])

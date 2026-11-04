@@ -838,8 +838,8 @@ impl Render for UpdatePanel {
             .children(self.settings_notes().map(|notes|
                 scroll_body("update-release-notes", &self.settings_notes_scroll).test_support().max_h(px(180.)).pr_3()
                     .child(div().flex_shrink_0().min_w_0().child(
-                        gpui_kit::component::text::TextView::markdown("update-settings-markdown", studyapp_ui::markdown_content::release_notes(notes))
-                            .style(studyapp_ui::compact_markdown::summary_markdown_style()).scrollable(false)))))
+                        studyapp_ui::markdown_view::copyable("update-settings-copy", gpui_kit::component::text::TextView::markdown("update-settings-markdown", studyapp_ui::markdown_content::release_notes(notes))
+                            .style(studyapp_ui::compact_markdown::summary_markdown_style()).scrollable(false))))))
             .children(self.prepared.as_ref().map(|(_, update)| {
                 let status = update.status_path.clone();
                 column().gap_1().child(muted(format!("安装位置：{}", studyapp_desktop::presentation::display_path(&update.installation_directory.to_string_lossy()))))
@@ -1071,6 +1071,7 @@ mod tests {
         let manifest = crate::update_manifest::UpdateManifest {
             version: semver::Version::parse("0.9.1").unwrap(),
             notes: String::new(),
+            history: Vec::new(),
             pub_date: None,
             setup_url: String::new(),
             signature: String::new(),
@@ -1107,6 +1108,7 @@ mod tests {
         let manifest = UpdateManifest {
             version: semver::Version::parse("0.9.0").unwrap(),
             notes: "- 新版本".into(),
+            history: Vec::new(),
             pub_date: Some("2026-10-28T00:00:00Z".into()),
             setup_url: "https://github.com/xwwpy/WW-StudyAPP/releases/download/v0.9.0/WW-StudyApp-0.9.0-windows-x86_64-Setup.exe".into(),
             signature: "c2lnbmF0dXJl".into(),
@@ -1135,6 +1137,7 @@ mod tests {
         let manifest = crate::update_manifest::UpdateManifest {
             version: semver::Version::parse("0.9.0").unwrap(),
             notes: "# Changes\n- **New**".into(),
+            history: Vec::new(),
             pub_date: None,
             setup_url: "https://example.com/setup.exe".into(),
             signature: "fixture".into(),
@@ -1257,6 +1260,7 @@ mod modal_visibility_tests {
                         Ok(Some(crate::update_manifest::UpdateManifest {
                             version: semver::Version::parse("9.0.0").unwrap(),
                             notes: String::new(),
+                            history: Vec::new(),
                             pub_date: None,
                             setup_url: String::new(),
                             signature: String::new(),

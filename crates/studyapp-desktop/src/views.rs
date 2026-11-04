@@ -7,15 +7,12 @@ use crate::{
 use chrono::{Local, TimeZone, Utc};
 use gpui_kit::component::{
     Disableable, IconName, Selectable, Sizable, button::ButtonVariants, input::Input,
-    scroll::ScrollableElement, text::TextView,
+    scroll::ScrollableElement,
 };
 use gpui_kit::{prelude::FluentBuilder, *};
 use studyapp_core::{Command, Review, SessionStatus, Snapshot};
 use studyapp_desktop::presentation::{duration, stamp};
-use studyapp_ui::{
-    compact_markdown::summary_markdown_style,
-    markdown_content::{markdown_excerpt, markdown_preview},
-};
+use studyapp_ui::markdown_view;
 
 fn review_text(title: String, metadata: String) -> Div {
     column()
@@ -29,14 +26,7 @@ fn review_text(title: String, metadata: String) -> Div {
                 .whitespace_normal()
                 .id("review-summary")
                 .test_support()
-                .child(
-                    TextView::markdown("review-summary-markdown", markdown_preview(&title))
-                        .style(summary_markdown_style())
-                        .on_link_click(|_, _, _, _| {})
-                        .w_full()
-                        .min_w_0()
-                        .scrollable(false),
-                ),
+                .child(markdown_view::summary("review-summary-markdown", &title)),
         )
         .child(muted(metadata).w_full().min_w_0().whitespace_normal())
 }
@@ -674,11 +664,14 @@ impl StudyApp {
                     .gap_1()
                     .flex_1()
                     .min_w_0()
-                    .child(div().truncate().child(if session.summary.is_empty() {
-                        "尚未填写学习内容".into()
-                    } else {
-                        markdown_excerpt(&session.summary, 160)
-                    }))
+                    .child(markdown_view::summary(
+                        SharedString::from(format!("session-summary-{}", session.id)),
+                        if session.summary.is_empty() {
+                            "尚未填写学习内容"
+                        } else {
+                            &session.summary
+                        },
+                    ))
                     .child(muted(format!(
                         "{}  ·  {} 分钟  ·  {} 份关联笔记 · {} 个快照",
                         stamp(session.started_at),

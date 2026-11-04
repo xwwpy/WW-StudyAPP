@@ -46,12 +46,15 @@ export function applyEditorTheme(tokens:Record<string,unknown>):boolean {
     if (backgrounds.some(background=>contrast(value,background)<4.5)) lowContrast=true;
     return value;
   };
+  const selection=pick("selection_background",token("selection",luminance(surface)<.18?"#3E6187":"#A3C9EE"));
+  if ([surface,quoteBackground,codeBackground,tableBackground,stripe].some(background=>contrast(selection,background)<1.5)) lowContrast=true;
+  const selectionText=foreground("selection_text",token("selectionText",text),[selection]);
   const generalBackgrounds=[surface,quoteBackground,tableBackground,stripe];
   const general = (name:string,fallback:string) => foreground(name,fallback,generalBackgrounds);
   const body=pick("body",text);
   if (contrast(body,surface)<4.5) lowContrast=true;
   const values:Record<string,string> = {
-    text:body,heading:foreground("heading",text,[surface]),link:general("link",accent),
+    selection,selection_text:selectionText,text:body,heading:foreground("heading",text,[surface]),link:general("link",accent),
     muted:general("muted",base("muted",text)),quote:foreground("quote",text,[quoteBackground]),quote_background:quoteBackground,
     toolbar_background:toolbarBackground,ui_text:readable(text,[surface,toolbarBackground]),ui_muted:readable(base("muted",text),[surface,toolbarBackground]),
     danger:readable(token("danger","#ac3a36"),[surface]),warning:readable(token("warning","#91631d"),[surface]),

@@ -549,7 +549,7 @@ test("semantic reading fixtures remain readable in light dark and two custom the
     const cells=await page.locator('.md-table-row').evaluateAll(rows=>rows.map(row=>[...row.querySelectorAll('.md-table-cell')].map(cell=>({left:cell.getBoundingClientRect().left,width:cell.getBoundingClientRect().width,align:getComputedStyle(cell).textAlign}))));
     assert.ok(cells.every(row=>row.length===3));
     for(const row of cells){assert.ok(Math.abs(row[1].left-cells[0][1].left)<2);assert.equal(row[1].align,"center");assert.equal(row[2].align,"right");}
-    const caretBox=await page.locator('.cm-cursor').first().boundingBox();
+    const caretBox=await page.evaluate(() => { const rect = getSelection().getRangeAt(0).getBoundingClientRect(); return {x:rect.x,y:rect.y}; });
     const activeCell=await page.locator('.md-table-row').nth(1).locator('.md-table-cell').first().boundingBox();
     assert.ok(caretBox.x>=activeCell.x && caretBox.y>=activeCell.y && caretBox.y<activeCell.y+activeCell.height,`${name}: caret must follow changed reading geometry`);
     await page.screenshot({path:directory+`product-theme-${name}.png`});
@@ -2028,5 +2028,134 @@ test("outline remains usable when browser preference storage is unavailable", as
   assert.equal(await page.locator(".outline-label").innerText(), "Safe");
   await page.locator(".outline-label").click();
   assert.equal((await state(page)).text, "# Safe");
+  await page.close();
+});
+
+test("native primary selection covers glyphs above opaque Markdown surfaces", async () => {
+  const text = "# 标题字符\n\n> 引用字符\n\n`内联字符`\n\n```text\n代码字符\n```\n\n| 表头字符 | B |\n| --- | --- |\n| 表格字符 | D |\n\n结束";
+  const {page, errors} = await setup(text);
+  await page.evaluate(text => window.studyappEditor.load({generation:42,text,readonly:true}), text);
+  for (const word of ["标题字符", "引用字符", "内联字符", "代码字符", "表头字符", "表格字符"]) {
+    const at = text.indexOf(word);
+    await select(page, at);
+    const before = await page.screenshot();
+    await select(page, at, at + word.length);
+    await page.waitForTimeout(50);
+    const rect = await page.evaluate(() => {
+      const range = getSelection().getRangeAt(0), r = range.getBoundingClientRect();
+      return {x:r.x,y:r.y,width:r.width,height:r.height,text:getSelection().toString()};
+    });
+    assert.equal(rect.text, word);
+    assert.ok(rect.width > 20 && rect.height > 10, `${word}: visible glyph range`);
+    const after = await page.screenshot();
+    const changed = await page.evaluate(async ({a,b,r}) => {
+      const read = async value => {
+        const bytes = Uint8Array.from(atob(value), ch => ch.charCodeAt(0));
+        const image = await createImageBitmap(new Blob([bytes], {type:"image/png"}));
+        const canvas = new OffscreenCanvas(image.width,image.height), context = canvas.getContext("2d");
+        context.drawImage(image,0,0);image.close();
+        return context.getImageData(Math.ceil(r.x)+2, Math.ceil(r.y)+2, Math.floor(r.width)-4, Math.floor(r.height)-4).data;
+      };
+      const [one,two] = await Promise.all([read(a),read(b)]);let changed=0;
+      for(let i=0;i<one.length;i+=4) if(Math.abs(one[i]-two[i])+Math.abs(one[i+1]-two[i+1])+Math.abs(one[i+2]-two[i+2])>30) changed++;
+      return changed/(one.length/4);
+    }, {a:before.toString("base64"),b:after.toString("base64"),r:rect});
+    assert.ok(changed > .35, `${word}: selection must paint inside the text bounds, not just the surrounding background (${changed})`);
+    await select(page, at + word.length, at);
+    assert.equal(await page.evaluate(() => getSelection().toString()), word, "reverse selection");
+  }
+  assert.equal((await state(page)).text, text);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test("right-click copy preserves selection and uses only an explicit copy event", async () => {
+  const text = "第一行 中文🙂\n第二行 copy";
+  const {page, errors} = await setup(text);
+  // Exercise CodeMirror's real copy handler with an in-memory DataTransfer;
+  // never call the operating system clipboard during local headless tests.
+  await page.evaluate(() => {
+    window.copied = [];
+    document.execCommand = command => {
+      if(command !== "copy") throw new Error("unexpected clipboard operation");
+      const data = new DataTransfer();
+      document.querySelector(".cm-content").dispatchEvent(new ClipboardEvent("copy", {clipboardData:data,bubbles:true,cancelable:true}));
+      window.copied.push(data.getData("text/plain"));
+      return true;
+    };
+  });
+  await select(page, 0, text.length);
+  const before = await state(page);
+  await page.locator(".cm-content").dispatchEvent("contextmenu", {clientX:1095,clientY:795});
+  assert.equal(await page.locator("#editor-copy-menu").isVisible(), true);
+  const box = await page.locator("#editor-copy-menu").boundingBox();
+  assert.ok(box.x + box.width <= 1100 && box.y + box.height <= 800);
+  assert.deepEqual(await page.evaluate(() => window.copied), []);
+  await page.locator("#editor-copy-menu button").click();
+  assert.deepEqual(await page.evaluate(() => window.copied), [text]);
+  assert.deepEqual((await state(page)).selection, before.selection);
+  assert.equal((await state(page)).text, text);
+  await page.keyboard.press("Shift+F10");
+  assert.equal(await page.locator("#editor-copy-menu").isVisible(), true);
+  await page.keyboard.press("Escape");
+  assert.equal(await page.locator("#editor-copy-menu").isVisible(), false);
+  await select(page, 0);
+  await page.keyboard.press("Shift+F10");
+  assert.equal(await page.locator("#editor-copy-menu button").isDisabled(), true);
+  await page.keyboard.press("Escape");
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test("selection colors are customizable, resettable and warn without replacing explicit styles", async () => {
+  const {page} = await setup("文字🙂 `code`\n\n> quote\n\nEnd");
+  const selectedStyle = () => {
+    const node = document.querySelector(".cm-line");
+    const css = getComputedStyle(node,"::selection");
+    return {background:css.backgroundColor,color:css.color};
+  };
+  await page.evaluate(() => window.studyappEditor.setTheme({surface:"#ffffff",text:"#202020",markdown:{colors:{selection_background:"#2A5577",selection_text:"#FFFFFF"}}}));
+  assert.deepEqual(await page.evaluate(selectedStyle), {background:"rgb(42, 85, 119)",color:"rgb(255, 255, 255)"});
+  await select(page,0,4);
+  const before = await state(page);
+  await page.evaluate(() => window.studyappEditor.setTheme({surface:"#ffffff",text:"#202020",markdown:{colors:{selection_background:"#ffffff",selection_text:"#fefefe"}}}));
+  assert.equal(await page.locator("#editor-theme-warning").isVisible(),true);
+  assert.deepEqual(await page.evaluate(selectedStyle), {background:"rgb(255, 255, 255)",color:"rgb(254, 254, 254)"});
+  assert.deepEqual((await state(page)).selection,before.selection);
+  assert.equal((await state(page)).revision,before.revision);
+  await page.evaluate(() => window.studyappEditor.setTheme({mode:"dark",surface:"#272A30",text:"#EFF0F3",markdown:{}}));
+  assert.notEqual((await page.evaluate(selectedStyle)).background,"rgb(255, 255, 255)");
+  await page.close();
+});
+
+test("copy menu keyboard activation never edits the note and closes on selection changes", async () => {
+  const {page} = await setup("copy 中文🙂 unchanged");
+  await page.evaluate(() => { window.copyCount=0;document.execCommand=command=>{if(command==="copy")window.copyCount++;return true;}; });
+  await select(page,0,4);
+  const before = await state(page);
+  await page.keyboard.press("Shift+F10");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.evaluate(() => window.copyCount),1);
+  const after = await state(page);
+  assert.equal(after.text,before.text);
+  assert.equal(after.revision,before.revision);
+  assert.deepEqual(after.selection,before.selection);
+  await page.keyboard.press("Shift+F10");
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await page.locator("#editor-copy-menu").isVisible(),false);
+  await page.close();
+});
+
+test("native primary selection retains secondary CodeMirror carets and multiple edits", async () => {
+  const {page} = await setup("first\nsecond\nthird");
+  await shortcuts(page,{"editor.add-cursor-below":"Alt+j"});
+  await select(page,2);
+  await page.keyboard.press("Alt+j");
+  const selected = (await state(page)).selections;
+  assert.equal(selected.length,2);
+  assert.ok(await page.locator(".cm-secondary-cursor").count()>=1);
+  await page.keyboard.insertText("X");
+  const expected = selected.slice().sort((a,b)=>b.head-a.head).reduce((text,range)=>text.slice(0,range.head)+"X"+text.slice(range.head),'first\nsecond\nthird');
+  assert.equal((await state(page)).text,expected);
   await page.close();
 });

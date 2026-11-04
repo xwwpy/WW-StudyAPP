@@ -41,7 +41,7 @@ pub struct ThemePreset {
 }
 
 /// Shared stable keys. Values are only six-digit colors, never CSS.
-pub const MARKDOWN_COLORS: [&str; 24] = [
+pub const MARKDOWN_COLORS: [&str; 26] = [
     "body",
     "heading",
     "link",
@@ -66,6 +66,8 @@ pub const MARKDOWN_COLORS: [&str; 24] = [
     "syntax_tag",
     "syntax_function",
     "syntax_punctuation",
+    "selection_background",
+    "selection_text",
 ];
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -196,7 +198,7 @@ pub fn readable_theme_color(color: u32, backgrounds: &[u32]) -> u32 {
 }
 
 impl MarkdownStyle {
-    pub fn resolved_colors(&self, palette: &ThemePalette) -> [u32; 24] {
+    pub fn resolved_colors(&self, palette: &ThemePalette) -> [u32; 26] {
         let background = parse_theme_color(&palette.background).unwrap_or(0xFFFFFF);
         let surface = parse_theme_color(&palette.surface).unwrap_or(0xFFFFFF);
         let text = parse_theme_color(&palette.text).unwrap_or(0x24272D);
@@ -229,6 +231,19 @@ impl MarkdownStyle {
                 surface
             }
         };
+        // Unlike navigation hover, text selection must be unmistakable.
+        let mut selection = if dark { 0x3E6187 } else { 0xA3C9EE };
+        for weight in 25u32..=75 {
+            let channel = |shift: u32| {
+                (((surface >> shift) & 255) * (100 - weight) + ((accent >> shift) & 255) * weight)
+                    / 100
+            };
+            let candidate = channel(16) << 16 | channel(8) << 8 | channel(0);
+            if theme_contrast(surface, candidate) >= 1.5 && theme_contrast(text, candidate) >= 4.5 {
+                selection = candidate;
+                break;
+            }
+        }
         let mut result = [
             text,
             text,
@@ -254,8 +269,10 @@ impl MarkdownStyle {
             0,
             0,
             0,
+            selection,
+            text,
         ];
-        result[15..].copy_from_slice(&syntax);
+        result[15..24].copy_from_slice(&syntax);
         for (index, key) in MARKDOWN_COLORS.iter().enumerate() {
             if let Some(value) = self
                 .colors
@@ -277,7 +294,8 @@ impl MarkdownStyle {
                 result[10]
             };
             let backgrounds = match index {
-                5 | 7 | 10 | 11 | 13 | 14 => continue,
+                5 | 7 | 10 | 11 | 13 | 14 | 24 => continue,
+                25 => vec![result[24]],
                 4 => vec![result[5]],
                 6 | 15..=23 => vec![result[7]],
                 8 => vec![result[10], stripe, surface],
@@ -326,6 +344,19 @@ impl MarkdownStyle {
         for (index, key) in MARKDOWN_COLORS.iter().enumerate() {
             let backgrounds: Vec<(&'static str, u32)> = match index {
                 5 | 7 | 10 | 11 | 13 | 14 => continue,
+                24 => {
+                    if let Some(warning) = contrast_warning(
+                        "selection_background",
+                        "surface",
+                        resolved[24],
+                        surface,
+                        1.5,
+                    ) {
+                        warnings.push(warning);
+                    }
+                    continue;
+                }
+                25 => vec![("selection_background", resolved[24])],
                 4 => vec![("quote_background", resolved[5])],
                 6 | 15..=23 => vec![("code_background", resolved[7])],
                 8 => vec![

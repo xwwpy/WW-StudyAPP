@@ -168,13 +168,16 @@ impl Render for CompactMarkdown {
                                 .p_3()
                                 .child(
                                     div().flex_shrink_0().min_w_0().child(
-                                        TextView::markdown(
-                                            "summary-markdown-content",
-                                            self.preview_source.clone(),
-                                        )
-                                        .style(summary_markdown_style())
-                                        .on_link_click(|_, _, _, _| {})
-                                        .scrollable(false),
+                                        crate::markdown_view::copyable(
+                                            "summary-preview-copy",
+                                            TextView::markdown(
+                                                "summary-markdown-content",
+                                                self.preview_source.clone(),
+                                            )
+                                            .style(summary_markdown_style())
+                                            .on_link_click(|_, _, _, _| {})
+                                            .scrollable(false),
+                                        ),
                                     ),
                                 ),
                         )

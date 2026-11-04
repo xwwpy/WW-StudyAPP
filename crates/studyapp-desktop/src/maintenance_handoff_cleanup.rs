@@ -679,7 +679,10 @@ mod tests {
             .ancestors()
             .nth(2)
             .unwrap()
-            .join(".scratch/installation-20261026/test-temp");
+            // Recovery fixtures deliberately survive: isolate each case instead
+            // of consuming another case or a previous run's stage quota.
+            .join(".scratch/installation-20261026/test-temp")
+            .join(format!("cleanup-case-{}", uuid::Uuid::new_v4().simple()));
         std::fs::create_dir_all(&parent).unwrap();
         let stage = parent.join(format!("{PREFIX}{}", uuid::Uuid::new_v4().simple()));
         create_private_directory(&stage).unwrap();

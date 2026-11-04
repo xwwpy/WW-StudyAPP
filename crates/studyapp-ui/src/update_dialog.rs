@@ -267,14 +267,15 @@ impl RenderOnce for UpdateDialog {
                                     .min_w_0()
                                     .text_size(px(13.))
                                     .text_color(rgb(colors.text))
-                                    .child(
+                                    .child(crate::markdown_view::copyable(
+                                        "update-dialog-copy",
                                         TextView::markdown(
                                             "update-dialog-markdown",
                                             crate::markdown_content::release_notes(&notes),
                                         )
                                         .style(crate::compact_markdown::summary_markdown_style())
                                         .scrollable(false),
-                                    ),
+                                    )),
                             ),
                     ),
             );

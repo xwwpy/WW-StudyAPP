@@ -572,7 +572,7 @@ impl StudyApp {
                 .flex_1()
                 .truncate()
                 .text_sm()
-                .child(note.title.clone()),
+                .child(studyapp_desktop::library_tree::note_label(note)),
         )
         .when(
             metadata
@@ -1124,7 +1124,18 @@ impl StudyApp {
                     .overflow_hidden();
                 if let Some(version) = version {
                     diff = diff
-                        .child(muted(version.summary.clone()).truncate().flex_shrink_0())
+                        .child(
+                            div()
+                                .id("version-summary-scroll")
+                                .max_h(px(120.))
+                                .overflow_y_scroll()
+                                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                                .flex_shrink_0()
+                                .child(studyapp_ui::markdown_view::summary(
+                                    "version-summary",
+                                    &version.summary,
+                                )),
+                        )
                         .child(
                             muted(if version.offline {
                                 "离线变更 · 不计入当前学习时段"
