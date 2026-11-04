@@ -8,14 +8,18 @@ use std::{
     process::{Child, Command, Stdio},
 };
 use windows_sys::Win32::{
-    Foundation::{HANDLE, STILL_ACTIVE},
+    Foundation::{HANDLE, LocalFree, STILL_ACTIVE},
     Security::{
+        Authorization::{
+            EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SetEntriesInAclW, TRUSTEE_IS_SID,
+            TRUSTEE_IS_USER, TRUSTEE_W,
+        },
         CreateRestrictedToken, CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, GetLengthSid,
         GetTokenInformation, LUA_TOKEN, SID_AND_ATTRIBUTES, SetTokenInformation,
-        TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION,
-        TOKEN_INFORMATION_CLASS, TOKEN_LINKED_TOKEN, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
-        TokenElevation, TokenIntegrityLevel, TokenLinkedToken, TokenSessionId, TokenUser,
-        WinBuiltinAdministratorsSid, WinMediumLabelSid,
+        TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE,
+        TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS, TOKEN_LINKED_TOKEN, TOKEN_MANDATORY_LABEL,
+        TOKEN_QUERY, TokenDefaultDacl, TokenElevation, TokenIntegrityLevel, TokenLinkedToken,
+        TokenSessionId, TokenUser, WinBuiltinAdministratorsSid, WinMediumLabelSid,
     },
     System::Threading::{
         CreateProcessAsUserW, CreateProcessWithTokenW, GetCurrentProcess, GetExitCodeProcess,
@@ -162,6 +166,7 @@ fn restricted_token(current: HANDLE) -> Result<Handle> {
         return Err(format!("create restricted token: {}", os_error()));
     }
     let restricted = Handle(restricted);
+    same_user_default_dacl(restricted.0)?;
     let integrity = sid(restricted.0, TokenIntegrityLevel)?;
     let level = u32::from_le_bytes(integrity[integrity.len() - 4..].try_into().unwrap());
     if level <= 8192 {
@@ -201,6 +206,75 @@ fn restricted_token(current: HANDLE) -> Result<Handle> {
     Ok(restricted)
 }
 
+// The caller's default ACL may grant only Administrators and SYSTEM. Once the
+// admin group is disabled, newly created process/loader objects would then be
+// inaccessible to their own user. Preserve every ACE and add only that exact
+// user's SID on this private derived token. No existing object ACL is changed.
+fn same_user_default_dacl(token: HANDLE) -> Result<()> {
+    let mut length = 0;
+    unsafe {
+        GetTokenInformation(
+            token,
+            TokenDefaultDacl,
+            std::ptr::null_mut(),
+            0,
+            &mut length,
+        )
+    };
+    if length == 0 || length > 65536 {
+        return Err("Invalid derived token default ACL size".into());
+    }
+    let mut buffer = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+    if unsafe {
+        GetTokenInformation(
+            token,
+            TokenDefaultDacl,
+            buffer.as_mut_ptr().cast(),
+            length,
+            &mut length,
+        )
+    } == 0
+    {
+        return Err(os_error());
+    }
+    let old = unsafe { &*buffer.as_ptr().cast::<TOKEN_DEFAULT_DACL>() };
+    if old.DefaultDacl.is_null() {
+        return Err("Refusing to replace a missing token default ACL".into());
+    }
+    let mut user = sid(token, TokenUser)?;
+    let entry = EXPLICIT_ACCESS_W {
+        grfAccessPermissions: 0x10000000, // GENERIC_ALL, only for the creator user
+        grfAccessMode: GRANT_ACCESS,
+        grfInheritance: 0,
+        Trustee: TRUSTEE_W {
+            pMultipleTrustee: std::ptr::null_mut(),
+            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+            TrusteeForm: TRUSTEE_IS_SID,
+            TrusteeType: TRUSTEE_IS_USER,
+            ptstrName: user.as_mut_ptr().cast(),
+        },
+    };
+    let mut merged = std::ptr::null_mut();
+    let error = unsafe { SetEntriesInAclW(1, &entry, old.DefaultDacl, &mut merged) };
+    if error != 0 {
+        return Err(format!("Merge derived user ACL: {error}"));
+    }
+    let value = TOKEN_DEFAULT_DACL {
+        DefaultDacl: merged,
+    };
+    let result = unsafe {
+        SetTokenInformation(
+            token,
+            TokenDefaultDacl,
+            &value as *const _ as *const _,
+            size_of::<TOKEN_DEFAULT_DACL>() as u32,
+        )
+    };
+    let error = (result == 0).then(os_error);
+    unsafe { LocalFree(merged.cast()) };
+    error.map_or(Ok(()), Err)
+}
+
 pub fn ensure_available() -> Result<()> {
     Token::acquire().map(|_| ())
 }
@@ -210,16 +284,17 @@ pub struct Supervisor {
     reduced: Option<Handle>,
 }
 impl Supervisor {
-    pub fn exited(&mut self) -> Result<bool> {
+    pub fn exit_code(&mut self) -> Result<Option<u32>> {
         if let Some(child) = &mut self.normal {
-            return io(child.try_wait()).map(|value| value.is_some());
+            return io(child.try_wait())
+                .map(|value| value.map(|status| status.code().unwrap_or(1) as u32));
         }
         let handle = self.reduced.as_ref().ok_or("Missing supervisor process")?;
         let mut code = 0;
         if unsafe { GetExitCodeProcess(handle.0, &mut code) } == 0 {
             return Err(os_error());
         }
-        Ok(code != STILL_ACTIVE as u32)
+        Ok((code != STILL_ACTIVE as u32).then_some(code))
     }
     pub fn kill(&mut self) {
         if let Some(child) = &mut self.normal {
@@ -356,6 +431,38 @@ pub fn record_process(dir: &Path, role: &str, pid: u32) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn default_aces(token: HANDLE) -> Vec<Vec<u8>> {
+        use windows_sys::Win32::Security::{ACE_HEADER, GetAce};
+        let mut buffer = [0usize; 8192];
+        let mut length = 0;
+        assert_ne!(
+            unsafe {
+                GetTokenInformation(
+                    token,
+                    TokenDefaultDacl,
+                    buffer.as_mut_ptr().cast(),
+                    size_of_val(&buffer) as u32,
+                    &mut length,
+                )
+            },
+            0
+        );
+        let dacl = unsafe { &*buffer.as_ptr().cast::<TOKEN_DEFAULT_DACL>() };
+        assert!(!dacl.DefaultDacl.is_null());
+        (0..unsafe { (*dacl.DefaultDacl).AceCount })
+            .map(|index| {
+                let mut ace = std::ptr::null_mut();
+                assert_ne!(
+                    unsafe { GetAce(dacl.DefaultDacl, u32::from(index), &mut ace) },
+                    0
+                );
+                let header = unsafe { &*ace.cast::<ACE_HEADER>() };
+                unsafe { std::slice::from_raw_parts(ace.cast::<u8>(), usize::from(header.AceSize)) }
+                    .to_vec()
+            })
+            .collect()
+    }
+
     #[test]
     fn restricted_fallback_is_same_user_ordinary_without_starting_a_process() {
         let mut current = std::ptr::null_mut();
@@ -374,5 +481,21 @@ mod tests {
         let current = Handle(current);
         let reduced = restricted_token(current.0).unwrap();
         validate(current.0, reduced.0).unwrap();
+        let before = default_aces(reduced.0);
+        same_user_default_dacl(reduced.0).unwrap();
+        let after = default_aces(reduced.0);
+        let user = sid(reduced.0, TokenUser).unwrap();
+        // Existing explicit denies (including a test sandbox's restrictions)
+        // remain authoritative. Only the same user's allow ACE is added.
+        for ace in before.iter().filter(|ace| ace[0] == 1) {
+            assert!(after.contains(ace), "existing deny ACE must be preserved");
+        }
+        assert!(
+            after.iter().any(|ace| ace.len() >= 8
+                && ace[0] == 0
+                && u32::from_le_bytes(ace[4..8].try_into().unwrap()) & 0x10000000 != 0
+                && ace[8..] == user),
+            "derived default ACL must include its exact user SID"
+        );
     }
 }

@@ -122,7 +122,7 @@ def main():
         assert not old_context["elevated"] and old_context["user_sid"] == harness_context["user_sid"]
         assert int(old_context["integrity_sid"].rsplit("-", 1)[1]) <= 8192
         before = common.wait_file(fixture / "old-observation.json", 120, old)
-        assert old.wait(180) == 0
+        assert common.wait_exit(old, fixture, 180) == 0
         after = common.wait_file(fixture / "new-observation.json", 180)
         transaction = Path(after["transaction"])
         outer = json.loads((transaction / "transaction.json").read_text(encoding="utf-8"))
@@ -208,7 +208,7 @@ def portable_transition(root, binaries, package, source_sha, target_version, chi
         assert old_context["elevated"] == elevated
 
         before = common.wait_file(fixture / "old-observation.json", 120, old)
-        assert old.wait(180) == 0
+        assert common.wait_exit(old, fixture, 180) == 0
         after = common.wait_file(fixture / "new-observation.json", 180)
         transaction = Path(after["transaction"])
         outer = json.loads((transaction / "transaction.json").read_text(encoding="utf-8"))

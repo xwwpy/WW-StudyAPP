@@ -84,6 +84,23 @@ def wait_file(path, timeout, process=None):
         time.sleep(.2)
     return json.loads(path.read_text(encoding="utf-8"))
 
+def wait_exit(process, fixture, timeout):
+    """Do not let a terminal handoff failure masquerade as a live old app."""
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        attempt = fixture / "attempt.json"
+        if attempt.is_file():
+            directory = Path(json.loads(attempt.read_text(encoding="utf-8"))["directory"]).resolve()
+            if not directory.is_relative_to((fixture / ".runtime" / "updates").resolve()):
+                raise ValueError("Update attempt is outside the fixture runtime")
+            failures = list(directory.glob("status-failed-*.json"))
+            if failures:
+                raise RuntimeError("Native handoff failure: " + failures[0].read_text(encoding="utf-8"))
+        if time.monotonic() > deadline:
+            raise TimeoutError("Original application did not exit after update handoff")
+        time.sleep(.2)
+    return process.returncode
+
 def collect_diagnostics(root):
     fixture = root / "fixture"
     attempts = []

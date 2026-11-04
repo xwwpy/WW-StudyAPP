@@ -309,8 +309,10 @@ pub fn spawn(dir: &Path) -> Result<()> {
         let mut child = user_launch::spawn(dir)?;
         let started = Instant::now();
         loop {
-            if child.exited()? {
-                return Err("Update supervisor exited before readiness".into());
+            if let Some(code) = child.exit_code()? {
+                return Err(format!(
+                    "Update supervisor exited before readiness (0x{code:08X})"
+                ));
             }
             if let Ok(bytes) = read_bounded(&dir.join("ready"), 36) {
                 if bytes == tx.transaction.id.as_bytes() {

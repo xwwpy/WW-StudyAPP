@@ -69,6 +69,28 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(json.loads(retained.read_text())["message"], "installer failure")
         self.assertFalse((fixture / "new-observation.json").exists())
 
+    def test_wait_exit_reports_terminal_failure_while_original_app_is_live(self):
+        root = Path(tempfile.mkdtemp(prefix="native-handoff-failure-"))
+        fixture = root / "fixture"
+        directory = fixture / ".runtime" / "updates" / "attempt"
+        directory.mkdir(parents=True)
+        (fixture / "attempt.json").write_text(json.dumps({"directory": str(directory)}), encoding="utf-8")
+        (directory / "status-failed-test.json").write_text('{"state":"failed","message":"exit 0xC0000142"}', encoding="utf-8")
+        class LiveProcess:
+            def poll(self): return None
+        with self.assertRaisesRegex(RuntimeError, "0xC0000142"):
+            acceptance.wait_exit(LiveProcess(), fixture, 1)
+
+    def test_wait_exit_rejects_evidence_outside_fixture_runtime(self):
+        root = Path(tempfile.mkdtemp(prefix="native-handoff-boundary-"))
+        fixture = root / "fixture"
+        fixture.mkdir()
+        (fixture / "attempt.json").write_text(json.dumps({"directory": str(root / "outside")}), encoding="utf-8")
+        class LiveProcess:
+            def poll(self): return None
+        with self.assertRaisesRegex(ValueError, "outside the fixture runtime"):
+            acceptance.wait_exit(LiveProcess(), fixture, 1)
+
     def test_fixture_binds_exact_package_digest_size_and_version(self):
         root = Path(tempfile.mkdtemp(prefix="native-update-signing-test-"))
         packages = root / "packages"
