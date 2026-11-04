@@ -471,11 +471,13 @@ fn profile_revision(profile: &Path) -> Result<BTreeMap<PathBuf, (Entry, [u8; 32]
     Ok(revision)
 }
 fn wait_profile_stable(profile: &Path, attempts: usize, mut settle: impl FnMut()) -> Result<()> {
-    for _ in 0..attempts {
+    for _round in 0..attempts {
         check_cancel()?;
         let before = match profile_revision(profile) {
             Ok(revision) => revision,
             Err(error) if held(&error) => {
+                #[cfg(feature = "ui-test")]
+                eprintln!("migration profile round={_round} before-held: {error:#}");
                 settle();
                 continue;
             }
@@ -484,8 +486,26 @@ fn wait_profile_stable(profile: &Path, attempts: usize, mut settle: impl FnMut()
         settle();
         match profile_revision(profile) {
             Ok(after) if before == after => return Ok(()),
-            Ok(_) => {}
-            Err(error) if held(&error) => {}
+            Ok(_after) => {
+                #[cfg(feature = "ui-test")]
+                {
+                    let changed = before
+                        .keys()
+                        .chain(_after.keys())
+                        .filter(|path| before.get(*path) != _after.get(*path))
+                        .collect::<std::collections::BTreeSet<_>>();
+                    eprintln!(
+                        "migration profile round={_round} before={} after={} changed={:?}",
+                        before.len(),
+                        _after.len(),
+                        changed.into_iter().take(8).collect::<Vec<_>>()
+                    );
+                }
+            }
+            Err(error) if held(&error) => {
+                #[cfg(feature = "ui-test")]
+                eprintln!("migration profile round={_round} after-held: {error:#}");
+            }
             Err(error) => return Err(error),
         }
     }
