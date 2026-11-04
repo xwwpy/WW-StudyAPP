@@ -708,7 +708,7 @@ impl UpdatePanel {
         self.error = Some(error.to_string());
     }
 
-    #[cfg(all(feature = "update-acceptance", target_os = "macos"))]
+    #[cfg(feature = "update-acceptance")]
     pub(crate) fn acceptance_install_error(&self) -> Option<String> {
         self.nsis_error.clone()
     }

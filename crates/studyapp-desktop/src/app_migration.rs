@@ -965,7 +965,11 @@ fn prepare_checked(
         restore_profile_copies(&mut j, &scratch)?;
         atomic_json(&journal_file(&paths), &j)?;
         progress("正在等待编辑器释放缓存文件…".into());
-        wait_profile_stable(&paths.editor_profile(), 16, || {
+        // WebKit may finish its asynchronous WAL checkpoint several seconds
+        // after the closed WebView is dropped, especially on a busy runner.
+        // Keep the bounded wait and full content/identity checks; never copy a
+        // profile that is still changing when the ten-second budget expires.
+        wait_profile_stable(&paths.editor_profile(), 80, || {
             std::thread::sleep(std::time::Duration::from_millis(125));
         })?;
         progress("正在统计可迁移文件…".into());
@@ -1805,6 +1809,24 @@ mod tests {
         assert_eq!(fs::read(database).unwrap(), b"end bytes");
         assert!(!wal.exists());
         assert!(base.exists());
+    }
+    #[test]
+    fn closed_profile_allows_delayed_checkpoint_beyond_initial_two_seconds() {
+        let (_, paths, _) = fixture();
+        let profile = paths.effective.cache.join("editor");
+        fs::create_dir_all(&profile).unwrap();
+        let database = profile.join("localstorage.db");
+        fs::write(&database, b"0").unwrap();
+        let mut rounds = 0;
+        wait_profile_stable(&profile, 80, || {
+            rounds += 1;
+            if rounds <= 20 {
+                fs::write(&database, rounds.to_string()).unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(rounds, 21);
+        assert_eq!(fs::read(database).unwrap(), b"20");
     }
     #[test]
     fn continuously_changing_profile_is_held_without_publishing() {

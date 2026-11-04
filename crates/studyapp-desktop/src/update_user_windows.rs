@@ -11,10 +11,10 @@ use windows_sys::Win32::{
     Foundation::{HANDLE, STILL_ACTIVE},
     Security::{
         CreateRestrictedToken, CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, GetLengthSid,
-        GetTokenInformation, SID_AND_ATTRIBUTES, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
-        TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_INFORMATION_CLASS,
-        TOKEN_LINKED_TOKEN, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenElevation,
-        TokenIntegrityLevel, TokenLinkedToken, TokenSessionId, TokenUser,
+        GetTokenInformation, LUA_TOKEN, SID_AND_ATTRIBUTES, SetTokenInformation,
+        TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION,
+        TOKEN_INFORMATION_CLASS, TOKEN_LINKED_TOKEN, TOKEN_MANDATORY_LABEL, TOKEN_QUERY,
+        TokenElevation, TokenIntegrityLevel, TokenLinkedToken, TokenSessionId, TokenUser,
         WinBuiltinAdministratorsSid, WinMediumLabelSid,
     },
     System::Threading::{
@@ -111,73 +111,7 @@ impl Token {
         let (selected, restricted) = if let Ok(linked) = linked {
             (Handle(linked.LinkedToken), false)
         } else {
-            // UAC-disabled sessions have no linked token. Remove admin authority
-            // and lower only a newly restricted token, never the caller token.
-            let mut admin = [0u32; 17];
-            let mut length = size_of_val(&admin) as u32;
-            if unsafe {
-                CreateWellKnownSid(
-                    WinBuiltinAdministratorsSid,
-                    std::ptr::null_mut(),
-                    admin.as_mut_ptr().cast(),
-                    &mut length,
-                )
-            } == 0
-            {
-                return Err(os_error());
-            }
-            let disabled = SID_AND_ATTRIBUTES {
-                Sid: admin.as_mut_ptr().cast(),
-                Attributes: 0,
-            };
-            let mut restricted = std::ptr::null_mut();
-            if unsafe {
-                CreateRestrictedToken(
-                    current.0,
-                    DISABLE_MAX_PRIVILEGE,
-                    1,
-                    &disabled,
-                    0,
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null(),
-                    &mut restricted,
-                )
-            } == 0
-            {
-                return Err(os_error());
-            }
-            let restricted = Handle(restricted);
-            let mut medium = [0u32; 17];
-            let mut length = size_of_val(&medium) as u32;
-            if unsafe {
-                CreateWellKnownSid(
-                    WinMediumLabelSid,
-                    std::ptr::null_mut(),
-                    medium.as_mut_ptr().cast(),
-                    &mut length,
-                )
-            } == 0
-            {
-                return Err(os_error());
-            }
-            let label = TOKEN_MANDATORY_LABEL {
-                Label: SID_AND_ATTRIBUTES {
-                    Sid: medium.as_mut_ptr().cast(),
-                    Attributes: 0x20, // SE_GROUP_INTEGRITY
-                },
-            };
-            if unsafe {
-                SetTokenInformation(
-                    restricted.0,
-                    TokenIntegrityLevel,
-                    &label as *const _ as *const _,
-                    size_of::<TOKEN_MANDATORY_LABEL>() as u32 + length,
-                )
-            } == 0
-            {
-                return Err(os_error());
-            }
+            let restricted = restricted_token(current.0)?;
             (restricted, true)
         };
         validate(current.0, selected.0)?;
@@ -188,6 +122,85 @@ impl Token {
         })
     }
 }
+// DISABLE_MAX_PRIVILEGE alone leaves TokenElevation set on unsplit admin tokens.
+// LUA_TOKEN removes that authority as well; validate still fails closed.
+fn restricted_token(current: HANDLE) -> Result<Handle> {
+    // UAC-disabled sessions have no linked token. Remove admin authority
+    // and lower only a newly restricted token, never the caller token.
+    let mut admin = [0u32; 17];
+    let mut length = size_of_val(&admin) as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            WinBuiltinAdministratorsSid,
+            std::ptr::null_mut(),
+            admin.as_mut_ptr().cast(),
+            &mut length,
+        )
+    } == 0
+    {
+        return Err(format!("create administrator SID: {}", os_error()));
+    }
+    let disabled = SID_AND_ATTRIBUTES {
+        Sid: admin.as_mut_ptr().cast(),
+        Attributes: 0,
+    };
+    let mut restricted = std::ptr::null_mut();
+    if unsafe {
+        CreateRestrictedToken(
+            current,
+            DISABLE_MAX_PRIVILEGE | LUA_TOKEN,
+            1,
+            &disabled,
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            &mut restricted,
+        )
+    } == 0
+    {
+        return Err(format!("create restricted token: {}", os_error()));
+    }
+    let restricted = Handle(restricted);
+    let integrity = sid(restricted.0, TokenIntegrityLevel)?;
+    let level = u32::from_le_bytes(integrity[integrity.len() - 4..].try_into().unwrap());
+    if level <= 8192 {
+        // Preserve an already-low caller instead of trying to raise its token.
+        return Ok(restricted);
+    }
+    let mut medium = [0u32; 17];
+    let mut length = size_of_val(&medium) as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            WinMediumLabelSid,
+            std::ptr::null_mut(),
+            medium.as_mut_ptr().cast(),
+            &mut length,
+        )
+    } == 0
+    {
+        return Err(format!("create medium SID: {}", os_error()));
+    }
+    let label = TOKEN_MANDATORY_LABEL {
+        Label: SID_AND_ATTRIBUTES {
+            Sid: medium.as_mut_ptr().cast(),
+            Attributes: 0x20, // SE_GROUP_INTEGRITY
+        },
+    };
+    if unsafe {
+        SetTokenInformation(
+            restricted.0,
+            TokenIntegrityLevel,
+            &label as *const _ as *const _,
+            size_of::<TOKEN_MANDATORY_LABEL>() as u32 + length,
+        )
+    } == 0
+    {
+        return Err(format!("lower restricted token integrity: {}", os_error()));
+    }
+    Ok(restricted)
+}
+
 pub fn ensure_available() -> Result<()> {
     Token::acquire().map(|_| ())
 }
@@ -337,4 +350,29 @@ pub fn record_process(dir: &Path, role: &str, pid: u32) -> Result<()> {
         &dir.join(format!("{role}-token.json")),
         &serde_json::to_vec(&value).map_err(|error| error.to_string())?,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restricted_fallback_is_same_user_ordinary_without_starting_a_process() {
+        let mut current = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_ADJUST_DEFAULT,
+                    &mut current,
+                )
+            },
+            0,
+            "{}",
+            os_error()
+        );
+        let current = Handle(current);
+        let reduced = restricted_token(current.0).unwrap();
+        validate(current.0, reduced.0).unwrap();
+    }
 }
