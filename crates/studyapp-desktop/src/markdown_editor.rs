@@ -730,6 +730,13 @@ impl MarkdownEditor {
     }
 
     pub(crate) fn suspend_for_migration(&mut self, suspended: bool, cx: &mut Context<Self>) {
+        #[cfg(feature = "ui-test")]
+        eprintln!(
+            "migration editor suspended={suspended} host={} creating={} epoch={}",
+            self.host.is_some(),
+            self.creating,
+            self.host_epoch
+        );
         self.suspended = suspended;
         self.host_epoch = self.host_epoch.wrapping_add(1);
         self.host = None;
