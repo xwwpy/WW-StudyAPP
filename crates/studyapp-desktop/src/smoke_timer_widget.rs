@@ -3,7 +3,10 @@ use crate::native_test_pointer as pointer;
 use crate::{app::StudyApp, smoke_library::until};
 use gpui_kit::{test::TestWindowExt, *};
 use serde_json::json;
-use std::{path::Path, time::Duration};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
 use studyapp_ui::timer_card::TimerCardAction;
 use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, RECT},
@@ -119,6 +122,19 @@ async fn settle(cx: &AsyncApp) {
     cx.background_executor()
         .timer(Duration::from_millis(450))
         .await;
+}
+
+async fn until_native(label: &str, cx: &AsyncApp, ready: impl Fn() -> bool) {
+    let started = Instant::now();
+    while !ready() {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "native transition: {label}"
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
 }
 
 pub async fn exercise(
@@ -328,20 +344,6 @@ pub async fn exercise(
     }
     settle(cx).await;
     let through = pixel(clear);
-    widget
-        .update(cx, |_, window, cx| {
-            window.activate_window();
-            window.render_frame(cx);
-            pointer::capture(window, &database.parent().unwrap().join("timer-widget.bmp"));
-            pointer::capture_diagnostic(
-                window,
-                &database
-                    .parent()
-                    .unwrap()
-                    .join("timer-widget-diagnostic.bmp"),
-            );
-        })
-        .unwrap();
     std::fs::write(
         database
             .parent()
@@ -352,6 +354,30 @@ pub async fn exercise(
         .unwrap(),
     )
     .unwrap();
+    widget
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            pointer::capture_diagnostic(
+                window,
+                &database
+                    .parent()
+                    .unwrap()
+                    .join("timer-widget-diagnostic.bmp"),
+            );
+            // GPUI's Windows activation is an executor task. Submit it on this
+            // turn, then await the actual OS transition before a strict capture.
+            window.activate_window();
+        })
+        .unwrap();
+    until_native("widget foreground after re-show", cx, || unsafe {
+        GetForegroundWindow() == HWND(handle as *mut _)
+    })
+    .await;
+    widget
+        .update(cx, |_, window, _| {
+            pointer::capture(window, &database.parent().unwrap().join("timer-widget.bmp"));
+        })
+        .unwrap();
     assert_eq!(
         through, behind,
         "transparent widget padding must expose the underlying desktop"
@@ -396,14 +422,12 @@ pub async fn exercise(
         })
     })
     .unwrap();
-    assert!(
-        unsafe {
-            IsIconic(HWND(
-                main.update(cx, |_, window, _| raw(window)).unwrap() as *mut _
-            ))
-        }
-        .as_bool()
-    );
+    let main_handle = main.update(cx, |_, window, _| raw(window)).unwrap();
+    // minimize_window uses ShowWindowAsync on Windows as well.
+    until_native("main minimized", cx, || unsafe {
+        IsIconic(HWND(main_handle as *mut _)).as_bool()
+    })
+    .await;
     cx.background_executor()
         .timer(Duration::from_millis(2200))
         .await;
