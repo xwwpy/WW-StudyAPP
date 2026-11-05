@@ -1392,15 +1392,23 @@ pub async fn exercise(
         cx,
     )
     .await;
+    let purge = SharedString::from(format!("purge-copy-{}", purge_target.id));
     window
         .update(cx, |_, window, cx| {
-            click_scrolled(
-                window,
-                format!("purge-copy-{}", purge_target.id).into(),
-                "storage-copy-list",
-                cx,
-            );
+            reveal_scrolled(window, purge.clone(), "storage-copy-list", cx);
         })
+        .unwrap();
+    #[cfg(windows)]
+    crate::smoke_interactions::dismiss_notices_over_gesture(
+        window,
+        view,
+        purge.clone(),
+        purge.clone(),
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, window, cx| window.click(purge, cx))
         .unwrap();
     until(
         window,

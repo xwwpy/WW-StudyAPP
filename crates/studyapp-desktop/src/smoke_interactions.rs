@@ -48,16 +48,48 @@ pub(crate) async fn dismiss_notices_over_gesture(
     target: SharedString,
     cx: &mut AsyncApp,
 ) {
+    dismiss_notices(window, view, Some((source, target)), cx).await;
+}
+
+/// Remove setup-result animations before measuring only window movement. This
+/// still clicks real close controls and waits for normal occlusion release.
+pub(crate) async fn dismiss_notices_before_measurement(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    cx: &mut AsyncApp,
+) {
+    dismiss_notices(window, view, None, cx).await;
+}
+
+async fn dismiss_notices(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    gesture: Option<(SharedString, SharedString)>,
+    cx: &mut AsyncApp,
+) {
     let started = std::time::Instant::now();
     loop {
         let clear = window
             .update(cx, |_, window, cx| {
                 window.render_frame(cx);
-                let points = [
-                    window.find(source.clone()).bounds().center(),
-                    window.find(target.clone()).bounds().center(),
-                ];
                 let center = view.read(cx).notifications.clone();
+                let points: Vec<_> = if let Some((source, target)) = &gesture {
+                    vec![
+                        window.find(source.clone()).bounds().center(),
+                        window.find(target.clone()).bounds().center(),
+                    ]
+                } else {
+                    center
+                        .read(cx)
+                        .test_state()
+                        .iter()
+                        .filter_map(|(id, _)| {
+                            window
+                                .try_find(SharedString::from(format!("notice-{id}")))
+                                .map(|card| card.bounds().center())
+                        })
+                        .collect()
+                };
                 let Some((id, button)) = blocking_notice_button(window, center.read(cx), &points)
                 else {
                     return true;

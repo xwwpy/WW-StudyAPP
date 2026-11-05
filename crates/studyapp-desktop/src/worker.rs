@@ -156,9 +156,27 @@ pub struct Update {
     pub image_cloud_busy: Option<bool>,
 }
 
+/// Keep update delivery ordered and lossless on the existing queue. A separate
+/// capacity-one signal wakes the UI without storing another copy of any data.
+#[derive(Clone)]
+struct UpdateSender {
+    updates: mpsc::Sender<Update>,
+    ready: async_channel::Sender<()>,
+}
+impl UpdateSender {
+    fn send(&self, update: Update) -> Result<(), mpsc::SendError<()>> {
+        self.updates.send(update).map_err(|_| mpsc::SendError(()))?;
+        // Full means an earlier wake already covers this update. Closed means
+        // the UI has gone away; the existing update channel remains authoritative.
+        let _ = self.ready.try_send(());
+        Ok(())
+    }
+}
+
 pub struct Worker {
     pub sender: mpsc::Sender<Work>,
     pub receiver: mpsc::Receiver<Update>,
+    pub ready: async_channel::Receiver<()>,
     handle: Option<thread::JoinHandle<()>>,
     #[cfg(test)]
     startup_probe: startup_timing::Probe,
@@ -187,7 +205,7 @@ struct LibraryLock {
     database: PathBuf,
 }
 impl LibraryLock {
-    fn serve(&mut self, updates: &mpsc::Sender<Update>) {
+    fn serve(&mut self, updates: &UpdateSender) {
         if self.owner_attempted {
             return;
         }
@@ -344,7 +362,7 @@ fn open_locked_library(
 fn relocate(
     engine: &mut Engine,
     target: &std::path::Path,
-    updates: &mpsc::Sender<Update>,
+    updates: &UpdateSender,
     commands: &mpsc::Receiver<Work>,
 ) -> anyhow::Result<Option<(OpenLibrary, Vec<crate::app_migration::CopyRecord>)>> {
     let _logging_pause = audit_log::pause_for_migration()?;
@@ -427,7 +445,7 @@ fn relocate(
         }
     }
 }
-fn offer_cleanup(files: Vec<crate::app_migration::CopyRecord>, updates: &mpsc::Sender<Update>) {
+fn offer_cleanup(files: Vec<crate::app_migration::CopyRecord>, updates: &UpdateSender) {
     let _ = updates.send(Update {
         storage_event: Some(StorageEvent::CleanupOffer(Arc::new(files))),
         ..Default::default()
@@ -490,6 +508,11 @@ impl Worker {
     ) -> Self {
         let (sender, commands) = mpsc::channel();
         let (updates, receiver) = mpsc::channel();
+        let (ready_sender, ready) = async_channel::bounded(1);
+        let updates = UpdateSender {
+            updates,
+            ready: ready_sender,
+        };
         let command_sender = sender.clone();
         #[cfg(test)]
         let startup_probe = startup_timing::Probe::new();
@@ -1380,6 +1403,7 @@ impl Worker {
         Self {
             sender,
             receiver,
+            ready,
             handle: Some(handle),
             #[cfg(test)]
             startup_probe,
@@ -1419,6 +1443,47 @@ impl Drop for Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn update_wakes_are_coalesced_without_losing_ordered_receipts() {
+        let (updates, receiver) = mpsc::channel();
+        let (ready, wake) = async_channel::bounded(1);
+        let sender = UpdateSender { updates, ready };
+        for index in 0..100 {
+            sender
+                .send(Update {
+                    notice: Some(Ok(index.to_string())),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+        assert_eq!(wake.len(), 1, "wake memory must remain bounded");
+        wake.try_recv().unwrap();
+        for index in 0..100 {
+            assert_eq!(
+                receiver.try_recv().unwrap().notice,
+                Some(Ok(index.to_string()))
+            );
+        }
+        assert!(receiver.try_recv().is_err());
+        sender.send(Update::default()).unwrap();
+        wake.try_recv().unwrap();
+        receiver.try_recv().unwrap();
+        drop(receiver);
+        assert!(
+            sender.send(Update::default()).is_err(),
+            "disconnection must remain visible"
+        );
+        assert!(
+            wake.is_empty(),
+            "failed delivery must not emit a success wake"
+        );
+        drop(sender);
+        assert!(
+            wake.is_closed(),
+            "worker teardown must release the waiting UI task"
+        );
+    }
 
     // Fresh libraries durably publish defaults and preferences. Parallel Windows
     // runners can take over 10 seconds; bound readiness without weakening results.

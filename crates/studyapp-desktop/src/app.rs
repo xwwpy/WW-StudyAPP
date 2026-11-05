@@ -150,6 +150,7 @@ pub struct StudyApp {
     pub media_ui: crate::media_ui::MediaUi,
     notified: HashSet<String>,
     _poll: Task<()>,
+    _worker_wake: Option<Task<()>>,
     #[cfg(feature = "ui-test")]
     poll_probe: (
         std::rc::Rc<std::cell::Cell<u64>>,
@@ -158,6 +159,37 @@ pub struct StudyApp {
 }
 
 impl StudyApp {
+    pub(crate) fn spawn_worker_wake(
+        ready: async_channel::Receiver<()>,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.spawn_in(window, async move |this, cx| {
+            'receive: while ready.recv().await.is_ok() {
+                let mut deferred = 0u8;
+                loop {
+                    let mut consumed = false;
+                    if !crate::owned_poll::update(&this, cx, |this, window, cx| {
+                        consumed = true;
+                        this.poll(window, cx);
+                    }) {
+                        break 'receive;
+                    }
+                    if consumed {
+                        break;
+                    }
+                    // Only the helper's known temporary App-borrow outcome
+                    // reaches here. Retain this wake until its queue is drained;
+                    // closed owners/windows and all other errors stop above.
+                    deferred = deferred.saturating_add(1);
+                    cx.background_executor()
+                        .timer(Duration::from_millis(if deferred <= 4 { 1 } else { 250 }))
+                        .await;
+                }
+            }
+        })
+    }
+
     pub fn clear_pending_updates(&mut self) {
         crate::update_install::clear_pending(
             &mut self.pending_update,
@@ -197,6 +229,11 @@ impl StudyApp {
                 }
             }
         });
+        // Deterministic virtual windows forbid wakeups from OS threads. Their
+        // receipt regression injects this same wake task/channel on the test
+        // thread; native ui-test runners always use the real worker signal.
+        let worker_wake =
+            (!cx.is_test()).then(|| Self::spawn_worker_wake(worker.ready.clone(), window, cx));
         cx.observe_window_appearance(window, |this, window, cx| {
             this.refresh_appearance(window, cx);
             cx.notify();
@@ -226,6 +263,8 @@ impl StudyApp {
         .detach();
         let note_title = input("笔记标题", "", window, cx);
         let note_content = cx.new(|cx| crate::markdown_editor::MarkdownEditor::new(window, cx));
+        #[cfg(all(target_os = "macos", not(test)))]
+        note_content.update(cx, |editor, cx| editor.prewarm(window, cx));
         let notifications = cx.new(|_| crate::notifications::NotificationCenter::new());
         cx.subscribe_in(
             &notifications,
@@ -616,6 +655,7 @@ impl StudyApp {
             last_library: String::new(),
             notified: HashSet::new(),
             _poll: poll,
+            _worker_wake: worker_wake,
             #[cfg(feature = "ui-test")]
             poll_probe,
         }

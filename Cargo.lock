@@ -7864,6 +7864,7 @@ name = "studyapp-desktop"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "async-channel",
  "base64 0.22.1",
  "chrono",
  "chrono-tz",

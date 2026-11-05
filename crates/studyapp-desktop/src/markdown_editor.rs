@@ -892,7 +892,15 @@ impl MarkdownEditor {
         cx.notify();
     }
 
-    fn ensure_host(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Start the built-in WebKit process during application startup, without
+    /// selecting a document or making the child visible/focused. Cold process
+    /// creation can then overlap the initial native storage load.
+    #[cfg(all(target_os = "macos", not(test)))]
+    pub(crate) fn prewarm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.ensure_host(window, true, cx);
+    }
+
+    fn ensure_host(&mut self, window: &mut Window, eager: bool, cx: &mut Context<Self>) {
         #[cfg(target_os = "linux")]
         if self.native_closed {
             return;
@@ -902,7 +910,7 @@ impl MarkdownEditor {
             || self.host.is_some()
             || self.creating
             || self.error.is_some()
-            || !self.visible
+            || (!self.visible && !eager)
         {
             return;
         }
@@ -1091,7 +1099,7 @@ impl MarkdownEditor {
 
 impl Render for MarkdownEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.ensure_host(window, cx);
+        self.ensure_host(window, false, cx);
         let weak = cx.weak_entity();
         #[cfg(target_os = "linux")]
         let focus_weak = weak.clone();

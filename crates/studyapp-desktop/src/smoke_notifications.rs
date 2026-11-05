@@ -171,11 +171,44 @@ pub async fn exercise(
             view.update(cx, |app, cx| configure(app, NoticeStyle::CornerCard, cx))
         })
         .unwrap();
+    // Native editor/pixel prerequisites may temporarily raise this process's
+    // main fixture to TOPMOST. Return only our known main window to the normal
+    // band before asking the independent, non-topmost witness to take focus.
+    window
+        .update(cx, |_, window, _| {
+            use windows::Win32::{
+                Foundation::HWND,
+                UI::WindowsAndMessaging::{
+                    HWND_NOTOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SetWindowPos,
+                },
+            };
+            use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let RawWindowHandle::Win32(raw) = window.window_handle().unwrap().as_raw() else {
+                panic!("Win32 main fixture required")
+            };
+            unsafe {
+                SetWindowPos(
+                    HWND(raw.hwnd.get() as *mut _),
+                    Some(HWND_NOTOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+                .unwrap()
+            };
+        })
+        .unwrap();
+    // Drain earlier modal focus restoration before requesting witness focus.
+    cx.background_executor()
+        .timer(Duration::from_millis(50))
+        .await;
     let witness = cx
         .update(|cx| {
             cx.open_window(
                 WindowOptions {
-                    focus: true,
+                    focus: false,
                     show: true,
                     ..Default::default()
                 },
@@ -190,8 +223,10 @@ pub async fn exercise(
     // must acquire its own root lease, so use the untyped owning window.
     let witness: AnyWindowHandle = witness.into();
     witness
-        .update(cx, |_, window, _| {
-            crate::native_test_pointer::prepare(window)
+        .update(cx, |_, window, cx| {
+            crate::native_test_pointer::prepare(window);
+            window.render_frame(cx);
+            window.activate_window();
         })
         .unwrap();
     // Losing main-window activation is not proof that the new witness has

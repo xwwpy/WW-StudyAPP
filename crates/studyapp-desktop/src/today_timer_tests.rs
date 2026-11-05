@@ -396,3 +396,57 @@ fn worker_poll_keeps_the_main_window_after_an_observing_window_closes(cx: &mut T
         "worker replies must still be consumed in the explicitly owned main window"
     );
 }
+
+/// The deterministic GPUI clock is never advanced. Queue and signal delivery
+/// occur on the test thread, as required by GPUI's deterministic scheduler.
+#[gpui_kit::test]
+fn worker_receipt_wakes_the_main_view_without_advancing_its_poll_timer(cx: &mut TestAppContext) {
+    let (app, visual) = fixture(cx);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let (signal, ready) = async_channel::bounded(1);
+    let (mut snapshot, mut preferences) = app.update(visual, |app, _| {
+        app.worker.receiver = receiver;
+        (
+            app.snapshot.as_ref().unwrap().as_ref().clone(),
+            app.preferences_ui.saved.as_ref().unwrap().clone(),
+        )
+    });
+    let target = !snapshot.settings.timer_widget.pinned;
+    snapshot.settings.timer_widget.pinned = target;
+    preferences.settings.timer_widget.pinned = target;
+    let snapshot = std::sync::Arc::new(snapshot);
+    let read_models = studyapp_desktop::read_models::ReadModelCache::default().refresh(
+        &snapshot,
+        &chrono::Local,
+        chrono::Utc::now().timestamp(),
+    );
+    let _wake = visual.update(|window, cx| {
+        app.update(cx, |_, cx| StudyApp::spawn_worker_wake(ready, window, cx))
+    });
+    visual.run_until_parked();
+    sender
+        .send(crate::worker::Update {
+            snapshot: Some(snapshot),
+            read_models: Some(read_models),
+            preferences: Some(preferences),
+            ..Default::default()
+        })
+        .unwrap();
+    signal.try_send(()).unwrap();
+    visual.run_until_parked();
+    assert!(
+        app.read_with(visual, |app, _| {
+            app.snapshot.as_ref().unwrap().settings.timer_widget.pinned == target
+                && app
+                    .preferences_ui
+                    .saved
+                    .as_ref()
+                    .unwrap()
+                    .settings
+                    .timer_widget
+                    .pinned
+                    == target
+        }),
+        "receipt delivery, not the periodic timer, must update both accepted views"
+    );
+}

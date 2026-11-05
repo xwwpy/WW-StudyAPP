@@ -430,6 +430,16 @@ pub async fn exercise(
             "native widget resize edge: {name}"
         );
     }
+    #[cfg(not(test))]
+    widget
+        .update(cx, |_, window, _| {
+            let frame = crate::timer_widget_window::pin_observation(window).unwrap();
+            assert_eq!(
+                frame["nonClientRendering"], false,
+                "the card must not retain an opaque native non-client frame"
+            );
+        })
+        .unwrap();
     // The card now fills the client area; only its rounded corner is clear.
     // Compare that corner with the same pixel behind the hidden widget.
     // Never require a separate transparent toolbar/padding outside the card.

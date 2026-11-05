@@ -405,11 +405,16 @@ pub async fn exercise(
             })
             .unwrap();
         settle(cx).await;
+        crate::smoke_interactions::dismiss_notices_before_measurement(window, view, cx).await;
+        let (_, x, y) = control_point(window, view, "window-title-drag", cx);
+        crate::native_test_pointer::hover(window, POINT { x, y }, cx).await;
+        // Hover may close a tooltip: take the baseline after that setup, not
+        // before it. The held native drag must still leave all three counters
+        // unchanged and must meet the original physical movement threshold.
+        settle(cx).await;
         let before = window
             .update(cx, |_, _, cx| editor.read(cx).native_state().unwrap())
             .unwrap();
-        let (_, x, y) = control_point(window, view, "window-title-drag", cx);
-        crate::native_test_pointer::hover(window, POINT { x, y }, cx).await;
         let evidence = database.with_file_name(format!("window-drag-{name}-samples.json"));
         let diagnostic_path = database.with_file_name(format!("window-drag-{name}-render.json"));
         let geometry = window

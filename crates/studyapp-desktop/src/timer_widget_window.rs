@@ -121,7 +121,11 @@ mod macos_pin;
 pub fn decorate(window: &mut gpui_kit::Window, pinned: bool, request: bool) -> Result<bool> {
     #[cfg(all(windows, not(test)))]
     {
-        use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::*};
+        use windows::Win32::{
+            Foundation::HWND,
+            Graphics::Dwm::{DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY, DwmSetWindowAttribute},
+            UI::WindowsAndMessaging::*,
+        };
         use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let RawWindowHandle::Win32(raw) = HasWindowHandle::window_handle(window)?.as_raw() else {
             anyhow::bail!("计时窗口句柄无效")
@@ -131,6 +135,17 @@ pub fn decorate(window: &mut gpui_kit::Window, pinned: bool, request: bool) -> R
         unsafe {
             let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             if request {
+                // The card paints its own rounded surface. WS_THICKFRAME must
+                // remain for native edge resizing, but DWM's opaque non-client
+                // border would otherwise cover its transparent top corner.
+                // This changes neither client hit testing nor the resize style.
+                let policy = DWMNCRP_DISABLED;
+                DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_NCRENDERING_POLICY,
+                    std::ptr::from_ref(&policy).cast(),
+                    std::mem::size_of_val(&policy) as u32,
+                )?;
                 SetWindowLongPtrW(
                     hwnd,
                     GWL_EXSTYLE,
@@ -205,6 +220,7 @@ pub(crate) fn pin_observation(window: &gpui_kit::Window) -> Result<serde_json::V
     {
         use windows::Win32::{
             Foundation::{HWND, RECT},
+            Graphics::Dwm::{DWMWA_NCRENDERING_ENABLED, DwmGetWindowAttribute},
             UI::WindowsAndMessaging::*,
         };
         let RawWindowHandle::Win32(raw) = handle.as_raw() else {
@@ -214,7 +230,15 @@ pub(crate) fn pin_observation(window: &gpui_kit::Window) -> Result<serde_json::V
         let mut bounds = RECT::default();
         unsafe {
             GetWindowRect(hwnd, &mut bounds)?;
+            let mut non_client_rendering = 0u32;
+            DwmGetWindowAttribute(
+                hwnd,
+                DWMWA_NCRENDERING_ENABLED,
+                (&mut non_client_rendering as *mut u32).cast(),
+                std::mem::size_of_val(&non_client_rendering) as u32,
+            )?;
             Ok(serde_json::json!({
+                "nonClientRendering": non_client_rendering != 0,
                 "pinned": GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0,
                 "focus": GetForegroundWindow().0 as usize,
                 "bounds": [bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top],
