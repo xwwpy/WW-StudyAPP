@@ -2582,8 +2582,21 @@ test('table Escape cancels a drag while content retains focus; new generation ca
 test('table empty cells retain widths across inline source selection and text undo',async()=>{
   const text='| A | B | C |\n| --- | :---: | ---: |\n| | value | |\n| a | | c |\n';
   const {page,errors}=await tableSetup(text,{},false);
+  const initial=await tableWidths(page);
   await page.getByRole('separator',{name:'调整第 1 列宽度'}).focus();await page.keyboard.press('Shift+ArrowRight');
-  const before=await tableWidths(page);await select(page,text.indexOf('value'),text.indexOf('value')+5);
+  const saved=(await tableMessages(page)).at(-1);assert.ok(saved?.value.widths);
+  // Keyboard resizing saves synchronously but redraws on the next animation
+  // frame. Establish the baseline from the committed geometry, not the old
+  // equal-width DOM or CodeMirror's transient measurement elements.
+  await page.waitForFunction(({table,widths})=>{
+    const header=document.querySelector(`.md-table-header[data-table-id="${table}"]`);
+    if(!header)return false;
+    const cells=[...header.querySelectorAll('.md-table-cell')];
+    return cells.length===widths.length&&cells.every((cell,i)=>
+      Math.abs(cell.getBoundingClientRect().width-header.clientWidth*widths[i]/10000)<2);
+  },{table:saved.table,widths:saved.value.widths});
+  const before=await tableWidths(page);assert.ok(before[0]>initial[0]+20);
+  await select(page,text.indexOf('value'),text.indexOf('value')+5);
   await page.keyboard.type('changed');await action(page,{type:'command',name:'undo'});await page.waitForTimeout(100);
   assert.equal((await state(page)).text,text);
   const widths=await tableWidths(page);assert.ok(Math.abs(widths[0]-before[0])<2);
