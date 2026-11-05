@@ -432,6 +432,7 @@ async fn default_appearance_sample(
         .update(cx, |_, window, _| {
             let bounds = window.find("review-summary").bounds();
             assert!(bounds.size.width > px(100.) && bounds.size.height > px(0.));
+            crate::smoke::styled_summary_geometry(window, database);
         })
         .unwrap();
     let image = database.with_file_name("native-markdown-editor-default-summary.png");

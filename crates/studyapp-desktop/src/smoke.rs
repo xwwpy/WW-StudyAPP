@@ -33,6 +33,30 @@ pub(crate) fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
+#[cfg(feature = "ui-test")]
+pub(crate) fn styled_summary_geometry(window: &mut Window, database: &Path) {
+    use gpui_kit::test::TestWindowExt;
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let surface = window.find("native-html-surface").bounds();
+    let word = window.find(("native-html-run", 0_usize)).bounds();
+    assert!(
+        word.size.height >= px(35.),
+        "20px HTML text must use its 36px line height"
+    );
+    assert!(word.left() >= surface.left() && word.right() <= surface.right());
+    std::fs::write(
+        database.with_file_name("native-markdown-editor-default-summary-html.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "htmlSummary": true, "fontSize": 20, "lineHeight": 36,
+            "actualHeight": f32::from(word.size.height),
+            "surfaceWidth": f32::from(surface.size.width),
+            "viewportWidth": f32::from(window.viewport_size().width),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
 pub fn prepare(database: &Path) -> anyhow::Result<()> {
     anyhow::ensure!(
         !database.exists(),
@@ -63,7 +87,10 @@ pub fn prepare(database: &Path) -> anyhow::Result<()> {
             started_at: now - 172800,
             minutes: 45,
             summary: format!(
-                "{}{}",
+                "{}{}{}",
+                "<span style='font-size:20px;line-height:1.8;color:#586D83;background-color:#90CAF940'>HTML 摘要🙂</span>
+
+",
                 "理解 Rust 所有权与借用规则。".repeat(8),
                 "UnbrokenSummary".repeat(10)
             ),
@@ -196,6 +223,8 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert!(title.right() <= status.left() && title.left() >= check.right(), "long review summary overlaps controls");
                 assert!(status.right() <= card.right() && title.size.height > px(40.), "review card must wrap its complete long summary");
                 assert!(review.title.contains(&"UnbrokenSummary".repeat(10)), "stored summary was truncated");
+                styled_summary_geometry(window, &database);
+                if width == 1400. { capture(window, database.with_file_name("native-markdown-editor-summary-html.png")).unwrap(); }
                 if width == 1400. { window.click(SharedString::from(format!("review-check-{}", review.id)), cx); }
             }).expect("review resize and click");
             }

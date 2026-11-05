@@ -218,3 +218,31 @@ fn ordered_start_attributes_use_the_shared_bounded_decimal_grammar() {
         );
     }
 }
+
+#[test]
+fn preformatted_leading_and_interior_blank_lines_survive_resanitization() {
+    for source in [
+        "<pre>
+
+x
+
+y</pre>",
+        "<pre><!-- comment -->
+x</pre>",
+    ] {
+        let clean = sanitize_html(source).unwrap();
+        assert!(clean.contains("<span></span>"));
+        assert_eq!(sanitize_html(&clean).unwrap(), clean);
+        let tree = studyapp_core::safe_html_document(&clean).unwrap();
+        fn text(nodes: &[studyapp_core::SafeHtmlNode]) -> String {
+            nodes
+                .iter()
+                .map(|node| match node {
+                    studyapp_core::SafeHtmlNode::Text(value) => value.clone(),
+                    studyapp_core::SafeHtmlNode::Element { children, .. } => text(children),
+                })
+                .collect()
+        }
+        assert!(text(&tree).starts_with(char::from(10)));
+    }
+}

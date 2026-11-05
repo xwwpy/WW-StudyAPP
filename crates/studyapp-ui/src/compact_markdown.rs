@@ -2,14 +2,13 @@
 use crate::{
     components::{BORDER, column, muted, row, scroll_body},
     controls::Button,
-    markdown_content::markdown_preview_with_html,
     markdown_format::{MarkdownFormat, format_markdown},
 };
 use gpui_kit::component::{
     Selectable, Sizable,
     button::ButtonVariants,
     input::{Textarea, TextareaState},
-    text::{TextView, TextViewStyle},
+    text::TextViewStyle,
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -20,16 +19,11 @@ pub fn summary_markdown_style() -> TextViewStyle {
     TextViewStyle::default().table(table)
 }
 
-fn preview(source: &str) -> String {
-    markdown_preview_with_html(source, crate::theme::palette().render_html)
-}
-
 pub struct CompactMarkdown {
     input: Entity<TextareaState>,
     preview: bool,
     preview_scroll: ScrollHandle,
     preview_source: String,
-    html_enabled: bool,
     _input_observer: Subscription,
 }
 
@@ -37,17 +31,16 @@ impl CompactMarkdown {
     pub fn new(input: Entity<TextareaState>, cx: &mut Context<Self>) -> Self {
         let observer = cx.observe(&input, |this, _, cx| {
             if this.preview {
-                this.preview_source = preview(&this.input.read(cx).value());
+                this.preview_source = this.input.read(cx).value().to_string();
                 cx.notify();
             }
         });
-        let preview_source = preview(&input.read(cx).value());
+        let preview_source = input.read(cx).value().to_string();
         Self {
             input,
             preview: true,
             preview_scroll: ScrollHandle::new(),
             preview_source,
-            html_enabled: crate::theme::palette().render_html,
             _input_observer: observer,
         }
     }
@@ -55,7 +48,7 @@ impl CompactMarkdown {
     pub fn reset(&mut self, cx: &mut Context<Self>) {
         self.preview = true;
         self.preview_scroll.set_offset(point(px(0.), px(0.)));
-        self.preview_source = preview(&self.input.read(cx).value());
+        self.preview_source = self.input.read(cx).value().to_string();
         cx.notify();
     }
 
@@ -82,11 +75,6 @@ impl CompactMarkdown {
 
 impl Render for CompactMarkdown {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let enabled = crate::theme::palette().render_html;
-        if self.html_enabled != enabled {
-            self.html_enabled = enabled;
-            self.preview_source = preview(&self.input.read(cx).value());
-        }
         let toolbar =
             row().flex_wrap().gap_1().children(
                 [
@@ -132,7 +120,7 @@ impl Render for CompactMarkdown {
                                 this.preview_source = if source.trim().is_empty() {
                                     "写下学习内容后，在这里查看排版。".into()
                                 } else {
-                                    preview(&source)
+                                    source.to_string()
                                 };
                                 this.preview = !this.preview;
                                 cx.notify();
@@ -177,20 +165,15 @@ impl Render for CompactMarkdown {
                                 .border_color(crate::theme::color(BORDER))
                                 .rounded_md()
                                 .p_3()
-                                .child(
-                                    div().flex_shrink_0().min_w_0().child(
-                                        crate::markdown_view::copyable(
-                                            "summary-preview-copy",
-                                            TextView::markdown(
-                                                "summary-markdown-content",
-                                                self.preview_source.clone(),
-                                            )
-                                            .style(summary_markdown_style())
-                                            .on_link_click(|_, _, _, _| {})
-                                            .scrollable(false),
+                                .child(div().flex_shrink_0().min_w_0().child(
+                                    crate::markdown_view::copyable(
+                                        "summary-preview-copy",
+                                        crate::markdown_view::content(
+                                            "summary-markdown-content",
+                                            &self.preview_source,
                                         ),
                                     ),
-                                ),
+                                )),
                         )
                     }),
             )

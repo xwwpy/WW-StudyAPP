@@ -137,6 +137,7 @@ fn visit(node: &Handle, depth: usize, remaining: &mut usize, output: &mut String
     }
     *remaining -= 1;
     let mut close = None;
+    let mut pre_content_start = None;
     match &node.data {
         NodeData::Text { contents } => escaped(output, &contents.borrow()),
         NodeData::Element { name, attrs, .. } => {
@@ -193,6 +194,9 @@ fn visit(node: &Handle, depth: usize, remaining: &mut usize, output: &mut String
                     }
                 }
                 output.push('>');
+                if tag == "pre" {
+                    pre_content_start = Some(output.len());
+                }
                 if !matches!(tag, "br" | "hr") {
                     close = Some(tag);
                 }
@@ -205,6 +209,13 @@ fn visit(node: &Handle, depth: usize, remaining: &mut usize, output: &mut String
     }
     for child in node.children.borrow().iter() {
         visit(child, depth + 1, remaining, output)?;
+    }
+    if let Some(start) = pre_content_start
+        && output[start..].starts_with(char::from(10))
+    {
+        // HTML parsers discard one LF immediately after <pre>. An empty safe
+        // span protects an already-parsed leading LF on subsequent passes.
+        output.insert_str(start, "<span></span>");
     }
     if let Some(tag) = close {
         output.push_str("</");

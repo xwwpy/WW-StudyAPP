@@ -32,6 +32,5 @@ mod modal_selection_regression;
 #[cfg(all(test, feature = "ui-test"))]
 mod scroll_regression;
 
-// The native renderer is not wired yet; keep its pure model test-only.
-#[cfg(test)]
+mod native_html;
 mod native_markdown_model;

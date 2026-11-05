@@ -12,21 +12,37 @@ use gpui_kit::{
     test::TestWindowExt,
 };
 struct CachedBackground {
+    html: bool,
     state: Entity<TextViewState>,
 }
 impl Render for CachedBackground {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child(
-            TextView::new(&self.state)
-                .selectable(true)
-                .scrollable(false),
-        )
+        if self.html {
+            return div()
+                .size_full()
+                .child(crate::markdown_view::summary(
+                    "native-cached-background",
+                    "<span>BackgroundOnly secret underneath</span>"
+                        .repeat(60)
+                        .as_str(),
+                ))
+                .into_any_element();
+        }
+        div()
+            .size_full()
+            .child(
+                TextView::new(&self.state)
+                    .selectable(true)
+                    .scrollable(false),
+            )
+            .into_any_element()
     }
 }
 struct Fixture {
     focus: ModalFocus,
     open: bool,
     legacy: bool,
+    html: bool,
     background: Entity<TextViewState>,
     cached: Entity<CachedBackground>,
     scroll: gpui_kit::ScrollHandle,
@@ -55,7 +71,8 @@ impl Render for Fixture {
                         "0.2.2",
                         "0.2.3",
                         "",
-                        "## ReleaseOnly\n\nReleaseOnly updates\n\nMore release notes",
+                        if self.html { "<div><b>ReleaseOnly</b><br><span style='font-size:24px'>ReleaseOnly updates</span><br>More release notes</div>" }
+                        else { "## ReleaseOnly\n\nReleaseOnly updates\n\nMore release notes" },
                         UpdateDialogPhase::Ready,
                     ),
                     &self.scroll,
@@ -68,7 +85,7 @@ impl Render for Fixture {
             }))
     }
 }
-fn check_selection(cx: &mut TestAppContext, legacy: bool) {
+fn check_selection(cx: &mut TestAppContext, legacy: bool, html: bool) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         crate::theme::apply(&Default::default(), false, cx);
@@ -85,12 +102,14 @@ fn check_selection(cx: &mut TestAppContext, legacy: bool) {
             )
         });
         let cached = cx.new(|_| CachedBackground {
+            html,
             state: background.clone(),
         });
         let view = cx.new(|cx| Fixture {
             focus: ModalFocus::new(cx),
             open: false,
             legacy,
+            html,
             background,
             cached,
             scroll: gpui_kit::ScrollHandle::new(),
@@ -170,9 +189,18 @@ fn check_selection(cx: &mut TestAppContext, legacy: bool) {
 }
 #[gpui_kit::test]
 fn update_card_selection_never_includes_the_underlying_page(cx: &mut TestAppContext) {
-    check_selection(cx, false);
+    check_selection(cx, false, false);
 }
 #[gpui_kit::test]
 fn legacy_modal_selection_is_also_isolated_and_restored(cx: &mut TestAppContext) {
-    check_selection(cx, true);
+    check_selection(cx, true, false);
+}
+
+#[gpui_kit::test]
+fn native_html_modal_selection_excludes_cached_html_background(cx: &mut TestAppContext) {
+    check_selection(cx, false, true);
+}
+#[gpui_kit::test]
+fn native_html_legacy_modal_selection_excludes_cached_html_background(cx: &mut TestAppContext) {
+    check_selection(cx, true, true);
 }

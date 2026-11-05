@@ -31,22 +31,29 @@ pub fn copyable(id: impl Into<ElementId>, content: impl IntoElement) -> impl Int
         })
 }
 
-pub fn summary(id: impl Into<ElementId>, source: &str) -> impl IntoElement {
-    copyable(
+/// Shared offline renderer. HTML has no resource or application callbacks.
+pub fn content(id: impl Into<ElementId>, source: &str) -> AnyElement {
+    let id = id.into();
+    if let Some(content) = crate::native_html::content(id.clone(), source) {
+        return content;
+    }
+    TextView::markdown(
         id,
-        TextView::markdown(
-            "summary-content",
-            crate::markdown_content::markdown_preview_with_html(
-                source,
-                crate::theme::palette().render_html,
-            ),
-        )
-        .style(crate::compact_markdown::summary_markdown_style())
-        .on_link_click(|_, _, _, _| {})
-        .w_full()
-        .min_w_0()
-        .scrollable(false),
+        crate::markdown_content::markdown_preview_with_html(
+            source,
+            crate::theme::palette().render_html,
+        ),
     )
+    .style(crate::compact_markdown::summary_markdown_style())
+    .on_link_click(|_, _, _, _| {})
+    .w_full()
+    .min_w_0()
+    .scrollable(false)
+    .into_any_element()
+}
+
+pub fn summary(id: impl Into<ElementId>, source: &str) -> impl IntoElement {
+    copyable(id, content("summary-content", source))
 }
 
 #[cfg(all(test, feature = "ui-test"))]

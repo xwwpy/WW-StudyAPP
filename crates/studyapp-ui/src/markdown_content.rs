@@ -67,10 +67,10 @@ fn preview(source: &str, safe_links: bool, render_html: bool) -> String {
                         studyapp_core::sanitize_inline_html(raw)
                     } else {
                         studyapp_core::sanitize_html(raw).map(|clean| {
-                            format!(
-                                "<div>{clean}</div>
-"
-                            )
+                            // A div HTML block ends at a physical blank line in
+                            // CommonMark. Encode text newlines so a sanitized
+                            // pre block cannot be split and reinterpreted.
+                            format!("<div>{}</div>\n", clean.replace('\n', "&#10;"))
                         })
                     };
                     if let Some(safe) = safe {
