@@ -102,13 +102,21 @@ pub(crate) async fn exercise(
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
             assert!(
-                window.try_find("update-dialog").is_some(),
-                "a detected release opens the dialog"
+                window.try_find("update-dialog").is_none(),
+                "discovery must not open a modal"
             );
+            assert!(window.try_find("sidebar-version-open-unread").is_some());
+            window.click("sidebar-version-open", cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("update-dialog").is_some(),
+                "the version entry opens a card"
+            );
+            assert!(window.try_find("sidebar-version-open-unread").is_none());
             let panel = view.read(cx).update_panel.clone();
             let content = panel.read(cx).dialog_content().expect("update content");
-            assert!(content.notes.contains("# Update fixture"));
-            assert!(content.notes.contains("**Formatting**"));
+            assert!(content.releases[0].notes.contains("# Update fixture"));
+            assert!(content.releases[0].notes.contains("**Formatting**"));
             assert!(matches!(
                 content.phase,
                 studyapp_ui::update_dialog::UpdateDialogPhase::Ready

@@ -6,6 +6,11 @@ gpui_kit::assets::icon_assets!(ExtraIcons, [House, ChartBar]);
 pub struct StudyAssets;
 impl AssetSource for StudyAssets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        if path == "images/app-icon.png" {
+            return Ok(Some(Cow::Borrowed(include_bytes!(
+                "../../../assets/icon.png"
+            ))));
+        }
         match ExtraIcons.load(path)? {
             Some(icon) => Ok(Some(icon)),
             None => gpui_kit::assets::Assets.load(path),

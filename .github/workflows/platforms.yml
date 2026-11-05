@@ -147,6 +147,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-interactive/native-markdown-editor*.png
             ${{ runner.temp }}/native-interactive/native-markdown-editor-default-*.json
+            ${{ runner.temp }}/native-interactive/native-about.png
             ${{ runner.temp }}/native-interactive/page-4.png
             ${{ runner.temp }}/native-interactive.stderr.log
             ${{ runner.temp }}/native-interactive-*.stderr.log
@@ -165,6 +166,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-interactive/native-markdown-editor*.png
             ${{ runner.temp }}/native-interactive/native-markdown-editor-default-*.json
+            ${{ runner.temp }}/native-interactive/native-about.png
             ${{ runner.temp }}/native-interactive.stderr.log
           if-no-files-found: warn
       - name: Build production executable

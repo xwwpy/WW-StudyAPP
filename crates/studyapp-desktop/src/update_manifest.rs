@@ -44,6 +44,10 @@ pub struct UpdateManifest {
 }
 
 impl UpdateManifest {
+    pub fn releases_since(&self, current: &str) -> Vec<ReleaseNotes> {
+        history::releases_since(&self.history, &self.notes, current, &self.version)
+    }
+
     pub fn notes_since(&self, current: &str) -> String {
         history::notes_since(&self.history, &self.notes, current, &self.version)
     }

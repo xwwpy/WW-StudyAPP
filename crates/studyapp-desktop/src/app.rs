@@ -232,6 +232,9 @@ impl StudyApp {
                 }
                 crate::update_ui::UpdateEvent::NsisReady => this.install_nsis_update(window, cx),
                 crate::update_ui::UpdateEvent::AvailabilityChanged => cx.notify(),
+                crate::update_ui::UpdateEvent::ReadStateFailed(error) => {
+                    this.push_notice(Err(error.clone()), cx)
+                }
             },
         )
         .detach();
@@ -1355,7 +1358,28 @@ impl StudyApp {
                     .test_support()
                     .gap_1()
                     .px_1()
-                    .child(muted(format!("v{} · 本地", env!("CARGO_PKG_VERSION")))),
+                    .child(
+                        studyapp_ui::update_available::version_entry(
+                            "sidebar-version-open",
+                            env!("CARGO_PKG_VERSION"),
+                            self.update_panel.read(cx).available_version(),
+                            self.update_panel.read(cx).unread_update(),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.update_panel.read(cx).available_version().is_some() {
+                                this.update_panel
+                                    .update(cx, |panel, cx| panel.show_dialog(cx));
+                            } else {
+                                this.navigate(Page::Settings, window, cx);
+                                if this.page == Page::Settings {
+                                    this.select_settings_section(
+                                        crate::settings_ui::SettingsSection::AboutAccount,
+                                        cx,
+                                    );
+                                }
+                            }
+                        })),
+                    ),
             )
     }
 }

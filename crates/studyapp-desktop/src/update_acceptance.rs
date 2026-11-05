@@ -489,6 +489,9 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         }
         CHECKS_READY.store(true,Ordering::Relaxed);
         window.update(cx,|_,_,cx|{let panel=view.read(cx).update_panel.clone();panel.update(cx,|p,cx|p.acceptance_check(cx));}).unwrap();
+        wait(window,&view,cx,"signed update available",|a,cx|a.update_panel.read(cx).available_version().is_some()).await;
+        window.update(cx,|_,_,cx|assert!(!view.read(cx).update_panel.read(cx).dialog_visible())).unwrap();
+        click_visible(window, "sidebar-version-open".into(), cx).await;
         wait(window,&view,cx,"signed update card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
         if config["settings_continuation"] != true {
         native_visibility(window, &view, false, "card-first-native-state.json", cx).await;

@@ -9,7 +9,7 @@ use crate::{
 };
 use gpui_kit::{
     assets::IconName,
-    component::{Disableable, Icon, Sizable, button::ButtonVariants, text::TextView},
+    component::{Disableable, Icon, Sizable, button::ButtonVariants},
     *,
 };
 
@@ -57,7 +57,7 @@ pub struct UpdateDialogContent {
     pub current_version: SharedString,
     pub latest_version: SharedString,
     pub published: SharedString,
-    pub notes: SharedString,
+    pub releases: Vec<crate::release_notes::ReleaseNotesSection>,
     pub phase: UpdateDialogPhase,
 }
 
@@ -69,13 +69,24 @@ impl UpdateDialogContent {
         notes: impl Into<SharedString>,
         phase: UpdateDialogPhase,
     ) -> Self {
+        let latest_version = latest_version.into();
         Self {
             current_version: current_version.into(),
-            latest_version: latest_version.into(),
+            releases: vec![crate::release_notes::ReleaseNotesSection::new(
+                latest_version.clone(),
+                notes,
+            )],
+            latest_version,
             published: published.into(),
-            notes: notes.into(),
             phase,
         }
+    }
+    pub fn with_releases(
+        mut self,
+        releases: Vec<crate::release_notes::ReleaseNotesSection>,
+    ) -> Self {
+        self.releases = releases;
+        self
     }
 }
 
@@ -184,7 +195,7 @@ impl RenderOnce for UpdateDialog {
             None => install,
         };
 
-        let notes = self.content.notes.clone();
+        let releases = self.content.releases.clone();
         let mut card = gpui_kit::div()
             .id("update-dialog")
             .test_support()
@@ -261,22 +272,7 @@ impl RenderOnce for UpdateDialog {
                         scroll_body("update-dialog-notes", &self.notes_scroll)
                             .test_support()
                             .p_3()
-                            .child(
-                                gpui_kit::div()
-                                    .flex_shrink_0()
-                                    .min_w_0()
-                                    .text_size(px(13.))
-                                    .text_color(rgb(colors.text))
-                                    .child(crate::markdown_view::copyable(
-                                        "update-dialog-copy",
-                                        TextView::markdown(
-                                            "update-dialog-markdown",
-                                            crate::markdown_content::release_notes(&notes),
-                                        )
-                                        .style(crate::compact_markdown::summary_markdown_style())
-                                        .scrollable(false),
-                                    )),
-                            ),
+                            .child(crate::release_notes::sections("update-release", &releases)),
                     ),
             );
 

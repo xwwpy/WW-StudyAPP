@@ -94,6 +94,7 @@ mod update_backend;
 mod update_install;
 mod update_manifest;
 mod update_nsis;
+mod update_read_state;
 mod update_signature;
 mod update_ui;
 mod views;

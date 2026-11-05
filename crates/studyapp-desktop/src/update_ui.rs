@@ -26,6 +26,7 @@ pub fn schedule_startup(panel: Entity<UpdatePanel>, cx: &mut App) {
 pub enum UpdateEvent {
     InstallRequested,
     AvailabilityChanged,
+    ReadStateFailed(String),
     NsisReady,
 }
 
@@ -64,6 +65,8 @@ pub struct UpdatePanel {
     previous: Option<UpdateStatus>,
     repair_needed: bool,
     dialog: Option<String>,
+    read_state: crate::update_read_state::UpdateReadState,
+    read_state_path: Option<PathBuf>,
     progress: Option<UpdateProgress>,
     nsis: Option<crate::update_manifest::UpdateManifest>,
     nsis_version: Option<String>,
@@ -73,7 +76,6 @@ pub struct UpdatePanel {
     install_prepared: Option<(String, crate::update_install::PreparedPackage)>,
     nsis_error: Option<String>,
     notes_scroll: ScrollHandle,
-    settings_notes_scroll: ScrollHandle,
     receiver: mpsc::Receiver<UpdateReply>,
     sender: mpsc::Sender<UpdateReply>,
     _poll: Task<()>,
@@ -108,11 +110,25 @@ impl UpdatePanel {
             .or(self.nsis_version.as_deref())
     }
 
-    fn settings_notes(&self) -> Option<&str> {
-        self.nsis
+    pub fn unread_update(&self) -> bool {
+        self.available_version()
+            .is_some_and(|version| self.read_state.unread(version))
+    }
+
+    fn release_sections(&self) -> Vec<studyapp_ui::release_notes::ReleaseNotesSection> {
+        use studyapp_ui::release_notes::ReleaseNotesSection;
+        if let Some(manifest) = &self.nsis {
+            return manifest
+                .releases_since(env!("CARGO_PKG_VERSION"))
+                .into_iter()
+                .map(|entry| ReleaseNotesSection::new(entry.version.to_string(), entry.notes))
+                .collect();
+        }
+        self.release
             .as_ref()
-            .map(|manifest| manifest.notes.as_str())
-            .or_else(|| self.release.as_ref().map(|release| release.notes.as_str()))
+            .map(|release| ReleaseNotesSection::new(release.version.clone(), release.notes.clone()))
+            .into_iter()
+            .collect()
     }
     pub(crate) fn relocation_blocked(&self) -> bool {
         self.busy
@@ -184,6 +200,19 @@ impl UpdatePanel {
                 }
             }
         });
+        let read_state_path = if !cfg!(test) && startup_check_allowed(std::env::args_os()) {
+            crate::app_usage::runtime_paths()
+                .ok()
+                .map(|paths| paths.effective.config.join("update-read.json"))
+        } else {
+            None
+        };
+        // This cache controls only the unread dot, never update availability or
+        // installed version. An unreadable marker safely reverts to unread.
+        let read_state = read_state_path
+            .as_deref()
+            .and_then(|path| crate::update_read_state::UpdateReadState::load(path).ok())
+            .unwrap_or_default();
         Self {
             library: String::new(),
             busy: false,
@@ -198,6 +227,8 @@ impl UpdatePanel {
             previous: None,
             repair_needed: false,
             dialog: None,
+            read_state,
+            read_state_path,
             progress: None,
             nsis: None,
             nsis_version: None,
@@ -207,7 +238,6 @@ impl UpdatePanel {
             install_prepared: None,
             nsis_error: None,
             notes_scroll: ScrollHandle::new(),
-            settings_notes_scroll: ScrollHandle::new(),
             receiver,
             sender,
             _poll: poll,
@@ -239,13 +269,16 @@ impl UpdatePanel {
             } else {
                 UpdateDialogPhase::Ready
             };
-            return Some(UpdateDialogContent::new(
-                env!("CARGO_PKG_VERSION"),
-                manifest.version.to_string(),
-                manifest.pub_date.clone().unwrap_or_default(),
-                manifest.notes.clone(),
-                phase,
-            ));
+            return Some(
+                UpdateDialogContent::new(
+                    env!("CARGO_PKG_VERSION"),
+                    manifest.version.to_string(),
+                    manifest.pub_date.clone().unwrap_or_default(),
+                    String::new(),
+                    phase,
+                )
+                .with_releases(self.release_sections()),
+            );
         }
         let release = self.release.as_ref()?;
         self.dialog.as_ref()?;
@@ -269,23 +302,33 @@ impl UpdatePanel {
         } else {
             UpdateDialogPhase::Ready
         };
-        Some(UpdateDialogContent::new(
-            env!("CARGO_PKG_VERSION"),
-            release.version.clone(),
-            String::new(),
-            release.notes.clone(),
-            phase,
-        ))
+        Some(
+            UpdateDialogContent::new(
+                env!("CARGO_PKG_VERSION"),
+                release.version.clone(),
+                String::new(),
+                String::new(),
+                phase,
+            )
+            .with_releases(self.release_sections()),
+        )
     }
 
     pub fn show_dialog(&mut self, cx: &mut Context<Self>) {
-        if let Some(release) = &self.release {
-            self.dialog = Some(release.version.clone());
-            cx.notify();
-        } else if let Some(version) = &self.nsis_version {
-            self.dialog = Some(version.clone());
-            cx.notify();
+        let Some(version) = self.available_version().map(str::to_owned) else {
+            return;
+        };
+        self.dialog = Some(version.clone());
+        self.read_state.mark_read(&version);
+        if let Some(path) = &self.read_state_path
+            && let Err(error) = self.read_state.save(path)
+        {
+            cx.emit(UpdateEvent::ReadStateFailed(format!(
+                "更新阅读状态未保存：{error:#}"
+            )));
         }
+        cx.emit(UpdateEvent::AvailabilityChanged);
+        cx.notify();
     }
 
     pub fn dismiss_dialog(&mut self, cx: &mut Context<Self>) {
@@ -333,16 +376,12 @@ impl UpdatePanel {
                     self.cancel_install_preparation();
                     self.nsis_setup = None;
                     self.notes_scroll.set_offset(point(px(0.), px(0.)));
-                    self.settings_notes_scroll.set_offset(point(px(0.), px(0.)));
                 }
                 self.error = None;
                 self.nsis_error = None;
                 self.nsis_progress = None;
                 self.nsis_version = Some(manifest.version.to_string());
-                self.dialog = self
-                    .check_policy
-                    .should_prompt(origin, &manifest.version.to_string())
-                    .then(|| manifest.version.to_string());
+                self.dialog = self.dialog.take().map(|_| manifest.version.to_string());
                 self.status = format!("发现新版本 {}", manifest.version);
                 self.nsis = Some(manifest);
                 self.release = None;
@@ -621,17 +660,13 @@ impl UpdatePanel {
                 {
                     self.prepared = None;
                     self.notes_scroll.set_offset(point(px(0.), px(0.)));
-                    self.settings_notes_scroll.set_offset(point(px(0.), px(0.)));
                 }
                 self.status = format!(
                     "发现新版本 {} · {:.1} MB",
                     release.version,
                     release.package_size as f64 / 1_048_576.
                 );
-                self.dialog = self
-                    .check_policy
-                    .should_prompt(origin, &release.version)
-                    .then(|| release.version.clone());
+                self.dialog = self.dialog.take().map(|_| release.version.clone());
                 self.progress = None;
                 self.release = Some(*release);
             }
@@ -818,7 +853,12 @@ impl Render for UpdatePanel {
             .unwrap_or_else(|| "https://github.com/xwwpy/WW-StudyAPP/releases".into());
         card().id("application-updates").test_support()
             .child(heading("软件更新"))
-            .child(muted(format!("WW-StudyApp {}", env!("CARGO_PKG_VERSION"))))
+            .child(studyapp_ui::update_available::version_entry(
+                "about-version", env!("CARGO_PKG_VERSION"), self.available_version(), self.unread_update(),
+            ).on_click(cx.listener(|this, _, _, cx| {
+                if this.available_version().is_some() { this.show_dialog(cx); }
+                else { this.check(CheckOrigin::Manual, cx); }
+            })))
             .child(div().child(self.status.clone()))
             .children(self.error.as_ref().map(|error| div().text_color(crate::theme::color(0xB45142)).child(error.clone())))
             .child(row().flex_wrap()
@@ -835,11 +875,9 @@ impl Render for UpdatePanel {
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(UpdateEvent::InstallRequested)))))
                 .child(Button::new("open-releases").ghost().label("发布页面")
                     .on_click(move |_, _, cx| cx.open_url(&release_url))))
-            .children(self.settings_notes().map(|notes|
-                scroll_body("update-release-notes", &self.settings_notes_scroll).test_support().max_h(px(180.)).pr_3()
-                    .child(div().flex_shrink_0().min_w_0().child(
-                        studyapp_ui::markdown_view::copyable("update-settings-copy", gpui_kit::component::text::TextView::markdown("update-settings-markdown", studyapp_ui::markdown_content::release_notes(notes))
-                            .style(studyapp_ui::compact_markdown::summary_markdown_style()).scrollable(false))))))
+            .children(self.available_version().map(|_| Button::new("view-update-notes")
+                .label("查看更新内容")
+                .on_click(cx.listener(|this, _, _, cx| this.show_dialog(cx)))))
             .children(self.prepared.as_ref().map(|(_, update)| {
                 let status = update.status_path.clone();
                 column().gap_1().child(muted(format!("安装位置：{}", studyapp_desktop::presentation::display_path(&update.installation_directory.to_string_lossy()))))
@@ -992,17 +1030,17 @@ mod tests {
     use studyapp_desktop::update_policy::CheckOrigin;
 
     #[::core::prelude::v1::test]
-    fn settings_and_dialog_release_notes_have_independent_scroll_state() {
+    fn dialog_release_notes_keep_one_scroll_state_across_card_renders() {
         let panel = panel();
         panel.notes_scroll.set_offset(point(px(0.), px(-80.)));
-        assert_eq!(panel.settings_notes_scroll.offset(), point(px(0.), px(0.)));
-        panel
-            .settings_notes_scroll
-            .set_offset(point(px(0.), px(-120.)));
         assert_eq!(
             panel.dialog_notes_scroll().offset(),
             point(px(0.), px(-80.))
         );
+        panel
+            .dialog_notes_scroll()
+            .set_offset(point(px(0.), px(-120.)));
+        assert_eq!(panel.notes_scroll.offset(), point(px(0.), px(-120.)));
     }
 
     #[::core::prelude::v1::test]
@@ -1034,6 +1072,8 @@ mod tests {
             previous: None,
             repair_needed: false,
             dialog: None,
+            read_state: Default::default(),
+            read_state_path: None,
             progress: None,
             nsis: None,
             nsis_version: None,
@@ -1043,7 +1083,6 @@ mod tests {
             install_prepared: None,
             nsis_error: None,
             notes_scroll: ScrollHandle::new(),
-            settings_notes_scroll: ScrollHandle::new(),
             receiver,
             sender,
             check_policy: Default::default(),
@@ -1104,7 +1143,50 @@ mod tests {
         );
     }
     #[::core::prelude::v1::test]
-    fn nsis_manifest_opens_dialog_and_clears_when_up_to_date() {
+    fn signed_history_is_filtered_before_any_card_consumer() {
+        use crate::update_manifest::{ReleaseNotes, UpdateManifest};
+        let mut panel = panel();
+        let manifest = UpdateManifest {
+            version: semver::Version::parse("0.9.0").unwrap(),
+            notes: "already-installed aggregate must never be displayed".into(),
+            history: vec![
+                ReleaseNotes {
+                    version: semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap(),
+                    notes: "already-installed".into(),
+                },
+                ReleaseNotes {
+                    version: semver::Version::parse("0.8.0").unwrap(),
+                    notes: "intermediate".into(),
+                },
+                ReleaseNotes {
+                    version: semver::Version::parse("0.9.0").unwrap(),
+                    notes: "target".into(),
+                },
+            ],
+            pub_date: None,
+            setup_url: String::new(),
+            signature: String::new(),
+            signed_envelope: String::new(),
+            size: 10,
+            sha256: "a".repeat(64),
+        };
+        panel.finish_nsis_check(CheckOrigin::Manual, Ok(Some(manifest)));
+        panel.dialog = Some("0.9.0".into());
+        let content = panel.dialog_content().unwrap();
+        assert_eq!(content.releases.len(), 2);
+        assert_eq!(content.releases[0].version.as_ref(), "0.9.0");
+        assert_eq!(content.releases[0].notes.as_ref(), "target");
+        assert_eq!(content.releases[1].notes.as_ref(), "intermediate");
+        assert!(
+            !content
+                .releases
+                .iter()
+                .any(|entry| entry.notes.contains("already-installed"))
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn nsis_manifest_marks_unread_without_opening_and_clears_when_up_to_date() {
         use crate::update_manifest::UpdateManifest;
         use studyapp_ui::update_dialog::UpdateDialogPhase;
         let mut panel = panel();
@@ -1120,10 +1202,12 @@ mod tests {
             sha256: "a".repeat(64),
         };
         panel.finish_nsis_check(CheckOrigin::Startup, Ok(Some(manifest)));
-        assert_eq!(panel.settings_notes(), Some("- 新版本"));
+        assert_eq!(panel.release_sections()[0].notes.as_ref(), "- 新版本");
         assert!(!panel.busy);
-        assert!(panel.dialog_visible());
+        assert!(!panel.dialog_visible());
+        assert!(panel.unread_update());
         assert_eq!(panel.available_version(), Some("0.9.0"));
+        panel.dialog = Some("0.9.0".into());
         let content = panel.dialog_content().unwrap();
         assert_eq!(content.latest_version.as_ref(), "0.9.0");
         assert!(matches!(content.phase, UpdateDialogPhase::Ready));
@@ -1135,7 +1219,7 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn automatic_checks_respect_dismissal_and_manual_reopens() {
+    fn checks_never_open_the_card_and_unread_marker_tracks_each_target() {
         let mut panel = panel();
         let manifest = crate::update_manifest::UpdateManifest {
             version: semver::Version::parse("0.9.0").unwrap(),
@@ -1152,12 +1236,16 @@ mod tests {
         panel.finish_nsis_check(CheckOrigin::Periodic, Ok(Some(manifest.clone())));
         assert!(!panel.dialog_visible());
         panel.finish_nsis_check(CheckOrigin::Manual, Ok(Some(manifest.clone())));
-        assert!(panel.dialog_visible());
-        panel.dialog = None;
+        assert!(!panel.dialog_visible());
+        assert!(panel.unread_update());
+        panel.read_state.mark_read("0.9.0");
+        assert!(!panel.unread_update());
+        assert_eq!(panel.available_version(), Some("0.9.0"));
         let mut newer = manifest;
         newer.version = semver::Version::parse("0.9.1").unwrap();
         panel.finish_nsis_check(CheckOrigin::Periodic, Ok(Some(newer)));
-        assert!(panel.dialog_visible());
+        assert!(!panel.dialog_visible());
+        assert!(panel.unread_update());
     }
     #[::core::prelude::v1::test]
     fn update_startup_failure_is_quiet_and_manual_retry_is_visible() {
@@ -1273,6 +1361,14 @@ mod modal_visibility_tests {
                         })),
                     );
                 });
+                assert!(
+                    !app.has_modal(cx),
+                    "discovery must leave the current editor visible"
+                );
+                app.prepare_document_view(window, cx);
+                assert!(app.note_content.read(cx).requested_visible_for_test());
+                app.update_panel
+                    .update(cx, |panel, cx| panel.show_dialog(cx));
                 assert!(app.has_modal(cx));
                 app.prepare_document_view(window, cx);
                 assert!(

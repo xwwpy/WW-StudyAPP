@@ -165,60 +165,7 @@ pub async fn default_preview(
         cx.background_executor()
             .timer(Duration::from_millis(700))
             .await;
-        let native = window
-            .update(cx, |_, _, cx| editor.read(cx).native_state().unwrap())
-            .unwrap();
-        // Capture the compositor BEFORE any browser inspection, not Metal's
-        // GPUI-only readback (which omits the native WKWebView child).
-        let image = database.with_file_name(format!("native-markdown-editor-default-{label}.png"));
-        #[cfg(target_os = "macos")]
-        {
-            let output = std::process::Command::new("/usr/sbin/screencapture")
-                .args(["-x", "-m"])
-                .arg(&image)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        #[cfg(target_os = "linux")]
-        window
-            .update(cx, |_, window, _| {
-                crate::smoke::capture(window, image).unwrap()
-            })
-            .unwrap();
-        let dom = bridge(window, &editor, json!({"type":"passiveVisibility"}), cx).await;
-        let evidence = json!({"native":native,"dom":dom,"presetSelected":false});
-        std::fs::write(
-            database.with_file_name(format!("native-markdown-editor-default-{label}.json")),
-            serde_json::to_vec_pretty(&evidence).unwrap(),
-        )
-        .unwrap();
-        for key in ["requestedVisible", "appliedVisible", "visible"] {
-            assert_eq!(native[key], true, "default readonly {label}: {evidence}");
-        }
-        assert_eq!(dom["readonly"], true, "{evidence}");
-        assert_eq!(dom["source"], false, "{evidence}");
-        assert!(
-            dom["text"].as_str().unwrap().starts_with("# Rust 所有权"),
-            "{evidence}"
-        );
-        assert!(
-            dom["editor"]["width"].as_f64().unwrap() > 100.,
-            "{evidence}"
-        );
-        assert!(
-            dom["editor"]["height"].as_f64().unwrap() > 100.,
-            "{evidence}"
-        );
-        assert!(
-            dom["firstLine"]["height"].as_f64().unwrap() > 0.,
-            "{evidence}"
-        );
-        assert_eq!(dom["firstLine"]["visibility"], "visible", "{evidence}");
+        capture_default_preview(window, &editor, database, label, "# Rust 所有权", cx).await;
         if label == "first" {
             window
                 .update(cx, |_, _, cx| {
@@ -245,6 +192,243 @@ pub async fn default_preview(
                 .unwrap();
         }
     }
+    default_appearance_sample(window, view, database, cx).await;
+}
+
+#[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
+async fn capture_default_preview(
+    window: AnyWindowHandle,
+    editor: &Entity<MarkdownEditor>,
+    database: &Path,
+    label: &str,
+    expected_prefix: &str,
+    cx: &mut AsyncApp,
+) {
+    let native = window
+        .update(cx, |_, _, cx| editor.read(cx).native_state().unwrap())
+        .unwrap();
+    // Capture the compositor BEFORE any browser inspection, not Metal's
+    // GPUI-only readback (which omits the native WKWebView child).
+    let image = database.with_file_name(format!("native-markdown-editor-default-{label}.png"));
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-m"])
+            .arg(&image)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[cfg(target_os = "linux")]
+    window
+        .update(cx, |_, window, _| {
+            crate::smoke::capture(window, image).unwrap()
+        })
+        .unwrap();
+    let dom = bridge(window, editor, json!({"type":"passiveVisibility"}), cx).await;
+    let evidence = json!({"native":native,"dom":dom,"presetSelected":false});
+    std::fs::write(
+        database.with_file_name(format!("native-markdown-editor-default-{label}.json")),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+    for key in ["requestedVisible", "appliedVisible", "visible"] {
+        assert_eq!(native[key], true, "default readonly {label}: {evidence}");
+    }
+    assert_eq!(dom["readonly"], true, "{evidence}");
+    assert_eq!(dom["source"], false, "{evidence}");
+    assert!(
+        dom["text"].as_str().unwrap().starts_with(expected_prefix),
+        "{evidence}"
+    );
+    assert!(
+        dom["editor"]["width"].as_f64().unwrap() > 100.,
+        "{evidence}"
+    );
+    assert!(
+        dom["editor"]["height"].as_f64().unwrap() > 100.,
+        "{evidence}"
+    );
+    assert!(
+        dom["firstLine"]["height"].as_f64().unwrap() > 0.,
+        "{evidence}"
+    );
+    assert_eq!(dom["firstLine"]["visibility"], "visible", "{evidence}");
+}
+
+#[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
+async fn default_appearance_sample(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    use crate::settings_ui::{AppearancePage, SettingsSection};
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                app.navigate(Page::Settings, window, cx);
+                app.select_settings_section(SettingsSection::Appearance, cx);
+                app.select_appearance_page(AppearancePage::ThemeEditor, cx);
+                assert!(app.preferences_ui.editing_preset.is_none());
+                assert!(!app.preferences_ui.appearance_touched);
+            })
+        })
+        .unwrap();
+    crate::smoke_library::until(
+        window,
+        view,
+        "first default appearance sample",
+        |app, cx| {
+            app.preferences_ui
+                .appearance_preview
+                .as_ref()
+                .and_then(|preview| preview.read(cx).editor())
+                .is_some_and(|editor| {
+                    assert!(
+                        editor.read(cx).error().is_none(),
+                        "{:?}",
+                        editor.read(cx).error()
+                    );
+                    editor.read(cx).ready()
+                })
+        },
+        cx,
+    )
+    .await;
+    let editor = view.read_with(cx, |app, cx| {
+        app.preferences_ui
+            .appearance_preview
+            .as_ref()
+            .unwrap()
+            .read(cx)
+            .editor()
+            .unwrap()
+    });
+    cx.background_executor()
+        .timer(Duration::from_millis(700))
+        .await;
+    capture_default_preview(
+        window,
+        &editor,
+        database,
+        "sample-first",
+        crate::appearance_preview::PREVIEW_SAMPLE,
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, cx| {
+                app.select_settings_section(SettingsSection::Learning, cx)
+            })
+        })
+        .unwrap();
+    cx.background_executor()
+        .timer(Duration::from_millis(250))
+        .await;
+    window
+        .update(cx, |_, _, cx| {
+            assert_eq!(
+                editor.read(cx).native_state().unwrap()["appliedVisible"],
+                false
+            );
+            view.update(cx, |app, cx| {
+                app.select_settings_section(SettingsSection::Appearance, cx)
+            });
+        })
+        .unwrap();
+    cx.background_executor()
+        .timer(Duration::from_millis(700))
+        .await;
+    capture_default_preview(
+        window,
+        &editor,
+        database,
+        "sample-reopened",
+        crate::appearance_preview::PREVIEW_SAMPLE,
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                assert!(
+                    !app.settings_dirty(cx),
+                    "opening default previews must not create settings changes"
+                );
+                app.navigate(Page::Reviews, window, cx);
+            })
+        })
+        .unwrap();
+    cx.background_executor()
+        .timer(Duration::from_millis(700))
+        .await;
+    window
+        .update(cx, |_, window, _| {
+            let bounds = window.find("review-summary").bounds();
+            assert!(bounds.size.width > px(100.) && bounds.size.height > px(0.));
+        })
+        .unwrap();
+    let image = database.with_file_name("native-markdown-editor-default-summary.png");
+    #[cfg(target_os = "macos")]
+    assert!(
+        std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-m"])
+            .arg(image)
+            .status()
+            .unwrap()
+            .success()
+    );
+    #[cfg(target_os = "linux")]
+    window
+        .update(cx, |_, window, _| {
+            crate::smoke::capture(window, image).unwrap()
+        })
+        .unwrap();
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                app.navigate(Page::Settings, window, cx);
+                app.select_settings_section(SettingsSection::AboutAccount, cx);
+            })
+        })
+        .unwrap();
+    cx.background_executor()
+        .timer(Duration::from_millis(700))
+        .await;
+    window
+        .update(cx, |_, window, _| {
+            assert!(window.try_find("about-identity").is_some());
+            assert!(window.try_find("about-version").is_some());
+            assert!(window.try_find("update-release-notes").is_none());
+        })
+        .unwrap();
+    let image = database.with_file_name("native-about.png");
+    #[cfg(target_os = "macos")]
+    assert!(
+        std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-m"])
+            .arg(image)
+            .status()
+            .unwrap()
+            .success()
+    );
+    #[cfg(target_os = "linux")]
+    window
+        .update(cx, |_, window, _| {
+            crate::smoke::capture(window, image).unwrap()
+        })
+        .unwrap();
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| app.navigate(Page::Notes, window, cx))
+        })
+        .unwrap();
 }
 
 pub async fn exercise(

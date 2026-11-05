@@ -1,6 +1,6 @@
 # 安装、更新与卸载
 
-WW-StudyApp 支持 Windows、Linux 和 macOS。Linux 的 deb 与 macOS 的 dmg 安装命令见 [README](https://github.com/xwwpy/WW-StudyAPP/blob/main/README.md)。
+WW-StudyApp 支持 Windows、Linux 和 macOS。请从发布页面选择对应系统的安装包。
 
 Windows 10/11 x64 提供安装版与便携版，均使用当前用户权限。Markdown 编辑器需要 Microsoft Edge WebView2 Runtime。
 
@@ -24,10 +24,39 @@ Windows 10/11 x64 提供安装版与便携版，均使用当前用户权限。Ma
 
 使用 ZIP 中的安装脚本时，本次安装的临时文件会保留在包内 `temp` 文件夹；安装结束并关闭安装程序后，可自行清理该文件夹。
 
+## Linux 安装
+
+
+支持 Ubuntu 24.04 及兼容系统的 x86_64 桌面，需要 X11 或 XWayland，以及可用的 Vulkan 驱动。下载 `.deb` 和同名 `.sha256` 文件，在下载目录运行：
+
+```bash
+sha256sum --check WW-StudyApp-0.2.5-linux-x86_64.deb.sha256
+sudo apt install ./WW-StudyApp-0.2.5-linux-x86_64.deb
+studyapp
+```
+
+安装后也可从应用菜单打开 WW-StudyApp。更新时下载新版本的 `.deb`，再次执行安装命令；笔记与设置会保留。WebDAV 凭据通过桌面密钥环保存，使用前请确保登录密钥环已解锁。
+
+## macOS 安装
+
+需要 macOS 15 或更高版本。Apple 芯片选择 `macos-arm64.dmg`，Intel 芯片选择 `macos-x86_64.dmg`。打开磁盘映像，将 WW-StudyApp 拖到 Applications 后启动。
+
+也可在下载目录使用命令安装（以下为 Apple 芯片版本）：
+
+```bash
+shasum -a 256 --check WW-StudyApp-0.2.5-macos-arm64.dmg.sha256
+hdiutil attach WW-StudyApp-0.2.5-macos-arm64.dmg
+sudo ditto /Volumes/WW-StudyApp/WW-StudyApp.app /Applications/WW-StudyApp.app
+hdiutil detach /Volumes/WW-StudyApp
+open /Applications/WW-StudyApp.app
+```
+
+当前 macOS 安装包采用临时签名，尚未经过 Apple 公证。若系统阻止启动，请先确认下载来源和校验结果，再到“系统设置 → 隐私与安全性”中选择“仍要打开”。手动更新时，退出应用后将新版本复制到 Applications 替换旧版本。
+
 ## 检查与安装更新
 
 - 每次正常启动后检查一次新版本，运行期间每小时检查；也可以在「设置 → 关于 / 账户」中点击「检查更新」。
-- 发现新版本时弹出更新卡片，显示版本与 Markdown 更新日志。跨版本升级时可查看本次升级包含的各版更新说明，按版本从新到旧排列；设置页也可查看。日志可选中复制，不会选中弹窗后面的页面内容。较长的日志可在卡片内独立滚动，更新与关闭按钮保持在日志之外。点击「稍后再说」后，同一版本在本次运行中不再主动弹出；可以从侧边栏的更新入口重新打开。
+- 发现新版本后，侧栏和关于页的当前版本旁显示未读红点，不会自动弹出整篇日志。点击版本入口或「查看更新内容」打开更新卡片；已安装版本之后、目标版本以内的更新说明按版本从新到旧分别显示。阅读后红点消失，仍可再次打开卡片安装更新；出现后续新版本时再次标记未读。日志可选中复制，长内容在同一个区域滚动，更新与关闭按钮保持可见。
 - 点「立即更新」后，应用会下载安装包并校验发布签名，处理尚未保存的设置并保存草稿，再退出安装，完成后重新打开原资料库。需要系统授权时请按提示操作。
 - 更新包只从本仓库的 Releases 下载，签名校验失败时不会运行安装程序，并会显示失败原因。
 - Windows 0.2.4 起，即使误以管理员身份启动，更新也会交给同一用户的普通权限进程，安装和重启不继续保留管理员权限。请仍选择当前用户可写的安装目录。0.2.3 及更早版本若提示先正常重启，请先退出并直接双击应用（不要选择「以管理员身份运行」），再更新或手动安装新版。

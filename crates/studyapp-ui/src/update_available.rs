@@ -1,14 +1,46 @@
 //! Compact update affordance, sharing the application's button activation/focus behavior.
 use crate::{controls::Button, theme::ResolvedTheme};
 use gpui_kit::{
-    App, ClickEvent, ElementId, IntoElement, RenderOnce, Styled, Window,
+    App, ClickEvent, ElementId, InteractiveElement, IntoElement, ParentElement, RenderOnce,
+    SharedString, Styled, TestSupportExt, Window,
     assets::IconName,
     component::{
         Disableable, FocusableExt, Sizable,
         button::{ButtonCustomVariant, ButtonVariants},
     },
-    px, rgb,
+    div, px, rgb,
 };
+
+/// A readable version button with a supplementary, never color-only unread dot.
+pub fn version_entry(
+    id: &'static str,
+    current: &str,
+    available: Option<&str>,
+    unread: bool,
+) -> Button {
+    let description = match available {
+        Some(version) if unread => {
+            format!("当前版本 v{current}；新版本 v{version} 有未读更新内容，点击查看")
+        }
+        Some(version) => format!("当前版本 v{current}；可更新至 v{version}，点击查看"),
+        None => format!("当前版本 v{current}；查看应用信息"),
+    };
+    Button::new(id)
+        .small()
+        .ghost()
+        .label(format!("v{current}"))
+        .accessibility_label(description.clone())
+        .tooltip(description)
+        .children((unread && available.is_some()).then(|| {
+            div()
+                .id(SharedString::from(format!("{id}-unread")))
+                .test_support()
+                .size(px(7.))
+                .flex_shrink_0()
+                .rounded_full()
+                .bg(rgb(crate::theme::palette().danger))
+        }))
+}
 
 #[derive(IntoElement)]
 pub struct AvailableUpdateButton {
@@ -123,6 +155,53 @@ mod tests {
             }
             assert!(theme_contrast(colors.disabled_text, colors.disabled) >= 4.5);
         }
+    }
+
+    #[cfg(feature = "ui-test")]
+    #[gpui_kit::test]
+    fn version_entry_read_dot_does_not_replace_installed_version_or_click_semantics(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{test::TestWindowExt, *};
+        use std::{cell::Cell, rc::Rc};
+        struct Fixture(bool, Rc<Cell<usize>>);
+        impl Render for Fixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let count = self.1.clone();
+                version_entry("version", "0.2.5", Some("0.3.0"), self.0)
+                    .on_click(move |_, _, _| count.set(count.get() + 1))
+            }
+        }
+        cx.update(gpui_kit::init);
+        let count = Rc::new(Cell::new(0));
+        let (view, visual) = cx.add_window_view({
+            let count = count.clone();
+            move |_, _| Fixture(true, count)
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("version-unread").is_some());
+            assert_eq!(
+                window.find("version").label(),
+                Some("当前版本 v0.2.5；新版本 v0.3.0 有未读更新内容，点击查看")
+            );
+            window.click("version", cx);
+        });
+        assert_eq!(count.get(), 1);
+        view.update(visual, |view, cx| {
+            view.0 = false;
+            cx.notify();
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("version-unread").is_none());
+            assert_eq!(
+                window.find("version").label(),
+                Some("当前版本 v0.2.5；可更新至 v0.3.0，点击查看")
+            );
+            window.click("version", cx);
+        });
+        assert_eq!(count.get(), 2);
     }
 
     #[cfg(feature = "ui-test")]

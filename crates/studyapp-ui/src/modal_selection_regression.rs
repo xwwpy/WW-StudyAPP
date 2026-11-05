@@ -111,9 +111,9 @@ fn check_selection(cx: &mut TestAppContext, legacy: bool) {
     visual.run_until_parked();
     let (start, end) = visual.update(|window, cx| {
         window.render_frame(cx);
-        let bounds = window.find("update-dialog-notes").bounds();
+        let bounds = window.find("update-release-0-body").bounds();
         (
-            bounds.origin + point(px(20.), px(28.)),
+            bounds.origin + point(px(4.), px(12.)),
             point(
                 bounds.right() + px(40.),
                 window.viewport_size().height - px(10.),
