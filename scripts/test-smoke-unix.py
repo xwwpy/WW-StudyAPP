@@ -142,6 +142,21 @@ class SmokeTests(unittest.TestCase):
                          "editor_page_allowed(&url)", "ipc_allowed(&request.uri().to_string()"):
             self.assertIn(boundary, source)
 
+    def test_mac_bundled_document_keeps_exact_request_origin_and_compositor_capture(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/web_editor_host_unix.rs").read_text(encoding="utf-8")
+        for boundary in ("NSURL::URLWithString(&NSString::from_str(EDITOR_PAGE))",
+                         "NSURLRequest::requestWithURL(&url)",
+                         "super::single_document_editor().1",
+                         "loadSimulatedRequest_responseHTMLString("):
+            self.assertIn(boundary, source)
+        self.assertNotIn(".with_html(", source)
+        self.assertNotIn("loadHTMLString_baseURL", source)
+        captures = (root / "crates/studyapp-desktop/src/smoke.rs").read_text(encoding="utf-8")
+        self.assertIn('args(["-x", "-o", "-l", &id.to_string()])', captures)
+        self.assertIn("windowNumber()", captures)
+        self.assertIn("Native macOS captures are restricted to GitHub runners", captures)
+
     def test_first_readiness_deadline_captures_evidence_without_silently_repairing(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "crates/studyapp-desktop/src/smoke_editor.rs").read_text(encoding="utf-8")

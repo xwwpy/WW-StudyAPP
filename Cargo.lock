@@ -7880,6 +7880,7 @@ dependencies = [
  "libc",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "percent-encoding",
  "pulldown-cmark",
  "reqwest",

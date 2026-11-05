@@ -491,7 +491,7 @@ impl StudyApp {
         })
     }
 
-    #[cfg(any(test, feature = "ui-test"))]
+    #[cfg(feature = "ui-test")]
     pub fn shortcut_analysis_rebuilds(&self) -> u64 {
         self.preferences_ui.shortcut_analysis.rebuilds()
     }
@@ -546,7 +546,7 @@ impl StudyApp {
         )
     }
 
-    #[cfg(any(test, feature = "ui-test"))]
+    #[cfg(feature = "ui-test")]
     pub fn appearance_preview_rebuilds(&self) -> u64 {
         self.preferences_ui.markdown_preview.rebuilds()
     }
@@ -2249,6 +2249,7 @@ impl StudyApp {
             .collect()
     }
 
+    #[cfg(feature = "ui-test")]
     pub fn appearance_color_popup_bounds(&self, cx: &App) -> Vec<Bounds<Pixels>> {
         self.preferences_ui
             .appearance_colors

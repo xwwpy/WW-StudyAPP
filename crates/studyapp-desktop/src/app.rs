@@ -918,7 +918,7 @@ impl StudyApp {
         }
     }
 
-    #[cfg(any(test, feature = "ui-test"))]
+    #[cfg(feature = "ui-test")]
     pub fn accept_snapshot(
         &mut self,
         snapshot: Arc<Snapshot>,

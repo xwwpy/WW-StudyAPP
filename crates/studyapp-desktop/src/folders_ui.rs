@@ -430,7 +430,7 @@ impl FolderPanel {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test"))]
     pub fn accept(&mut self, snapshot: Arc<Snapshot>, window: &mut Window, cx: &mut Context<Self>) {
         let index = if self.index.needs_update(&snapshot) {
             Arc::new(studyapp_desktop::library_tree::LibraryIndex::build(
@@ -1558,7 +1558,7 @@ impl FolderPanel {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test"))]
     pub fn library_tree(
         &mut self,
         _: HashMap<Option<String>, Vec<AnyElement>>,

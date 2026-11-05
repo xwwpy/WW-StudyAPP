@@ -75,4 +75,5 @@ keyring = { version = "=3.6.3", features = ["sync-secret-service", "crypto-rust"
 keyring = { version = "=3.6.3", features = ["apple-native"] }
 
 objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSURLRequest"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSView", "NSWindow", "NSApplication", "NSResponder"] }

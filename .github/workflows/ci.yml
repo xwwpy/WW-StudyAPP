@@ -143,6 +143,8 @@ jobs:
           cache-on-failure: true
       - name: Validate source-run environment without launching
         run: ./scripts/run-dev.ps1 -CheckOnly
+      - name: Verify production feature boundaries
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       # Core/sync tests already run in the dedicated Windows verification group.
       - run: cargo test --locked -p studyapp-desktop -p studyapp-ui --all-features

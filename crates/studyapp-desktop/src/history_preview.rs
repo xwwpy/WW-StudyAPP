@@ -37,6 +37,7 @@ impl HistoryPreview {
         self.scroll = UniformListScrollHandle::default();
     }
 
+    #[cfg(feature = "ui-test")]
     pub fn rows(&self) -> DiffRows {
         self.measured.borrow().rows.clone()
     }

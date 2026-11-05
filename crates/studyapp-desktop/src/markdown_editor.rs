@@ -274,7 +274,7 @@ impl MarkdownEditor {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test"))]
     pub(crate) fn outline_enabled(&self) -> bool {
         self.outline_enabled
     }
@@ -577,7 +577,7 @@ impl MarkdownEditor {
         cx.notify();
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test"))]
     pub(crate) fn requested_visible_for_test(&self) -> bool {
         self.visible
     }

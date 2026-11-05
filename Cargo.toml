@@ -13,6 +13,13 @@ repository = "https://github.com/xwwpy/WW-StudyAPP"
 [profile.dev]
 debug = 0
 
+# Keep native source runs responsive without disabling debug assertions.
+[profile.dev.package.gpui-pre]
+opt-level = 2
+
+[profile.dev.package.gpui-component]
+opt-level = 2
+
 [patch.crates-io]
 # Preserve bounds observers without repainting unchanged Windows client content.
 gpui-pre = { path = "vendor/gpui-pre" }

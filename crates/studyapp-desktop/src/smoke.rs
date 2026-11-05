@@ -8,8 +8,36 @@ use studyapp_core::{Command, Engine};
 
 #[cfg(feature = "ui-test")]
 pub(crate) fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> {
-    #[cfg(not(target_os = "linux"))]
-    window.render_to_image()?.save(path)?;
+    let started = std::time::Instant::now();
+    eprintln!("native capture begin: {:?}", path.file_name());
+    #[cfg(windows)]
+    window.render_to_image()?.save(&path)?;
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::NSView;
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        anyhow::ensure!(
+            std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+            "Native macOS captures are restricted to GitHub runners"
+        );
+        let RawWindowHandle::AppKit(raw) = HasWindowHandle::window_handle(window)?.as_raw() else {
+            anyhow::bail!("macOS capture requires an AppKit window");
+        };
+        // SAFETY: the borrowed GPUI window owns this live NSView on the main
+        // thread for this read; never activate, resize, or reparent it.
+        let view = unsafe { raw.ns_view.cast::<NSView>().as_ref() };
+        let id = view
+            .window()
+            .ok_or_else(|| anyhow::anyhow!("Capture window is closed"))?
+            .windowNumber();
+        // Capture the actual compositor, including WKWebView children, rather
+        // than asking the debug Metal renderer for a second offscreen frame.
+        let status = std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-o", "-l", &id.to_string()])
+            .arg(&path)
+            .status()?;
+        anyhow::ensure!(status.success(), "macOS window capture failed: {status}");
+    }
     #[cfg(target_os = "linux")]
     {
         use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -26,10 +54,15 @@ pub(crate) fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> 
         };
         let status = std::process::Command::new("import")
             .args(["-window", &id.to_string(), "-silent"])
-            .arg(path)
+            .arg(&path)
             .status()?;
         anyhow::ensure!(status.success(), "X11 window capture failed: {status}");
     }
+    eprintln!(
+        "native capture complete: {:?}, elapsedMs={}",
+        path.file_name(),
+        started.elapsed().as_millis()
+    );
     Ok(())
 }
 

@@ -336,7 +336,6 @@ impl HostedEditor {
                     embedded_response(request)
                 }
             })
-            .with_url(EDITOR_PAGE)
             .with_visible(false)
             .with_focused(false)
             .with_bounds(wry::Rect {
@@ -371,6 +370,8 @@ impl HostedEditor {
                     let _ = sender.send(request.into_body());
                 }
             });
+        #[cfg(target_os = "linux")]
+        let builder = builder.with_url(EDITOR_PAGE);
         // The child remains hidden until its authenticated Ready handshake.
         // WebKit must not suspend that very handshake as inactive-page work.
         // This is scheduling only: visibility, permissions and CSP are unchanged.
@@ -397,6 +398,29 @@ impl HostedEditor {
         let webview = builder
             .build_as_child(&parent)
             .context("无法启动系统 WebKit 编辑器")?;
+        #[cfg(target_os = "macos")]
+        {
+            use objc2_foundation::{NSString, NSURL, NSURLRequest};
+            use wry::WebViewExtMacOS;
+            // Load the same bundled response at the same authenticated URL,
+            // without a cold custom-protocol/network-process round trip. This
+            // public WebKit API never sends the request. The document retains
+            // its exact-script-hash CSP; every later navigation/resource/IPC
+            // still goes through the unchanged allowlists above.
+            let url = NSURL::URLWithString(&NSString::from_str(EDITOR_PAGE))
+                .context("内置编辑器地址无效")?;
+            let request = NSURLRequest::requestWithURL(&url);
+            let html = std::str::from_utf8(super::single_document_editor().1)?;
+            #[cfg(feature = "ui-test")]
+            load_trace.record("document-memory");
+            // SAFETY: the view is live on its owning AppKit foreground thread;
+            // both arguments are retained for the entire synchronous call.
+            let _navigation = unsafe {
+                webview
+                    .webview()
+                    .loadSimulatedRequest_responseHTMLString(&request, &NSString::from_str(html))
+            };
+        }
         #[cfg(target_os = "linux")]
         let webview = {
             use gtk::{glib::translate::ToGlibPtr, prelude::*};

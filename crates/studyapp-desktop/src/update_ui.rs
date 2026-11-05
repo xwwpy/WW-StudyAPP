@@ -32,6 +32,7 @@ pub enum UpdateEvent {
 }
 
 enum UpdateReply {
+    #[cfg(feature = "ui-test")]
     Checked(CheckOrigin, UpdateResult<UpdateCheck>),
     NsisChecked(
         CheckOrigin,
@@ -632,6 +633,7 @@ impl UpdatePanel {
             let previous_offer = self.available_version().map(str::to_owned);
             changed = true;
             match reply {
+                #[cfg(feature = "ui-test")]
                 UpdateReply::Checked(origin, result) => {
                     let failure = if origin == CheckOrigin::Manual {
                         result.as_ref().err().map(ToString::to_string)
@@ -784,6 +786,7 @@ impl UpdatePanel {
         }
     }
 
+    #[cfg(any(test, feature = "ui-test"))]
     fn finish_check(&mut self, origin: CheckOrigin, result: UpdateResult<UpdateCheck>) {
         self.busy = false;
         self.check_policy.finish();

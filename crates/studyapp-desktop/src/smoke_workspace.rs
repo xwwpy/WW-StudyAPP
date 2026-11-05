@@ -493,15 +493,18 @@ async fn exercise_notifications(
     cx: &mut AsyncApp,
 ) {
     let native = crate::smoke_visibility::visible(window, editor, cx).await;
-    // Short and long notifications size themselves independently, rather than
-    // stretching every message to a fixed shell-wide banner.
+    // This is the retained legacy queue surface for embedded consumers. Test
+    // its API directly: StudyApp feedback now uses structured, configurable
+    // cards, whose routing/focus/configuration has a separate native regression.
+    // Short and long legacy notices still size themselves independently.
     let short_width = window
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| {
                 app.clear_notices(cx);
                 app.notifications
                     .update(cx, |center, _| center.freeze_time());
-                app.push_notice(Ok("已保存".into()), cx);
+                app.notifications
+                    .update(cx, |center, cx| center.push(Ok("已保存".into()), cx));
             });
             view.read(cx)
                 .notifications
@@ -524,9 +527,11 @@ async fn exercise_notifications(
                 app.clear_notices(cx);
                 let message =
                     "通知队列回归：相同结果分别显示；悬停暂停，关闭时平滑淡出。".repeat(12);
-                app.push_notice(Ok(message.clone()), cx);
-                app.push_notice(Ok(message), cx);
-                app.push_notice(Err("等待前面的通知退出后显示".into()), cx);
+                app.notifications.update(cx, |center, cx| {
+                    center.push(Ok(message.clone()), cx);
+                    center.push(Ok(message), cx);
+                    center.push(Err("等待前面的通知退出后显示".into()), cx);
+                });
             });
             window.render_frame(cx);
             assert_eq!(view.read(cx).notifications.read(cx).visible_count(), 2);

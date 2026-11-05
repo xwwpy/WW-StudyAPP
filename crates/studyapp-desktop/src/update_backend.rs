@@ -415,6 +415,7 @@ pub(crate) fn failure(kind: UpdateErrorKind) -> UpdateError {
     UpdateError { kind, message }
 }
 
+#[cfg(any(test, feature = "ui-test"))]
 #[derive(Clone, Debug)]
 pub enum UpdateCheck {
     UpToDate { current_version: String },
@@ -434,6 +435,7 @@ pub struct UpdateRelease {
 }
 
 impl UpdateRelease {
+    #[cfg(any(test, feature = "ui-test"))]
     pub fn same_artifacts(&self, other: &Self) -> bool {
         self.version == other.version
             && self.kind == other.kind
@@ -699,15 +701,19 @@ fn payload_name(version: &Version, kind: PayloadKind) -> String {
     format!("WW-StudyApp-{version}-windows-x86_64{suffix}")
 }
 
+#[cfg(any(test, feature = "ui-test"))]
 fn release_for_kind(json: &str, current: &str, kind: PayloadKind) -> UpdateResult<UpdateCheck> {
-    parse_release(json, current, kind, false)
+    Ok(match parse_release(json, current, kind, false)? {
+        Some(release) => UpdateCheck::Available(Box::new(release)),
+        None => UpdateCheck::UpToDate {
+            current_version: current.to_owned(),
+        },
+    })
 }
 
 fn current_tag_from_json(json: &str, current: &str) -> UpdateResult<UpdateRelease> {
-    match parse_release(json, current, PayloadKind::PortableZip, true)? {
-        UpdateCheck::Available(release) => Ok(*release),
-        UpdateCheck::UpToDate { .. } => Err(failure(UpdateErrorKind::InvalidRelease)),
-    }
+    parse_release(json, current, PayloadKind::PortableZip, true)?
+        .ok_or_else(|| failure(UpdateErrorKind::InvalidRelease))
 }
 
 fn parse_release(
@@ -715,7 +721,7 @@ fn parse_release(
     current: &str,
     kind: PayloadKind,
     exact_current: bool,
-) -> UpdateResult<UpdateCheck> {
+) -> UpdateResult<Option<UpdateRelease>> {
     if json.len() as u64 > MAX_METADATA_BYTES {
         return Err(failure(UpdateErrorKind::InvalidRelease));
     }
@@ -742,9 +748,7 @@ fn parse_release(
         return Err(failure(UpdateErrorKind::InvalidRelease));
     }
     if !exact_current && version <= installed {
-        return Ok(UpdateCheck::UpToDate {
-            current_version: current.to_owned(),
-        });
+        return Ok(None);
     }
     let page = format!(
         "https://github.com/xwwpy/WW-StudyAPP/releases/tag/{}",
@@ -773,7 +777,7 @@ fn parse_release(
     if notes.len() > 128 * 1024 {
         return Err(failure(UpdateErrorKind::InvalidRelease));
     }
-    Ok(UpdateCheck::Available(Box::new(UpdateRelease {
+    Ok(Some(UpdateRelease {
         kind,
         version: version.to_string(),
         tag: metadata.tag_name,
@@ -782,7 +786,7 @@ fn parse_release(
         package_size: package.size,
         package,
         checksum,
-    })))
+    }))
 }
 
 fn digest(asset: &ReleaseAsset) -> UpdateResult<String> {

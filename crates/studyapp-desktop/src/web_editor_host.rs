@@ -638,6 +638,10 @@ fn single_document_editor() -> (&'static str, &'static [u8]) {
         let source = format!("script-src 'sha256-{digest}'");
         let policy = CONTENT_SECURITY_POLICY.replace("script-src 'self'", &source);
         let html = template
+            .replace(
+                "<head>",
+                "<head><meta name=\"referrer\" content=\"no-referrer\">",
+            )
             .replace("script-src 'self'", &source)
             .replace(
                 "<link rel=\"stylesheet\" href=\"editor.css\">",
@@ -715,6 +719,7 @@ mod tests {
         let source = format!("script-src 'sha256-{digest}'");
         assert!(policy.contains(&source));
         assert!(html.contains(&source));
+        assert!(html.contains("<meta name=\"referrer\" content=\"no-referrer\">"));
         assert!(!policy.contains("script-src 'self'"));
         assert!(!policy.contains("script-src 'unsafe-inline'"));
         assert!(html.contains(&format!("<script>{script}</script></body>")));
