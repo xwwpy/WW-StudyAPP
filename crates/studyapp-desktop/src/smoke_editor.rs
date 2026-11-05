@@ -264,8 +264,11 @@ async fn capture_default_preview(
     expected_prefix: &str,
     cx: &mut AsyncApp,
 ) {
-    let native = window
-        .update(cx, |_, _, cx| editor.read(cx).native_state().unwrap())
+    let (native, startup) = window
+        .update(cx, |_, _, cx| {
+            let editor = editor.read(cx);
+            (editor.native_state().unwrap(), editor.startup_diagnostic())
+        })
         .unwrap();
     // Capture the compositor BEFORE any browser inspection, not Metal's
     // GPUI-only readback (which omits the native WKWebView child).
@@ -290,12 +293,16 @@ async fn capture_default_preview(
         })
         .unwrap();
     let dom = bridge(window, editor, json!({"type":"passiveVisibility"}), cx).await;
-    let evidence = json!({"native":native,"dom":dom,"presetSelected":false});
+    let evidence = json!({"native":native,"dom":dom,"startup":startup,"presetSelected":false});
     std::fs::write(
         database.with_file_name(format!("native-markdown-editor-default-{label}.json")),
         serde_json::to_vec_pretty(&evidence).unwrap(),
     )
     .unwrap();
+    assert_eq!(startup["hostAttached"], true, "{evidence}");
+    assert_eq!(startup["ready"], true, "{evidence}");
+    assert_eq!(startup["creating"], false, "{evidence}");
+    assert!(startup["error"].is_null(), "{evidence}");
     for key in ["requestedVisible", "appliedVisible", "visible"] {
         assert_eq!(native[key], true, "default readonly {label}: {evidence}");
     }

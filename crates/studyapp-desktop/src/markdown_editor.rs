@@ -260,6 +260,8 @@ impl MarkdownEditor {
         self.native_closed = true;
         self.visible = false;
         self.ready = false;
+        self.creating = false;
+        self.reset_host_messages();
         drop(self.host.take());
     }
 
@@ -619,6 +621,12 @@ impl MarkdownEditor {
     }
 
     fn poll(&mut self, cx: &mut Context<Self>) {
+        // Native construction may pump the foreground event loop. In that
+        // interval the page can already post Ready, but evaluate() has no host
+        // to target yet. Leave the queue intact until this exact host attaches.
+        if self.creating || self.host.is_none() || self.suspended {
+            return;
+        }
         let mut changed = false;
         for _ in 0..256 {
             let Ok(json) = self.receiver.try_recv() else {
@@ -859,6 +867,14 @@ impl MarkdownEditor {
         }
     }
 
+    /// The channel belongs to one native host, not to the document. Dropping
+    /// its receiver revokes queued and late callbacks from a retired WebView,
+    /// including Ready/Error messages that lack a document generation.
+    fn reset_host_messages(&mut self) {
+        (self.sender, self.receiver) = mpsc::channel();
+        self.host_epoch = self.host_epoch.wrapping_add(1);
+    }
+
     pub(crate) fn suspend_for_migration(&mut self, suspended: bool, cx: &mut Context<Self>) {
         #[cfg(feature = "ui-test")]
         eprintln!(
@@ -868,7 +884,7 @@ impl MarkdownEditor {
             self.host_epoch
         );
         self.suspended = suspended;
-        self.host_epoch = self.host_epoch.wrapping_add(1);
+        self.reset_host_messages();
         self.host = None;
         self.creating = false;
         self.ready = false;
@@ -897,6 +913,7 @@ impl MarkdownEditor {
                 return;
             }
         };
+        self.reset_host_messages();
         let sender = self.sender.clone();
         self.creating = true;
         let epoch = self.host_epoch;
@@ -1022,6 +1039,7 @@ impl MarkdownEditor {
     #[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
     pub(crate) fn startup_diagnostic(&self) -> serde_json::Value {
         serde_json::json!({"ready":self.ready,"creating":self.creating,"hostEpoch":self.host_epoch,
+            "hostAttached":self.host.is_some(),
             "visible":self.visible,"readonly":self.readonly,"themeInitialized":!self.theme.is_null(),
             "error":self.error,"native":self.native_state().ok()})
     }
@@ -1239,3 +1257,7 @@ mod profile_tests {
         assert!(resolved.load(Ordering::SeqCst));
     }
 }
+
+#[cfg(all(test, feature = "ui-test"))]
+#[path = "markdown_editor_startup_tests.rs"]
+mod startup_tests;
