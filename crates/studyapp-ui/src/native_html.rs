@@ -47,9 +47,6 @@ impl Frame {
 
 pub(crate) fn content(id: impl Into<ElementId>, source: &str) -> Option<AnyElement> {
     let palette = crate::theme::palette();
-    if !palette.render_html {
-        return None;
-    }
     let document = cached_document(source, palette.font_size, palette.markdown_rgba[0])?;
     Some(
         NativeHtml {
@@ -70,26 +67,48 @@ fn cached_document(source: &str, size: u16, color: RgbaColor) -> Option<Rc<Docum
         source: String,
         size: u16,
         color: RgbaColor,
+        render_html: bool,
+        marker_color: RgbaColor,
+        markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
         document: Option<Rc<Document>>,
     }
     thread_local! {
         static CACHE: RefCell<VecDeque<Entry>> = const { RefCell::new(VecDeque::new()) };
     }
-    if source.len() > 65_536 || !source.contains('<') {
+    if source.len() > 65_536 {
         return None;
     }
+    let palette = crate::theme::palette();
     CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        if let Some(i) = cache
-            .iter()
-            .position(|e| e.source == source && e.size == size && e.color == color)
-        {
+        if let Some(i) = cache.iter().position(|e| {
+            e.source == source
+                && e.size == size
+                && e.color == color
+                && e.marker_color == palette.markdown_rgba[12]
+                && e.render_html == palette.render_html
+                && e.markers == palette.list_markers
+        }) {
             let entry = cache.remove(i).expect("cached native document index");
             let result = entry.document.clone();
             cache.push_back(entry);
             return result;
         }
-        let document = Document::from_markdown(source, f32::from(size), color).map(Rc::new);
+        let document = Document::from_markdown_with_style(
+            source,
+            f32::from(size),
+            color,
+            palette.render_html,
+            palette.list_markers,
+        )
+        .map(|mut document| {
+            for run in &mut document.runs {
+                if run.marker.is_some() {
+                    run.font.color = palette.markdown_rgba[12];
+                }
+            }
+            Rc::new(document)
+        });
         if document.as_ref().is_none_or(|d| d.runs.len() <= 4096) {
             if cache.len() >= 4 {
                 cache.pop_front();
@@ -98,6 +117,9 @@ fn cached_document(source: &str, size: u16, color: RgbaColor) -> Option<Rc<Docum
                 source: source.into(),
                 size,
                 color,
+                render_html: palette.render_html,
+                marker_color: palette.markdown_rgba[12],
+                markers: palette.list_markers,
                 document: document.clone(),
             });
         }
@@ -261,6 +283,7 @@ struct Word {
     run: Run,
     frame: SharedFrame,
     text: Option<StyledText>,
+    marker: Option<AnyElement>,
 }
 impl IntoElement for Word {
     type Element = Self;
@@ -285,7 +308,7 @@ impl Element for Word {
         cx: &mut App,
     ) -> (LayoutId, ()) {
         let font = &self.run.font;
-        let style = run_style(font, window);
+        let mut style = run_style(font, window);
         let selection = self
             .frame
             .borrow()
@@ -293,15 +316,36 @@ impl Element for Word {
             .get(self.index)
             .cloned()
             .flatten();
-        let highlights = selection.into_iter().map(|range| {
-            (
-                range,
-                HighlightStyle {
-                    color: Some(color(crate::theme::palette().markdown_rgba[25])),
-                    ..Default::default()
-                },
-            )
-        });
+        if let Some(marker) = self.run.marker {
+            let symbol = marker.symbol();
+            let highlights = selection.as_ref().map(|_| {
+                (
+                    0..symbol.len(),
+                    HighlightStyle {
+                        color: Some(color(crate::theme::palette().markdown_rgba[25])),
+                        ..Default::default()
+                    },
+                )
+            });
+            self.marker = Some(
+                StyledText::new(symbol)
+                    .with_default_highlights(&style, highlights)
+                    .into_any_element(),
+            );
+            style.color = rgba(0x00000000).into();
+        }
+        let highlights = selection
+            .into_iter()
+            .filter(|_| self.run.marker.is_none())
+            .map(|range| {
+                (
+                    range,
+                    HighlightStyle {
+                        color: Some(color(crate::theme::palette().markdown_rgba[25])),
+                        ..Default::default()
+                    },
+                )
+            });
         let mut text =
             StyledText::new(self.run.text.clone()).with_default_highlights(&style, highlights);
         let (layout, ()) = window.with_text_style(
@@ -328,6 +372,26 @@ impl Element for Word {
     ) {
         let text = self.text.as_mut().unwrap();
         text.prepaint(None, None, bounds, &mut (), window, cx);
+        if let Some(marker) = &mut self.marker {
+            let style = run_style(&self.run.font, window);
+            window.with_text_style(
+                Some(TextStyleRefinement {
+                    color: Some(style.color),
+                    font_size: Some(style.font_size),
+                    line_height: Some(style.line_height),
+                    white_space: Some(WhiteSpace::Nowrap),
+                    ..Default::default()
+                }),
+                |window| {
+                    marker.layout_as_root(
+                        size(AvailableSpace::MaxContent, AvailableSpace::MaxContent),
+                        window,
+                        cx,
+                    );
+                    marker.prepaint_at(bounds.origin, window, cx);
+                },
+            );
+        }
         if bounds.size.width > px(0.) && bounds.size.height > px(0.) {
             self.frame.borrow_mut().geometry[self.index] = Some(
                 TextSelectionRun::new(self.run.text.clone(), text.layout().clone(), bounds)
@@ -360,6 +424,9 @@ impl Element for Word {
             );
         }
         text.paint(None, None, bounds, &mut (), &mut (), window, cx);
+        if let Some(marker) = &mut self.marker {
+            marker.paint(window, cx);
+        }
     }
 }
 fn run_style(font: &RunFont, window: &Window) -> TextStyle {
@@ -417,6 +484,7 @@ fn node(value: &Node, frame: &SharedFrame) -> AnyElement {
                     run,
                     frame: frame.clone(),
                     text: None,
+                    marker: None,
                 })
                 .into_any_element()
         }
@@ -427,7 +495,13 @@ fn node(value: &Node, frame: &SharedFrame) -> AnyElement {
             children,
         } => {
             let mut container = div().flex().min_w_0().max_w_full().flex_shrink_0();
-            if *kind == Kind::Row {
+            if *kind == Kind::ListItem {
+                container = container
+                    .w_full()
+                    .items_start()
+                    .child(node(&children[0], frame))
+                    .child(div().flex_1().min_w_0().child(node(&children[1], frame)));
+            } else if *kind == Kind::Row {
                 container = container
                     .w_full()
                     .items_stretch()

@@ -34,6 +34,11 @@ impl SettingResult {
 static SETTINGS: &[SettingResult] = &[
     SettingResult::new(
         SettingsSection::Appearance,
+        "多级无序列表标记",
+        "markdown md 无序 列表 嵌套 层级 标记 符号 圆 方块 三角 预设 自定义",
+    ),
+    SettingResult::new(
+        SettingsSection::Appearance,
         "Markdown HTML 渲染开关",
         "md markdown html 行内 样式 安全 渲染 源文 关闭",
     ),

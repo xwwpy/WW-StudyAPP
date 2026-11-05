@@ -388,6 +388,7 @@ impl StudyApp {
                 draft.appearance.mode = defaults.settings.appearance.mode;
                 draft.appearance.render_html = defaults.settings.appearance.render_html;
                 draft.appearance.table_defaults = defaults.settings.appearance.table_defaults;
+                draft.appearance.list_style = defaults.settings.appearance.list_style;
                 draft.appearance.font_size = defaults.settings.appearance.font_size;
                 draft.appearance.spacing = defaults.settings.appearance.spacing;
             }
@@ -2670,7 +2671,7 @@ impl StudyApp {
                     })))
                     .child(muted("适用于所有主题；正文中可为单张表格调整列宽与对齐，恢复默认后重新跟随此处。不会改写 Markdown。"))
                     .child(muted("修改可即时预览；保存全部设置后才会写入资料库。")),
-            );
+            ).child(self.list_style_settings(cx));
         }
         if part == 1 {
             let mut custom = card().gap_3().child(
@@ -5057,6 +5058,7 @@ mod scoped_tests {
                 draft.appearance.mode = studyapp_core::ThemeMode::Dark;
                 draft.appearance.font_size = 20;
                 draft.appearance.spacing = 12;
+                draft.appearance.list_style.levels[2] = Some(studyapp_core::ListMarker::Star);
                 draft.show_file_paths = true;
                 draft.layout.navigation_visible = false;
                 app.preferences_ui.editing_preset = Some(preset.id.clone());
@@ -5076,6 +5078,10 @@ mod scoped_tests {
                 assert!(app.preferences_ui.appearance_touched);
                 let draft = app.preferences_ui.draft.as_ref().unwrap();
                 assert_eq!(draft.appearance.font_size, 14);
+                assert_eq!(
+                    draft.appearance.list_style,
+                    studyapp_core::ListStyle::default()
+                );
                 assert_eq!(draft.appearance.mode, studyapp_core::ThemeMode::System);
                 assert!(draft.show_file_paths);
                 assert_eq!(draft.appearance.custom_presets, vec![preset.clone()]);
@@ -5290,6 +5296,78 @@ mod scoped_tests {
                         .is_none()
                 );
             })
+        });
+    }
+
+    struct ListPreferenceFixture {
+        app: Entity<StudyApp>,
+    }
+    impl Render for ListPreferenceFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| app.list_style_settings(cx))
+        }
+    }
+    #[gpui_kit::test]
+    fn list_styles_are_live_discardable_drafts_and_reset_is_scoped(cx: &mut TestAppContext) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(1000.)));
+        visual.replace_root_view(|_, _| ListPreferenceFixture { app: app.clone() });
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click(("list-preset", 1usize), cx);
+            app.update(cx, |app, cx| {
+                assert_eq!(
+                    app.preferences_ui
+                        .draft
+                        .as_ref()
+                        .unwrap()
+                        .appearance
+                        .list_style
+                        .preset,
+                    studyapp_core::ListPreset::Classic
+                );
+                assert_eq!(
+                    crate::theme::palette().list_markers[1],
+                    studyapp_core::ListMarker::Circle
+                );
+                assert_eq!(
+                    app.preferences_ui
+                        .saved
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .appearance
+                        .list_style,
+                    studyapp_core::ListStyle::default()
+                );
+                assert!(app.settings_dirty(cx));
+                app.discard_settings(window, cx);
+                assert_eq!(
+                    crate::theme::palette().list_markers[1],
+                    studyapp_core::ListMarker::Square
+                );
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                draft.appearance.list_style.levels[2] = Some(studyapp_core::ListMarker::Plus);
+                draft.logging.enabled = false;
+                draft.notifications.do_not_disturb = true;
+                app.reset_settings_page(SettingsResetScope::Appearance, window, cx);
+                let draft = app.preferences_ui.draft.as_ref().unwrap();
+                assert_eq!(
+                    draft.appearance.list_style,
+                    studyapp_core::ListStyle::default()
+                );
+                assert!(!draft.logging.enabled);
+                assert!(draft.notifications.do_not_disturb);
+                assert!(
+                    app.preferences_ui
+                        .appearance_preview
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .editor()
+                        .is_none()
+                );
+            });
         });
     }
 }

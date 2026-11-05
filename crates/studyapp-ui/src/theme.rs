@@ -12,6 +12,7 @@ use studyapp_core::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedTheme {
     pub table_defaults: studyapp_core::TableDefaults,
+    pub list_markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
     pub render_html: bool,
     pub dark: bool,
     pub background: u32,
@@ -166,6 +167,7 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
         markdown_layout: markdown.layout,
         render_html: settings.render_html,
         table_defaults: settings.table_defaults,
+        list_markers: settings.list_style.markers(),
     }
 }
 
@@ -210,6 +212,7 @@ impl ResolvedTheme {
         serde_json::json!({
             "renderHtml": self.render_html,
             "tableDefaults": self.table_defaults,
+            "listMarkers": self.list_markers,
             "mode": if self.dark { "dark" } else { "light" },
             "accent": hex(self.accent), "background": hex(self.surface),
             "surface": hex(self.surface), "text": hex(self.text),
@@ -692,5 +695,31 @@ mod table_defaults_tests {
             assert_eq!(tokens["tableDefaults"]["sizing"], "adaptive");
             assert_eq!(tokens["tableDefaults"]["alignment"], "center");
         }
+    }
+}
+
+#[cfg(test)]
+mod list_style_tests {
+    #[test]
+    fn global_list_markers_follow_all_theme_modes_and_default_reset() {
+        use studyapp_core::{AppearanceSettings, ListMarker, ThemeMode};
+        let mut settings = AppearanceSettings::default();
+        settings.list_style.levels[2] = Some(ListMarker::Star);
+        for mode in [
+            ThemeMode::System,
+            ThemeMode::Light,
+            ThemeMode::Dark,
+            ThemeMode::Custom,
+        ] {
+            settings.mode = mode;
+            let theme = super::resolve(&settings, false);
+            assert_eq!(theme.list_markers[2], ListMarker::Star);
+            assert_eq!(theme.editor_tokens()["listMarkers"][2], "star");
+        }
+        settings.list_style = Default::default();
+        assert_eq!(
+            super::resolve(&settings, true).list_markers[2],
+            ListMarker::Triangle
+        );
     }
 }

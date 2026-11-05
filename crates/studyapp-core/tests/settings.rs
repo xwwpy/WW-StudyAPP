@@ -107,6 +107,7 @@ fn custom_theme_presets_round_trip_and_reject_missing_selection_and_duplicates()
     use studyapp_core::{AppearanceSettings, ThemeMode, ThemePalette, ThemePreset};
     let mut appearance = AppearanceSettings {
         table_defaults: Default::default(),
+        list_style: Default::default(),
         render_html: true,
         mode: ThemeMode::Custom,
         active_preset: Some("paper".into()),

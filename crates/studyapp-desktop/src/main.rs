@@ -55,6 +55,7 @@ mod resize_overlay;
 mod settings_cache;
 mod settings_color;
 mod settings_components;
+mod settings_lists;
 mod settings_search;
 mod settings_ui;
 mod shortcuts;

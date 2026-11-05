@@ -19,10 +19,12 @@ impl Render for Fixture {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         let palette = crate::theme::palette();
         let document = Rc::new(
-            Document::from_markdown(
+            Document::from_markdown_with_style(
                 &self.source,
                 f32::from(palette.font_size),
                 palette.markdown_rgba[0],
+                palette.render_html,
+                palette.list_markers,
             )
             .unwrap(),
         );
@@ -430,4 +432,113 @@ fn native_html_framed_inline_span_does_not_expand_to_the_paragraph_width(cx: &mu
         assert!(get("right").left() > get("chip").right());
         assert!(f32::from(get("left").top() - get("chip").top()).abs() < 10.);
     });
+}
+
+#[gpui_kit::test]
+fn native_list_marker_geometry_and_copy_survive_style_changes_with_html_disabled(
+    cx: &mut TestAppContext,
+) {
+    init(cx);
+    cx.update(|cx| {
+        let settings = studyapp_core::AppearanceSettings {
+            render_html: false,
+            ..Default::default()
+        };
+        crate::theme::apply(&settings, false, cx);
+    });
+    let capture: Capture = Rc::default();
+    let (_, visual) = cx.add_window_view(|window, cx| {
+        let view = cx.new(|_| Fixture {
+            source: "- parent 中文🙂\n  - child\n    - third\n      - fourth\n\n- [x] done".into(),
+            width: 240.,
+            capture: capture.clone(),
+            scroll: None,
+        });
+        Root::new(view, window, cx)
+    });
+    let (start, end, plain) = visual.update(|window, cx| {
+        window.render_frame(cx);
+        let frame = capture.borrow().clone().unwrap();
+        let state = frame.borrow();
+        let xs: Vec<_> = state
+            .document
+            .runs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                r.marker
+                    .map(|_| state.geometry[i].as_ref().unwrap().bounds().left())
+            })
+            .collect();
+        assert_eq!(xs.len(), 4);
+        assert!(
+            xs.windows(2).all(|p| p[1] > p[0]),
+            "nested markers require increasing gutters: {xs:?}"
+        );
+        for (i, run) in state.document.runs.iter().enumerate() {
+            let geometry = state.geometry[i].as_ref().unwrap();
+            assert_eq!(geometry.text().as_str(), run.text.as_str());
+            assert!(geometry.bounds().size.height > px(0.));
+        }
+        let first = state.geometry.iter().flatten().next().unwrap().bounds();
+        let last = state.geometry.iter().flatten().last().unwrap().bounds();
+        (
+            point(first.left() + px(0.1), first.top() + px(1.)),
+            point(last.right() - px(0.1), last.bottom() - px(1.)),
+            state.document.plain.clone(),
+        )
+    });
+    for (anchor, cursor) in [(start, end), (end, start)] {
+        visual.update(TextSelection::clear);
+        visual.simulate_mouse_down(anchor, MouseButton::Left, Modifiers::default());
+        visual.update(|window, cx| window.render_frame(cx));
+        visual.simulate_mouse_move(cursor, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(cursor, MouseButton::Left, Modifiers::default());
+        assert_eq!(visual.update(TextSelection::selected_text), plain);
+    }
+    visual.update(|window, cx| {
+        let mut settings = studyapp_core::AppearanceSettings {
+            render_html: false,
+            ..Default::default()
+        };
+        settings.list_style.levels = [Some(studyapp_core::ListMarker::Plus); 8];
+        crate::theme::apply(&settings, false, cx);
+        window.refresh();
+        window.render_frame(cx);
+        let frame = capture.borrow().clone().unwrap();
+        let state = frame.borrow();
+        assert_eq!(state.document.plain, plain);
+        assert!(
+            state
+                .document
+                .runs
+                .iter()
+                .filter_map(|r| r.marker)
+                .all(|m| m == studyapp_core::ListMarker::Plus)
+        );
+        assert_eq!(TextSelection::selected_text(window, cx), plain);
+    });
+}
+
+#[gpui_kit::test]
+fn native_list_cache_invalidates_marker_styles_and_html_permission(cx: &mut TestAppContext) {
+    init(cx);
+    let source = "- parent <b>bold</b>\n  - child";
+    let color = RgbaColor::opaque(0x202020);
+    let first = super::cached_document(source, 16, color).unwrap();
+    cx.update(|cx| {
+        let mut settings = studyapp_core::AppearanceSettings {
+            render_html: false,
+            ..Default::default()
+        };
+        settings.list_style.levels[1] = Some(studyapp_core::ListMarker::Star);
+        crate::theme::apply(&settings, false, cx);
+    });
+    let second = super::cached_document(source, 16, color).unwrap();
+    assert!(!Rc::ptr_eq(&first, &second));
+    assert!(second.plain.contains("<b>bold</b>"));
+    assert_eq!(
+        second.runs.iter().filter_map(|r| r.marker).nth(1),
+        Some(studyapp_core::ListMarker::Star)
+    );
 }

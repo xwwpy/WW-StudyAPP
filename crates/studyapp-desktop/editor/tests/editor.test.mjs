@@ -107,7 +107,9 @@ test("layout completion acknowledges readonly preview resize before the continui
     window.studyappEditor.setTheme({ markdown: { reading_width: 640 } });
     window.studyappEditor.load({ generation: 42, text, readonly: true });
   }, text);
-  await action(page, { type: "select", anchor: Math.floor(text.length / 2) });
+  // Anchor a stable table row: adding list examples must not move the caret
+  // into an atomic HTML widget that has no resize-driven scroll delta.
+  await action(page, { type: "select", anchor: text.indexOf("| 概念与定义") });
   const full = await action(page, { type: "layout", width: 830, height: 371 });
   assert.ok(full.scrollTop > 50);
   // Hold the real browser measurement scheduler across the same full-width to
@@ -2581,4 +2583,86 @@ test('table empty cells retain widths across inline source selection and text un
   const rows=await page.locator('.md-table-row').evaluateAll(rows=>rows.map(row=>[...row.querySelectorAll('.md-table-cell')].map(cell=>cell.getBoundingClientRect().width)));
   for(const row of rows) {assert.equal(row.length,3);row.forEach((w,i)=>assert.ok(Math.abs(w-widths[i])<2));}
   assert.deepEqual(errors,[]);await page.close();
+});
+
+test("unordered markers follow real mixed AST depth and leave tasks and code unchanged", async () => {
+  const text = "1. ordered\n   - child\n     - grandchild\n       - fourth\n\n- [ ] task\n  - nested task child\n\n```md\n- code, not a list\n```\n\n`- inline code`";
+  const {page,errors} = await setup(text);
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  const rows = await page.locator('.md-list-line').evaluateAll(rows=>rows.map(row=>({depth:Number(row.dataset.listDepth),bullet:row.querySelector('.md-bullet')?.textContent,task:!!row.querySelector('.md-task')})));
+  assert.deepEqual(rows.filter(r=>r.bullet).map(r=>[r.depth,r.bullet]),[[2,'▪'],[3,'▸'],[4,'◆'],[2,'▪']]);
+  assert.equal(rows.filter(r=>r.task).length,1);
+  assert.ok((await page.locator('.md-code-line').allTextContents()).some(line=>line.includes('- code, not a list')));
+  assert.equal((await state(page)).text,text);
+  assert.deepEqual(errors,[]);
+  await page.close();
+});
+
+test("list marker appearance updates preserve readonly source revision and explicit source copy", async () => {
+  const text = '- 中文🙂 parent\n  - child\n    - grandchild\n\n- [x] done';
+  const {page,errors} = await setup(text);
+  await page.evaluate(()=>{window.studyappEditor.setReadonly(true);window.messages=[];});
+  const before = await state(page);
+  const markers = ['star','dash','plus','arrow','square','circle','diamond','triangle'];
+  await page.evaluate(listMarkers=>window.studyappEditor.setTheme({listMarkers}),markers);
+  assert.deepEqual(await page.locator('.md-bullet').allTextContents(),['✦','–','+']);
+  assert.equal(await page.locator('.md-task[aria-checked="true"]').count(),1);
+  await select(page,0,text.length);
+  const copied = await page.evaluate(()=>{const data=new DataTransfer();document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('copy',{clipboardData:data,bubbles:true,cancelable:true}));return data.getData('text/plain');});
+  assert.equal(copied,text);
+  const after=await state(page);
+  assert.equal(after.text,text); assert.equal(after.revision,before.revision);
+  assert.equal(await page.evaluate(()=>window.messages.filter(m=>['change','requestEdit'].includes(m.type)).length),0);
+  assert.deepEqual(errors,[]);
+  await page.close();
+});
+
+test("deep list markers cycle eight configured levels and safely reject foreign markup", async () => {
+  const text=Array.from({length:11},(_,i)=>'  '.repeat(i)+'- level '+(i+1)).join('\n');
+  const {page,errors,externalRequests}=await setup(text);
+  await page.setViewportSize({width:350,height:800});
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  await page.evaluate(()=>window.studyappEditor.setTheme({listMarkers:['star','dash','plus','arrow','square','circle','diamond','triangle']}));
+  assert.deepEqual(await page.locator('.md-bullet').allTextContents(),['✦','–','+','➤','▪','◦','◆','▸','✦','–','+']);
+  for (const invalid of [null, ['star'],Array(8).fill('<img src=https://bad.test>'),Array(8).fill('__proto__')]) {
+    await page.evaluate(listMarkers=>window.studyappEditor.setTheme({listMarkers}),invalid);
+    assert.deepEqual((await page.locator('.md-bullet').allTextContents()).slice(0,3),['•','▪','▸']);
+  }
+  assert.equal(await page.locator('.md-bullet img,.md-bullet script').count(),0);
+  assert.deepEqual(externalRequests,[]); assert.deepEqual(errors,[]);
+  await page.screenshot({path:'test-results/list-markers-narrow.png'});
+  await page.close();
+});
+
+test("list marker preview never enters text undo history and editing retains source markers", async () => {
+  const text='- parent\n  - child\n    - grandchild\n\nEnd';
+  const {page,errors}=await setup(text);
+  await select(page,text.length);
+  await page.keyboard.type(' edited');
+  await page.evaluate(()=>window.studyappEditor.setTheme({listMarkers:Array(8).fill('star')}));
+  assert.deepEqual(await page.locator('.md-bullet').allTextContents(),['✦','✦','✦']);
+  await page.evaluate(()=>window.studyappEditor.command('undo'));
+  assert.equal((await state(page)).text,text);
+  await select(page,2);
+  assert.equal(await page.locator('.md-list-line').first().locator('.md-bullet').count(),0);
+  assert.ok((await page.locator('.md-list-line').first().textContent()).startsWith('- parent'));
+  assert.equal((await state(page)).text,text);
+  assert.deepEqual(errors,[]); await page.close();
+});
+
+test("quoted loose lists and continuation paragraphs keep source markers and alignment", async () => {
+  const text='> + parent\n>\n>   continuation paragraph 中文🙂\n>\n>   * child\n>\n>     - grandchild\n\n7. ordered start\n8. next';
+  const {page,errors}=await setup(text);
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  assert.deepEqual(await page.locator('.md-bullet').allTextContents(),['•','▪','▸']);
+  const lines=await page.locator('.md-list-line').evaluateAll(lines=>lines.map(line=>({depth:Number(line.dataset.listDepth),text:line.textContent,left:parseFloat(getComputedStyle(line).paddingLeft)})));
+  const continuation=lines.find(r=>r.text.includes('continuation paragraph'));
+  assert.equal(continuation.depth,1);
+  const child=lines.find(r=>r.text.includes('child')&&!r.text.includes('grandchild'));
+  assert.ok(child.left>continuation.left);
+  assert.ok((await page.locator('.cm-content').textContent()).includes('7. ordered start'));
+  await page.evaluate(()=>window.studyappEditor.setTheme({listMarkers:Array(8).fill('diamond')}));
+  assert.deepEqual(await page.locator('.md-bullet').allTextContents(),['◆','◆','◆']);
+  assert.equal((await state(page)).text,text);
+  assert.deepEqual(errors,[]); await page.close();
 });

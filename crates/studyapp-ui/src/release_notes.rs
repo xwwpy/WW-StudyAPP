@@ -1,6 +1,6 @@
 //! Version-separated notes inside one bounded scroll surface.
 use crate::components::{column, heading, muted};
-use gpui_kit::{component::text::TextView, prelude::FluentBuilder, *};
+use gpui_kit::{prelude::FluentBuilder, *};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleaseNotesSection {
@@ -47,18 +47,16 @@ pub fn sections(id: &'static str, entries: &[ReleaseNotesSection]) -> Div {
                         .min_w_0()
                         .child(crate::markdown_view::copyable(
                             SharedString::from(format!("{key}-copy")),
-                            TextView::markdown(
+                            crate::markdown_view::content(
                                 SharedString::from(format!("{key}-markdown")),
-                                crate::markdown_content::release_notes(
+                                &crate::markdown_content::release_notes(
                                     if entry.notes.trim().is_empty() {
                                         "本版本未提供更新说明。"
                                     } else {
                                         &entry.notes
                                     },
                                 ),
-                            )
-                            .style(crate::compact_markdown::summary_markdown_style())
-                            .scrollable(false),
+                            ),
                         )),
                 )
         }))

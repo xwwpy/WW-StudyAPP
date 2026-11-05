@@ -1,3 +1,4 @@
+import { listDepth, listSymbol, listPresentationChanged } from "./lists";
 import { Range, StateEffect, Text, Transaction } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
@@ -152,11 +153,12 @@ class LanguageWidget extends WidgetType {
 }
 
 class BulletWidget extends WidgetType {
-  eq() { return true; }
+  constructor(readonly symbol:string) { super(); }
+  eq(other:BulletWidget) { return this.symbol === other.symbol; }
   toDOM() {
     const span = document.createElement("span");
     span.className = "md-bullet";
-    span.textContent = "•";
+    span.textContent = this.symbol;
     span.setAttribute("aria-hidden", "true");
     return span;
   }
@@ -245,7 +247,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
   }
   update(update: ViewUpdate) {
     const tree = syntaxTree(update.state);
-    if (update.transactions.some(transaction => transaction.effects.some(effect => effect.is(imageMapChanged) || effect.is(languageFocusChanged) || effect.is(tablePresentationChanged))) || update.docChanged || update.selectionSet || update.focusChanged || update.viewportChanged || tree !== this.tree ||
+    if (update.transactions.some(transaction => transaction.effects.some(effect => effect.is(imageMapChanged) || effect.is(languageFocusChanged) || effect.is(tablePresentationChanged) || effect.is(listPresentationChanged))) || update.docChanged || update.selectionSet || update.focusChanged || update.viewportChanged || tree !== this.tree ||
         update.startState.readOnly !== update.state.readOnly) {
       this.tree = tree;
       this.decorations = this.build(update.view);
@@ -363,10 +365,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
           } else if (name === "CodeInfo" && parent && !active(parent.from, parent.to)) {
             mark(from, to, "md-code-language");
           } else if (name === "ListItem") {
-            let depth = 0;
-            for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
-              if (ancestor.name === "BulletList" || ancestor.name === "OrderedList") depth++;
-            }
+            const depth = listDepth(node);
             const first = state.doc.lineAt(Math.max(from,visible.from)).number;
             const last = state.doc.lineAt(Math.min(to,visible.to)).number;
             for (let i = first; i <= last; i++) {
@@ -378,7 +377,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
             if (!active(current.from, current.to) && /^[-+*]$/.test(state.sliceDoc(from, to))) {
               const task = parent?.getChild("Task");
               if (task) hide(from, Math.min(to + 1, current.to));
-              else ranges.push(Decoration.replace({ widget: new BulletWidget() }).range(from, to));
+              else ranges.push(Decoration.replace({ widget: new BulletWidget(listSymbol(listDepth(node))) }).range(from, to));
             } else mark(from, to, "md-list-marker");
           } else if (name === "QuoteMark") {
             const current = state.doc.lineAt(from);

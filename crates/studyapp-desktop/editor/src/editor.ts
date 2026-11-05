@@ -1,3 +1,4 @@
+import { setListMarkers, listPresentationChanged } from "./lists";
 import { setTableDocument, setTableDefaults, tableUpdates, tablePresentationChanged, installTableControls, syncTableAnchors, hideTableControls } from "./tables";
 import { sanitizeHtml, sanitizeStyle } from "./safe-html";
 import { htmlConfiguration, htmlRendering } from "./html-rendering";
@@ -572,11 +573,12 @@ function restoreSelection(position: number): void {
 }
 function setTheme(tokens: Record<string, unknown>): void {
   setTableDefaults(tokens?.tableDefaults);
+  setListMarkers(tokens?.listMarkers);
   themeWarning.hidden = !applyEditorTheme(tokens);
   // A changed style module invalidates CodeMirror's measured text geometry,
   // including its cursor layer, without replacing document/history/selection.
   htmlEnabled = tokens?.renderHtml !== false;
-  view.dispatch({effects:[themeMode.reconfigure([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)]),tablePresentationChanged.of()]});
+  view.dispatch({effects:[themeMode.reconfigure([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)]),tablePresentationChanged.of(),listPresentationChanged.of()]});
   view.requestMeasure();
 }
 applyEditorTheme({});

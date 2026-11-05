@@ -64,6 +64,7 @@ pub(super) enum Kind {
     Inline,
     Row,
     Cell,
+    ListItem,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Node {
@@ -78,6 +79,8 @@ pub(super) enum Node {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Run {
     pub text: String,
+    /// Canonical text remains selectable; the marker glyph is display-only.
+    pub marker: Option<studyapp_core::ListMarker>,
     pub font: Font,
     pub separator: String,
 }
@@ -283,6 +286,8 @@ struct Builder {
     runs: Vec<Run>,
     separator: String,
     last_space: bool,
+    markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
+    html_document: bool,
 }
 impl Builder {
     fn boundary(&mut self, separator: &'static str) {
@@ -341,6 +346,7 @@ impl Builder {
                 let index = self.runs.len();
                 self.runs.push(Run {
                     text: part.into(),
+                    marker: None,
                     font: font.clone(),
                     separator: std::mem::take(&mut self.separator),
                 });
@@ -355,6 +361,7 @@ impl Builder {
         font: &Font,
         pre: bool,
         list: Option<u32>,
+        depth: usize,
     ) -> Option<Vec<Node>> {
         let mut out = Vec::new();
         let mut list_index = list;
@@ -398,21 +405,91 @@ impl Builder {
                         bx.padding[3] = bx.padding[3].max(12.);
                     }
                     let mut content = Vec::new();
+                    let mut prefix = Vec::new();
+                    let item_index = list_index;
+                    if tag == "li" {
+                        list_index = list_index.map(|n| n.saturating_add(1));
+                    }
                     if tag == "li" && !starts_with_task(children) {
-                        let marker = if let Some(n) = list_index {
-                            list_index = Some(n.saturating_add(1));
-                            format!("{n}. ")
+                        if let Some(n) = item_index {
+                            let marker = if self.html_document || depth <= 1 || list == Some(0) {
+                                format!("{n}. ")
+                            } else if depth == 2 {
+                                format!(
+                                    "{}. ",
+                                    char::from(b'A' + ((n - list.unwrap_or(n)) % 26) as u8)
+                                )
+                            } else {
+                                format!(
+                                    "{}. ",
+                                    char::from(b'a' + ((n - list.unwrap_or(n)) % 26) as u8)
+                                )
+                            };
+                            prefix.extend(self.text(&marker, &next, false)?);
                         } else {
-                            "• ".into()
-                        };
-                        content.extend(self.text(&marker, &next, false)?);
+                            let before = self.runs.len();
+                            prefix.extend(self.text("• ", &next, false)?);
+                            if let Some(run) = self.runs.get_mut(before) {
+                                run.marker = Some(
+                                    self.markers
+                                        [depth.saturating_sub(1) % studyapp_core::LIST_LEVELS],
+                                );
+                            }
+                        }
                     }
                     let child_list = if tag == "ol" {
                         Some(start.unwrap_or(1))
                     } else {
                         None
                     };
-                    content.extend(self.nodes(children, &next, pre || tag == "pre", child_list)?);
+                    let child_depth = depth + usize::from(matches!(tag.as_str(), "ul" | "ol"));
+                    content.extend(self.nodes(
+                        children,
+                        &next,
+                        pre || tag == "pre",
+                        child_list,
+                        child_depth,
+                    )?);
+                    if tag == "li" && !prefix.is_empty() {
+                        // One marker gutter and one wrapping body. Continuation paragraphs
+                        // and nested lists stay under the body, not beneath the marker.
+                        let width = prefix
+                            .iter()
+                            .filter_map(|n| match n {
+                                Node::Run(i) => Some(self.runs[*i].text.chars().count()),
+                                _ => None,
+                            })
+                            .sum::<usize>();
+                        out.push(Node::Box {
+                            kind: Kind::ListItem,
+                            style: bx,
+                            children: vec![
+                                Node::Box {
+                                    kind: Kind::Inline,
+                                    style: BoxStyle {
+                                        width: Some(Dimension::Pixels(
+                                            (next.size * 1.4).max(width as f32 * next.size * 0.65),
+                                        )),
+                                        ..Default::default()
+                                    },
+                                    children: prefix,
+                                },
+                                Node::Box {
+                                    kind: Kind::Flow,
+                                    style: BoxStyle {
+                                        align: next.align.clone(),
+                                        ..Default::default()
+                                    },
+                                    children: content,
+                                },
+                            ],
+                        });
+                        self.boundary("\n");
+                        continue;
+                    }
+                    if matches!(tag.as_str(), "ul" | "ol") && depth > 0 {
+                        bx.padding[3] = bx.padding[3].max(next.size * 0.3);
+                    }
                     if matches!(tag.as_str(), "td" | "th") {
                         self.boundary("\t");
                     }
@@ -481,19 +558,39 @@ fn is_block(node: &SafeHtmlNode) -> bool {
     matches!(node,SafeHtmlNode::Element {tag,..} if is_block_tag(tag))
 }
 impl Document {
+    #[cfg(test)]
     pub fn from_markdown(source: &str, size: f32, color: RgbaColor) -> Option<Self> {
+        Self::from_markdown_with_style(
+            source,
+            size,
+            color,
+            true,
+            studyapp_core::ListStyle::default().markers(),
+        )
+    }
+    pub fn from_markdown_with_style(
+        source: &str,
+        size: f32,
+        color: RgbaColor,
+        render_html: bool,
+        markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
+    ) -> Option<Self> {
         if source.len() > 65_536 {
             return None;
         }
-        use pulldown_cmark::{Event, Options, Parser};
+        use pulldown_cmark::{Event, Options, Parser, Tag};
         let options =
             Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-        if !Parser::new_ext(source, options)
-            .any(|e| matches!(e, Event::Html(_) | Event::InlineHtml(_)))
-        {
+        let mut html_document = false;
+        let mut bullet_list = false;
+        for event in Parser::new_ext(source, options) {
+            html_document |= matches!(event, Event::Html(_) | Event::InlineHtml(_));
+            bullet_list |= matches!(event, Event::Start(Tag::List(None)));
+        }
+        if !(bullet_list || html_document && render_html) {
             return None;
         }
-        let safe = crate::markdown_content::markdown_preview_with_html(source, true);
+        let safe = crate::markdown_content::markdown_preview_with_html(source, render_html);
         let mut html = String::new();
         pulldown_cmark::html::push_html(
             &mut html,
@@ -509,8 +606,10 @@ impl Document {
             runs: Vec::new(),
             separator: String::new(),
             last_space: true,
+            markers,
+            html_document: html_document && render_html,
         };
-        let children = builder.nodes(&nodes, &Font::base(size, color), false, None)?;
+        let children = builder.nodes(&nodes, &Font::base(size, color), false, None, 0)?;
         let mut plain = String::new();
         for run in &builder.runs {
             plain.push_str(&run.separator);
@@ -645,5 +744,105 @@ mod inheritance_tests {
         assert!(doc.runs.iter().any(|r| r.text == "👩‍💻"));
         assert!(doc.runs.iter().all(|r| r.font.tracking == 2.));
         assert_eq!(doc.plain, "e\u{301} 👩‍💻 中");
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+    use studyapp_core::{ListMarker, ListStyle};
+    #[test]
+    fn native_list_ast_depth_and_display_markers_do_not_change_copy_runs() {
+        let source = "1. ordered\n   - child\n     - grandchild\n\n- [ ] task\n  - task child\n\n```md\n- code\n```";
+        let color = RgbaColor::opaque(0x202020);
+        let original = Document::from_markdown_with_style(
+            source,
+            16.,
+            color,
+            false,
+            ListStyle::default().markers(),
+        )
+        .unwrap();
+        assert_eq!(
+            original
+                .runs
+                .iter()
+                .filter_map(|r| r.marker)
+                .collect::<Vec<_>>(),
+            [ListMarker::Square, ListMarker::Triangle, ListMarker::Square]
+        );
+        let custom =
+            Document::from_markdown_with_style(source, 16., color, false, [ListMarker::Plus; 8])
+                .unwrap();
+        assert_eq!(custom.plain, original.plain);
+        assert_eq!(
+            custom.runs.iter().map(|r| &r.text).collect::<Vec<_>>(),
+            original.runs.iter().map(|r| &r.text).collect::<Vec<_>>()
+        );
+        let all: Vec<_> = custom.runs.iter().map(|r| Some(0..r.text.len())).collect();
+        assert_eq!(custom.selected(&all), original.selected(&all));
+        assert!(custom.plain.contains("☐ task"));
+        assert!(custom.plain.contains("- code"));
+    }
+    #[test]
+    fn native_markdown_lists_work_with_html_disabled_without_activating_html_or_resources() {
+        let source = "- first <span style='color:red'>literal</span>\n  - second\n\n```html\n<ul><li>code</li></ul>\n```";
+        let document = Document::from_markdown_with_style(
+            source,
+            16.,
+            RgbaColor::opaque(0x202020),
+            false,
+            ListStyle::default().markers(),
+        )
+        .unwrap();
+        assert!(
+            document
+                .plain
+                .contains("<span style='color:red'>literal</span>")
+        );
+        assert!(document.plain.contains("<ul><li>code</li></ul>"));
+        assert!(
+            Document::from_markdown("```md\n- not a list\n```", 16., RgbaColor::opaque(0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn ordered_starts_and_tasks_do_not_renumber_when_list_appearance_changes() {
+        let source = "3. [ ] ordered task
+4. second
+
+- bullet";
+        let original = Document::from_markdown(source, 16., RgbaColor::opaque(0)).unwrap();
+        let custom = Document::from_markdown_with_style(
+            source,
+            16.,
+            RgbaColor::opaque(0),
+            true,
+            [ListMarker::Star; 8],
+        )
+        .unwrap();
+        assert!(original.plain.contains("4. second"));
+        assert_eq!(original.plain, custom.plain);
+    }
+
+    #[test]
+    fn list_gutter_preserves_inherited_html_body_alignment() {
+        let document = Document::from_markdown(
+            "<ul style='text-align:center'><li>centered words</li></ul>",
+            16.,
+            RgbaColor::opaque(0),
+        )
+        .unwrap();
+        fn inspect(node: &Node) -> bool {
+            if let Node::Box { kind, children, .. } = node {
+                if *kind == Kind::ListItem {
+                    return matches!(&children[1],Node::Box {style,..} if style.align == "center");
+                }
+                return children.iter().any(inspect);
+            }
+            false
+        }
+        assert!(inspect(&document.root));
     }
 }
