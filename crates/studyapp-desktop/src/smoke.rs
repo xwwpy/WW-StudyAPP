@@ -181,7 +181,8 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         #[cfg(all(windows, feature = "ui-test"))]
         if std::env::var("WW_STUDYAPP_SMOKE_SCENARIO").as_deref() == Ok("note-rename") {
             Box::pin(crate::smoke_note_rename::exercise(window, &view, &database, cx)).await;
-            cx.update(|cx| cx.quit());
+            // The scenario retains a live draft and ends with a real native
+            // close. Let its durable-close acknowledgement terminate the app.
             return;
         }
         #[cfg(all(windows, feature = "ui-test"))]

@@ -17,7 +17,7 @@ foreach ($renamePath in @($renameData, $renameStdout, $renameStderr)) {
 $renameOldScenario = [Environment]::GetEnvironmentVariable('WW_STUDYAPP_SMOKE_SCENARIO', 'Process')
 try {
     $env:WW_STUDYAPP_SMOKE_SCENARIO = 'note-rename'
-    $renameProcess = Start-Process -FilePath $renameBinary -ArgumentList @('--smoke-test', '--data-dir', ('"' + $renameData + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput $renameStdout -RedirectStandardError $renameStderr
+    $renameProcess = Start-Process -FilePath $renameBinary -ArgumentList @('--smoke-test', '--data-dir', ('"' + $renameData + '"')) -PassThru -NoNewWindow -RedirectStandardOutput $renameStdout -RedirectStandardError $renameStderr
     if (-not $renameProcess.WaitForExit(120000)) {
         $renameProcess.Kill()
         throw 'Isolated rename regression exceeded 120 seconds'
@@ -27,7 +27,7 @@ try {
         throw "Rename regression exit code: $($renameProcess.ExitCode)"
     }
     $renameEvidence = Get-Content -LiteralPath (Join-Path $renameData 'native-note-rename-evidence.json') -Raw | ConvertFrom-Json
-    foreach ($renameAssertion in @('prefilled', 'escapeCancelled', 'enterPersisted', 'historyAndMarkdownPreserved', 'busyRejected', 'staleLibraryAndRevisionRejected', 'liveDraftPreserved')) {
+    foreach ($renameAssertion in @('prefilled', 'escapeCancelled', 'enterPersisted', 'historyAndMarkdownPreserved', 'busyRejected', 'staleLibraryAndRevisionRejected', 'liveDraftPreserved', 'normalCloseDurable')) {
         if ($renameEvidence.$renameAssertion -cne $true) { throw "Rename assertion failed: $renameAssertion" }
     }
     if (-not $renameEvidence.targetNoteId -or -not $renameEvidence.selectedNoteId -or $renameEvidence.targetNoteId -eq $renameEvidence.selectedNoteId) {

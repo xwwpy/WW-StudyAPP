@@ -308,15 +308,60 @@ pub async fn exercise(
         })
         .unwrap();
     assert_eq!(std::fs::read(&target.path).unwrap(), original_bytes);
-    std::fs::write(
-        database.with_file_name("native-note-rename-evidence.json"),
-        serde_json::to_vec_pretty(&json!({
-            "targetNoteId": target.id, "selectedNoteId": selected.id,
-            "prefilled": true, "escapeCancelled": true, "enterPersisted": true,
-            "historyAndMarkdownPreserved": true, "busyRejected": true,
-            "staleLibraryAndRevisionRejected": true, "liveDraftPreserved": true
-        }))
-        .unwrap(),
+    until(
+        window,
+        view,
+        "preserved draft ready for normal close",
+        |app, cx| !app.draft_loading && app.note_content.read(cx).ready(),
+        cx,
     )
-    .unwrap();
+    .await;
+    let (draft_id, draft_path) = view.read_with(cx, |app, cx| {
+        assert_eq!(app.note_editor.as_ref(), Some(&draft));
+        assert_eq!(app.note_content.read(cx).value(), draft.content);
+        let id = app
+            .active_draft_id
+            .clone()
+            .expect("preserved draft identity");
+        let path = crate::drafts::DraftStore::record_path(&app.last_library, &id).unwrap();
+        (id, path)
+    });
+    let expected = serde_json::to_value(&draft).unwrap();
+    let report_path = database.with_file_name("native-note-rename-evidence.json");
+    let report = json!({
+        "targetNoteId": target.id, "selectedNoteId": selected.id,
+        "prefilled": true, "escapeCancelled": true, "enterPersisted": true,
+        "historyAndMarkdownPreserved": true, "busyRejected": true,
+        "staleLibraryAndRevisionRejected": true, "liveDraftPreserved": true,
+        "normalCloseDurable": true, "draftId": draft_id
+    });
+    let owner = view.clone();
+    cx.update(|cx| {
+        cx.on_window_closed(move |cx, _| {
+            if !cx.windows().is_empty() {
+                return;
+            }
+            let app = owner.read(cx);
+            assert!(app.close_allowed && app.note_editor.is_none());
+            assert!(app.draft_close_drain.is_none() && app.draft_persist.is_none());
+            let stored: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&draft_path).unwrap()).unwrap();
+            assert_eq!(stored["id"], draft_id);
+            assert_eq!(stored["status"]["kind"], "active");
+            assert_eq!(stored["draft"], expected);
+            std::fs::write(&report_path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
+        })
+        .detach();
+    });
+    // Do not post a raw application quit while the retained WebView and draft
+    // are live. Exercise the same native Close control and durable checkpoint
+    // path as an ordinary user, retaining the runner's original exit deadline.
+    crate::smoke_window_drag::click_window_control(
+        window,
+        view,
+        "window-close",
+        windows::Win32::UI::WindowsAndMessaging::HTCLOSE,
+        cx,
+    )
+    .await;
 }

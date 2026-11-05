@@ -120,7 +120,7 @@ class SmokeTests(unittest.TestCase):
 
     def test_native_pointer_launch_does_not_hide_the_window_or_create_a_console(self):
         root = Path(__file__).resolve().parents[1]
-        for name in ("smoke-window-drag.ps1", "smoke-timer-widget.ps1"):
+        for name in ("smoke-window-drag.ps1", "smoke-timer-widget.ps1", "smoke-note-rename.ps1"):
             source = (root / "scripts" / name).read_text(encoding="utf-8")
             launch = next(line for line in source.splitlines() if "Start-Process" in line)
             self.assertIn("-NoNewWindow", launch)
@@ -131,6 +131,29 @@ class SmokeTests(unittest.TestCase):
                       'fixture must own its target window'):
             self.assertIn(check, pointer)
         self.assertNotIn("HWND_TOPMOST", pointer)
+
+    def test_rename_pass_requires_native_close_and_the_exact_preserved_draft(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/smoke_note_rename.rs").read_text(encoding="utf-8")
+        for check in ("cx.on_window_closed(", "click_window_control(", '"window-close"',
+                      "WindowsAndMessaging::HTCLOSE", "app.close_allowed", "app.note_editor.is_none()",
+                      "app.draft_close_drain.is_none()", "app.draft_persist.is_none()",
+                      'assert_eq!(stored["draft"], expected)', '"normalCloseDurable": true'):
+            self.assertIn(check, source)
+        self.assertLess(source.index("cx.on_window_closed("), source.index("std::fs::write(&report_path"))
+        dispatch = (root / "crates/studyapp-desktop/src/smoke.rs").read_text(encoding="utf-8")
+        branch = dispatch.split('== Ok("note-rename") {', 1)[1].split("return;", 1)[0]
+        self.assertNotIn("cx.quit()", branch)
+        harness = (root / "scripts/smoke-note-rename.ps1").read_text(encoding="utf-8")
+        self.assertIn("'normalCloseDurable'", harness)
+        self.assertIn("WaitForExit(120000)", harness)
+
+    def test_native_settings_keep_notification_and_logging_receipts(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for directory in ("SMOKE_DIR", "SETTINGS_DIR", "OPTIMIZED_SETTINGS_DIR"):
+            for receipt in ("notification-native-result.json", "logging-native-result.json"):
+                self.assertIn("${{ env." + directory + " }}/" + receipt, workflow)
 
     def test_mac_editor_has_no_persistent_browser_state_and_keeps_origin_checks(self):
         root = Path(__file__).resolve().parents[1]
