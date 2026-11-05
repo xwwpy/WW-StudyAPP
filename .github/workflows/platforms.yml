@@ -81,7 +81,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libdbus-1-dev vulkan-validationlayers libvulkan1 mesa-vulkan-drivers fonts-noto-cjk xwayland xvfb imagemagick xdotool dbus-x11 gnome-keyring dpkg-dev desktop-file-utils
+          sudo apt-get install -y gcc g++ clang libfontconfig-dev libwayland-dev libwebkit2gtk-4.1-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libdbus-1-dev vulkan-validationlayers libvulkan1 mesa-vulkan-drivers fonts-noto-cjk xwayland xvfb imagemagick xdotool x11-utils openbox dbus-x11 gnome-keyring dpkg-dev desktop-file-utils
       - name: Verify package and smoke evidence logic
         run: |
           python3 scripts/test-package-unix.py
@@ -148,10 +148,12 @@ jobs:
           path: |
             ${{ runner.temp }}/native-interactive/native-markdown-editor*.png
             ${{ runner.temp }}/native-interactive/native-markdown-editor-default-*.json
+            ${{ runner.temp }}/native-interactive/native-timer-pin*
             ${{ runner.temp }}/native-interactive/native-about.png
             ${{ runner.temp }}/native-interactive/page-4.png
             ${{ runner.temp }}/native-interactive.stderr.log
             ${{ runner.temp }}/native-interactive-*.stderr.log
+            ${{ runner.temp }}/native-interactive-*/native-timer-pin*
             ${{ runner.temp }}/native-interactive-*/native-app-migration.txt
             ${{ runner.temp }}/native-interactive-*/native-markdown-editor*.png
             ${{ runner.temp }}/native-interactive-*/page-4.png
@@ -167,6 +169,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-interactive/native-markdown-editor*.png
             ${{ runner.temp }}/native-interactive/native-markdown-editor-default-*.json
+            ${{ runner.temp }}/native-interactive/native-timer-pin*
             ${{ runner.temp }}/native-interactive/native-about.png
             ${{ runner.temp }}/native-interactive.stderr.log
           if-no-files-found: warn

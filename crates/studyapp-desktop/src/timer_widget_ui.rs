@@ -336,12 +336,9 @@ impl StudyApp {
         let mut behavior = column().gap_2();
         type BoolField = fn(&mut TimerWidgetSettings) -> &mut bool;
         let fields: [(&str, &str, bool, BoolField); 5] = [
-            (
-                "widget-pinned",
-                "窗口置顶（Windows）",
-                settings.pinned,
-                |s| &mut s.pinned,
-            ),
+            ("widget-pinned", "窗口置顶", settings.pinned, |s| {
+                &mut s.pinned
+            }),
             (
                 "widget-seconds",
                 "显示秒数",
@@ -371,7 +368,9 @@ impl StudyApp {
             let toggle = Checkbox::new(SharedString::from(key.to_owned()))
                 .label(label)
                 .checked(checked)
-                .disabled(busy || (key == "widget-pinned" && !cfg!(windows)))
+                .disabled(
+                    busy || (key == "widget-pinned" && !studyapp_ui::timer_card::PIN_SUPPORTED),
+                )
                 .on_click(cx.listener(move |this, checked, _, cx| {
                     if let Some(draft) = &mut this.preferences_ui.draft {
                         *field(&mut draft.timer_widget) = *checked;

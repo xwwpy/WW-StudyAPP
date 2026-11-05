@@ -13,6 +13,7 @@ struct WidgetPresentation {
     model: TimerCardModel,
     settings: TimerWidgetSettings,
     bindings: std::collections::BTreeMap<String, String>,
+    pin_retry: u64,
 }
 impl WidgetPresentation {
     fn from_app(app: &StudyApp, cx: &App) -> Self {
@@ -29,6 +30,7 @@ impl WidgetPresentation {
             + 1;
         Self {
             model: TimerCardModel::from_timer(timer, segment),
+            pin_retry: app.timer_pin_retry,
             settings: app.preview_widget_settings(cx),
             bindings: app
                 .preferences_ui
@@ -45,7 +47,8 @@ pub struct TimerWidget {
     state: WidgetWindowState,
     path: PathBuf,
     save_task: Option<Task<()>>,
-    pinned: Option<bool>,
+    pin: crate::timer_widget_pin::PinController,
+    pin_poll: Option<Task<()>>,
     presentation: WidgetPresentation,
     content_fit: Rc<RefCell<WidgetContentFit>>,
 }
@@ -107,7 +110,8 @@ impl TimerWidget {
             state,
             path,
             save_task: None,
-            pinned: None,
+            pin: Default::default(),
+            pin_poll: None,
             presentation,
             content_fit: Rc::default(),
         }
@@ -123,18 +127,42 @@ impl TimerWidget {
     }
 }
 impl Render for TimerWidget {
-    fn render(&mut self, window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // open_window renders synchronously while the StudyApp update lease is
         // still held. Render only the supplied/observed value snapshot; never
         // read the owner from this new window's render path.
         let model = self.presentation.model.clone();
         let settings = self.presentation.settings.clone();
         let bindings = self.presentation.bindings.clone();
-        if self.pinned != Some(settings.pinned)
-            && crate::timer_widget_window::decorate(window, settings.pinned).is_ok()
-        {
-            self.pinned = Some(settings.pinned);
+        let update = self.pin.step(
+            settings.pinned,
+            self.presentation.pin_retry,
+            std::time::Instant::now(),
+            |request| crate::timer_widget_window::decorate(window, settings.pinned, request),
+        );
+        if let crate::timer_widget_pin::PinUpdate::Failed(error) = update {
+            let owner = self.app.downgrade();
+            window.defer(cx, move |_, cx| {
+                let _ = owner.update(cx, |app, cx| app.push_notice(Err(error), cx));
+            });
         }
+        if self.pin.pending() && self.pin_poll.is_none() {
+            self.pin_poll = Some(cx.spawn(async |this, cx| {
+                cx.background_executor()
+                    .timer(crate::timer_widget_pin::POLL_INTERVAL)
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    this.pin_poll = None;
+                    cx.notify();
+                });
+            }));
+        } else if !self.pin.pending() {
+            self.pin_poll = None;
+        }
+        let mut style = TimerCardStyle::from_widget_settings(&settings, crate::theme::palette());
+        style.pin_applied = Some(self.pin.applied());
+        style.pin_pending = self.pin.pending();
+        style.pin_failed = self.pin.failed();
         let app = self.app.downgrade();
         let card_owner = app.clone();
         let keys_owner = app.clone();
@@ -172,7 +200,7 @@ impl Render for TimerWidget {
             })
             .child(timer_widget_card(
                 model,
-                TimerCardStyle::from_widget_settings(&settings, crate::theme::palette()),
+                style,
                 move |action, _, cx| forward(card_owner.clone(), action, cx),
                 move |natural, window, cx| {
                     let current = window.viewport_size();
@@ -330,6 +358,13 @@ impl StudyApp {
     ) {
         match action {
             TimerCardAction::OpenMain => window.activate_window(),
+            TimerCardAction::RetryPinned => {
+                if self.has_modal(cx) || self.storage_busy || self.preferences_ui.busy {
+                    return;
+                }
+                self.timer_pin_retry = self.timer_pin_retry.wrapping_add(1);
+                cx.notify();
+            }
             TimerCardAction::TogglePinned => {
                 if self.has_modal(cx) || self.storage_busy || self.preferences_ui.busy {
                     return;

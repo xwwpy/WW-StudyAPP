@@ -45,11 +45,78 @@ class SmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             smoke.verify(data, interactive=True)
         (data / "native-app-migration.txt").write_text("PASS: profile relocation")
+        with self.assertRaises(FileNotFoundError):
+            smoke.verify(data, interactive=True)
+        (data / "native-timer-pin.json").write_text(json.dumps(self.pin_fixture()), encoding="utf-8")
+        for target in ("true", "false"):
+            (data / f"native-timer-pin-{target}.png").write_bytes(b"pin-fixture-image" * 200)
         smoke.verify(data, interactive=True)
         draft["draft"]["content"] = "stale content"
         path.write_text(json.dumps(draft), encoding="utf-8")
         with self.assertRaises(ValueError):
             smoke.verify(data, interactive=True)
+
+    @staticmethod
+    def pin_fixture():
+        # Fabricated evidence belongs only to these verifier unit-test fixtures.
+        return {"schema": 1, "desktopClosed": True, "states": [
+            {"checked": target, "label": "取消置顶" if target else "置顶", "native": {"pinned": target, "managed": True,
+             "focus": 123, "bounds": [80, 80, 380, 300]}}
+            for target in (False, True, False)]}
+
+    def test_native_pin_verifier_rejects_missing_ack_focus_move_and_incomplete_close(self):
+        root = Path(__file__).resolve().parents[1] / ".scratch/cross-platform-012"
+        root.mkdir(parents=True, exist_ok=True)
+        data = Path(tempfile.mkdtemp(dir=root, prefix="pin-proof-"))
+        cases = [("pinned", False), ("focus", 456), ("bounds", [0, 0, 380, 300]), ("managed", False)]
+        for key, value in cases:
+            evidence = self.pin_fixture()
+            evidence["states"][1]["native"][key] = value
+            (data / "native-timer-pin.json").write_text(json.dumps(evidence), encoding="utf-8")
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                smoke.verify_pin(data)
+        for bad in ({"schema": 1}, {**self.pin_fixture(), "desktopClosed": False}):
+            (data / "native-timer-pin.json").write_text(json.dumps(bad), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                smoke.verify_pin(data)
+
+    def test_isolated_wm_waits_for_ewmh_and_stops_its_own_child_on_failure(self):
+        root = Path(__file__).resolve().parents[1] / ".scratch/cross-platform-012"
+        root.mkdir(parents=True, exist_ok=True)
+        data = Path(tempfile.mkdtemp(dir=root, prefix="wm-proof-")) / "native"
+        process = mock.Mock()
+        process.poll.return_value = None
+        reply = mock.Mock(stdout="_NET_SUPPORTED(ATOM) = _NET_WM_STATE_ABOVE")
+        with (
+            mock.patch.object(smoke.sys, "platform", "linux"),
+            mock.patch.object(smoke.subprocess, "Popen", return_value=process) as start,
+            mock.patch.object(smoke.subprocess, "run", return_value=reply),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fixture failure"):
+                with smoke.window_manager(data, True):
+                    raise RuntimeError("fixture failure")
+        self.assertEqual(start.call_args.args[0], ["openbox", "--sm-disable"])
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once_with(timeout=5)
+
+    def test_wm_exit_is_not_treated_as_readiness_and_noninteractive_skips_it(self):
+        root = Path(__file__).resolve().parents[1] / ".scratch/cross-platform-012"
+        root.mkdir(parents=True, exist_ok=True)
+        data = Path(tempfile.mkdtemp(dir=root, prefix="wm-exit-proof-")) / "native"
+        process = mock.Mock()
+        process.poll.return_value = 1
+        with (
+            mock.patch.object(smoke.sys, "platform", "linux"),
+            mock.patch.object(smoke.subprocess, "Popen", return_value=process) as start,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "exited before readiness"):
+                with smoke.window_manager(data, True):
+                    self.fail("must not launch app without WM readiness")
+            with smoke.window_manager(data, False):
+                pass
+            self.assertEqual(start.call_count, 1)
+        process.terminate.assert_not_called()
+        process.wait.assert_called_once_with(timeout=5)
 
     def test_first_readiness_deadline_captures_evidence_without_silently_repairing(self):
         root = Path(__file__).resolve().parents[1]

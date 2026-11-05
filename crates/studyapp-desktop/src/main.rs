@@ -84,6 +84,8 @@ mod smoke_settings;
 mod smoke_statistics;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_storage_performance;
+#[cfg(all(feature = "ui-test", not(test)))]
+mod smoke_timer_pin;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_timer_widget;
 #[cfg(all(windows, feature = "ui-test"))]
@@ -101,6 +103,7 @@ mod sync_runtime;
 mod sync_ui;
 mod theme;
 mod timer_widget;
+mod timer_widget_pin;
 mod timer_widget_ui;
 mod timer_widget_window;
 #[cfg(all(test, feature = "ui-test"))]

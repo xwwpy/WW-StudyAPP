@@ -13,6 +13,8 @@ use gpui_kit::{
 use std::{cell::Cell, rc::Rc};
 use studyapp_core::{TimerKind, TimerState, TimerWidgetSettings, WidgetBackground, WidgetLayout};
 
+pub const PIN_SUPPORTED: bool = cfg!(any(windows, target_os = "macos", target_os = "linux"));
+
 #[derive(Clone, Debug)]
 pub struct TimerCardModel {
     pub kind: TimerKind,
@@ -50,6 +52,9 @@ pub struct TimerCardStyle {
     pub settings: TimerWidgetSettings,
     pub surface: u32,
     pub accent: Hsla,
+    pub pin_applied: Option<bool>,
+    pub pin_pending: bool,
+    pub pin_failed: bool,
 }
 impl TimerCardStyle {
     pub fn from_widget_settings(settings: &TimerWidgetSettings, palette: ResolvedTheme) -> Self {
@@ -68,6 +73,9 @@ impl TimerCardStyle {
             settings: settings.clone(),
             surface,
             accent,
+            pin_applied: None,
+            pin_pending: false,
+            pin_failed: false,
         }
     }
 }
@@ -91,6 +99,7 @@ pub enum TimerCardAction {
     OpenSettings,
     OpenMain,
     TogglePinned,
+    RetryPinned,
     CloseWidget,
     ExitApp,
 }
@@ -350,6 +359,52 @@ fn render_card(
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
             }
         }
+        let applied = style.pin_applied.unwrap_or(s.pinned);
+        let pin_label = if style.pin_failed {
+            if s.pinned {
+                "重试置顶"
+            } else {
+                "重试取消置顶"
+            }
+        } else if style.pin_pending {
+            if s.pinned {
+                "正在置顶"
+            } else {
+                "正在取消置顶"
+            }
+        } else if applied {
+            "取消置顶"
+        } else {
+            "置顶"
+        };
+        let pin_action = action.clone();
+        let retry_pin = style.pin_failed;
+        let pin = Button::new("widget-pin")
+            .small()
+            .ghost()
+            .icon_action(
+                if applied {
+                    IconName::PinOff
+                } else {
+                    IconName::Pin
+                },
+                pin_label,
+            )
+            .selected(applied)
+            .toggled(applied)
+            .loading(style.pin_pending)
+            .disabled(preview || style.pin_pending || !PIN_SUPPORTED)
+            .on_click(move |_, window, cx| {
+                pin_action(
+                    if retry_pin {
+                        TimerCardAction::RetryPinned
+                    } else {
+                        TimerCardAction::TogglePinned
+                    },
+                    window,
+                    cx,
+                )
+            });
         surface = surface.child(
             row()
                 .id("widget-tools")
@@ -357,15 +412,7 @@ fn render_card(
                 .flex_shrink_0()
                 .gap_1()
                 .child(drag)
-                .child(
-                    button(
-                        "widget-pin",
-                        if s.pinned { "取消置顶" } else { "置顶" },
-                        TimerCardAction::TogglePinned,
-                    )
-                    .selected(s.pinned)
-                    .disabled(preview || !cfg!(windows)),
-                )
+                .child(pin)
                 .child(button(
                     "widget-open-main",
                     "主界面",
@@ -734,6 +781,115 @@ mod widget_geometry_tests {
                     );
                 });
             }
+        }
+    }
+
+    struct PinFixture {
+        style: TimerCardStyle,
+        variant: TimerCardVariant,
+        actions: std::rc::Rc<std::cell::RefCell<Vec<super::TimerCardAction>>>,
+    }
+    impl Render for PinFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let actions = self.actions.clone();
+            div().size_full().child(timer_card(
+                TimerCardModel::from_timer(&TimerState::default(), 1),
+                self.style.clone(),
+                self.variant,
+                move |action, _, _| actions.borrow_mut().push(action),
+            ))
+        }
+    }
+    #[gpui_kit::test]
+    fn pin_control_reports_acknowledged_state_and_explicit_retry_without_activating_preview(
+        cx: &mut TestAppContext,
+    ) {
+        use super::TimerCardAction::{RetryPinned, TogglePinned};
+        cx.update(gpui_kit::init);
+        let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorded = actions.clone();
+        let (view, visual) = cx.add_window_view(move |_, _| PinFixture {
+            style: TimerCardStyle::from_widget_settings(
+                &Default::default(),
+                crate::theme::palette(),
+            ),
+            variant: TimerCardVariant::Widget,
+            actions: recorded,
+        });
+        // desired, applied, pending, failed, preview, accessible label, dispatched action
+        for (desired, applied, pending, failed, preview, label, expected) in [
+            (true, false, true, false, false, "正在置顶", None),
+            (false, true, true, false, false, "正在取消置顶", None),
+            (
+                true,
+                false,
+                false,
+                true,
+                false,
+                "重试置顶",
+                Some(RetryPinned),
+            ),
+            (
+                false,
+                true,
+                false,
+                true,
+                false,
+                "重试取消置顶",
+                Some(RetryPinned),
+            ),
+            (
+                true,
+                true,
+                false,
+                false,
+                false,
+                "取消置顶",
+                Some(TogglePinned),
+            ),
+            (
+                false,
+                false,
+                false,
+                false,
+                false,
+                "置顶",
+                Some(TogglePinned),
+            ),
+            (true, true, false, false, true, "取消置顶", None),
+            (true, false, false, true, true, "重试置顶", None),
+        ] {
+            actions.borrow_mut().clear();
+            view.update(visual, |fixture, cx| {
+                fixture.style.settings.pinned = desired;
+                fixture.style.pin_applied = Some(applied);
+                fixture.style.pin_pending = pending;
+                fixture.style.pin_failed = failed;
+                fixture.variant = if preview {
+                    TimerCardVariant::Preview
+                } else {
+                    TimerCardVariant::Widget
+                };
+                cx.notify();
+            });
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let pin = window.find("widget-pin");
+                assert_eq!(pin.label(), Some(label));
+                assert_eq!(
+                    pin.checked(),
+                    Some(applied),
+                    "never substitute saved intent for acknowledgement"
+                );
+                // The upstream button does not expose a disabled flag to the
+                // observer. Prove blocking by dispatching a real virtual click
+                // below and asserting that no action escapes pending/preview.
+                window.click("widget-pin", cx);
+            });
+            assert_eq!(
+                &*actions.borrow(),
+                &expected.into_iter().collect::<Vec<_>>()
+            );
         }
     }
 }

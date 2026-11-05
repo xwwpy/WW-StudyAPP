@@ -111,49 +111,142 @@ impl WidgetContentFit {
     }
 }
 
-pub fn decorate(window: &mut gpui_kit::Window, pinned: bool) -> Result<()> {
+#[cfg(all(target_os = "linux", not(test)))]
+#[path = "timer_widget_pin_linux.rs"]
+mod linux_pin;
+#[cfg(all(target_os = "macos", not(test)))]
+#[path = "timer_widget_pin_macos.rs"]
+mod macos_pin;
+
+pub fn decorate(window: &mut gpui_kit::Window, pinned: bool, request: bool) -> Result<bool> {
     #[cfg(all(windows, not(test)))]
     {
         use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::*};
         use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        let RawWindowHandle::Win32(raw) = window.window_handle()?.as_raw() else {
+        let RawWindowHandle::Win32(raw) = HasWindowHandle::window_handle(window)?.as_raw() else {
             anyhow::bail!("计时窗口句柄无效")
         };
         let hwnd = HWND(raw.hwnd.get() as *mut _);
         // Only this application's new floating window is modified.
         unsafe {
             let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-            SetWindowLongPtrW(
-                hwnd,
-                GWL_EXSTYLE,
-                (style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize),
-            );
-            SetWindowPos(
-                hwnd,
-                Some(if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST }),
-                0,
-                0,
-                0,
-                0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            )?;
+            if request {
+                SetWindowLongPtrW(
+                    hwnd,
+                    GWL_EXSTYLE,
+                    (style | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize),
+                );
+                SetWindowPos(
+                    hwnd,
+                    Some(if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST }),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                )?;
+            }
             let applied = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             ensure!(
                 applied & WS_EX_TOOLWINDOW.0 as isize != 0
                     && applied & WS_EX_APPWINDOW.0 as isize == 0,
                 "计时窗口装饰未生效"
             );
-            ensure!(
-                (applied & WS_EX_TOPMOST.0 as isize != 0) == pinned,
-                "计时窗口置顶状态未生效"
-            );
+            Ok((applied & WS_EX_TOPMOST.0 as isize != 0) == pinned)
         }
     }
-    #[cfg(any(not(windows), test))]
+    #[cfg(all(target_os = "macos", not(test)))]
     {
-        let _ = (window, pinned);
+        use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let RawWindowHandle::AppKit(raw) = HasWindowHandle::window_handle(window)?.as_raw() else {
+            anyhow::bail!("计时小组件需要原生 AppKit 窗口")
+        };
+        // SAFETY: this foreground GPUI window owns and retains its NSView.
+        unsafe { macos_pin::apply(raw.ns_view, pinned, request) }
     }
-    Ok(())
+    #[cfg(all(target_os = "linux", not(test)))]
+    {
+        use wry::raw_window_handle::{
+            HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle,
+        };
+        let handle = HasWindowHandle::window_handle(window)?;
+        let display = HasDisplayHandle::display_handle(window)?;
+        let (RawWindowHandle::Xcb(raw), RawDisplayHandle::Xcb(display)) =
+            (handle.as_raw(), display.as_raw())
+        else {
+            anyhow::bail!("计时小组件置顶需要应用自己的 X11/XWayland 窗口连接")
+        };
+        let connection = display.connection.context("应用的 X11 连接不可用")?;
+        // SAFETY: both live handle borrows remain in scope; no ownership or
+        // event queue is transferred to the temporary XCB wrapper.
+        unsafe { linux_pin::apply(connection, raw.window.get(), pinned, request) }
+    }
+    #[cfg(test)]
+    {
+        let _ = (window, pinned, request);
+        Ok(true)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos", test)))]
+    {
+        let _ = (window, pinned, request);
+        anyhow::bail!("当前平台不支持计时小组件置顶")
+    }
+}
+
+#[cfg(all(feature = "ui-test", not(test)))]
+pub(crate) fn pin_observation(window: &gpui_kit::Window) -> Result<serde_json::Value> {
+    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    ensure!(
+        std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true"),
+        "原生置顶验收仅允许在 GitHub runner 执行"
+    );
+    let handle = HasWindowHandle::window_handle(window)?;
+    #[cfg(windows)]
+    {
+        use windows::Win32::{
+            Foundation::{HWND, RECT},
+            UI::WindowsAndMessaging::*,
+        };
+        let RawWindowHandle::Win32(raw) = handle.as_raw() else {
+            anyhow::bail!("计时窗口句柄无效")
+        };
+        let hwnd = HWND(raw.hwnd.get() as *mut _);
+        let mut bounds = RECT::default();
+        unsafe {
+            GetWindowRect(hwnd, &mut bounds)?;
+            Ok(serde_json::json!({
+                "pinned": GetWindowLongPtrW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0,
+                "focus": GetForegroundWindow().0 as usize,
+                "bounds": [bounds.left, bounds.top, bounds.right - bounds.left, bounds.bottom - bounds.top],
+                "managed": true,
+            }))
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let RawWindowHandle::AppKit(raw) = handle.as_raw() else {
+            anyhow::bail!("计时小组件需要原生 AppKit 窗口")
+        };
+        // SAFETY: the foreground window keeps the borrowed NSView alive.
+        unsafe { macos_pin::observe(raw.ns_view) }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use wry::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
+        let display = HasDisplayHandle::display_handle(window)?;
+        let (RawWindowHandle::Xcb(raw), RawDisplayHandle::Xcb(display)) =
+            (handle.as_raw(), display.as_raw())
+        else {
+            anyhow::bail!("计时小组件需要应用自己的 X11 连接")
+        };
+        // SAFETY: both native handle borrows outlive this passive observation.
+        unsafe {
+            linux_pin::observe(
+                display.connection.context("应用的 X11 连接不可用")?,
+                raw.window.get(),
+            )
+        }
+    }
 }
 
 #[cfg(test)]

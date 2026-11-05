@@ -1,10 +1,12 @@
 """Run native startup/editor checks only on remote Unix CI runners."""
 import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import uuid
 
 
@@ -16,7 +18,9 @@ def verify(data, interactive):
         if not (data / report).read_text(encoding="utf-8").startswith("PASS:"):
             raise ValueError(f"Native smoke did not pass: {report}")
     if interactive:
+        verify_pin(data)
         captures = [f"page-{index}.png" for index in range(5)]
+        captures.extend(["native-timer-pin-true.png", "native-timer-pin-false.png"])
         if sys.platform.startswith("linux"):
             captures.append("native-markdown-editor.png")
         elif sys.platform == "darwin":
@@ -32,6 +36,51 @@ def verify(data, interactive):
         if (draft["schema"] != 2 or draft["id"] != draft_id or draft["status"]["kind"] != "active"
                 or draft["revision"] < 1 or draft["draft"]["content"] != "关闭窗口前的末次输入 🧠"):
             raise ValueError("Native close did not persist the final editor input")
+
+
+def verify_pin(data):
+    evidence = json.loads((data / "native-timer-pin.json").read_text(encoding="utf-8"))
+    states = evidence.get("states", [])
+    if evidence.get("schema") != 1 or evidence.get("desktopClosed") is not True or len(states) != 3:
+        raise ValueError("Incomplete native timer pin evidence")
+    baseline = states[0]["native"]
+    if baseline.get("focus") is None or len(baseline.get("bounds", [])) != 4:
+        raise ValueError("Missing native timer focus or geometry")
+    for state, target in zip(states, [False, True, False]):
+        native = state["native"]
+        if (native.get("pinned") is not target or state.get("checked") is not target
+                or native.get("managed") is not True or native.get("focus") != baseline["focus"]
+                or native.get("bounds") != baseline["bounds"]
+                or state.get("label") != ("取消置顶" if target else "置顶")):
+            raise ValueError("Native timer pin acknowledgement, focus or geometry mismatch")
+
+
+@contextmanager
+def window_manager(data, interactive):
+    # This function is called only after main's GitHub/Unix guard, under the
+    # runner's isolated Xvfb display. Never take over an existing desktop WM.
+    if not interactive or not sys.platform.startswith("linux"):
+        yield
+        return
+    with data.with_suffix(".wm.log").open("w") as log:
+        process = subprocess.Popen(["openbox", "--sm-disable"], stdout=log, stderr=log)
+        try:
+            deadline = time.monotonic() + 5
+            while True:
+                if process.poll() is not None:
+                    raise RuntimeError("Isolated EWMH window manager exited before readiness")
+                supported = subprocess.run(["xprop", "-root", "_NET_SUPPORTED"],
+                                           capture_output=True, text=True, check=True, timeout=2)
+                if "_NET_WM_STATE_ABOVE" in supported.stdout:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Isolated EWMH window manager did not become ready")
+                time.sleep(0.05)
+            yield
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
 
 
 def run_native(binary, data, interactive):
@@ -58,7 +107,8 @@ def main():
     if data.exists():
         raise ValueError("Smoke data directory must be new")
     data.parent.mkdir(parents=True, exist_ok=True)
-    run_native(args.binary, data, args.interactive)
+    with window_manager(data, args.interactive):
+        run_native(args.binary, data, args.interactive)
     verify(data, args.interactive)
     print(f"Native startup and WebKit smoke passed: {data}")
 
