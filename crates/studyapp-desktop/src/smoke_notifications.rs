@@ -189,6 +189,11 @@ pub async fn exercise(
     // Rendering through a typed handle would already lease Root. The frame
     // must acquire its own root lease, so use the untyped owning window.
     let witness: AnyWindowHandle = witness.into();
+    witness
+        .update(cx, |_, window, _| {
+            crate::native_test_pointer::prepare(window)
+        })
+        .unwrap();
     // Losing main-window activation is not proof that the new witness has
     // received its asynchronous activation event. Establish both ends before
     // taking the no-focus-stealing baseline.

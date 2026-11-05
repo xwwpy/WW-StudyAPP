@@ -409,6 +409,7 @@ pub async fn exercise(
             .update(cx, |_, _, cx| editor.read(cx).native_state().unwrap())
             .unwrap();
         let (_, x, y) = control_point(window, view, "window-title-drag", cx);
+        crate::native_test_pointer::hover(window, POINT { x, y }, cx).await;
         let evidence = database.with_file_name(format!("window-drag-{name}-samples.json"));
         let diagnostic_path = database.with_file_name(format!("window-drag-{name}-render.json"));
         let geometry = window

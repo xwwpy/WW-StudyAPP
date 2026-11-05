@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -32,6 +33,32 @@ class FixtureTests(unittest.TestCase):
         record.write_text(json.dumps({"profile": str(fixture / ".runtime" / "unrelated")}))
         with self.assertRaises(ValueError):
             acceptance.editor_profile_paths(root)
+
+    @unittest.skipUnless(os.name == "nt", "Windows extended drive paths")
+    def test_extended_drive_profile_is_contained_without_allowing_an_external_profile(self):
+        root = Path(tempfile.mkdtemp(prefix="native-update-extended-profile-"))
+        fixture = root / "fixture"
+        fixture.mkdir()
+        profile = fixture / ".runtime" / "cache" / "editor"
+        profile.mkdir(parents=True)
+        prefix = chr(92) * 2 + "?" + chr(92)
+        record = fixture / "editor-profile-123.json"
+        record.write_text(json.dumps({"profile": prefix + str(profile.resolve())}), encoding="utf-8")
+        self.assertEqual(acceptance.editor_profile_paths(root), [profile.resolve()])
+        record.write_text(json.dumps({"profile": prefix + str((root.parent / "unrelated-profile").resolve())}), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            acceptance.editor_profile_paths(root)
+
+    def test_acl_boundary_stays_inside_the_exact_fixture_runtime_or_temp(self):
+        root = Path(tempfile.mkdtemp(prefix="native-update-profile-boundary-"))
+        runtime = root / "fixture" / ".runtime"
+        stable = runtime / "cache" / "editor"
+        self.assertEqual(acceptance.editor_profile_boundary(root, stable), runtime.resolve())
+        temporary = root / "temp" / "test-profile" / "editor"
+        self.assertEqual(acceptance.editor_profile_boundary(root, temporary), (root / "temp").resolve())
+        for outside in (runtime / "unrelated", root / "fixture", root.parent / "real-user"):
+            with self.assertRaises(ValueError):
+                acceptance.editor_profile_boundary(root, outside)
 
     def test_next_fixture_version_and_snapshot_leave_external_versions_unchanged(self):
         import io, tarfile

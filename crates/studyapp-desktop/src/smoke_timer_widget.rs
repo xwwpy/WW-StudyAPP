@@ -322,6 +322,7 @@ pub async fn exercise(
         widget.update(cx, |_, window, _| raw(window)).unwrap()
     );
     let before = rect(handle);
+    pointer::hover(widget, caption, cx).await;
     cx.background_executor()
         .spawn(async move {
             gesture(handle, caption, 60, 35, HTCAPTION);

@@ -813,13 +813,43 @@ impl PreferencesStore {
         engine: &mut Engine,
         runtime: &mut SyncRuntime,
     ) -> Result<()> {
+        #[cfg(feature = "ui-test")]
+        let trace = (request.settings.timer_widget.pinned
+            != self.current.settings.timer_widget.pinned)
+            .then(|| {
+                (
+                    std::time::Instant::now(),
+                    request.settings.timer_widget.pinned,
+                )
+            });
         let prepared = self.prepare(request, engine, runtime)?;
+        #[cfg(feature = "ui-test")]
+        if let Some((began, pin)) = trace {
+            eprintln!(
+                "native pin preferences prepared: target={pin}, elapsedMs={}",
+                began.elapsed().as_millis()
+            );
+        }
         let changed = prepared.snapshot.revision != self.current.revision;
         let (engine_settings, synchronization) = self.publish(prepared)?;
+        #[cfg(feature = "ui-test")]
+        if let Some((began, pin)) = trace {
+            eprintln!(
+                "native pin preferences published: target={pin}, elapsedMs={}",
+                began.elapsed().as_millis()
+            );
+        }
         if changed {
             engine.install_prepared_settings(engine_settings);
             runtime.install_configuration(synchronization);
             self.clear_inactive_transaction();
+        }
+        #[cfg(feature = "ui-test")]
+        if let Some((began, pin)) = trace {
+            eprintln!(
+                "native pin preferences complete: target={pin}, elapsedMs={}",
+                began.elapsed().as_millis()
+            );
         }
         Ok(())
     }

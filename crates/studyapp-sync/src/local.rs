@@ -46,6 +46,35 @@ fn checked_metadata(path: &Path) -> Result<Option<fs::Metadata>> {
     }
 }
 
+/// Only real contention is LockBusy. Interrupted or failed OS calls must not
+/// masquerade as a different StudyApp instance holding this directory.
+fn acquire_directory_lock(
+    mut attempt: impl FnMut() -> std::result::Result<(), std::fs::TryLockError>,
+) -> Result<()> {
+    // A nonblocking attempt can still be interrupted by Unix child-process
+    // signals. Retry only Interrupted, with a finite syscall budget.
+    for _ in 0..8 {
+        match attempt() {
+            Ok(()) => return Ok(()),
+            Err(std::fs::TryLockError::WouldBlock) => return Err(SyncError::LockBusy),
+            Err(std::fs::TryLockError::Error(error))
+                if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+    Err(SyncError::Io(std::io::ErrorKind::Interrupted))
+}
+
+/// Closing one descriptor need not release an advisory lock while a duplicated
+/// or briefly inherited descriptor is alive. End this operation explicitly,
+/// before closing its owned file, without deleting or replacing the lock file.
+struct DirectoryLock(File);
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 impl LocalFolderProvider {
     fn asset_path(&self, key: &str, create: bool) -> Result<PathBuf> {
         validate_asset_key(key)?;
@@ -117,7 +146,7 @@ impl LocalFolderProvider {
         Ok(path)
     }
 
-    fn locked_dir(&self) -> Result<(PathBuf, File)> {
+    fn locked_dir(&self) -> Result<(PathBuf, DirectoryLock)> {
         let notes = self.ensure_dirs()?;
         let lock_path = self.root.join("StudyApp/.sync.lock");
         if let Some(m) = checked_metadata(&lock_path)?
@@ -131,7 +160,8 @@ impl LocalFolderProvider {
             .create(true)
             .truncate(false)
             .open(lock_path)?;
-        lock.try_lock().map_err(|_| SyncError::LockBusy)?;
+        acquire_directory_lock(|| lock.try_lock())?;
+        let lock = DirectoryLock(lock);
         self.ensure_dirs()?;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
@@ -695,5 +725,76 @@ impl Provider for LocalFolderProvider {
     fn test_connection(&self) -> Result<()> {
         let _ = self.locked_dir()?;
         self.list().map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod locking_tests {
+    use super::*;
+    use std::{
+        fs::TryLockError,
+        io::{Error, ErrorKind},
+    };
+
+    #[test]
+    fn interrupted_directory_lock_retries_without_claiming_another_owner() {
+        let mut calls = 0;
+        acquire_directory_lock(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(TryLockError::Error(Error::from(ErrorKind::Interrupted)))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
+        assert_eq!(calls, 3);
+    }
+    #[test]
+    fn operation_unlocks_before_a_duplicate_descriptor_is_closed() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let provider = LocalFolderProvider::new(root).unwrap();
+        let (_, lock) = provider.locked_dir().unwrap();
+        let duplicate = lock.0.try_clone().unwrap();
+        assert!(matches!(provider.list(), Err(SyncError::LockBusy)));
+        drop(lock);
+        assert!(
+            provider.list().is_ok(),
+            "completed operation must explicitly unlock even while a duplicate lives"
+        );
+        drop(duplicate);
+    }
+
+    #[test]
+    fn real_contention_still_fails_immediately() {
+        let mut calls = 0;
+        assert!(matches!(
+            acquire_directory_lock(|| {
+                calls += 1;
+                Err(TryLockError::WouldBlock)
+            }),
+            Err(SyncError::LockBusy)
+        ));
+        assert_eq!(calls, 1);
+    }
+    #[test]
+    fn io_failures_and_repeated_interruptions_remain_bounded_typed_errors() {
+        assert!(matches!(
+            acquire_directory_lock(|| {
+                Err(TryLockError::Error(Error::from(
+                    ErrorKind::PermissionDenied,
+                )))
+            }),
+            Err(SyncError::Io(ErrorKind::PermissionDenied))
+        ));
+        let mut calls = 0;
+        assert!(matches!(
+            acquire_directory_lock(|| {
+                calls += 1;
+                Err(TryLockError::Error(Error::from(ErrorKind::Interrupted)))
+            }),
+            Err(SyncError::Io(ErrorKind::Interrupted))
+        ));
+        assert_eq!(calls, 8);
     }
 }

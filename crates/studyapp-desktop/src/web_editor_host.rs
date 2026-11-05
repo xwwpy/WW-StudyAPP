@@ -617,6 +617,41 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; \
     frame-src 'none'; frame-ancestors 'none'; object-src 'none'; \
     media-src 'none'; font-src 'none'; form-action 'none'; base-uri 'none'";
 
+/// A single authenticated document avoids additional custom-protocol round
+/// trips during WebKit's cold process launch. Inline code is authorized by its
+/// exact SHA-256, never by unsafe-inline, a nonce, or an expanded resource list.
+#[cfg(any(target_os = "macos", test))]
+fn single_document_editor() -> (&'static str, &'static [u8]) {
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    static DOCUMENT: std::sync::OnceLock<(String, String)> = std::sync::OnceLock::new();
+    let (policy, html) = DOCUMENT.get_or_init(|| {
+        let script = include_str!("../editor/dist/editor.js");
+        let style = include_str!("../editor/dist/editor.css");
+        let template = include_str!("../editor/dist/index.html");
+        // esbuild escapes HTML end tags in script literals. Fail closed if a
+        // future generator violates that embedded-document invariant.
+        assert!(!script.to_ascii_lowercase().contains("</script"));
+        assert!(!style.to_ascii_lowercase().contains("</style"));
+        let digest =
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
+        let source = format!("script-src 'sha256-{digest}'");
+        let policy = CONTENT_SECURITY_POLICY.replace("script-src 'self'", &source);
+        let html = template
+            .replace("script-src 'self'", &source)
+            .replace(
+                "<link rel=\"stylesheet\" href=\"editor.css\">",
+                &format!("<style>{style}</style>"),
+            )
+            .replace("<script defer src=\"editor.js\"></script>", "")
+            // Equivalent to the old deferred script: all editor DOM exists
+            // before CodeMirror/bridge initialization and its real Ready IPC.
+            .replace("</body>", &format!("<script>{script}</script></body>"));
+        (policy, html)
+    });
+    (policy.as_str(), html.as_bytes())
+}
+
 fn embedded_response(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
     let asset = if request.method() == Method::GET {
         editor_asset(&request.uri().to_string())
@@ -645,10 +680,18 @@ fn embedded_response(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> 
             b"Editor resource not found",
         ),
     };
+    #[cfg(target_os = "macos")]
+    let (policy, body) = if asset == Some(EditorAsset::Html) {
+        single_document_editor()
+    } else {
+        (CONTENT_SECURITY_POLICY, body)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let policy = CONTENT_SECURITY_POLICY;
     Response::builder()
         .status(status)
         .header("Content-Type", content_type)
-        .header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
+        .header("Content-Security-Policy", policy)
         .header("X-Content-Type-Options", "nosniff")
         .header("Referrer-Policy", "no-referrer")
         .header("Cache-Control", "no-store")
@@ -659,6 +702,48 @@ fn embedded_response(request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_document_authorizes_only_the_exact_embedded_script() {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        let (policy, bytes) = single_document_editor();
+        let html = std::str::from_utf8(bytes).unwrap();
+        let script = include_str!("../editor/dist/editor.js");
+        let digest =
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(script.as_bytes()));
+        let source = format!("script-src 'sha256-{digest}'");
+        assert!(policy.contains(&source));
+        assert!(html.contains(&source));
+        assert!(!policy.contains("script-src 'self'"));
+        assert!(!policy.contains("script-src 'unsafe-inline'"));
+        assert!(html.contains(&format!("<script>{script}</script></body>")));
+        assert!(html.contains(&format!(
+            "<style>{}</style>",
+            include_str!("../editor/dist/editor.css")
+        )));
+        assert!(!html.contains("src=\"editor.js\""));
+        assert!(!html.contains("href=\"editor.css\""));
+        assert!(html.find("id=\"editor\"").unwrap() < html.find("<script>").unwrap());
+        for directive in [
+            "default-src 'none'",
+            "connect-src 'none'",
+            "frame-src 'none'",
+            "object-src 'none'",
+            "media-src 'none'",
+            "font-src 'none'",
+            "form-action 'none'",
+            "base-uri 'none'",
+        ] {
+            assert!(policy.contains(directive), "lost restriction: {directive}");
+        }
+        let changed = base64::engine::general_purpose::STANDARD
+            .encode(Sha256::digest(format!("{script};alert(1)")));
+        assert!(
+            !policy.contains(&changed),
+            "modified scripts must not inherit authorization"
+        );
+    }
 
     #[test]
     fn serves_only_the_three_embedded_assets() {

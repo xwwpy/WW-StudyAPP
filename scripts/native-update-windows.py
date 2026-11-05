@@ -266,8 +266,9 @@ def collect_editor_diagnostics(root):
     records = []
     try:
         for profile in common.editor_profile_paths(root):
+            boundary = common.editor_profile_boundary(root, profile)
             for path in (profile, *profile.parents):
-                if not path.is_relative_to((root / "temp").resolve()):
+                if not path.is_relative_to(boundary):
                     break
                 acl = subprocess.run(["icacls", str(path)], capture_output=True, text=True, timeout=10)
                 try:

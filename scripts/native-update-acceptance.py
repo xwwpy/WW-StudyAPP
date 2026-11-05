@@ -132,15 +132,36 @@ def collect_diagnostics(root):
                 (target / "copy-error.txt").write_text(str(error), encoding="utf-8")
 
 
+def diagnostic_path(path):
+    """Compare resolved local Windows drive paths independent of verbatim spelling."""
+    path = Path(path).resolve()
+    prefix = chr(92) * 2 + "?" + chr(92)
+    text = str(path)
+    if os.name == "nt" and text.startswith(prefix):
+        drive = text[len(prefix):]
+        if len(drive) >= 3 and drive[0].isascii() and drive[0].isalpha() and drive[1:3] == ":" + chr(92):
+            return Path(drive)
+    return path
+
+
+def editor_profile_boundary(root, profile):
+    """Only the exact stable editor, or a contained temporary fixture profile."""
+    profile = diagnostic_path(profile)
+    runtime = diagnostic_path(root / "fixture" / ".runtime")
+    if profile == diagnostic_path(runtime / "cache" / "editor"):
+        return runtime
+    temp = diagnostic_path(root / "temp")
+    if profile.is_relative_to(temp):
+        return temp
+    raise ValueError("Editor diagnostic profile is outside fixture temp")
+
+
 def editor_profile_paths(root):
     """Never let diagnostic records redirect inspection into a real user profile."""
-    temp = (root / "temp").resolve()
-    stable = (root / "fixture" / ".runtime" / "cache" / "editor").resolve()
     profiles = []
     for record in sorted((root / "fixture").glob("editor-profile-*.json")):
-        profile = Path(json.loads(record.read_text(encoding="utf-8"))["profile"]).resolve()
-        if profile != stable and not profile.is_relative_to(temp):
-            raise ValueError("Editor diagnostic profile is outside fixture temp")
+        profile = diagnostic_path(json.loads(record.read_text(encoding="utf-8"))["profile"])
+        editor_profile_boundary(root, profile)
         profiles.append(profile)
     return profiles
 

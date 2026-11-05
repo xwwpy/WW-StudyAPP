@@ -20,19 +20,22 @@ fn blocking_notice_button(
         .enumerate()
         .find_map(|(index, (id, _))| {
             let card = window.try_find(SharedString::from(format!("notice-{id}")))?;
-            points
-                .iter()
-                .any(|point| card.bounds().contains(point))
-                .then(|| {
-                    (
-                        *id,
-                        if index == 0 {
-                            "dismiss-notice".into()
-                        } else {
-                            format!("dismiss-notice-{id}").into()
-                        },
-                    )
-                })
+            if !points.iter().any(|point| card.bounds().contains(point)) {
+                return None;
+            }
+            // Event presenters always key their close action by event ID;
+            // only the first legacy toast uses the unkeyed compatibility ID.
+            let keyed: SharedString = format!("dismiss-notice-{id}").into();
+            let button = if window.try_find(keyed.clone()).is_some() {
+                keyed
+            } else if index == 0 {
+                let legacy: SharedString = "dismiss-notice".into();
+                window.try_find(legacy.clone())?;
+                legacy
+            } else {
+                return None;
+            };
+            Some((*id, button))
         })
 }
 
@@ -1686,6 +1689,74 @@ mod notice_drag_tests {
                         })),
                 )
                 .child(self.center.clone())
+        }
+    }
+
+    #[gpui_kit::test]
+    fn first_blocking_card_uses_its_real_close_id_for_legacy_and_event_presenters(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        for structured in [false, true] {
+            let (fixture, visual) = cx.add_window_view(|_, cx| {
+                let center = cx.new(|_| NotificationCenter::new());
+                center.update(cx, |center, cx| {
+                    center.freeze_time();
+                    if structured {
+                        center
+                            .enqueue(
+                                studyapp_core::NoticeEvent::new(
+                                    studyapp_core::NoticeCategory::SaveFailure,
+                                    studyapp_core::NoticeSeverity::Error,
+                                    "需要关闭的结构化提示",
+                                ),
+                                cx,
+                            )
+                            .unwrap();
+                    } else {
+                        center.push(Err("需要关闭的兼容提示".into()), cx);
+                    }
+                    center.advance_time(Duration::from_millis(240), cx);
+                });
+                Fixture {
+                    center,
+                    starts: Default::default(),
+                    drops: 0,
+                }
+            });
+            visual.simulate_resize(size(px(1028.), px(780.)));
+            let center = fixture.read_with(visual, |fixture, _| fixture.center.clone());
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let id = center.read(cx).test_state()[0].0;
+                let at = window
+                    .find(SharedString::from(format!("notice-{id}")))
+                    .bounds()
+                    .center();
+                let (chosen, close) =
+                    blocking_notice_button(window, center.read(cx), &[at]).unwrap();
+                assert_eq!(chosen, id);
+                assert!(
+                    window.try_find(close.clone()).is_some(),
+                    "close action must be mounted"
+                );
+                assert_eq!(
+                    close,
+                    if structured {
+                        SharedString::from(format!("dismiss-notice-{id}"))
+                    } else {
+                        "dismiss-notice".into()
+                    }
+                );
+                window.click(close, cx);
+            });
+            center.update(visual, |center, cx| {
+                center.advance_time(Duration::from_millis(240), cx)
+            });
+            assert_eq!(
+                center.read_with(visual, |center, _| center.visible_count()),
+                0
+            );
         }
     }
 

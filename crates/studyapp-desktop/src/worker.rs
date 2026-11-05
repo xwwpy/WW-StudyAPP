@@ -455,7 +455,11 @@ fn save_scoped_settings(
         }
         Command::SetShowFilePaths(visible) => settings.show_file_paths = visible,
         Command::SaveLayout(layout) => settings.layout = layout,
-        Command::SetTimerWidgetPinned(pinned) => settings.timer_widget.pinned = pinned,
+        Command::SetTimerWidgetPinned(pinned) => {
+            #[cfg(feature = "ui-test")]
+            eprintln!("native worker pin received: {pinned}");
+            settings.timer_widget.pinned = pinned;
+        }
         Command::Restore(path) => return engine.restore_preserving_settings(&path, now),
         other => return engine.apply(other, now),
     }
@@ -742,6 +746,11 @@ impl Worker {
                         Ok(*work)
                     }
                     other => other,
+                };
+                #[cfg(feature = "ui-test")]
+                let pin_request = match &work {
+                    Ok(Work::Apply(Command::SetTimerWidgetPinned(pin))) => Some(*pin),
+                    _ => None,
                 };
                 let notice_key = work
                     .as_ref()
@@ -1353,6 +1362,10 @@ impl Worker {
                         .is_err()
                     {
                         break;
+                    }
+                    #[cfg(feature = "ui-test")]
+                    if let Some(pin) = pin_request {
+                        eprintln!("native worker pin reply sent: target={pin}");
                     }
                 }
                 library_lock.serve(&updates);

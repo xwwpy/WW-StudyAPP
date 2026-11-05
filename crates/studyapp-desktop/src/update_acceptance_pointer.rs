@@ -140,6 +140,67 @@ pub fn prepare(window: &mut Window) {
     }
 }
 
+/// Establish actual OS hover before a native non-client gesture. Fixed sleeps
+/// cannot prove that the asynchronous WM_MOUSEMOVE reached GPUI's hit-test cache.
+#[cfg(windows)]
+pub async fn hover(
+    handle: gpui_kit::AnyWindowHandle,
+    target: windows::Win32::Foundation::POINT,
+    cx: &mut gpui_kit::AsyncApp,
+) {
+    use gpui_kit::test::TestWindowExt;
+    use windows::Win32::{
+        Foundation::{HWND, POINT},
+        Graphics::Gdi::ScreenToClient,
+        UI::WindowsAndMessaging::{GetCursorPos, SetCursorPos},
+    };
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    unsafe { SetCursorPos(target.x, target.y).unwrap() };
+    let started = std::time::Instant::now();
+    loop {
+        let (native, rendered, expected) = handle
+            .update(cx, |_, window, cx| {
+                let RawWindowHandle::Win32(raw) = window.window_handle().unwrap().as_raw() else {
+                    panic!("Win32 fixture required")
+                };
+                let parent = HWND(raw.hwnd.get() as *mut _);
+                assert_target(parent, target);
+                let mut native = POINT::default();
+                let mut local = target;
+                unsafe {
+                    GetCursorPos(&mut native).unwrap();
+                    assert!(ScreenToClient(parent, &mut local).as_bool());
+                }
+                window.render_frame(cx);
+                let rendered = window.mouse_position();
+                let scale = window.scale_factor();
+                (
+                    native,
+                    rendered,
+                    gpui_kit::point(
+                        gpui_kit::px(local.x as f32 / scale),
+                        gpui_kit::px(local.y as f32 / scale),
+                    ),
+                )
+            })
+            .unwrap();
+        if native.x == target.x
+            && native.y == target.y
+            && (f32::from(rendered.x - expected.x)).abs() <= 1.
+            && (f32::from(rendered.y - expected.y)).abs() <= 1.
+        {
+            return;
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "native hover not delivered: OS={native:?}, rendered={rendered:?}, expected={expected:?}"
+        );
+        cx.background_executor()
+            .timer(std::time::Duration::from_millis(25))
+            .await;
+    }
+}
+
 /// Both dispatched Win32 hit testing and real clicks require actual coverage.
 #[cfg(windows)]
 pub fn assert_target(

@@ -10,7 +10,18 @@ pub(crate) fn update<T: 'static>(
 ) -> bool {
     match cx.update(|window, cx| owner.update(cx, |owner, cx| poll(owner, window, cx))) {
         Ok(result) => result.is_ok(),
-        Err(error) => error.is::<std::cell::BorrowMutError>() && owner.upgrade().is_some(),
+        Err(error) => {
+            let deferred = error.is::<std::cell::BorrowMutError>() && owner.upgrade().is_some();
+            #[cfg(feature = "ui-test")]
+            if !deferred {
+                eprintln!(
+                    "native owning-window poll stopped: owner={}, alive={}, reason={error:#}",
+                    std::any::type_name::<T>(),
+                    owner.upgrade().is_some()
+                );
+            }
+            deferred
+        }
     }
 }
 

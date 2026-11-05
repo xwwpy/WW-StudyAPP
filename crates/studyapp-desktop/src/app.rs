@@ -636,6 +636,19 @@ impl StudyApp {
             self.capture_note_draft(cx);
         }
         while let Ok(update) = self.worker.receiver.try_recv() {
+            #[cfg(feature = "ui-test")]
+            if let Some(snapshot) = &update.snapshot
+                && self.snapshot.as_ref().is_some_and(|old| {
+                    old.settings.timer_widget.pinned != snapshot.settings.timer_widget.pinned
+                })
+            {
+                eprintln!(
+                    "native worker pin reply received: target={}, readModels={}, preferences={}",
+                    snapshot.settings.timer_widget.pinned,
+                    update.read_models.is_some(),
+                    update.preferences.is_some()
+                );
+            }
             if let Some(control) = update.owner_close {
                 self.accept_owner_close(control, window, cx);
             }
