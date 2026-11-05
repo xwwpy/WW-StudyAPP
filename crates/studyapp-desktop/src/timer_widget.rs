@@ -137,51 +137,48 @@ impl TimerWidget {
         // Rendering only displays the last acknowledged state.
         self.pin_poll = Some(cx.spawn(async move |this, cx| {
             loop {
-                let pending = handle
-                    .update(cx, |_, window, cx| {
-                        this.update(cx, |this, cx| {
-                            let settings = &this.presentation.settings;
-                            let update = this.pin.step(
-                                settings.pinned,
-                                this.presentation.pin_retry,
-                                std::time::Instant::now(),
-                                |request| {
-                                    crate::timer_widget_window::decorate(
-                                        window,
-                                        settings.pinned,
-                                        request,
-                                    )
-                                },
-                            );
-                            #[cfg(feature = "ui-test")]
-                            match &update {
-                                crate::timer_widget_pin::PinUpdate::Applied => {
-                                    eprintln!("native widget pin acknowledged: {}", settings.pinned)
-                                }
-                                crate::timer_widget_pin::PinUpdate::Failed(error) => {
-                                    eprintln!("native widget pin failed: {error}")
-                                }
-                                _ => {}
+                // A nested native event may temporarily hold the App lease.
+                // Keep this task and its pending marker alive for that tick;
+                // only a closed owner/window or a completed request stops it.
+                let mut pending = true;
+                let alive =
+                    crate::owned_poll::update_in_app(&this, handle, cx, |this, window, cx| {
+                        let settings = &this.presentation.settings;
+                        let update = this.pin.step(
+                            settings.pinned,
+                            this.presentation.pin_retry,
+                            std::time::Instant::now(),
+                            |request| {
+                                crate::timer_widget_window::decorate(
+                                    window,
+                                    settings.pinned,
+                                    request,
+                                )
+                            },
+                        );
+                        #[cfg(feature = "ui-test")]
+                        match &update {
+                            crate::timer_widget_pin::PinUpdate::Applied => {
+                                eprintln!("native widget pin acknowledged: {}", settings.pinned)
                             }
-                            if let crate::timer_widget_pin::PinUpdate::Failed(error) = update {
-                                let owner = this.app.downgrade();
-                                cx.defer(move |cx| {
-                                    let _ =
-                                        owner.update(cx, |app, cx| app.push_notice(Err(error), cx));
-                                });
+                            crate::timer_widget_pin::PinUpdate::Failed(error) => {
+                                eprintln!("native widget pin failed: {error}")
                             }
-                            cx.notify();
-                            if this.pin.pending() {
-                                true
-                            } else {
-                                this.pin_poll = None;
-                                false
-                            }
-                        })
-                        .unwrap_or(false)
-                    })
-                    .unwrap_or(false);
-                if !pending {
+                            _ => {}
+                        }
+                        if let crate::timer_widget_pin::PinUpdate::Failed(error) = update {
+                            let owner = this.app.downgrade();
+                            cx.defer(move |cx| {
+                                let _ = owner.update(cx, |app, cx| app.push_notice(Err(error), cx));
+                            });
+                        }
+                        cx.notify();
+                        pending = this.pin.pending();
+                        if !pending {
+                            this.pin_poll = None;
+                        }
+                    });
+                if !alive || !pending {
                     break;
                 }
                 cx.background_executor()
