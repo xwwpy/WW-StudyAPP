@@ -98,7 +98,10 @@ pub async fn exercise(
                 app.storage_busy,
             );
             if last != Some(state) {
-                eprintln!("native pin preparation: snapshot/saved/busy={state:?}");
+                eprintln!(
+                    "native pin preparation: snapshot/saved/busy={state:?}, poll={:?}",
+                    app.poll_diagnostic()
+                );
                 last = Some(state);
             }
             !state.0 && !state.2

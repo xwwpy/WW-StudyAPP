@@ -131,7 +131,12 @@ async fn until_for(
                     app.active_draft_id, app.note_editor.as_ref().map(|draft| &draft.folder_id), app.note_intent.is_some(),
                     app.pending_note_save, app.draft_persist.as_ref().map(|pending| (&pending.id, pending.revision, pending.token)))
             }).unwrap();
-            panic!("library smoke timed out: {description}; {diagnostic}");
+            let poll = window
+                .update(cx, |_, _, cx| view.read(cx).poll_diagnostic())
+                .unwrap();
+            panic!(
+                "library smoke timed out: {description}; {diagnostic}; poll_wakes/runs/finished={poll:?}"
+            );
         }
         pause(cx).await;
     }
@@ -1395,6 +1400,20 @@ pub async fn exercise(
                 "storage-copy-list",
                 cx,
             );
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "purge dialog mounted after real list action",
+        |app, _| {
+            app.storage_confirm.as_ref() == Some(&purge_target.id) && app.storage_ui.purge.is_some()
+        },
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, window, cx| {
             window.render_frame(cx);
             window.click("purge-submit", cx);
         })

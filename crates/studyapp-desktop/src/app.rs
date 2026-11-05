@@ -150,6 +150,11 @@ pub struct StudyApp {
     pub media_ui: crate::media_ui::MediaUi,
     notified: HashSet<String>,
     _poll: Task<()>,
+    #[cfg(feature = "ui-test")]
+    poll_probe: (
+        std::rc::Rc<std::cell::Cell<u64>>,
+        std::rc::Rc<std::cell::Cell<u64>>,
+    ),
 }
 
 impl StudyApp {
@@ -169,12 +174,25 @@ impl StudyApp {
                         .default_value(value.to_owned())
                 })
             };
+        #[cfg(feature = "ui-test")]
+        let poll_probe = (
+            std::rc::Rc::new(std::cell::Cell::new(0u64)),
+            std::rc::Rc::new(std::cell::Cell::new(0u64)),
+        );
+        #[cfg(feature = "ui-test")]
+        let task_probe = poll_probe.clone();
         let poll = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
-                if !crate::owned_poll::update(&this, cx, |this, window, cx| this.poll(window, cx)) {
+                #[cfg(feature = "ui-test")]
+                task_probe.0.set(task_probe.0.get().saturating_add(1));
+                if !crate::owned_poll::update(&this, cx, |this, window, cx| {
+                    #[cfg(feature = "ui-test")]
+                    task_probe.1.set(task_probe.1.get().saturating_add(1));
+                    this.poll(window, cx);
+                }) {
                     break;
                 }
             }
@@ -598,7 +616,18 @@ impl StudyApp {
             last_library: String::new(),
             notified: HashSet::new(),
             _poll: poll,
+            #[cfg(feature = "ui-test")]
+            poll_probe,
         }
+    }
+
+    #[cfg(feature = "ui-test")]
+    pub(crate) fn poll_diagnostic(&self) -> (u64, u64, bool) {
+        (
+            self.poll_probe.0.get(),
+            self.poll_probe.1.get(),
+            self._poll.is_ready(),
+        )
     }
 
     fn poll(&mut self, window: &mut Window, cx: &mut Context<Self>) {

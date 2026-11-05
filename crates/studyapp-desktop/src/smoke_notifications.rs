@@ -211,10 +211,26 @@ pub async fn exercise(
         if active && inactive {
             break;
         }
-        assert!(
-            began.elapsed() < Duration::from_secs(5),
-            "notification witness activation"
-        );
+        if began.elapsed() >= Duration::from_secs(5) {
+            use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            let native = |handle: AnyWindowHandle, cx: &mut AsyncApp| {
+                handle
+                    .update(cx, |_, window, _| {
+                        let RawWindowHandle::Win32(raw) = window.window_handle().unwrap().as_raw()
+                        else {
+                            panic!("Win32 witness required")
+                        };
+                        raw.hwnd.get()
+                    })
+                    .unwrap()
+            };
+            panic!(
+                "notification witness activation: witnessActive={active}, mainInactive={inactive}, foreground={}, witness={}, main={}",
+                foreground(),
+                native(witness, cx),
+                native(window, cx)
+            );
+        }
         cx.background_executor()
             .timer(Duration::from_millis(50))
             .await;
