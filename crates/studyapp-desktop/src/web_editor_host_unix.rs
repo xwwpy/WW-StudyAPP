@@ -375,7 +375,12 @@ impl HostedEditor {
         // WebKit must not suspend that very handshake as inactive-page work.
         // This is scheduling only: visibility, permissions and CSP are unchanged.
         #[cfg(target_os = "macos")]
-        let builder = builder.with_background_throttling(wry::BackgroundThrottlingPolicy::Disabled);
+        let builder = builder
+            // The editor has no cookies, accounts or browser-owned document
+            // state. Avoid starting the shared persistent WebsiteDataStore;
+            // documents, drafts and preferences remain in native storage.
+            .with_incognito(true)
+            .with_background_throttling(wry::BackgroundThrottlingPolicy::Disabled);
         #[cfg(feature = "ui-test")]
         let builder = builder
             .with_initialization_script("window.__STUDYAPP_EDITOR_TEST__ = true;")

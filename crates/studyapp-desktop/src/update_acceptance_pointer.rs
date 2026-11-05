@@ -90,6 +90,98 @@ fn capture_inner(window: &mut Window, path: &std::path::Path, require_foreground
     }
 }
 
+/// Runner setup may show/raise only this process's known fixture window.
+/// Never hide, terminate or change the level of an obstructing external window.
+#[cfg(windows)]
+pub fn prepare(window: &mut Window) {
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{
+            GetWindowThreadProcessId, HWND_TOP, IsIconic, IsWindowVisible, SW_RESTORE, SW_SHOW,
+            SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, ShowWindow,
+        },
+    };
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let RawWindowHandle::Win32(raw) = window.window_handle().unwrap().as_raw() else {
+        panic!("Win32 fixture required")
+    };
+    let parent = HWND(raw.hwnd.get() as *mut _);
+    // SAFETY: the captured HWND belongs to the live GPUI window on this thread.
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(parent, Some(&mut pid));
+        assert_eq!(
+            pid,
+            std::process::id(),
+            "fixture must own its target window"
+        );
+        let command = if IsIconic(parent).as_bool() {
+            SW_RESTORE
+        } else {
+            SW_SHOW
+        };
+        let _ = ShowWindow(parent, command);
+        SetWindowPos(
+            parent,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        )
+        .unwrap();
+        let _ = SetForegroundWindow(parent);
+        assert!(
+            IsWindowVisible(parent).as_bool(),
+            "fixture must be visibly mapped"
+        );
+        assert!(!IsIconic(parent).as_bool(), "fixture must not be minimized");
+    }
+}
+
+/// Both dispatched Win32 hit testing and real clicks require actual coverage.
+#[cfg(windows)]
+pub fn assert_target(
+    parent: windows::Win32::Foundation::HWND,
+    point: windows::Win32::Foundation::POINT,
+) {
+    use windows::Win32::{
+        Foundation::RECT,
+        UI::WindowsAndMessaging::{
+            GA_ROOT, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetForegroundWindow,
+            GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+            WindowFromPoint,
+        },
+    };
+    unsafe {
+        assert_eq!(
+            GetForegroundWindow(),
+            parent,
+            "Acceptance window must be foreground"
+        );
+        let hit_root = GetAncestor(WindowFromPoint(point), GA_ROOT);
+        if hit_root != parent {
+            let mut class = [0_u16; 256];
+            let length = GetClassNameW(hit_root, &mut class) as usize;
+            let mut pid = 0;
+            GetWindowThreadProcessId(hit_root, Some(&mut pid));
+            let mut bounds = RECT::default();
+            let _ = GetWindowRect(parent, &mut bounds);
+            eprintln!(
+                "native pointer obstruction: point={point:?}, parentBounds={bounds:?}, parentVisible={}, parentIconic={}, parentExStyle={:#x}, hitExStyle={:#x}, hitClass={}, hitPid={pid}, ownPid={}",
+                IsWindowVisible(parent).as_bool(),
+                IsIconic(parent).as_bool(),
+                GetWindowLongPtrW(parent, GWL_EXSTYLE),
+                GetWindowLongPtrW(hit_root, GWL_EXSTYLE),
+                String::from_utf16_lossy(&class[..length]),
+                std::process::id()
+            );
+        }
+        assert_eq!(hit_root, parent, "Another native window covers the control");
+    }
+}
+
 #[cfg(windows)]
 pub fn click(window: &mut Window, point: Point<Pixels>) {
     use windows::Win32::{
@@ -100,10 +192,7 @@ pub fn click(window: &mut Window, point: Point<Pixels>) {
                 INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
                 SendInput,
             },
-            WindowsAndMessaging::{
-                GA_ROOT, GetAncestor, GetForegroundWindow, SetCursorPos, SetForegroundWindow,
-                WindowFromPoint,
-            },
+            WindowsAndMessaging::{GetForegroundWindow, SetCursorPos, SetForegroundWindow},
         },
     };
     let RawWindowHandle::Win32(raw) = window.window_handle().unwrap().as_raw() else {
@@ -125,25 +214,7 @@ pub fn click(window: &mut Window, point: Point<Pixels>) {
         );
         assert!(ClientToScreen(parent, &mut point).as_bool());
         SetCursorPos(point.x, point.y).unwrap();
-        let hit_root = GetAncestor(WindowFromPoint(point), GA_ROOT);
-        if hit_root != parent {
-            use windows::Win32::{
-                Foundation::RECT,
-                UI::WindowsAndMessaging::{GetClassNameW, GetWindowRect, GetWindowThreadProcessId},
-            };
-            let mut class = [0_u16; 256];
-            let length = GetClassNameW(hit_root, &mut class) as usize;
-            let mut pid = 0;
-            GetWindowThreadProcessId(hit_root, Some(&mut pid));
-            let mut bounds = RECT::default();
-            let _ = GetWindowRect(parent, &mut bounds);
-            eprintln!(
-                "native pointer obstruction: point={point:?}, parentBounds={bounds:?}, hitClass={}, hitPid={pid}, ownPid={}",
-                String::from_utf16_lossy(&class[..length]),
-                std::process::id()
-            );
-        }
-        assert_eq!(hit_root, parent, "Another native window covers the control");
+        assert_target(parent, point);
         let inputs = [MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP].map(|flags| INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {

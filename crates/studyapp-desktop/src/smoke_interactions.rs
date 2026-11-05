@@ -38,7 +38,7 @@ fn blocking_notice_button(
 
 /// Scenario setup only: use the actual close action for a prior notification
 /// covering a gesture endpoint, then wait for its normal fade/occlusion release.
-async fn dismiss_notices_over_gesture(
+pub(crate) async fn dismiss_notices_over_gesture(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
     source: SharedString,

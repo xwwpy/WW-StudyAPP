@@ -1284,6 +1284,23 @@ pub async fn exercise(
         cx,
     )
     .await;
+    let delete = SharedString::from(format!("delete-copy-{}", disposable.id));
+    window
+        .update(cx, |_, window, cx| {
+            reveal_scrolled(window, delete.clone(), "storage-copy-list", cx);
+        })
+        .unwrap();
+    // Dismiss a prior operation result through its real close control before
+    // starting the destructive-confirmation scenario underneath that card.
+    #[cfg(windows)]
+    crate::smoke_interactions::dismiss_notices_over_gesture(
+        window,
+        view,
+        delete.clone(),
+        delete.clone(),
+        cx,
+    )
+    .await;
     window
         .update(cx, |_, window, cx| {
             let report = view.read(cx).storage_report.as_ref().unwrap();
@@ -1293,7 +1310,6 @@ pub async fn exercise(
                     .iter()
                     .all(|(id, _, _)| { report.copies.iter().all(|copy| &copy.note_id != id) })
             );
-            let delete = SharedString::from(format!("delete-copy-{}", disposable.id));
             reveal_scrolled(window, delete.clone(), "storage-copy-list", cx);
             eprintln!("storage delete fixture: viewport={:?}, target={:?}, inner={:?}, outer={:?}, save={:?}, notifications={:?}", window.viewport_size(), window.find(delete.clone()).bounds(), window.find("storage-copy-list").bounds(), window.find("settings-section-scroll").bounds(), window.find("save-settings").bounds(), view.read(cx).notifications.read(cx).test_state());
             window.render_to_image().unwrap().save(database.with_file_name("storage-delete-before-click.png")).unwrap();

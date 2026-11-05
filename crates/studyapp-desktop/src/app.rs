@@ -174,10 +174,7 @@ impl StudyApp {
                 cx.background_executor()
                     .timer(Duration::from_millis(250))
                     .await;
-                if this
-                    .update_in(cx, |this, window, cx| this.poll(window, cx))
-                    .is_err()
-                {
+                if !crate::owned_poll::update(&this, cx, |this, window, cx| this.poll(window, cx)) {
                     break;
                 }
             }

@@ -308,3 +308,91 @@ fn fixed_timer_fits_small_windows_large_fonts_and_long_counter_values(cx: &mut T
         }
     }
 }
+
+#[gpui_kit::test]
+fn worker_poll_keeps_the_main_window_after_an_observing_window_closes(cx: &mut TestAppContext) {
+    use gpui_kit::{
+        AppContext, Context, IntoElement, ParentElement, Render, Window, WindowOptions, div,
+    };
+    struct Observer(Entity<StudyApp>);
+    impl Render for Observer {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            // Reading the owner while drawing associates it with this window.
+            let pinned = self
+                .0
+                .read(cx)
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .settings
+                .timer_widget
+                .pinned;
+            div().child(format!("pin observer {pinned}"))
+        }
+    }
+    let (app, visual) = fixture(cx);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut snapshot = app.update(visual, |app, _| {
+        app.worker.receiver = receiver;
+        app.snapshot.as_ref().unwrap().as_ref().clone()
+    });
+    snapshot.settings.timer_widget.pinned = false;
+    let snapshot = std::sync::Arc::new(snapshot);
+    let read_models = studyapp_desktop::read_models::ReadModelCache::default().refresh(
+        &snapshot,
+        &chrono::Local,
+        chrono::Utc::now().timestamp(),
+    );
+    visual.run_until_parked();
+    let observing = visual.update(|_, cx| {
+        cx.open_window(WindowOptions::default(), |_, cx| {
+            cx.new(|_| Observer(app.clone()))
+        })
+        .unwrap()
+    });
+    let observing: gpui_kit::AnyWindowHandle = observing.into();
+    observing
+        .update(visual, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    // Keep the real main window alive without drawing the owner's view again.
+    // A covered/cached window cannot be relied on to restore inferred affinity.
+    struct Covered;
+    impl Render for Covered {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+    visual.update(|window, cx| {
+        window.replace_root(cx, |_, _| Covered);
+        window.render_frame(cx);
+    });
+    observing
+        .update(visual, |_, window, _| window.remove_window())
+        .unwrap();
+    let mut async_cx = visual.to_async();
+    assert!(
+        app.downgrade()
+            .update_in(&mut async_cx, |_, _, _| ())
+            .is_err(),
+        "fixture must invalidate inferred affinity without closing the real main window"
+    );
+    sender
+        .send(crate::worker::Update {
+            snapshot: Some(snapshot),
+            read_models: Some(read_models),
+            ..Default::default()
+        })
+        .unwrap();
+    visual.executor().advance_clock(Duration::from_millis(300));
+    visual.run_until_parked();
+    assert!(
+        !app.read_with(visual, |app, _| app
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .settings
+            .timer_widget
+            .pinned),
+        "worker replies must still be consumed in the explicitly owned main window"
+    );
+}

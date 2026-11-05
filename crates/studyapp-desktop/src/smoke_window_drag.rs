@@ -198,6 +198,7 @@ fn assert_hit(raw: usize, x: i32, y: i32, expected: u32) {
         hwnd,
         "native input must target the isolated foreground window"
     );
+    crate::native_test_pointer::assert_target(hwnd, POINT { x, y });
     let hit = unsafe {
         SendMessageW(
             hwnd,
@@ -366,6 +367,12 @@ pub async fn exercise(
         )
         .unwrap();
     }
+    window
+        .update(cx, |_, window, _| {
+            crate::native_test_pointer::prepare(window)
+        })
+        .unwrap();
+    settle(cx).await;
     assert!(
         !unsafe { IsZoomed(HWND(raw as *mut _)) }.as_bool(),
         "drag fixture must start restored"

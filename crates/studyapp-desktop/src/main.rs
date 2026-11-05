@@ -52,6 +52,7 @@ mod notification_settings;
 mod notification_sound;
 mod notifications;
 mod overlay_regions;
+mod owned_poll;
 mod preferences;
 mod resize_overlay;
 mod settings_cache;

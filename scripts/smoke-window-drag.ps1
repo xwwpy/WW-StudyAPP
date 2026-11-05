@@ -6,6 +6,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Native window drag verification runs only on GitHub Windows runners' }
 $dragBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
 $dragData = [IO.Path]::GetFullPath($DataDirectory)
 if (Test-Path -LiteralPath $dragData) { throw 'Window drag smoke requires a fresh isolated directory' }
@@ -14,7 +15,7 @@ $dragPriorTrace = $env:WW_STUDY_WINDOW_DRAG_TRACE
 try {
     $env:WW_STUDYAPP_SMOKE_SCENARIO = 'window-drag'
     $env:WW_STUDY_WINDOW_DRAG_TRACE = $dragData + '.jsonl'
-    $dragProcess = Start-Process -FilePath $dragBinary -ArgumentList @('--smoke-test', '--data-dir', ('"' + $dragData + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput ($dragData + '.stdout.log') -RedirectStandardError ($dragData + '.stderr.log')
+    $dragProcess = Start-Process -FilePath $dragBinary -ArgumentList @('--smoke-test', '--data-dir', ('"' + $dragData + '"')) -PassThru -NoNewWindow -RedirectStandardOutput ($dragData + '.stdout.log') -RedirectStandardError ($dragData + '.stderr.log')
     Write-Output ('Isolated window drag PID: ' + $dragProcess.Id)
     if (-not $dragProcess.WaitForExit(60000)) {
         # This is the exact process launched above, never an enumerated user app.

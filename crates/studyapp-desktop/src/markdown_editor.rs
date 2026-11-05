@@ -217,7 +217,7 @@ impl MarkdownEditor {
                     .await;
                 #[cfg(target_os = "linux")]
                 crate::web_editor_host::HostedEditor::pump_events();
-                if this.update_in(cx, |this, _, cx| this.poll(cx)).is_err() {
+                if !crate::owned_poll::update(&this, cx, |this, _, cx| this.poll(cx)) {
                     break;
                 }
             }

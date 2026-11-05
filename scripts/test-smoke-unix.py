@@ -118,6 +118,30 @@ class SmokeTests(unittest.TestCase):
         process.terminate.assert_not_called()
         process.wait.assert_called_once_with(timeout=5)
 
+    def test_native_pointer_launch_does_not_hide_the_window_or_create_a_console(self):
+        root = Path(__file__).resolve().parents[1]
+        for name in ("smoke-window-drag.ps1", "smoke-timer-widget.ps1"):
+            source = (root / "scripts" / name).read_text(encoding="utf-8")
+            launch = next(line for line in source.splitlines() if "Start-Process" in line)
+            self.assertIn("-NoNewWindow", launch)
+            self.assertNotIn("-WindowStyle", launch)
+            self.assertIn("$env:GITHUB_ACTIONS -ne 'true'", source)
+        pointer = (root / "crates/studyapp-desktop/src/update_acceptance_pointer.rs").read_text(encoding="utf-8")
+        for check in ("WindowFromPoint(point)", "assert_eq!(hit_root, parent", "IsWindowVisible(parent)",
+                      'fixture must own its target window'):
+            self.assertIn(check, pointer)
+        self.assertNotIn("HWND_TOPMOST", pointer)
+
+    def test_mac_editor_has_no_persistent_browser_state_and_keeps_origin_checks(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/web_editor_host_unix.rs").read_text(encoding="utf-8")
+        self.assertIn(".with_incognito(true)", source)
+        self.assertIn("BackgroundThrottlingPolicy::Disabled", source)
+        for boundary in (".with_url(EDITOR_PAGE)", ".with_visible(false)", ".with_focused(false)",
+                         "PermissionResponse::Deny", "NewWindowResponse::Deny",
+                         "editor_page_allowed(&url)", "ipc_allowed(&request.uri().to_string()"):
+            self.assertIn(boundary, source)
+
     def test_first_readiness_deadline_captures_evidence_without_silently_repairing(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "crates/studyapp-desktop/src/smoke_editor.rs").read_text(encoding="utf-8")

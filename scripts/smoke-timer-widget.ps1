@@ -13,7 +13,7 @@ if (Test-Path -LiteralPath $data) { throw 'Timer widget smoke requires a fresh i
 $prior = $env:WW_STUDYAPP_SMOKE_SCENARIO
 try {
     $env:WW_STUDYAPP_SMOKE_SCENARIO = 'timer-widget'
-    $process = Start-Process -FilePath $binary -ArgumentList @('--smoke-test', '--data-dir', ('"' + $data + '"')) -PassThru -WindowStyle Hidden -RedirectStandardOutput ($data + '.stdout.log') -RedirectStandardError ($data + '.stderr.log')
+    $process = Start-Process -FilePath $binary -ArgumentList @('--smoke-test', '--data-dir', ('"' + $data + '"')) -PassThru -NoNewWindow -RedirectStandardOutput ($data + '.stdout.log') -RedirectStandardError ($data + '.stderr.log')
     if (-not $process.WaitForExit(90000)) {
         if (-not $process.HasExited) { $process.Kill() }
         throw ('Isolated timer widget smoke timed out; PID: ' + $process.Id)

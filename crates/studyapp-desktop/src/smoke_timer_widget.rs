@@ -191,6 +191,9 @@ pub async fn exercise(
         cx,
     )
     .await;
+    main.update(cx, |_, window, _| pointer::prepare(window))
+        .unwrap();
+    settle(cx).await;
     main.update(cx, |_, window, cx| {
         window.render_frame(cx);
         let bounds = window.find("timer-show-desktop").bounds();
