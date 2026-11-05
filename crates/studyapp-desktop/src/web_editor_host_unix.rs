@@ -371,6 +371,11 @@ impl HostedEditor {
                     let _ = sender.send(request.into_body());
                 }
             });
+        // The child remains hidden until its authenticated Ready handshake.
+        // WebKit must not suspend that very handshake as inactive-page work.
+        // This is scheduling only: visibility, permissions and CSP are unchanged.
+        #[cfg(target_os = "macos")]
+        let builder = builder.with_background_throttling(wry::BackgroundThrottlingPolicy::Disabled);
         #[cfg(feature = "ui-test")]
         let builder = builder
             .with_initialization_script("window.__STUDYAPP_EDITOR_TEST__ = true;")

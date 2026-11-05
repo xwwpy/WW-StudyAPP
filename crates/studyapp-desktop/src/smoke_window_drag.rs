@@ -9,6 +9,7 @@ use std::{
 };
 use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, RECT},
+    Graphics::Gdi::ClientToScreen,
     UI::{
         Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEINPUT,
@@ -173,14 +174,19 @@ fn control_point(
                 .bounds()
                 .center();
             let native = view.read(cx).note_content.read(cx).native_state().unwrap();
-            let scale = native["logicalBounds"][4].as_f64().unwrap() / 96.;
-            (
-                native["parentHwnd"].as_u64().unwrap() as usize,
-                native["parentBounds"]["x"].as_i64().unwrap() as i32
-                    + (f64::from(f32::from(center.x)) * scale).round() as i32,
-                native["parentBounds"]["y"].as_i64().unwrap() as i32
-                    + (f64::from(f32::from(center.y)) * scale).round() as i32,
-            )
+            // Hidden WebViews retain their last layout/DPI. Chrome uses the
+            // live GPUI viewport and client transform, not that stale scale.
+            let raw = native["parentHwnd"].as_u64().unwrap() as usize;
+            let mut screen = POINT {
+                x: (f32::from(center.x) * window.scale_factor()).round() as i32,
+                y: (f32::from(center.y) * window.scale_factor()).round() as i32,
+            };
+            assert!(unsafe { ClientToScreen(HWND(raw as *mut _), &mut screen) }.as_bool());
+            eprintln!(
+                "native chrome target: {id}, local={center:?}, scale={}, screen={screen:?}",
+                window.scale_factor()
+            );
+            (raw, screen.x, screen.y)
         })
         .unwrap()
 }

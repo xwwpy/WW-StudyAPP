@@ -135,9 +135,17 @@ pub async fn exercise(
         .await;
     let mut states = vec![acknowledged(widget, false, cx).await];
     for target in [true, false] {
+        eprintln!(
+            "native widget pin before click target={target}: {}",
+            observe(widget, cx)
+        );
         widget
             .update(cx, |_, window, cx| window.click("widget-pin", cx))
             .unwrap();
+        eprintln!(
+            "native widget pin after click target={target}: {}",
+            observe(widget, cx)
+        );
         until(
             main,
             app,

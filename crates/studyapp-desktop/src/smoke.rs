@@ -103,14 +103,14 @@ pub fn prepare(database: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "ui-test")]
-fn reveal_learning_version(
+fn reveal_learning_control(
     window: &mut Window,
     view: &Entity<StudyApp>,
-    version: &str,
+    id: impl Into<ElementId>,
     cx: &mut App,
 ) {
     use gpui_kit::test::TestWindowExt;
-    let id = SharedString::from(format!("associate-version-{version}"));
+    let id = id.into();
     window.render_frame(cx);
     let scroll = view.read(cx).page_scroll.clone();
     let target = window.find(id.clone()).bounds();
@@ -120,7 +120,7 @@ fn reveal_learning_version(
     window.render_frame(cx);
     assert!(
         window.find(id).visible(),
-        "learning version must be in the scroll viewport"
+        "learning control must be in the scroll viewport"
     );
 }
 
@@ -306,10 +306,11 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 window.click("manual-top", cx);
                 let version = view.read(cx).snapshot.as_ref().unwrap().versions[0].id.clone();
                 assert!(view.read(cx).chosen_versions.contains(&version));
-                reveal_learning_version(window, &view, &version, cx);
+                reveal_learning_control(window, &view, format!("associate-version-{version}"), cx);
                 window.click(SharedString::from(format!("associate-version-{version}")), cx);
                 assert!(!view.read(cx).chosen_versions.contains(&version));
                 view.update(cx, |app, cx| app.summary.update(cx, |s, cx| s.set_value("## 学习摘要\n\n- 确认阅读了**所有权**快照\n- `中文🧠`", window, cx)));
+                reveal_learning_control(window, &view, "save-learning", cx);
                 window.click("save-learning", cx);
             }).expect("version selection validation");
             cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -317,13 +318,14 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert!(view.read(cx).editor.is_some());
                 assert!(view.read(cx).notice.as_ref().is_some_and(Result::is_err));
                 let version = view.read(cx).snapshot.as_ref().unwrap().versions[0].id.clone();
-                reveal_learning_version(window, &view, &version, cx);
+                reveal_learning_control(window, &view, format!("associate-version-{version}"), cx);
                 window.click(SharedString::from(format!("associate-version-{version}")), cx);
                 capture(window, database.with_file_name("learning-editor.png")).unwrap();
                 window.render_frame(cx);
                 assert!(view.read(cx).summary_editor.read(cx).is_preview());
                 assert!(window.try_find("summary-markdown-preview").is_some());
                 capture(window, database.with_file_name("learning-summary-preview.png")).unwrap();
+                reveal_learning_control(window, &view, "save-learning", cx);
                 window.click("save-learning", cx);
             }).expect("save selected version");
             cx.background_executor().timer(Duration::from_secs(1)).await;

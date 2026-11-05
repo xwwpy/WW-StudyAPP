@@ -54,6 +54,8 @@ pub struct TimerWidget {
 }
 
 fn forward(app: WeakEntity<StudyApp>, action: TimerCardAction, cx: &mut App) {
+    #[cfg(feature = "ui-test")]
+    eprintln!("native widget action forwarded: {action:?}");
     let Some(owner) = app.upgrade() else {
         return;
     };
@@ -76,8 +78,10 @@ impl TimerWidget {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe(&app, |this, app, cx| {
+        let handle = window.window_handle();
+        cx.observe(&app, move |this, app, cx| {
             this.presentation = WidgetPresentation::from_app(app.read(cx), cx);
+            this.poll_pin(handle, cx);
             cx.notify();
         })
         .detach();
@@ -105,7 +109,7 @@ impl TimerWidget {
             });
             true
         });
-        Self {
+        let mut this = Self {
             app,
             state,
             path,
@@ -114,7 +118,77 @@ impl TimerWidget {
             pin_poll: None,
             presentation,
             content_fit: Rc::default(),
+        };
+        this.poll_pin(handle, cx);
+        this
+    }
+
+    fn poll_pin(&mut self, handle: AnyWindowHandle, cx: &mut Context<Self>) {
+        if self.pin_poll.is_some()
+            || !self.pin.needs_step(
+                self.presentation.settings.pinned,
+                self.presentation.pin_retry,
+            )
+        {
+            return;
         }
+        // Native acknowledgement must run even when the compositor does not
+        // request frames (covered windows, inactive windows, or cached views).
+        // Rendering only displays the last acknowledged state.
+        self.pin_poll = Some(cx.spawn(async move |this, cx| {
+            loop {
+                let pending = handle
+                    .update(cx, |_, window, cx| {
+                        this.update(cx, |this, cx| {
+                            let settings = &this.presentation.settings;
+                            let update = this.pin.step(
+                                settings.pinned,
+                                this.presentation.pin_retry,
+                                std::time::Instant::now(),
+                                |request| {
+                                    crate::timer_widget_window::decorate(
+                                        window,
+                                        settings.pinned,
+                                        request,
+                                    )
+                                },
+                            );
+                            #[cfg(feature = "ui-test")]
+                            match &update {
+                                crate::timer_widget_pin::PinUpdate::Applied => {
+                                    eprintln!("native widget pin acknowledged: {}", settings.pinned)
+                                }
+                                crate::timer_widget_pin::PinUpdate::Failed(error) => {
+                                    eprintln!("native widget pin failed: {error}")
+                                }
+                                _ => {}
+                            }
+                            if let crate::timer_widget_pin::PinUpdate::Failed(error) = update {
+                                let owner = this.app.downgrade();
+                                cx.defer(move |cx| {
+                                    let _ =
+                                        owner.update(cx, |app, cx| app.push_notice(Err(error), cx));
+                                });
+                            }
+                            cx.notify();
+                            if this.pin.pending() {
+                                true
+                            } else {
+                                this.pin_poll = None;
+                                false
+                            }
+                        })
+                        .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if !pending {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(crate::timer_widget_pin::POLL_INTERVAL)
+                    .await;
+            }
+        }));
     }
     fn persist(&self, cx: &mut Context<Self>) {
         let result = self.state.save(&self.path);
@@ -127,38 +201,13 @@ impl TimerWidget {
     }
 }
 impl Render for TimerWidget {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         // open_window renders synchronously while the StudyApp update lease is
         // still held. Render only the supplied/observed value snapshot; never
         // read the owner from this new window's render path.
         let model = self.presentation.model.clone();
         let settings = self.presentation.settings.clone();
         let bindings = self.presentation.bindings.clone();
-        let update = self.pin.step(
-            settings.pinned,
-            self.presentation.pin_retry,
-            std::time::Instant::now(),
-            |request| crate::timer_widget_window::decorate(window, settings.pinned, request),
-        );
-        if let crate::timer_widget_pin::PinUpdate::Failed(error) = update {
-            let owner = self.app.downgrade();
-            window.defer(cx, move |_, cx| {
-                let _ = owner.update(cx, |app, cx| app.push_notice(Err(error), cx));
-            });
-        }
-        if self.pin.pending() && self.pin_poll.is_none() {
-            self.pin_poll = Some(cx.spawn(async |this, cx| {
-                cx.background_executor()
-                    .timer(crate::timer_widget_pin::POLL_INTERVAL)
-                    .await;
-                let _ = this.update(cx, |this, cx| {
-                    this.pin_poll = None;
-                    cx.notify();
-                });
-            }));
-        } else if !self.pin.pending() {
-            self.pin_poll = None;
-        }
         let mut style = TimerCardStyle::from_widget_settings(&settings, crate::theme::palette());
         style.pin_applied = Some(self.pin.applied());
         style.pin_pending = self.pin.pending();
@@ -356,6 +405,14 @@ impl StudyApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(feature = "ui-test")]
+        eprintln!(
+            "native widget action received: {action:?}, page={:?}, modal={}, storage={}, preferences={}",
+            self.page,
+            self.has_modal(cx),
+            self.storage_busy,
+            self.preferences_ui.busy
+        );
         match action {
             TimerCardAction::OpenMain => window.activate_window(),
             TimerCardAction::RetryPinned => {

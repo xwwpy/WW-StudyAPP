@@ -125,11 +125,25 @@ pub fn click(window: &mut Window, point: Point<Pixels>) {
         );
         assert!(ClientToScreen(parent, &mut point).as_bool());
         SetCursorPos(point.x, point.y).unwrap();
-        assert_eq!(
-            GetAncestor(WindowFromPoint(point), GA_ROOT),
-            parent,
-            "Another native window covers the control"
-        );
+        let hit_root = GetAncestor(WindowFromPoint(point), GA_ROOT);
+        if hit_root != parent {
+            use windows::Win32::{
+                Foundation::RECT,
+                UI::WindowsAndMessaging::{GetClassNameW, GetWindowRect, GetWindowThreadProcessId},
+            };
+            let mut class = [0_u16; 256];
+            let length = GetClassNameW(hit_root, &mut class) as usize;
+            let mut pid = 0;
+            GetWindowThreadProcessId(hit_root, Some(&mut pid));
+            let mut bounds = RECT::default();
+            let _ = GetWindowRect(parent, &mut bounds);
+            eprintln!(
+                "native pointer obstruction: point={point:?}, parentBounds={bounds:?}, hitClass={}, hitPid={pid}, ownPid={}",
+                String::from_utf16_lossy(&class[..length]),
+                std::process::id()
+            );
+        }
+        assert_eq!(hit_root, parent, "Another native window covers the control");
         let inputs = [MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP].map(|flags| INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {

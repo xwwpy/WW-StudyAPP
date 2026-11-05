@@ -18,6 +18,9 @@ pub(crate) enum PinUpdate {
     Failed(String),
 }
 impl PinController {
+    pub(crate) fn needs_step(&self, target: bool, retry: u64) -> bool {
+        self.request != Some((target, retry)) || self.pending()
+    }
     pub(crate) fn applied(&self) -> bool {
         self.applied
     }
@@ -70,6 +73,31 @@ impl PinController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn polling_lifecycle_does_not_require_a_render_or_retry_a_failed_request() {
+        let now = Instant::now();
+        let mut pin = PinController::default();
+        assert!(pin.needs_step(false, 0));
+        assert!(matches!(
+            pin.step(false, 0, now, |_| Ok(false)),
+            PinUpdate::Pending
+        ));
+        assert!(pin.needs_step(false, 0));
+        assert!(matches!(
+            pin.step(false, 0, now + POLL_INTERVAL, |_| Ok(true)),
+            PinUpdate::Applied
+        ));
+        assert!(!pin.needs_step(false, 0));
+        assert!(pin.needs_step(true, 0));
+        assert!(matches!(
+            pin.step(true, 0, now, |_| anyhow::bail!("fixture failure")),
+            PinUpdate::Failed(_)
+        ));
+        assert!(!pin.needs_step(true, 0));
+        assert!(pin.needs_step(true, 1));
+        assert!(pin.needs_step(false, 0));
+    }
+
     #[test]
     fn sends_once_then_waits_for_ack_without_claiming_success() {
         let now = Instant::now();

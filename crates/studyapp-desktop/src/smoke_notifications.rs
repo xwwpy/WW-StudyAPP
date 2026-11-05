@@ -186,7 +186,31 @@ pub async fn exercise(
             )
         })
         .unwrap();
-    settle(window, view, cx, |_, window, _| !window.is_window_active()).await;
+    // Losing main-window activation is not proof that the new witness has
+    // received its asynchronous activation event. Establish both ends before
+    // taking the no-focus-stealing baseline.
+    let began = Instant::now();
+    loop {
+        let active = witness
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                window.is_window_active()
+            })
+            .unwrap();
+        let inactive = window
+            .update(cx, |_, window, _| !window.is_window_active())
+            .unwrap();
+        if active && inactive {
+            break;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(5),
+            "notification witness activation"
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
     assert!(
         witness
             .update(cx, |_, window, _| window.is_window_active())

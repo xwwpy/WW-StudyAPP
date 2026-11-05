@@ -169,8 +169,6 @@ pub async fn exercise(
         assert!(timer.bottom() <= body.top());
         assert!(body.size.height >= px(160.));
         assert_eq!(window.find("timer-show-desktop").checked(), Some(false));
-        let center = window.find("timer-show-desktop").bounds().center();
-        pointer::click(window, center);
     })
     .unwrap();
     until(
@@ -185,6 +183,31 @@ pub async fn exercise(
         cx,
     )
     .await;
+    until(
+        main,
+        app,
+        "countup fixture storage settled",
+        |app, _| !app.storage_busy,
+        cx,
+    )
+    .await;
+    main.update(cx, |_, window, cx| {
+        window.render_frame(cx);
+        let bounds = window.find("timer-show-desktop").bounds();
+        let viewport = window.viewport_size();
+        pointer::capture_diagnostic(
+            window,
+            &database.with_file_name("timer-widget-before-open.bmp"),
+        );
+        eprintln!(
+            "native timer entry: bounds={bounds:?}, viewport={viewport:?}, scale={}",
+            window.scale_factor()
+        );
+        assert!(bounds.left() >= px(0.) && bounds.right() <= viewport.width);
+        assert!(bounds.top() >= px(0.) && bounds.bottom() <= viewport.height);
+        pointer::click(window, bounds.center());
+    })
+    .unwrap();
     until(
         main,
         app,
