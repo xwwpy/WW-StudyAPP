@@ -104,7 +104,7 @@ impl StudyApp {
                 self.note_saving = false;
                 self.close_requested = false;
                 self.clear_pending_updates();
-                self.push_notice(Err(error.to_string()), cx);
+                self.push_save_notice(Err(error.to_string()), cx);
             }
         }
         cx.notify();
@@ -168,7 +168,7 @@ impl StudyApp {
                 self.close_requested = false;
                 self.clear_pending_updates();
                 self.cancel_draft_retention();
-                self.push_notice(Err(error), cx);
+                self.push_save_notice(Err(error), cx);
                 cx.notify();
             }
             MarkdownEvent::Flushed(request) => {
@@ -241,7 +241,7 @@ impl StudyApp {
                     .update(cx, |editor, cx| editor.set_readonly(false, cx));
             }
             self.refresh_recoverable();
-            self.push_notice(Ok("草稿所属目录已更新".into()), cx);
+            self.push_save_notice(Ok("草稿所属目录已更新".into()), cx);
             cx.notify();
             return;
         }

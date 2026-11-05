@@ -42,6 +42,10 @@ mod note_actions;
 mod note_commands;
 mod note_editor;
 mod notes_view;
+mod notification_desktop;
+mod notification_runtime;
+mod notification_settings;
+mod notification_sound;
 mod notifications;
 mod overlay_regions;
 mod preferences;
@@ -65,6 +69,8 @@ mod smoke_interactions;
 mod smoke_library;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_note_rename;
+#[cfg(all(windows, feature = "ui-test"))]
+mod smoke_notifications;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_settings;
 #[cfg(all(windows, feature = "ui-test"))]

@@ -655,7 +655,10 @@ fn data_fixture(parent: &Path, name: &str) -> Result<DataFixture> {
     )?;
     let mut settings = engine.snapshot().settings;
     settings.interval_minutes = 41;
-    engine.apply(studyapp_core::Command::SaveSettings(settings.clone()), NOW)?;
+    engine.apply(
+        studyapp_core::Command::SaveSettings(Box::new(settings.clone())),
+        NOW,
+    )?;
     let (preferences, sync) = crate::preferences::PreferencesStore::open(&database, &mut engine)?;
     let original_history = history(&engine.snapshot());
     let inside_canonical = std::fs::canonicalize(&inside)?;

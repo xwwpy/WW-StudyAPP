@@ -255,7 +255,7 @@ impl StudyApp {
             })
             .is_err()
         {
-            self.push_notice(Err("图片处理服务已停止，当前笔记仍保留。".into()), cx);
+            self.push_image_notice(Err("图片处理服务已停止，当前笔记仍保留。".into()), cx);
             return false;
         }
         true
@@ -323,7 +323,7 @@ impl StudyApp {
 
     pub fn request_insert_image(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if !self.can_insert_image(cx) || self.media_busy() {
-            self.push_notice(
+            self.push_image_notice(
                 Err("请先打开可编辑的草稿，并等待当前图片操作完成。".into()),
                 cx,
             );
@@ -363,12 +363,12 @@ impl StudyApp {
             return;
         }
         if !self.can_insert_image(cx) || (self.media_busy() && self.media_ui.insertion.is_none()) {
-            self.push_notice(Err("请等待当前图片操作完成后再粘贴。".into()), cx);
+            self.push_image_notice(Err("请等待当前图片操作完成后再粘贴。".into()), cx);
             return;
         }
         match clipboard_input(encoded) {
             Ok(input) => self.queue_image_inputs(VecDeque::from([input]), cx),
-            Err(error) => self.push_notice(Err(format!("无法粘贴图片：{error}")), cx),
+            Err(error) => self.push_image_notice(Err(format!("无法粘贴图片：{error}")), cx),
         }
     }
 
@@ -392,7 +392,7 @@ impl StudyApp {
                 self.queue_image_inputs(VecDeque::from([MediaInput::Bytes(bytes)]), cx)
             }
             Ok(None) => {}
-            Err(error) => self.push_notice(Err(format!("无法粘贴图片：{error}")), cx),
+            Err(error) => self.push_image_notice(Err(format!("无法粘贴图片：{error}")), cx),
         }
     }
 
@@ -407,14 +407,14 @@ impl StudyApp {
             return false;
         }
         if !self.can_insert_image(cx) || self.media_busy() {
-            self.push_notice(
+            self.push_image_notice(
                 Err("请先打开可编辑的草稿，并等待当前图片操作完成后插入图片。".into()),
                 cx,
             );
             return true;
         }
         if paths.len() > MAX_FILES {
-            self.push_notice(Err(format!("每次最多插入 {MAX_FILES} 张图片。")), cx);
+            self.push_image_notice(Err(format!("每次最多插入 {MAX_FILES} 张图片。")), cx);
             return true;
         }
         self.queue_image_inputs(paths.into_iter().map(MediaInput::Path).collect(), cx);
@@ -440,7 +440,7 @@ impl StudyApp {
         let generation = self.note_content.read(cx).generation();
         if let Some(pending) = self.media_ui.insertion.as_mut() {
             if let Err(error) = pending.append(&self.last_library, generation, &group, inputs) {
-                self.push_notice(Err(format!("无法粘贴图片：{error}")), cx);
+                self.push_image_notice(Err(format!("无法粘贴图片：{error}")), cx);
             } else {
                 self.send_next_image(cx);
                 cx.notify();
@@ -464,7 +464,7 @@ impl StudyApp {
             clipboard_bytes: 0,
         };
         if let Err(error) = pending.append(&self.last_library, generation, &group, inputs) {
-            self.push_notice(Err(format!("无法插入图片：{error}")), cx);
+            self.push_image_notice(Err(format!("无法插入图片：{error}")), cx);
             return;
         }
         self.media_ui.insertion = Some(pending);
@@ -538,7 +538,7 @@ impl StudyApp {
                     self.clear_pending_updates();
                     self.note_content
                         .update(cx, |editor, cx| editor.set_readonly(false, cx));
-                    self.push_notice(Err(error.to_string()), cx);
+                    self.push_image_notice(Err(error.to_string()), cx);
                     return;
                 }
             };
@@ -696,7 +696,7 @@ impl StudyApp {
             } else {
                 "部分图片无法显示"
             };
-            self.push_notice(
+            self.push_image_notice(
                 Err(format!(
                     "{prefix}（{} 项）：{}",
                     missing.len(),
@@ -763,7 +763,7 @@ impl StudyApp {
                     self.clear_pending_updates();
                     self.note_content
                         .update(cx, |editor, cx| editor.set_readonly(false, cx));
-                    self.push_notice(
+                    self.push_image_notice(
                         Err(format!("草稿图片尚未保存，当前正文已保留，请重试：{error}")),
                         cx,
                     );
@@ -798,7 +798,7 @@ impl StudyApp {
                     });
                     self.warn_missing_images(missing, false, cx);
                 }
-                Err(error) => self.push_notice(Err(format!("图片预览失败：{error}")), cx),
+                Err(error) => self.push_image_notice(Err(format!("图片预览失败：{error}")), cx),
                 _ => {}
             }
             return;
@@ -833,7 +833,7 @@ impl StudyApp {
                         return;
                     }
                     if missing.is_empty() && !pending.commit_after_adoption {
-                        self.push_notice(Ok("已创建可编辑副本".into()), cx);
+                        self.push_image_notice(Ok("已创建可编辑副本".into()), cx);
                     }
                     self.warn_missing_images(missing, true, cx);
                     if pending.commit_after_adoption {
@@ -850,7 +850,7 @@ impl StudyApp {
                         self.note_content
                             .update(cx, |editor, cx| editor.set_readonly(false, cx));
                     }
-                    self.push_notice(
+                    self.push_image_notice(
                         Err(format!("无法保存笔记图片：{error}；原笔记和草稿已保留。")),
                         cx,
                     );
@@ -881,10 +881,10 @@ impl StudyApp {
                         editor.insert_markdown(response.generation, &markdown, cx)
                     });
                     if let Err(error) = result {
-                        self.push_notice(Err(error.to_string()), cx);
+                        self.push_image_notice(Err(error.to_string()), cx);
                     }
                 }
-                Err(error) => self.push_notice(Err(format!("图片插入失败：{error}")), cx),
+                Err(error) => self.push_image_notice(Err(format!("图片插入失败：{error}")), cx),
                 _ => {}
             }
             self.send_next_image(cx);

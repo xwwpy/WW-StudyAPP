@@ -33,6 +33,17 @@ impl SettingResult {
 
 static SETTINGS: &[SettingResult] = &[
     SettingResult::new(
+        SettingsSection::Notifications,
+        "通知分类与免打扰",
+        "通知 提示 计时 复习 更新 红点 前台 后台 隐私 声音 免打扰",
+    ),
+    SettingResult::new(
+        SettingsSection::Appearance,
+        "通知样式与透明度",
+        "通知 外观 气泡 卡片 横幅 锚点 圆角 透明度 动画",
+    )
+    .appearance(AppearancePage::Notifications, 0),
+    SettingResult::new(
         SettingsSection::Learning,
         "学习提醒与回答时限",
         "学习 间隔 计时 小时 分钟 提醒 答复",

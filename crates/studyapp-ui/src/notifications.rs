@@ -15,7 +15,24 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct NotificationOcclusions(pub Vec<Bounds<Pixels>>);
 
+#[path = "notification_modal.rs"]
+mod modal;
+#[path = "notification_presenter.rs"]
+mod presenter;
+pub use presenter::{
+    NotificationActionRequested, NotificationActivityChanged, NotificationPresented,
+};
+
 pub struct NotificationCenter {
+    policy: studyapp_core::NotificationSettings,
+    appearance: studyapp_core::NotificationAppearance,
+    environment: studyapp_core::NoticeEnvironment,
+    anchors: BTreeMap<String, Bounds<Pixels>>,
+    anchor_owners: BTreeMap<String, u64>,
+    card_sizes: BTreeMap<u64, Size<Pixels>>,
+    modal_blocked: bool,
+    modal_surface: Option<Entity<modal::NotificationModal>>,
+    last_activity: (bool, bool),
     queue: NoticeQueue,
     epoch: Instant,
     timer: Option<Task<()>>,
@@ -39,6 +56,20 @@ impl NotificationCenter {
     }
     pub fn new() -> Self {
         Self {
+            policy: Default::default(),
+            appearance: Default::default(),
+            environment: studyapp_core::NoticeEnvironment {
+                foreground: true,
+                desktop_available: false,
+                anchor_available: false,
+                minute: 0,
+            },
+            anchors: Default::default(),
+            anchor_owners: Default::default(),
+            card_sizes: Default::default(),
+            modal_blocked: false,
+            modal_surface: None,
+            last_activity: (false, false),
             queue: NoticeQueue::default(),
             epoch: Instant::now(),
             timer: None,
@@ -100,7 +131,11 @@ impl NotificationCenter {
 
     pub fn push(&mut self, message: Result<String, String>, cx: &mut Context<Self>) {
         self.queue.push(message, self.now());
-        if self.timer.is_none() {
+        self.start_timer(cx);
+    }
+
+    fn start_timer(&mut self, cx: &mut Context<Self>) {
+        if self.timer.is_none() && self.queue.needs_timer(self.now()) {
             self.timer = Some(cx.spawn(async move |owner, cx| {
                 loop {
                     let delay = owner
@@ -118,9 +153,9 @@ impl NotificationCenter {
                     let keep = owner
                         .update(cx, |this, cx| {
                             if this.queue.tick(this.now()) {
-                                cx.notify();
+                                this.notify_activity(cx);
                             }
-                            if this.queue.is_empty() {
+                            if !this.queue.needs_timer(this.now()) {
                                 this.timer = None;
                                 false
                             } else {
@@ -134,13 +169,14 @@ impl NotificationCenter {
                 }
             }));
         }
-        cx.notify();
+        self.notify_activity(cx);
     }
 
     #[cfg(feature = "ui-test")]
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.queue.clear();
-        cx.notify();
+        self.timer = None;
+        self.notify_activity(cx);
     }
 
     #[cfg(feature = "ui-test")]
@@ -190,6 +226,9 @@ mod tests {
 
 impl Render for NotificationCenter {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.queue.visible().any(|entry| entry.event.is_some()) {
+            return self.structured_surface(window, cx).into_any_element();
+        }
         let now = self.now();
         self.scrolls
             .retain(|id, _| self.queue.visible().any(|notice| notice.id == *id));
@@ -311,12 +350,12 @@ impl Render for NotificationCenter {
                         .tooltip("关闭通知")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.queue.dismiss(id, this.now());
-                            cx.notify();
+                            this.start_timer(cx);
                         })),
                     )
                     .on_hover(cx.listener(move |this, hovered, _, cx| {
                         this.queue.hover(id, *hovered, this.now());
-                        cx.notify();
+                        this.start_timer(cx);
                     }))
                     .child(
                         canvas(
@@ -348,5 +387,10 @@ impl Render for NotificationCenter {
                 .absolute()
                 .size(px(0.)),
             )
+            .into_any_element()
     }
 }
+
+#[cfg(all(test, feature = "ui-test"))]
+#[path = "notification_presenter_tests.rs"]
+mod presenter_tests;

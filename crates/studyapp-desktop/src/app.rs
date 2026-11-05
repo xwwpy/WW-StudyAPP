@@ -129,6 +129,8 @@ pub struct StudyApp {
     pub(crate) picker_results: std::sync::mpsc::Receiver<(String, Work)>,
     pub modal_focus: crate::feedback::ModalFocus,
     pub notifications: Entity<crate::notifications::NotificationCenter>,
+    pub notification_window: Option<AnyWindowHandle>,
+    pub notification_desktop_failed: bool,
     pub bubble_registry: Entity<studyapp_ui::bubble::BubbleRegistry>,
     #[cfg(feature = "ui-test")]
     pub smoke_pointer_bubble: Option<AnyView>,
@@ -206,6 +208,39 @@ impl StudyApp {
         let note_title = input("笔记标题", "", window, cx);
         let note_content = cx.new(|cx| crate::markdown_editor::MarkdownEditor::new(window, cx));
         let notifications = cx.new(|_| crate::notifications::NotificationCenter::new());
+        cx.subscribe_in(
+            &notifications,
+            window,
+            |this, _, event: &crate::notifications::NotificationActionRequested, window, cx| {
+                // Opening the main window is allowed only after an explicit action click.
+                window.activate_window();
+                this.handle_notification_action(event.action, window, cx);
+            },
+        )
+        .detach();
+        cx.subscribe_in(
+            &notifications,
+            window,
+            |this, _, _: &crate::notifications::NotificationActivityChanged, window, cx| {
+                this.sync_notification_desktop(window, cx);
+                cx.notify();
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &notifications,
+            |_, _, _: &crate::notifications::NotificationPresented, _| {
+                crate::notification_sound::play();
+            },
+        )
+        .detach();
+        cx.observe_window_activation(window, |this, window, cx| {
+            if window.is_window_active() {
+                this.notification_desktop_failed = false;
+            }
+            this.sync_notification_preferences(window, cx);
+        })
+        .detach();
         let bubble_registry = studyapp_ui::bubble::window_bubble_registry(window, cx);
         let bubble_editor = note_content.clone();
         cx.subscribe(
@@ -232,8 +267,18 @@ impl StudyApp {
                 }
                 crate::update_ui::UpdateEvent::NsisReady => this.install_nsis_update(window, cx),
                 crate::update_ui::UpdateEvent::AvailabilityChanged => cx.notify(),
-                crate::update_ui::UpdateEvent::ReadStateFailed(error) => {
-                    this.push_notice(Err(error.clone()), cx)
+                crate::update_ui::UpdateEvent::ReadStateFailed => {
+                    let mut event = studyapp_core::NoticeEvent::new(
+                        studyapp_core::NoticeCategory::SaveFailure,
+                        studyapp_core::NoticeSeverity::Warning,
+                        "更新内容的阅读状态未保存；仍可查看更新并正常使用应用。",
+                    );
+                    event.dedupe_key = Some("update-read-state".into());
+                    event.action = Some(studyapp_core::NoticeAction::OpenUpdate);
+                    this.emit_notification(event, cx);
+                }
+                crate::update_ui::UpdateEvent::Notification(event) => {
+                    this.emit_notification(event.clone(), cx);
                 }
             },
         )
@@ -308,12 +353,15 @@ impl StudyApp {
         });
         let sync_panel =
             cx.new(|cx| crate::sync_ui::SyncPanel::new(worker.sender.clone(), window, cx));
+        sync_panel.update(cx, |panel, _| {
+            panel.notification_center = Some(notifications.clone())
+        });
         cx.subscribe(
             &sync_panel,
             |this, _, event: &crate::sync_ui::SyncEvent, cx| {
                 match event {
-                    crate::sync_ui::SyncEvent::Feedback(message) => {
-                        this.push_notice(message.clone(), cx);
+                    crate::sync_ui::SyncEvent::Notification(event) => {
+                        this.emit_notification(event.clone(), cx);
                     }
                 }
                 cx.notify();
@@ -419,6 +467,8 @@ impl StudyApp {
             picker_results,
             modal_focus: crate::feedback::ModalFocus::new(cx),
             notifications,
+            notification_window: None,
+            notification_desktop_failed: false,
             bubble_registry,
             #[cfg(feature = "ui-test")]
             smoke_pointer_bubble: None,
@@ -539,6 +589,7 @@ impl StudyApp {
         }
         while let Ok(update) = self.worker.receiver.try_recv() {
             let startup_failed = update.startup_failure.is_some();
+            let structured_feedback = !update.notifications.is_empty();
             if let Some(failure) = update.startup_failure {
                 self.snapshot = None;
                 self.pending_library = None;
@@ -589,7 +640,7 @@ impl StudyApp {
                             {
                                 self.storage_ui.purge = Some((plan.scope, Some(plan.clone())));
                             }
-                            Err(e) => self.push_notice(Err(e.clone()), cx),
+                            Err(e) if !structured_feedback => self.push_notice(Err(e.clone()), cx),
                             _ => {}
                         }
                     }
@@ -603,7 +654,8 @@ impl StudyApp {
                         self.drafts.load(&self.last_library);
                         match result {
                             Ok(r) => self.storage_report = Some(r.clone()),
-                            Err(e) => self.push_notice(Err(e.clone()), cx),
+                            Err(e) if !structured_feedback => self.push_notice(Err(e.clone()), cx),
+                            Err(_) => {}
                         }
                     }
                     _ => {}
@@ -618,7 +670,8 @@ impl StudyApp {
                     .update(cx, |panel, cx| panel.set_busy(false, cx));
                 match result {
                     Ok(report) => self.storage_report = Some(report),
-                    Err(error) => self.push_notice(Err(error), cx),
+                    Err(error) if !structured_feedback => self.push_notice(Err(error), cx),
+                    Err(_) => {}
                 }
             }
             if let Some(status) = update.sync_status {
@@ -635,9 +688,14 @@ impl StudyApp {
                     self.editor = None;
                 }
             }
+            if !preferences_finished && !startup_failed {
+                for event in update.notifications {
+                    self.emit_notification(event, cx);
+                }
+            }
             if let Some(notice) = update.notice {
                 // preferences_finished emits one contextual outcome below.
-                if !preferences_finished && !startup_failed {
+                if !preferences_finished && !startup_failed && !structured_feedback {
                     self.push_notice(notice, cx);
                 }
             }
@@ -832,32 +890,58 @@ impl StudyApp {
         } else if self.layout == snapshot.settings.layout {
             self.layout_dirty = false;
         }
+        self.configure_notification_settings(&snapshot.settings, window, cx);
+        let now = chrono::Utc::now().timestamp();
+        let due: Vec<_> = snapshot
+            .reviews
+            .iter()
+            .filter(|review| review.next_review_at.is_some_and(|time| time <= now))
+            .map(|review| {
+                format!(
+                    "review-{}-{}-{}",
+                    review.id,
+                    review.stage,
+                    review.next_review_at.unwrap_or_default()
+                )
+            })
+            .collect();
+        let active: HashSet<_> = snapshot
+            .sessions
+            .iter()
+            .filter(|session| session.status == SessionStatus::Pending)
+            .map(|session| session.id.clone())
+            .chain(due.iter().cloned())
+            .collect();
+        self.notified.retain(|key| active.contains(key));
         for session in &snapshot.sessions {
             if session.status == SessionStatus::Pending && self.notified.insert(session.id.clone())
             {
-                cx.show_system_notification(SystemNotification {
-                    tag: session.id.clone().into(),
-                    title: "该回顾刚才的学习了".into(),
-                    body: format!(
-                        "请在 {} 分钟内记录学到了什么，未回答将记为未学习。",
+                let mut event = studyapp_core::NoticeEvent::new(
+                    studyapp_core::NoticeCategory::TimerComplete,
+                    studyapp_core::NoticeSeverity::Information,
+                    format!(
+                        "这一段专注计时已结束。请在 {} 分钟内记录收获，未回答将记为未学习。",
                         snapshot.settings.answer_minutes
-                    )
-                    .into(),
-                    actions: vec![],
-                });
-                if self.editor.is_none() {
-                    self.editor = Some(EditorMode::Pending(session.id.clone()));
-                    self.summary_editor
-                        .update(cx, |editor, cx| editor.reset(cx));
-                    self.summary.update(cx, |s, cx| {
-                        s.set_value(session.suggested_summary.clone(), window, cx)
-                    });
-                    self.chosen_notes = session.note_ids.iter().cloned().collect();
-                    self.chosen_versions = session.version_ids.iter().cloned().collect();
-                    self.seed_versions(&snapshot, session.ended_at);
-                    self.navigate(Page::Today, window, cx);
-                }
+                    ),
+                );
+                event.dedupe_key = Some(format!("session-{}", session.id));
+                event.action = Some(studyapp_core::NoticeAction::OpenTimer);
+                self.emit_notification(event, cx);
             }
+        }
+        let mut newly_due = false;
+        for key in &due {
+            newly_due |= self.notified.insert(key.clone());
+        }
+        if newly_due {
+            let mut event = studyapp_core::NoticeEvent::new(
+                studyapp_core::NoticeCategory::ReviewDue,
+                studyapp_core::NoticeSeverity::Information,
+                format!("有 {} 项复习已到期，可以按自己的节奏开始。", due.len()),
+            );
+            event.dedupe_key = Some("reviews-due".into());
+            event.action = Some(studyapp_core::NoticeAction::OpenReviews);
+            self.emit_notification(event, cx);
         }
         if self.selected_note.as_ref().is_none_or(|id| {
             !snapshot.notes.iter().any(|n| {
@@ -936,13 +1020,17 @@ impl StudyApp {
                         && snapshot.timer.active_seconds == 86400))
         });
         if just_finished {
-            self.push_notice(
-                Ok(format!(
-                    "{}已到点，可选择记录这段收获",
-                    snapshot.timer.kind.label()
-                )),
-                cx,
+            let mut event = studyapp_core::NoticeEvent::new(
+                studyapp_core::NoticeCategory::TimerComplete,
+                studyapp_core::NoticeSeverity::Success,
+                format!("{}已到点，可选择记录这段收获", snapshot.timer.kind.label()),
             );
+            event.dedupe_key = Some(format!(
+                "timer-{:?}-{}",
+                snapshot.timer.kind, snapshot.timer.started_at
+            ));
+            event.action = Some(studyapp_core::NoticeAction::OpenTimer);
+            self.emit_notification(event, cx);
         }
         self.snapshot = Some(snapshot);
     }
@@ -1213,6 +1301,9 @@ impl StudyApp {
     }
 
     pub fn has_modal(&self, cx: &App) -> bool {
+        self.has_required_modal(cx) || self.notifications.read(cx).modal_visible()
+    }
+    pub(crate) fn has_required_modal(&self, cx: &App) -> bool {
         self.timer_setup.is_some()
             || self.timer_pending.is_some()
             || self.confirmation.is_some()
@@ -1226,6 +1317,11 @@ impl StudyApp {
 
     fn cancel_modal(&mut self, cx: &mut Context<Self>) {
         if self.preferences_ui.busy {
+            return;
+        }
+        if !self.has_required_modal(cx) && self.notifications.read(cx).modal_visible() {
+            self.notifications
+                .update(cx, |center, cx| center.dismiss_modal(cx));
             return;
         }
         if self.update_panel.read(cx).dialog_visible() {
@@ -1263,6 +1359,8 @@ impl StudyApp {
         } else if self.confirmation.is_some() || self.storage_confirm.is_some() {
             // Destructive actions require activation of their explicit button.
             // Enter on the dialog scope itself must never remove user content.
+        } else if self.notifications.read(cx).modal_visible() {
+            // Notification actions require their explicit button, not bare Enter.
         } else {
             self.folders
                 .update(cx, |panel, cx| panel.submit_action(window, cx));
@@ -1392,6 +1490,7 @@ impl StudyApp {
 impl Render for StudyApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.refresh_appearance(window, cx);
+        self.sync_notification_preferences(window, cx);
         self.external_drop.set_blocked(self.external_drop_block(cx));
         let modal_open = self.has_modal(cx);
         let initial_focus = self.folders.read(cx).modal_initial_focus(cx);
@@ -1468,7 +1567,12 @@ impl Render for StudyApp {
         } else if self.update_panel.read(cx).dialog_visible() {
             Some(self.update_dialog_view(cx))
         } else {
-            self.folders.update(cx, |panel, cx| panel.modal_content(cx))
+            self.folders
+                .update(cx, |panel, cx| panel.modal_content(cx))
+                .or_else(|| {
+                    self.notifications
+                        .update(cx, |center, cx| center.modal_content(cx))
+                })
         };
         let modal = modal_content.map(|content| {
             let cancel_owner = cx.weak_entity();

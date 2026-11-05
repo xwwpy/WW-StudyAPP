@@ -426,6 +426,7 @@ fn markdown_backdrop(index: usize, colors: &[RgbaColor; 26], surface: u32) -> u3
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppearanceSettings {
+    pub notifications: crate::NotificationAppearance,
     pub mode: ThemeMode,
     pub active_preset: Option<String>,
     pub custom_presets: Vec<ThemePreset>,
@@ -436,6 +437,7 @@ pub struct AppearanceSettings {
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
+            notifications: Default::default(),
             mode: ThemeMode::System,
             active_preset: None,
             custom_presets: vec![],
@@ -531,6 +533,7 @@ impl AppearanceSettings {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.notifications.validate()?;
         ensure!((12..=22).contains(&self.font_size), "字号须为 12–22 像素");
         ensure!((4..=16).contains(&self.spacing), "间距须为 4–16 像素");
         ensure!(self.custom_presets.len() <= 20, "自定义主题最多 20 个");

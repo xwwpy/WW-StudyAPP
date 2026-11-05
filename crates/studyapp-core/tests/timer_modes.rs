@@ -85,7 +85,9 @@ fn generic_timers_keep_targets_when_preferences_change_and_ignore_sleep() {
         let prepared = engine.prepare_settings(settings.clone()).unwrap();
         engine.install_prepared_settings(prepared);
         assert_eq!(engine.snapshot().timer.target_seconds, target.unwrap_or(0));
-        engine.apply(Command::SaveSettings(settings), 1001).unwrap();
+        engine
+            .apply(Command::SaveSettings(Box::new(settings)), 1001)
+            .unwrap();
         engine.tick(2000, 999).unwrap();
         assert_eq!(engine.snapshot().timer.active_seconds, 0);
         engine.tick(2001, 1).unwrap();
@@ -174,7 +176,9 @@ fn notes_from_a_generic_timer_do_not_leak_into_the_next_study_segment() {
     assert!(engine.snapshot().sessions.is_empty());
     let mut settings = engine.snapshot().settings;
     settings.interval_minutes = 5;
-    engine.apply(Command::SaveSettings(settings), 1120).unwrap();
+    engine
+        .apply(Command::SaveSettings(Box::new(settings)), 1120)
+        .unwrap();
     engine
         .apply(
             Command::StartTimer {

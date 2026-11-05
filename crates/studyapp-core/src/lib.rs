@@ -8,6 +8,7 @@ mod managed;
 pub mod media_settings;
 mod models;
 mod notes;
+mod notifications;
 mod purge;
 mod stats;
 mod storage;
@@ -17,6 +18,7 @@ pub use color::*;
 pub use engine::Engine;
 pub use media_settings::{ImageSettings, ImageStorage};
 pub use models::*;
+pub use notifications::*;
 pub use purge::{
     finish_purge_cleanup, inspect_purge_backup, purge_backup_revision,
     purge_managed_note_from_backup, scrub_confirmed_backup,

@@ -59,6 +59,7 @@ pub enum SettingsSection {
     #[default]
     Learning,
     Appearance,
+    Notifications,
     Shortcuts,
     Storage,
     Sync,
@@ -66,9 +67,10 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [(Self, &'static str, &'static str); 6] = [
+    pub const ALL: [(Self, &'static str, &'static str); 7] = [
         (Self::Learning, "learning", "学习"),
         (Self::Appearance, "appearance", "外观"),
+        (Self::Notifications, "notifications", "通知"),
         (Self::Shortcuts, "shortcuts", "快捷键"),
         (Self::Storage, "storage", "存储"),
         (Self::Sync, "sync", "同步"),
@@ -83,6 +85,7 @@ pub enum AppearancePage {
     ThemeEditor,
     Workspace,
     Widget,
+    Notifications,
 }
 
 impl AppearancePage {
@@ -91,7 +94,7 @@ impl AppearancePage {
             Self::Overview => &[0],
             Self::ThemeEditor => &[1, 3],
             Self::Workspace => &[4],
-            Self::Widget => &[],
+            Self::Widget | Self::Notifications => &[],
         }
     }
 }
@@ -108,6 +111,8 @@ pub enum StoragePage {
 #[derive(Clone, Copy)]
 enum SettingsResetScope {
     Learning,
+    Notifications,
+    NotificationAppearance,
     Appearance,
     ThemeEditor,
     Workspace,
@@ -121,6 +126,8 @@ impl SettingsResetScope {
     fn name(self) -> &'static str {
         match self {
             Self::Learning => "学习",
+            Self::Notifications => "通知",
+            Self::NotificationAppearance => "外观 · 通知",
             Self::Appearance => "外观 · 主题与阅读",
             Self::ThemeEditor => "外观 · 主题编辑器",
             Self::Workspace => "外观 · 工作区",
@@ -240,6 +247,9 @@ pub struct PreferencesUi {
     #[cfg(feature = "ui-test")]
     shortcut_frame_rows: std::cell::Cell<u64>,
     pub shortcut_search: Option<Entity<InputState>>,
+    pub notification_category: Option<studyapp_core::NoticeCategory>,
+    pub notification_fields: BTreeMap<&'static str, Entity<InputState>>,
+    pub notification_preview_scroll: ScrollHandle,
     pub widget_fields: BTreeMap<&'static str, Entity<InputState>>,
     pub appearance_fields: BTreeMap<&'static str, Entity<InputState>>,
     pub appearance_colors: BTreeMap<&'static str, Entity<crate::settings_color::ColorSetting>>,
@@ -294,11 +304,13 @@ impl StudyApp {
     fn settings_reset_scope(&self) -> Option<SettingsResetScope> {
         Some(match self.preferences_ui.section {
             SettingsSection::Learning => SettingsResetScope::Learning,
+            SettingsSection::Notifications => SettingsResetScope::Notifications,
             SettingsSection::Appearance => match self.preferences_ui.appearance_page {
                 AppearancePage::Overview => SettingsResetScope::Appearance,
                 AppearancePage::ThemeEditor => SettingsResetScope::ThemeEditor,
                 AppearancePage::Workspace => SettingsResetScope::Workspace,
                 AppearancePage::Widget => SettingsResetScope::Widget,
+                AppearancePage::Notifications => SettingsResetScope::NotificationAppearance,
             },
             SettingsSection::Shortcuts => SettingsResetScope::Shortcuts,
             SettingsSection::Storage if self.preferences_ui.storage_page == StoragePage::Images => {
@@ -350,6 +362,14 @@ impl StudyApp {
                         cx,
                     )
                 });
+            }
+            SettingsResetScope::Notifications => {
+                draft.notifications = defaults.settings.notifications;
+            }
+            SettingsResetScope::NotificationAppearance => {
+                let value = defaults.settings.appearance.notifications;
+                draft.appearance.notifications = value.clone();
+                self.fill_notification_fields(&value, window, cx);
             }
             SettingsResetScope::Appearance => {
                 // Presets and their editor fields belong to the theme editor.
@@ -737,6 +757,7 @@ impl StudyApp {
             }
             Err(error) => {
                 self.preferences_ui.error = Some(error.to_string());
+                self.settings_validation_notice(error.to_string(), cx);
                 cx.notify();
                 false
             }
@@ -1008,6 +1029,7 @@ impl StudyApp {
         self.layout = value.settings.layout.clone();
         self.preferences_ui.draft = Some(value.settings.clone());
         self.fill_appearance_fields(&value.settings.appearance, window, cx);
+        self.fill_notification_fields(&value.settings.appearance.notifications, window, cx);
         self.preferences_ui.image_cloud = Some(crate::image_cloud::ImageCloudDraft::new(
             &value.settings.images,
             value.image_secret_saved,
@@ -1389,7 +1411,7 @@ impl StudyApp {
                     .sender
                     .send(Work::Scoped {
                         library: self.last_library.clone(),
-                        work: Box::new(Work::SavePreferences(prepared)),
+                        work: Box::new(Work::SavePreferences(Box::new(prepared))),
                     })
                     .is_ok()
                 {
@@ -1400,12 +1422,13 @@ impl StudyApp {
                     self.preferences_ui.error = None;
                 } else {
                     self.preferences_ui.error = Some("后台服务已停止，修改仍保留".into());
+                    self.push_preferences_notice(Err("后台服务已停止，修改仍保留".into()), cx);
                 }
             }
-            Err(error) => self.preferences_ui.error = Some(error.to_string()),
-        }
-        if let Some(error) = &self.preferences_ui.error {
-            self.push_notice(Err(error.clone()), cx);
+            Err(error) => {
+                self.preferences_ui.error = Some(error.to_string());
+                self.settings_validation_notice(error.to_string(), cx);
+            }
         }
         cx.notify();
     }
@@ -1427,14 +1450,17 @@ impl StudyApp {
             Ok(()) => {
                 let action = self.preferences_ui.leave.take();
                 self.begin_settings(window, cx);
-                self.push_notice(Ok("全部设置已保存".into()), cx);
+                self.push_preferences_notice(Ok("全部设置已保存".into()), cx);
                 if let Some(action) = action {
                     self.resume_settings_action(action, window, cx);
                 }
             }
             Err(error) => {
                 self.preferences_ui.error = Some(error.clone());
-                self.push_notice(Err(format!("设置未保存：{error}；当前修改仍保留")), cx);
+                self.push_preferences_notice(
+                    Err(format!("设置未保存：{error}；当前修改仍保留")),
+                    cx,
+                );
             }
         }
         cx.notify();
@@ -1461,11 +1487,7 @@ impl StudyApp {
         Some(
             ModalFrame::new(
                 "设置尚未保存",
-                column()
-                    .child(muted("是否保存本次修改后继续？放弃只撤销当前配置草稿。"))
-                    .children(self.preferences_ui.error.as_ref().map(|error| {
-                        muted(error.clone()).text_color(rgb(crate::theme::palette().danger))
-                    })),
+                muted("是否保存本次修改后继续？放弃只撤销当前配置草稿。"),
             )
             .tone(ModalTone::Warning)
             .width(ModalWidth::Wide)
@@ -1519,68 +1541,57 @@ impl StudyApp {
     pub fn settings_header(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let dirty = self.settings_dirty(cx);
-        column()
-            .min_w_0()
-            .gap_2()
-            .px_2()
-            .py_2()
-            .child(
-                row()
-                    .flex_wrap()
-                    .child(heading("偏好设置").text_base())
-                    .child(div().flex_1())
-                    .child(muted(if dirty {
-                        "有未保存的修改"
-                    } else {
-                        "已保存"
-                    }))
-                    .child(
-                        Button::new("discard-settings")
-                            .small()
-                            .ghost()
-                            .label("放弃修改")
-                            .disabled(busy || !dirty)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| {
-                                    this.discard_settings(window, cx)
-                                }),
-                            ),
-                    )
-                    .children(self.settings_reset_scope().map(|_| {
-                        Button::new("reset-settings")
-                            .small()
-                            .label("恢复本页默认")
-                            .disabled(busy || self.sync_panel.read(cx).status.busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.preferences_ui.recording = None;
-                                this.preferences_ui.reset_confirmation = true;
-                                cx.notify();
-                            }))
-                    }))
-                    .child(
-                        Button::new("save-settings")
-                            .primary()
-                            .small()
-                            .label(if self.preferences_ui.busy {
-                                "正在保存…"
-                            } else {
-                                "保存全部设置"
-                            })
-                            .disabled(
-                                !dirty
-                                    || busy
-                                    || self.preferences_ui.saved.is_none()
-                                    || self.preferences_ui.recording.is_some(),
-                            )
-                            .on_click(cx.listener(|this, _, _, cx| this.save_preferences(cx))),
-                    ),
-            )
-            .children(
-                self.preferences_ui
-                    .error
-                    .as_ref()
-                    .map(|error| muted(error.clone()).text_color(crate::theme::color(0xBE3434))),
-            )
+        column().min_w_0().gap_2().px_2().py_2().child(
+            row()
+                .flex_wrap()
+                .child(heading("偏好设置").text_base())
+                .child(div().flex_1())
+                .child(muted(if dirty {
+                    "有未保存的修改"
+                } else {
+                    "已保存"
+                }))
+                .child(
+                    Button::new("discard-settings")
+                        .small()
+                        .ghost()
+                        .label("放弃修改")
+                        .disabled(busy || !dirty)
+                        .on_click(
+                            cx.listener(|this, _, window, cx| this.discard_settings(window, cx)),
+                        ),
+                )
+                .children(self.settings_reset_scope().map(|_| {
+                    Button::new("reset-settings")
+                        .small()
+                        .label("恢复本页默认")
+                        .disabled(busy || self.sync_panel.read(cx).status.busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.preferences_ui.recording = None;
+                            this.preferences_ui.reset_confirmation = true;
+                            cx.notify();
+                        }))
+                }))
+                .child(studyapp_ui::notification_anchor::NotificationAnchor::new(
+                    "settings-save",
+                    self.notifications.clone(),
+                    Button::new("save-settings")
+                        .primary()
+                        .small()
+                        .label(if self.preferences_ui.busy {
+                            "正在保存…"
+                        } else {
+                            "保存全部设置"
+                        })
+                        .disabled(
+                            !dirty
+                                || busy
+                                || self.preferences_ui.saved.is_none()
+                                || self.preferences_ui.recording.is_some(),
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| this.save_preferences(cx))),
+                )),
+        )
     }
 
     pub fn settings_navigation(&self, compact: bool, cx: &mut Context<Self>) -> Div {
@@ -1660,6 +1671,11 @@ impl StudyApp {
                 ),
                 (AppearancePage::Workspace, "appearance-workspace", "工作区"),
                 (AppearancePage::Widget, "appearance-widget", "计时小组件"),
+                (
+                    AppearancePage::Notifications,
+                    "appearance-notifications",
+                    "通知",
+                ),
             ] {
                 let mut button = Button::new(id)
                     .small()
@@ -1812,6 +1828,7 @@ impl StudyApp {
                     "保存后生效；询问间隔从下一时间段生效，复习间隔只影响新建计划。",
                 )),
             SettingsSection::Appearance => column(),
+            SettingsSection::Notifications => self.notification_controls(cx),
             // The shortcut list owns the bounded viewport, outside this
             // auto-height form used by the other categories.
             SettingsSection::Shortcuts => column(),
@@ -2238,6 +2255,18 @@ impl StudyApp {
                             .map(|color| color.read(cx).preview_value(cx))
                             .unwrap_or_else(|| input.read(cx).value())
                     })
+                    .chain(
+                        self.preferences_ui
+                            .notification_fields
+                            .iter()
+                            .map(|(key, input)| {
+                                self.preferences_ui
+                                    .appearance_colors
+                                    .get(key)
+                                    .map(|color| color.read(cx).preview_value(cx))
+                                    .unwrap_or_else(|| input.read(cx).value())
+                            }),
+                    )
                     .collect(),
                 self.preferences_ui.appearance_layout,
             ),
@@ -2284,6 +2313,16 @@ impl StudyApp {
         _window: &Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        if self.preferences_ui.appearance_page == AppearancePage::Notifications {
+            return div().flex().flex_1().min_h_0().min_w_0().child(
+                scroll_body("notification-appearance-scroll", &self.settings_scroll)
+                    .flex_1()
+                    .min_h_0()
+                    .pr_4()
+                    .pb_4()
+                    .child(self.notification_appearance_controls(cx)),
+            );
+        }
         if self.preferences_ui.appearance_page == AppearancePage::Widget {
             return div().flex().flex_1().min_h_0().min_w_0().child(
                 scroll_body("timer-widget-settings-scroll", &self.settings_scroll)
@@ -2608,6 +2647,7 @@ impl StudyApp {
                                 select_custom_preset(&mut draft.appearance, pending, &id)
                             {
                                 this.preferences_ui.error = Some(error.to_string());
+                                this.settings_validation_notice(error.to_string(), cx);
                                 cx.notify();
                                 return;
                             }
@@ -3973,6 +4013,370 @@ mod scoped_tests {
         (app.unwrap(), visual)
     }
 
+    struct NotificationFixture {
+        app: Entity<StudyApp>,
+        appearance: bool,
+        color_only: bool,
+    }
+    impl Render for NotificationFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                let content = if self.color_only {
+                    div().child(
+                        app.preferences_ui.appearance_colors["notification-background"].clone(),
+                    )
+                } else if self.appearance {
+                    app.notification_appearance_controls(cx)
+                } else {
+                    app.notification_controls(cx)
+                };
+                div().size_full().child(content)
+            })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn notification_switches_edit_only_their_draft_and_discard_restores_them(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(1200.)));
+        visual.replace_root_view(|_, _| NotificationFixture {
+            app: app.clone(),
+            appearance: false,
+            color_only: false,
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click("notification-update-badge", cx);
+            window.click("notification-dnd", cx);
+            window.click("notification-rule-UpdateAvailable-options", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click("notification-rule-UpdateAvailable-foreground", cx);
+            app.update(cx, |app, cx| {
+                let draft = app.preferences_ui.draft.as_ref().unwrap();
+                assert!(!draft.notifications.update_badge);
+                assert!(draft.notifications.do_not_disturb);
+                assert!(
+                    !draft
+                        .notifications
+                        .rule(studyapp_core::NoticeCategory::UpdateAvailable)
+                        .foreground
+                );
+                assert!(
+                    draft
+                        .notifications
+                        .rule(studyapp_core::NoticeCategory::TimerComplete)
+                        .foreground
+                );
+                assert_eq!(
+                    app.preferences_ui
+                        .saved
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .notifications,
+                    studyapp_core::NotificationSettings::default()
+                );
+                assert!(app.settings_dirty(cx));
+                assert_eq!(app.notifications.read(cx).visible_count(), 0);
+                app.discard_settings(window, cx);
+                assert_eq!(
+                    app.preferences_ui.draft.as_ref().unwrap().notifications,
+                    studyapp_core::NotificationSettings::default()
+                );
+                assert!(!app.settings_dirty(cx));
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn notification_resets_are_independent_of_styles_theme_learning_and_widget(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                draft.notifications.do_not_disturb = true;
+                draft.appearance.notifications.width = 420;
+                draft.timer_widget.opacity = 55;
+                app.interval.update(cx, |input, cx| {
+                    input.set_value("invalid learning", window, cx)
+                });
+                app.reset_settings_page(SettingsResetScope::Notifications, window, cx);
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                assert_eq!(
+                    draft.notifications,
+                    studyapp_core::NotificationSettings::default()
+                );
+                assert_eq!(draft.appearance.notifications.width, 420);
+                draft.notifications.do_not_disturb = true;
+                app.reset_settings_page(SettingsResetScope::NotificationAppearance, window, cx);
+                let draft = app.preferences_ui.draft.as_ref().unwrap();
+                assert!(draft.notifications.do_not_disturb);
+                assert_eq!(
+                    draft.appearance.notifications,
+                    studyapp_core::NotificationAppearance::default()
+                );
+                assert_eq!(draft.timer_widget.opacity, 55);
+                assert_eq!(app.interval.read(cx).value(), "invalid learning");
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn notification_appearance_preview_changes_never_create_an_event_or_mount_a_native_editor(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(1200.)));
+        visual.replace_root_view(|_, _| NotificationFixture {
+            app: app.clone(),
+            appearance: true,
+            color_only: false,
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click("notification-style-Banner", cx);
+            window.click("notification-position-TopLeft", cx);
+            window.click("notification-width-more", cx);
+            app.update(cx, |app, cx| {
+                let settings = app.preferences_ui.draft.as_ref().unwrap();
+                assert_eq!(
+                    settings.appearance.notifications.style,
+                    studyapp_core::NoticeStyle::Banner
+                );
+                assert_eq!(
+                    settings.appearance.notifications.position,
+                    studyapp_core::NoticePosition::TopLeft
+                );
+                assert_eq!(settings.appearance.notifications.width, 380);
+                settings.validate().unwrap();
+                assert!(!app.preferences_ui.appearance_touched);
+                assert_eq!(app.notifications.read(cx).visible_count(), 0);
+                assert!(
+                    app.preferences_ui
+                        .appearance_preview
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .editor()
+                        .is_none()
+                );
+                assert!(app.settings_dirty(cx));
+            });
+        });
+    }
+
+    #[gpui_kit::test]
+    fn notification_color_is_staged_applied_and_discardable_without_dirtying_theme(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.replace_root_view(|_, _| NotificationFixture {
+            app: app.clone(),
+            appearance: false,
+            color_only: true,
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click("color-open-notification-background", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click("color-swatch-notification-background-3", cx);
+        });
+        visual.run_until_parked();
+        app.read_with(visual, |app, cx| {
+            assert_eq!(
+                app.preferences_ui.appearance_colors["notification-background"]
+                    .read(cx)
+                    .preview_value(cx),
+                "#EF4444"
+            );
+            assert!(
+                app.preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .appearance
+                    .notifications
+                    .background
+                    .is_none()
+            );
+            assert!(!app.settings_dirty(cx));
+        });
+        visual.update(|window, cx| window.click("color-close-notification-background", cx));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(
+                    app.preferences_ui
+                        .draft
+                        .as_ref()
+                        .unwrap()
+                        .appearance
+                        .notifications
+                        .background
+                        .as_deref(),
+                    Some("#EF4444")
+                );
+                assert!(!app.preferences_ui.appearance_touched);
+                assert!(app.settings_dirty(cx));
+                app.discard_settings(window, cx);
+                assert!(
+                    app.preferences_ui
+                        .draft
+                        .as_ref()
+                        .unwrap()
+                        .appearance
+                        .notifications
+                        .background
+                        .is_none()
+                );
+                assert_eq!(
+                    app.preferences_ui.notification_fields["notification-background"]
+                        .read(cx)
+                        .value(),
+                    ""
+                );
+                assert!(!app.settings_dirty(cx));
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn desktop_delivery_reuses_the_queue_and_foreground_return_closes_only_the_passive_window(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        let active_before = visual.update(|window, _| window.is_window_active());
+        let event = studyapp_core::NoticeEvent::new(
+            studyapp_core::NoticeCategory::IntegrityResult,
+            studyapp_core::NoticeSeverity::Error,
+            "仅在应用内展示的检查详情",
+        );
+        let event_id = event.id;
+        let appearance = studyapp_core::NotificationAppearance {
+            reduce_motion: true,
+            ..Default::default()
+        };
+        app.update(visual, |app, cx| {
+            app.notifications.update(cx, |center, cx| {
+                center.configure(
+                    &Default::default(),
+                    &appearance,
+                    studyapp_core::NoticeEnvironment {
+                        foreground: false,
+                        desktop_available: true,
+                        anchor_available: false,
+                        minute: 720,
+                    },
+                    false,
+                    cx,
+                )
+            });
+            assert_eq!(app.emit_notification(event, cx), Some(event_id));
+        });
+        visual.run_until_parked();
+        let queue_id = app.read_with(visual, |app, cx| {
+            assert!(
+                app.notification_window.is_some(),
+                "passive desktop window did not open in the virtual platform"
+            );
+            let center = app.notifications.read(cx);
+            assert_eq!(center.visible_count(), 0);
+            let items = center.desktop_items();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].0.event.as_ref().unwrap().id, event_id);
+            items[0].0.id
+        });
+        assert_eq!(
+            visual.update(|window, _| window.is_window_active()),
+            active_before
+        );
+        app.update(visual, |app, cx| {
+            app.notifications.update(cx, |center, cx| {
+                center.configure(
+                    &Default::default(),
+                    &appearance,
+                    studyapp_core::NoticeEnvironment {
+                        foreground: true,
+                        desktop_available: true,
+                        anchor_available: false,
+                        minute: 720,
+                    },
+                    false,
+                    cx,
+                )
+            })
+        });
+        visual.run_until_parked();
+        app.read_with(visual, |app, cx| {
+            assert!(app.notification_window.is_none());
+            assert!(!app.notifications.read(cx).desktop_visible());
+            assert_eq!(app.notifications.read(cx).test_state()[0].0, queue_id);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn passive_desktop_window_does_not_retain_the_main_app_or_its_library_worker(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        app.update(visual, |app, cx| {
+            app.notifications.update(cx, |center, cx| {
+                center.configure(
+                    &Default::default(),
+                    &studyapp_core::NotificationAppearance {
+                        reduce_motion: true,
+                        ..Default::default()
+                    },
+                    studyapp_core::NoticeEnvironment {
+                        foreground: false,
+                        desktop_available: true,
+                        anchor_available: false,
+                        minute: 720,
+                    },
+                    false,
+                    cx,
+                )
+            });
+            app.emit_notification(
+                studyapp_core::NoticeEvent::new(
+                    studyapp_core::NoticeCategory::IntegrityResult,
+                    studyapp_core::NoticeSeverity::Error,
+                    "检查未完成",
+                ),
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        assert!(app.read_with(visual, |app, _| app.notification_window.is_some()));
+        let weak = app.downgrade();
+        drop(app);
+        struct Empty;
+        impl Render for Empty {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+            }
+        }
+        visual.replace_root_view(|_, _| Empty);
+        visual.run_until_parked();
+        assert!(
+            weak.upgrade().is_none(),
+            "desktop notification retained the app and its library lock"
+        );
+    }
+
     struct TimerModalFixture {
         app: Entity<StudyApp>,
     }
@@ -4477,6 +4881,43 @@ mod scoped_tests {
                     );
                     assert!(app.preferences_ui.error.is_none());
                 }
+            })
+        });
+    }
+    #[gpui_kit::test]
+    fn dismissing_settings_validation_never_discards_the_invalid_draft_or_clears_failure(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.notifications
+                    .update(cx, |center, _| center.freeze_time());
+                app.interval.update(cx, |input, cx| {
+                    input.set_value("not-an-integer", window, cx)
+                });
+                app.save_preferences(cx);
+                assert!(!app.preferences_ui.busy);
+                assert!(app.preferences_ui.error.is_some());
+                assert!(app.settings_dirty(cx));
+                let id = app.notifications.read(cx).test_state()[0].0;
+                app.notifications.update(cx, |center, cx| {
+                    center.dismiss(id, cx);
+                    center.advance_time(std::time::Duration::from_millis(250), cx);
+                    assert_eq!(center.visible_count(), 0);
+                });
+                assert!(app.preferences_ui.error.is_some());
+                assert!(app.settings_dirty(cx));
+                assert_eq!(app.interval.read(cx).value(), "not-an-integer");
+                assert!(
+                    app.preferences_ui
+                        .appearance_preview
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .editor()
+                        .is_none()
+                );
             })
         });
     }

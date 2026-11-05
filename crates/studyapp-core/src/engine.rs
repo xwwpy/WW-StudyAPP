@@ -338,7 +338,7 @@ impl Engine {
                 "笔记已重命名".into()
             }
             Command::SaveSettings(settings) => {
-                Self::save_settings(&mut next, settings)?;
+                Self::save_settings(&mut next, *settings)?;
                 "设置已保存".into()
             }
             Command::SaveLearningSettings {

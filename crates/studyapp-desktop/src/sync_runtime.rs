@@ -38,6 +38,7 @@ pub struct SyncStatus {
     pub busy: bool,
     /// Session-only outcome; presentation never infers failures from prose.
     pub failed: bool,
+    pub conflicts: usize,
     pub last_success: Option<i64>,
     pub message: String,
     pub credential_saved: bool,
@@ -268,6 +269,7 @@ impl SyncRuntime {
             settings,
             busy: false,
             failed: false,
+            conflicts: 0,
             last_success: data.last_success,
             message: "尚未同步；笔记和学习记录始终保存在本机".into(),
             credential_saved: !data.protected_password.is_empty(),
@@ -377,6 +379,7 @@ impl SyncRuntime {
             message,
             busy: false,
             failed,
+            conflicts: 0,
         };
         let credentials = CredentialPayload {
             target: data.settings.target.clone(),
@@ -492,6 +495,7 @@ impl SyncRuntime {
             settings,
             busy: false,
             failed: self.status.failed && !changed_target,
+            conflicts: 0,
             last_success: self.data.last_success,
             credential_saved: !self.data.protected_password.is_empty(),
             message: "同步设置已保存；可先测试连接，再开始同步".into(),
@@ -601,6 +605,7 @@ impl SyncRuntime {
         now: i64,
     ) -> Result<String> {
         self.status.busy = false;
+        self.status.conflicts = 0;
         let completion = match completion {
             Ok(completion) => completion,
             Err(error) => {
@@ -736,6 +741,7 @@ impl SyncRuntime {
             self.fail(error.to_string());
             return Err(error);
         }
+        self.status.conflicts = conflicts;
         self.status.failed = !errors.is_empty();
         self.status.last_success = self.data.last_success;
         self.status.message = format!(

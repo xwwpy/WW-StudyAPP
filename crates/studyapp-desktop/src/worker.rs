@@ -11,6 +11,8 @@ use studyapp_core::{Command, Engine, Snapshot};
 #[path = "startup_error.rs"]
 pub mod startup;
 use startup::{StartupFailure, StartupStage};
+#[path = "worker_notices.rs"]
+pub(crate) mod notices;
 
 // Test-only boundary lines correlate startup, receive deadlines and Drop joins.
 // Normal builds expand the original expressions without a probe or closure.
@@ -96,7 +98,7 @@ pub enum Work {
         work: Box<Work>,
     },
     Apply(Command),
-    SavePreferences(SavePreferences),
+    SavePreferences(Box<SavePreferences>),
     Media(crate::media::MediaRequest),
     TestImageCloud,
     RetryImageCloud,
@@ -138,6 +140,7 @@ pub struct Update {
     pub snapshot: Option<Arc<Snapshot>>,
     pub read_models: Option<Arc<studyapp_desktop::read_models::SnapshotReadModels>>,
     pub notice: Option<Result<String, String>>,
+    pub notifications: Vec<studyapp_core::NoticeEvent>,
     pub editor_result: bool,
     pub library_replaced: bool,
     pub library_result: Option<Result<(), String>>,
@@ -375,7 +378,7 @@ fn save_scoped_settings(
     let current = preferences.snapshot();
     let mut settings = current.settings;
     match command {
-        Command::SaveSettings(next) => settings = next,
+        Command::SaveSettings(next) => settings = *next,
         Command::SaveLearningSettings {
             interval_minutes,
             answer_minutes,
@@ -547,6 +550,11 @@ impl Worker {
                     startup_failure: None,
                     snapshot: Some(snapshot),
                     read_models: Some(read_models),
+                    notifications: startup_notice
+                        .as_ref()
+                        .map(|outcome| notices::Context::Recovery.event(outcome))
+                        .into_iter()
+                        .collect(),
                     notice: startup_notice,
                     editor_result: false,
                     library_replaced: recovery_requested,
@@ -628,6 +636,18 @@ impl Worker {
                                 startup_failure: None,
                                 snapshot: Some(snapshot),
                                 read_models: Some(read_models),
+                                notifications: if media_result.is_none() {
+                                    let mut event = notices::Context::for_work(&work)
+                                        .event(&Err(error.clone()));
+                                    event.summary = error.clone(); // Fixed stale-library guidance, not a backend error.
+                                    notices::set_work_key(
+                                        &mut event,
+                                        &format!("stale-{}", notices::work_key(&work, generation)),
+                                    );
+                                    vec![event]
+                                } else {
+                                    vec![]
+                                },
                                 notice: Some(Err(error)),
                                 editor_result,
                                 library_replaced: false,
@@ -646,6 +666,15 @@ impl Worker {
                     }
                     other => other,
                 };
+                let notice_key = work
+                    .as_ref()
+                    .ok()
+                    .map(|work| notices::work_key(work, generation));
+                let mut notice_context = work
+                    .as_ref()
+                    .map(notices::Context::for_work)
+                    .unwrap_or(notices::Context::Save);
+                let mut notifications = Vec::new();
                 let now = chrono::Utc::now().timestamp();
                 let mut notice = None;
                 let mut changed = false;
@@ -679,6 +708,7 @@ impl Worker {
                                 snapshot: None,
                                 read_models: None,
                                 notice: None,
+                                notifications: vec![],
                                 editor_result: false,
                                 library_replaced: false,
                                 library_result: None,
@@ -840,7 +870,7 @@ impl Worker {
                     }
                     Ok(Work::SavePreferences(request)) => {
                         let result = preferences
-                            .save(request, &mut engine, &mut synchronization)
+                            .save(*request, &mut engine, &mut synchronization)
                             .map_err(|error| format!("{error:#}"));
                         notice = Some(result.clone().map(|()| "全部设置已保存".into()));
                         preferences_result = Some(result);
@@ -906,6 +936,23 @@ impl Worker {
                             if let Err(error) = &result {
                                 synchronization.fail(error.clone());
                             }
+                            let outcome = if synchronization.status.failed {
+                                Err(String::new())
+                            } else {
+                                result.clone()
+                            };
+                            notice_context = if synchronization.status.conflicts > 0
+                                && !synchronization.status.failed
+                            {
+                                notices::Context::SyncConflict
+                            } else {
+                                notices::Context::Sync
+                            };
+                            let mut event = notice_context.event(&outcome);
+                            if let Some(key) = &notice_key {
+                                notices::set_work_key(&mut event, key);
+                            }
+                            notifications.push(event);
                             notice = Some(result);
                             sync_changed = true;
                             changed = true;
@@ -1115,6 +1162,30 @@ impl Worker {
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
+                if notifications.is_empty() {
+                    if let Some(outcome) = &notice {
+                        let mut event = notice_context.event(outcome);
+                        if let Some(key) = &notice_key {
+                            notices::set_work_key(&mut event, key);
+                        }
+                        notifications.push(event);
+                    } else if let Some(event) = &storage_event {
+                        let error = match event {
+                            StorageEvent::Finished(result) | StorageEvent::PurgeDone(result) => {
+                                result.as_ref().err()
+                            }
+                            StorageEvent::PurgePreview(result) => result.as_ref().err(),
+                            _ => None,
+                        };
+                        if let Some(error) = error {
+                            let mut event = notice_context.event(&Err(error.clone()));
+                            if let Some(key) = &notice_key {
+                                notices::set_work_key(&mut event, key);
+                            }
+                            notifications.push(event);
+                        }
+                    }
+                }
                 if !synchronization.status.busy
                     && synchronization
                         .status
@@ -1137,6 +1208,7 @@ impl Worker {
                         false,
                     ) {
                         synchronization.fail(error.to_string());
+                        notifications.push(notices::Context::Sync.event(&Err(String::new())));
                     }
                     last_sync_attempt = Instant::now();
                     sync_changed = true;
@@ -1147,6 +1219,7 @@ impl Worker {
                 if last_scan.elapsed() >= Duration::from_secs(3) {
                     if let Err(e) = engine.apply(Command::Scan { offline: false }, now) {
                         notice = Some(Err(format!("笔记扫描失败：{e:#}")));
+                        notifications.push(notices::Context::Operation.event(&Err(String::new())));
                     }
                     last_scan = Instant::now();
                     changed = true;
@@ -1155,6 +1228,7 @@ impl Worker {
                 if elapsed >= 1 {
                     if let Err(e) = engine.tick(now, elapsed) {
                         notice = Some(Err(format!("计时保存失败：{e:#}")));
+                        notifications.push(notices::Context::Save.event(&Err(String::new())));
                     }
                     last_tick += Duration::from_secs(elapsed);
                     changed = true;
@@ -1162,6 +1236,8 @@ impl Worker {
                 if last_checkpoint.elapsed() >= Duration::from_secs(5) {
                     if let Err(e) = engine.checkpoint() {
                         notice = Some(Err(format!("资料保存失败：{e:#}")));
+                        notifications.push(notices::Context::Save.event(&Err(String::new())));
+                        changed = true;
                     }
                     last_checkpoint = Instant::now();
                 }
@@ -1178,6 +1254,7 @@ impl Worker {
                             snapshot: Some(snapshot),
                             read_models: Some(read_models),
                             notice,
+                            notifications,
                             editor_result,
                             library_replaced,
                             library_result,
@@ -1511,14 +1588,14 @@ mod tests {
             .sender
             .send(Work::Scoped {
                 library: library.clone(),
-                work: Box::new(Work::SavePreferences(SavePreferences {
+                work: Box::new(Work::SavePreferences(Box::new(SavePreferences {
                     expected_revision: original.revision.clone(),
                     settings,
                     shortcuts: original.shortcuts.clone(),
                     sync: original.sync.clone(),
                     password: None,
                     image_secret: Default::default(),
-                })),
+                }))),
             })
             .unwrap();
         let saved = receive_notice(&worker);
@@ -1534,14 +1611,14 @@ mod tests {
         assert_eq!(patched.shortcuts, committed.shortcuts);
         worker
             .sender
-            .send(Work::SavePreferences(SavePreferences {
+            .send(Work::SavePreferences(Box::new(SavePreferences {
                 expected_revision: original.revision,
                 settings: original.settings,
                 shortcuts: original.shortcuts,
                 sync: original.sync,
                 password: None,
                 image_secret: Default::default(),
-            }))
+            })))
             .unwrap();
         let rejected = receive_notice(&worker);
         assert!(rejected.preferences_result.unwrap().is_err());
@@ -1876,7 +1953,7 @@ mod tests {
         });
         worker
             .sender
-            .send(Work::SavePreferences(SavePreferences {
+            .send(Work::SavePreferences(Box::new(SavePreferences {
                 expected_revision: current.revision,
                 settings: current.settings,
                 shortcuts: current.shortcuts,
@@ -1889,7 +1966,7 @@ mod tests {
                 },
                 password: Some(zeroize::Zeroizing::new("fixture".into())),
                 image_secret: Default::default(),
-            }))
+            })))
             .unwrap();
         receive_notice(worker).notice.unwrap().unwrap();
         worker
@@ -2104,7 +2181,7 @@ mod tests {
             interval_minutes: 5,
             ..Default::default()
         };
-        let updated = apply(&worker, Command::SaveSettings(settings));
+        let updated = apply(&worker, Command::SaveSettings(Box::new(settings)));
         assert!(updated.notice.unwrap().is_ok());
         assert!(!updated.library_replaced);
         let now = chrono::Utc::now().timestamp();
@@ -2127,10 +2204,10 @@ mod tests {
         assert!(!backed_up.library_replaced);
         let updated = apply(
             &worker,
-            Command::SaveSettings(studyapp_core::Settings {
+            Command::SaveSettings(Box::new(studyapp_core::Settings {
                 interval_minutes: 10,
                 ..Default::default()
-            }),
+            })),
         );
         assert!(updated.notice.unwrap().is_ok());
         assert!(!updated.library_replaced);
@@ -2256,5 +2333,56 @@ mod tests {
         assert!(result.snapshot.is_none());
         assert!(!result.library_replaced);
         assert!(result.notice.unwrap().unwrap_err().contains("另一个"));
+    }
+    #[test]
+    fn real_worker_classifies_save_import_export_and_failed_migration_without_raw_errors() {
+        use studyapp_core::{NoticeCategory as Category, NoticeSeverity as Severity};
+        let root = tempfile::tempdir().unwrap().keep();
+        let worker = Worker::start(root.join("library/study.sqlite3"), None);
+        let initial = initial_update(&worker);
+        assert!(initial.snapshot.is_some());
+        let created = apply(
+            &worker,
+            Command::CreateNote {
+                title: "notice test".into(),
+                content: "private-body".into(),
+            },
+        );
+        let event = created.notifications.first().unwrap();
+        assert_eq!(event.category, Category::SaveSuccess);
+        assert_eq!(event.severity, Severity::Success);
+        let original_id = event.id;
+        let source = root.join("import.md");
+        std::fs::write(&source, "# imported").unwrap();
+        let imported = apply(&worker, Command::Import(vec![source]));
+        assert_eq!(imported.notifications[0].category, Category::ImportResult);
+        assert_ne!(imported.notifications[0].id, original_id);
+        let blocked = root.join("private-blocked-path");
+        std::fs::write(&blocked, "unchanged marker").unwrap();
+        let exported = apply(&worker, Command::Backup(blocked.join("backup.sqlite3")));
+        assert!(exported.notice.unwrap().is_err());
+        let event = &exported.notifications[0];
+        assert_eq!(event.category, Category::ExportResult);
+        assert_eq!(event.severity, Severity::Error);
+        assert!(!event.summary.contains("private-blocked-path"));
+        worker
+            .sender
+            .send(Work::MigrateLibrary(blocked.clone()))
+            .unwrap();
+        let failed = receive_notice(&worker);
+        assert!(matches!(
+            failed.storage_event,
+            Some(StorageEvent::Finished(Err(_)))
+        ));
+        let event = &failed.notifications[0];
+        assert_eq!(event.category, Category::MigrationResult);
+        assert_eq!(event.severity, Severity::Error);
+        assert!(!event.summary.contains("private-blocked-path"));
+        event.validate().unwrap();
+        assert_eq!(failed.snapshot.unwrap().notes.len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(blocked).unwrap(),
+            "unchanged marker"
+        );
     }
 }

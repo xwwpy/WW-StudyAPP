@@ -14,11 +14,12 @@ use std::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub enum SyncEvent {
-    Feedback(Result<String, String>),
+    Notification(studyapp_core::NoticeEvent),
 }
 
 pub struct SyncPanel {
     sender: mpsc::Sender<Work>,
+    pub(crate) notification_center: Option<Entity<crate::notifications::NotificationCenter>>,
     pub status: SyncStatus,
     pub editing_locked: bool,
     pub target: usize,
@@ -36,6 +37,17 @@ pub struct SyncPanel {
 impl EventEmitter<SyncEvent> for SyncPanel {}
 
 impl SyncPanel {
+    fn announce_error(&self, summary: &'static str, cx: &mut Context<Self>) {
+        let mut event = studyapp_core::NoticeEvent::new(
+            studyapp_core::NoticeCategory::SyncFailure,
+            studyapp_core::NoticeSeverity::Error,
+            summary,
+        );
+        event.action = Some(studyapp_core::NoticeAction::OpenSync);
+        event.dedupe_key = Some("sync-panel-error".into());
+        event.anchor = Some("sync-start".into());
+        cx.emit(SyncEvent::Notification(event));
+    }
     fn invalidate_folder_picker(&mut self) {
         self.folder_picker.invalidate();
     }
@@ -86,6 +98,7 @@ impl SyncPanel {
         password.update(cx, |s, cx| s.set_masked(true, window, cx));
         let panel = Self {
             sender,
+            notification_center: None,
             status: SyncStatus::default(),
             editing_locked: false,
             target: 0,
@@ -130,7 +143,7 @@ impl SyncPanel {
         // Loading has no worker result notice; surface its warning once for
         // this library. Routine status polls must not recreate a dismissed toast.
         if opening_library && status.failed {
-            cx.emit(SyncEvent::Feedback(Err(status.message.clone())));
+            self.announce_error("同步配置无法读取，请重新配置；原配置文件保留。", cx);
         }
         if opening_library || status.settings != self.status.settings {
             self.invalidate_folder_picker();
@@ -247,14 +260,12 @@ impl SyncPanel {
         cx.notify();
     }
 
-    fn start(&mut self, test_only: bool, cx: &mut Context<Self>) {
+    pub(crate) fn start(&mut self, test_only: bool, cx: &mut Context<Self>) {
         if self.editing_locked || self.status.busy {
             return;
         }
         if self.has_unsaved_changes(cx) {
-            cx.emit(SyncEvent::Feedback(Err(
-                "同步设置有未保存的修改，请先保存。".into(),
-            )));
+            self.announce_error("同步设置有未保存的修改，请先保存。", cx);
             cx.notify();
             return;
         }
@@ -266,7 +277,7 @@ impl SyncPanel {
             })
             .is_err()
         {
-            cx.emit(SyncEvent::Feedback(Err("后台服务已停止".into())));
+            self.announce_error("同步后台服务已停止，请重新打开应用。", cx);
         }
         cx.notify();
     }
@@ -355,6 +366,26 @@ impl Render for SyncPanel {
                     "建议使用服务商提供的应用密码；凭据不进入学习数据库或备份。"
                 }));
         }
+        let sync_now = Button::new("sync-now")
+            .label(if busy {
+                "正在同步…"
+            } else {
+                "立即同步"
+            })
+            .disabled(
+                busy || unsaved || matches!(self.status.settings.target, SyncTarget::Disabled),
+            )
+            .on_click(cx.listener(|this, _, _, cx| this.start(false, cx)));
+        let sync_now = if let Some(center) = &self.notification_center {
+            studyapp_ui::notification_anchor::NotificationAnchor::new(
+                "sync-start",
+                center.clone(),
+                sync_now,
+            )
+            .into_any_element()
+        } else {
+            sync_now.into_any_element()
+        };
         panel.child(row().child(Checkbox::new("auto-sync").label("自动同步").checked(self.automatic).disabled(busy)
             .on_click(cx.listener(|this, checked, _, cx| {
                 if this.editing_locked || this.status.busy { return; }
@@ -362,7 +393,7 @@ impl Render for SyncPanel {
             })))
             .child(form::input(&self.interval, busy || !self.automatic).w(px(150.))).child(muted("分钟")))
             .child(row().child(Button::new("test-sync").label("测试连接").disabled(busy || unsaved || matches!(self.status.settings.target, SyncTarget::Disabled)).on_click(cx.listener(|this, _, _, cx| this.start(true, cx))))
-                .child(Button::new("sync-now").label(if busy { "正在同步…" } else { "立即同步" }).disabled(busy || unsaved || matches!(self.status.settings.target, SyncTarget::Disabled)).on_click(cx.listener(|this, _, _, cx| this.start(false, cx)))))
+                .child(sync_now))
             .child(muted(if unsaved { "同步设置有未保存的修改，请先保存。" } else { "使用已保存的同步设置" }))
             .child(muted(if busy { "正在处理同步任务…" }
                 else if matches!(self.status.settings.target, SyncTarget::Disabled) { "同步已关闭" }
@@ -395,7 +426,7 @@ mod feedback_tests {
         panel.update(cx, |panel, cx| panel.start(false, cx));
         cx.run_until_parked();
         assert!(
-            matches!(feedback.borrow().as_slice(), [SyncEvent::Feedback(Err(error))] if error == "后台服务已停止")
+            matches!(feedback.borrow().as_slice(), [SyncEvent::Notification(event)] if event.category == studyapp_core::NoticeCategory::SyncFailure && event.summary.contains("后台服务已停止"))
         );
         cx.update(|window, cx| panel.update(cx, |panel, cx| panel.poll(window, cx)));
         cx.run_until_parked();
@@ -430,7 +461,7 @@ mod feedback_tests {
             cx.run_until_parked();
         }
         assert!(
-            matches!(feedback.borrow().as_slice(), [SyncEvent::Feedback(Err(error))] if error.contains("同步配置无法读取"))
+            matches!(feedback.borrow().as_slice(), [SyncEvent::Notification(event)] if event.category == studyapp_core::NoticeCategory::SyncFailure && event.summary.contains("同步配置无法读取"))
         );
         drop(subscription);
     }

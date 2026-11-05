@@ -1020,7 +1020,10 @@ mod tests {
         let mut settings = engine.snapshot().settings;
         settings.interval_minutes = 25;
         engine
-            .apply(studyapp_core::Command::SaveSettings(settings), 1000)
+            .apply(
+                studyapp_core::Command::SaveSettings(Box::new(settings)),
+                1000,
+            )
             .unwrap();
         let original = data.join("original.md");
         std::fs::write(&original, b"original content").unwrap();

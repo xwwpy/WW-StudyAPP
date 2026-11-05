@@ -16,15 +16,65 @@ impl StudyApp {
             && !self.draft_loading
             && let Some(message) = self.pending_update_notice.take()
         {
-            self.push_notice(Err(update_recovery_message(&message).into()), cx);
+            let mut event = studyapp_core::NoticeEvent::new(
+                studyapp_core::NoticeCategory::StartupRecovery,
+                studyapp_core::NoticeSeverity::Warning,
+                update_recovery_message(&message),
+            );
+            event.action = Some(studyapp_core::NoticeAction::OpenUpdate);
+            event.dedupe_key = Some("startup-update-recovery".into());
+            self.emit_notification(event, cx);
         }
     }
+    fn push_context_notice(
+        &mut self,
+        context: crate::worker::notices::Context,
+        message: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.emit_notification(context.event(&message), cx);
+        // Diagnostic state only. Never render/log the raw error as a notification.
+        self.notice = Some(message);
+    }
     pub fn push_notice(&mut self, message: Result<String, String>, cx: &mut Context<Self>) {
-        // Retain the latest outcome for diagnostic assertions; event delivery
-        // goes to the queue, never through text equality or render timing.
-        self.notice = Some(message.clone());
-        self.notifications
-            .update(cx, |center, cx| center.push(message, cx));
+        self.push_context_notice(crate::worker::notices::Context::Operation, message, cx);
+    }
+    pub(crate) fn push_save_notice(
+        &mut self,
+        message: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_context_notice(crate::worker::notices::Context::Save, message, cx);
+    }
+    pub(crate) fn push_image_notice(
+        &mut self,
+        message: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_context_notice(crate::worker::notices::Context::Image, message, cx);
+    }
+    pub(crate) fn push_preferences_notice(
+        &mut self,
+        message: Result<String, String>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut event = crate::worker::notices::Context::Save.event(&message);
+        event.action = Some(studyapp_core::NoticeAction::OpenPreferences);
+        event.anchor = Some("settings-save".into());
+        event.dedupe_key = Some("preferences-save-outcome".into());
+        self.emit_notification(event, cx);
+        self.notice = Some(message);
+    }
+    /// Caller supplies a validation message, not an I/O/network error chain.
+    pub(crate) fn settings_validation_notice(&mut self, summary: String, cx: &mut Context<Self>) {
+        let mut event = studyapp_core::NoticeEvent::new(
+            studyapp_core::NoticeCategory::SaveFailure,
+            studyapp_core::NoticeSeverity::Error,
+            summary,
+        );
+        event.dedupe_key = Some("settings-validation".into());
+        event.anchor = Some("settings-save".into());
+        self.emit_notification(event, cx);
     }
 
     #[cfg(feature = "ui-test")]

@@ -574,7 +574,7 @@ fn synced_content_is_excluded_from_active_learning_and_history_exports_are_exact
     let (dir, mut engine) = fixture();
     engine
         .apply(
-            Command::SaveSettings(studyapp_core::Settings {
+            Command::SaveSettings(Box::new(studyapp_core::Settings {
                 interval_minutes: 5,
                 answer_minutes: 1,
                 review_days: vec![1],
@@ -583,7 +583,8 @@ fn synced_content_is_excluded_from_active_learning_and_history_exports_are_exact
                 appearance: Default::default(),
                 images: Default::default(),
                 timer_widget: Default::default(),
-            }),
+                notifications: Default::default(),
+            })),
             1000,
         )
         .unwrap();
@@ -754,7 +755,7 @@ fn synced_copy_keeps_its_title_is_offline_and_never_overwrites() {
     );
     engine
         .apply(
-            Command::SaveSettings(studyapp_core::Settings {
+            Command::SaveSettings(Box::new(studyapp_core::Settings {
                 interval_minutes: 5,
                 answer_minutes: 1,
                 review_days: vec![1],
@@ -763,7 +764,8 @@ fn synced_copy_keeps_its_title_is_offline_and_never_overwrites() {
                 appearance: Default::default(),
                 images: Default::default(),
                 timer_widget: Default::default(),
-            }),
+                notifications: Default::default(),
+            })),
             1002,
         )
         .unwrap();

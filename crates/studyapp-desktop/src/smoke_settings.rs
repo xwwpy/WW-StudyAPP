@@ -1323,8 +1323,12 @@ pub async fn exercise(
         )
         .await;
     }
+    Box::pin(crate::smoke_notifications::exercise(
+        window, view, database, cx,
+    ))
+    .await;
     std::fs::write(database.with_file_name("settings-capture-smoke-result.txt"),
-        "PASS: all six categories preserve one draft and byte-identical settings files; fixed save bar remains visible; wide category rail and settled 1024px compact navigation have bounded form content; inline recording stays inside its binding cell; 20 unchanged frames reuse one analysis and one captured edit rebuilds once; platform Ctrl+S and Ctrl+N record without dispatch; both conflicting rows displayed in screenshot; strict save rejects; F8 appends, Escape cancels, clear unbinds, focus loss disarms and normal input resumes; reset remains draft until save, discard restores baseline; light/dark theme persistence, native/editor token coherence and full native screenshots, original appearance restored. Key events use native-window GPUI test dispatch; separate strict Win32 input gates remain required.\n").unwrap();
+        "PASS: all seven categories preserve one draft and byte-identical settings files; fixed save bar remains visible; wide category rail and settled 1024px compact navigation have bounded form content; inline recording stays inside its binding cell; 20 unchanged frames reuse one analysis and one captured edit rebuilds once; platform Ctrl+S and Ctrl+N record without dispatch; both conflicting rows displayed in screenshot; strict save rejects; F8 appends, Escape cancels, clear unbinds, focus loss disarms and normal input resumes; reset remains draft until save, discard restores baseline; light/dark theme persistence, native/editor token coherence and full native screenshots, original appearance restored. Key events use native-window GPUI test dispatch; separate strict Win32 input gates remain required.\n").unwrap();
 }
 
 /// A real readonly native Markdown surface, independent from the user's note.

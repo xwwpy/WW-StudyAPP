@@ -26,8 +26,9 @@ pub fn schedule_startup(panel: Entity<UpdatePanel>, cx: &mut App) {
 pub enum UpdateEvent {
     InstallRequested,
     AvailabilityChanged,
-    ReadStateFailed(String),
+    ReadStateFailed,
     NsisReady,
+    Notification(studyapp_core::NoticeEvent),
 }
 
 enum UpdateReply {
@@ -64,6 +65,7 @@ pub struct UpdatePanel {
     previous: Option<UpdateStatus>,
     repair_needed: bool,
     dialog: Option<String>,
+    badge_enabled: bool,
     read_state: crate::update_read_state::UpdateReadState,
     read_state_path: Option<PathBuf>,
     progress: Option<UpdateProgress>,
@@ -109,9 +111,19 @@ impl UpdatePanel {
             .or(self.nsis_version.as_deref())
     }
 
+    pub fn set_badge_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.badge_enabled != enabled {
+            self.badge_enabled = enabled;
+            cx.emit(UpdateEvent::AvailabilityChanged);
+            cx.notify();
+        }
+    }
+
     pub fn unread_update(&self) -> bool {
-        self.available_version()
-            .is_some_and(|version| self.read_state.unread(version))
+        self.badge_enabled
+            && self
+                .available_version()
+                .is_some_and(|version| self.read_state.unread(version))
     }
 
     fn release_sections(&self) -> Vec<studyapp_ui::release_notes::ReleaseNotesSection> {
@@ -222,6 +234,7 @@ impl UpdatePanel {
             previous: None,
             repair_needed: false,
             dialog: None,
+            badge_enabled: true,
             read_state,
             read_state_path,
             progress: None,
@@ -255,8 +268,10 @@ impl UpdatePanel {
     pub fn dialog_content(&self) -> Option<studyapp_ui::update_dialog::UpdateDialogContent> {
         self.dialog.as_ref()?;
         if let Some(manifest) = &self.nsis {
-            let phase = if let Some(error) = self.nsis_error.clone() {
-                UpdateDialogPhase::Failed(error.into())
+            let phase = if self.nsis_error.is_some() {
+                UpdateDialogPhase::Failed(
+                    "更新未完成，当前资料保留。请重试或从官方发布页面手动安装。".into(),
+                )
             } else if let Some((downloaded, total)) = self.nsis_progress {
                 UpdateDialogPhase::Downloading { downloaded, total }
             } else if self.busy {
@@ -278,8 +293,10 @@ impl UpdatePanel {
         let release = self.release.as_ref()?;
         self.dialog.as_ref()?;
         use studyapp_ui::update_dialog::{UpdateDialogContent, UpdateDialogPhase};
-        let phase = if let Some(error) = self.error.clone() {
-            UpdateDialogPhase::Failed(error.into())
+        let phase = if self.error.is_some() {
+            UpdateDialogPhase::Failed(
+                "更新未完成，当前资料保留。请重试或从官方发布页面手动安装。".into(),
+            )
         } else if let Some(progress) = &self.progress {
             match progress {
                 UpdateProgress::Downloading { downloaded, total } => {
@@ -316,11 +333,9 @@ impl UpdatePanel {
         self.dialog = Some(version.clone());
         self.read_state.mark_read(&version);
         if let Some(path) = &self.read_state_path
-            && let Err(error) = self.read_state.save(path)
+            && self.read_state.save(path).is_err()
         {
-            cx.emit(UpdateEvent::ReadStateFailed(format!(
-                "更新阅读状态未保存：{error:#}"
-            )));
+            cx.emit(UpdateEvent::ReadStateFailed);
         }
         cx.emit(UpdateEvent::AvailabilityChanged);
         cx.notify();
@@ -467,7 +482,18 @@ impl UpdatePanel {
         self.status = "更新安装未完成，可重试；原有资料保留。".into();
         self.nsis_error = Some(message.clone());
         self.error = Some(message);
+        self.announce(
+            studyapp_core::NoticeCategory::UpdateInstallFailure,
+            studyapp_core::NoticeSeverity::Error,
+            "更新安装未完成，原有资料保留。可重试或从官方发布页面手动安装。",
+            studyapp_core::NoticeAction::OpenUpdate,
+            cx,
+        );
         cx.notify();
+    }
+
+    pub(crate) fn retry_from_notice(&mut self, cx: &mut Context<Self>) {
+        self.check(CheckOrigin::Manual, cx);
     }
 
     fn check(&mut self, origin: CheckOrigin, cx: &mut Context<Self>) {
@@ -545,6 +571,34 @@ impl UpdatePanel {
         cx.notify();
     }
 
+    fn announce(
+        &self,
+        category: studyapp_core::NoticeCategory,
+        severity: studyapp_core::NoticeSeverity,
+        summary: impl Into<String>,
+        action: studyapp_core::NoticeAction,
+        cx: &mut Context<Self>,
+    ) {
+        let mut event = studyapp_core::NoticeEvent::new(category, severity, summary);
+        event.dedupe_key = Some(format!("update-{category:?}"));
+        event.action = Some(action);
+        cx.emit(UpdateEvent::Notification(event));
+    }
+    fn announce_offer(&self, previous: Option<&str>, cx: &mut Context<Self>) {
+        if let Some(version) = self.available_version()
+            && previous != Some(version)
+            && self.read_state.unread(version)
+        {
+            let mut event = studyapp_core::NoticeEvent::new(
+                studyapp_core::NoticeCategory::UpdateAvailable,
+                studyapp_core::NoticeSeverity::Information,
+                format!("发现新版本 {version}，可查看更新内容。"),
+            );
+            event.dedupe_key = Some(format!("update-offer-{version}"));
+            event.action = Some(studyapp_core::NoticeAction::OpenUpdate);
+            cx.emit(UpdateEvent::Notification(event));
+        }
+    }
     fn poll(&mut self, cx: &mut Context<Self>) {
         if self.checks_allowed()
             && self
@@ -555,10 +609,27 @@ impl UpdatePanel {
         }
         let mut changed = false;
         while let Ok(reply) = self.receiver.try_recv() {
+            let previous_offer = self.available_version().map(str::to_owned);
             changed = true;
             match reply {
                 UpdateReply::Checked(origin, result) => {
+                    let failure = if origin == CheckOrigin::Manual {
+                        result.as_ref().err().map(ToString::to_string)
+                    } else {
+                        None
+                    };
                     self.finish_check(origin, result);
+                    if let Some(message) = failure {
+                        self.announce(
+                            studyapp_core::NoticeCategory::UpdateCheckFailure,
+                            studyapp_core::NoticeSeverity::Error,
+                            message,
+                            studyapp_core::NoticeAction::RetryUpdate,
+                            cx,
+                        );
+                    } else {
+                        self.announce_offer(previous_offer.as_deref(), cx);
+                    }
                     cx.emit(UpdateEvent::AvailabilityChanged);
                 }
                 UpdateReply::Progress(progress) => {
@@ -566,7 +637,23 @@ impl UpdatePanel {
                     self.progress = Some(progress);
                 }
                 UpdateReply::NsisChecked(origin, result) => {
+                    let failure = if origin == CheckOrigin::Manual {
+                        result.as_ref().err().map(ToString::to_string)
+                    } else {
+                        None
+                    };
                     self.finish_nsis_check(origin, result);
+                    if let Some(message) = failure {
+                        self.announce(
+                            studyapp_core::NoticeCategory::UpdateCheckFailure,
+                            studyapp_core::NoticeSeverity::Error,
+                            message,
+                            studyapp_core::NoticeAction::RetryUpdate,
+                            cx,
+                        );
+                    } else {
+                        self.announce_offer(previous_offer.as_deref(), cx);
+                    }
                     cx.emit(UpdateEvent::AvailabilityChanged);
                 }
                 UpdateReply::NsisProgress(downloaded, total) => {
@@ -583,12 +670,27 @@ impl UpdatePanel {
                     match *result {
                         Ok(path) => {
                             self.nsis_setup = Some(path);
+                            self.announce(
+                                studyapp_core::NoticeCategory::UpdateReady,
+                                studyapp_core::NoticeSeverity::Success,
+                                "更新已下载并通过签名校验。",
+                                studyapp_core::NoticeAction::OpenUpdate,
+                                cx,
+                            );
                             self.status = "已下载并校验签名，正在启动安装程序…".into();
                             cx.emit(UpdateEvent::NsisReady);
                         }
                         Err(error) => {
+                            self.status = "更新下载未完成，可稍后重试。".into();
                             self.nsis_error = Some(error.clone());
                             self.error = Some(error);
+                            self.announce(
+                                studyapp_core::NoticeCategory::UpdateDownloadFailure,
+                                studyapp_core::NoticeSeverity::Error,
+                                "更新下载或校验未完成；当前程序和资料未更改。请重试。",
+                                studyapp_core::NoticeAction::RetryUpdate,
+                                cx,
+                            );
                         }
                     }
                 }
@@ -619,10 +721,32 @@ impl UpdatePanel {
                                 format!("{} 已下载并校验，可以重启安装", prepared.version);
                             self.prepared = Some((library, prepared));
                             self.progress = None;
+                            self.announce(
+                                studyapp_core::NoticeCategory::UpdateReady,
+                                studyapp_core::NoticeSeverity::Success,
+                                "更新已下载并校验，可以重启安装。",
+                                studyapp_core::NoticeAction::OpenUpdate,
+                                cx,
+                            );
                         }
                         Ok(_) => self.status = "资料库已切换，请重新准备更新。".into(),
                         Err(error) => {
                             self.progress = None;
+                            let category = if matches!(
+                                error.kind,
+                                UpdateErrorKind::Network | UpdateErrorKind::RateLimited
+                            ) {
+                                studyapp_core::NoticeCategory::UpdateDownloadFailure
+                            } else {
+                                studyapp_core::NoticeCategory::UpdateInstallFailure
+                            };
+                            self.announce(
+                                category,
+                                studyapp_core::NoticeSeverity::Error,
+                                error.to_string(),
+                                studyapp_core::NoticeAction::RetryUpdate,
+                                cx,
+                            );
                             self.show_error(error);
                         }
                     }
@@ -731,9 +855,12 @@ impl UpdatePanel {
         if matches!(error.kind, UpdateErrorKind::RepairRequired) {
             self.repair_needed = true;
         }
-        if matches!(error.kind, UpdateErrorKind::ManualUpdate) {
-            self.status = "请使用手动更新".into();
+        self.status = if matches!(error.kind, UpdateErrorKind::ManualUpdate) {
+            "请使用手动更新"
+        } else {
+            "本次更新未完成，可稍后重试。"
         }
+        .into();
         self.error = Some(error.to_string());
     }
 
@@ -854,7 +981,7 @@ impl Render for UpdatePanel {
                 else { this.check(CheckOrigin::Manual, cx); }
             })))
             .child(div().child(self.status.clone()))
-            .children(self.error.as_ref().map(|error| div().text_color(crate::theme::color(0xB45142)).child(error.clone())))
+
             .child(row().flex_wrap()
                 .child(Button::new("check-for-updates").label("检查更新").disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.check(CheckOrigin::Manual, cx))))
@@ -924,7 +1051,6 @@ impl crate::app::StudyApp {
             self.clear_pending_updates();
             self.update_panel
                 .update(cx, |panel, cx| panel.install_failed(error.to_string(), cx));
-            self.push_notice(Err(error.to_string()), cx);
             return;
         }
         if let Some(setup) = self.pending_nsis_update.take()
@@ -934,7 +1060,6 @@ impl crate::app::StudyApp {
             self.clear_pending_updates();
             self.update_panel
                 .update(cx, |panel, cx| panel.install_failed(error.to_string(), cx));
-            self.push_notice(Err(error.to_string()), cx);
             return;
         }
         // GPUI drops its platform window before its view entities. Tear down
@@ -950,6 +1075,7 @@ impl crate::app::StudyApp {
         if self.timer_widget.is_some() {
             self.close_widget(true, cx);
         }
+        self.close_notification_desktop(cx);
         self.close_allowed = true;
         window.remove_window();
     }
@@ -1048,7 +1174,7 @@ mod tests {
         ));
     }
 
-    fn panel() -> UpdatePanel {
+    pub(super) fn panel() -> UpdatePanel {
         let (sender, receiver) = mpsc::channel();
         UpdatePanel {
             library: String::new(),
@@ -1062,6 +1188,7 @@ mod tests {
             previous: None,
             repair_needed: false,
             dialog: None,
+            badge_enabled: true,
             read_state: Default::default(),
             read_state_path: None,
             progress: None,
@@ -1228,6 +1355,14 @@ mod tests {
         panel.finish_nsis_check(CheckOrigin::Manual, Ok(Some(manifest.clone())));
         assert!(!panel.dialog_visible());
         assert!(panel.unread_update());
+        panel.badge_enabled = false;
+        assert!(!panel.unread_update());
+        assert!(
+            panel.read_state.unread("0.9.0"),
+            "hiding a badge must not mark a release as read"
+        );
+        panel.badge_enabled = true;
+        assert!(panel.unread_update());
         panel.read_state.mark_read("0.9.0");
         assert!(!panel.unread_update());
         assert_eq!(panel.available_version(), Some("0.9.0"));
@@ -1373,3 +1508,7 @@ mod modal_visibility_tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "ui-test"))]
+#[path = "notification_update_tests.rs"]
+mod notification_tests;

@@ -50,6 +50,8 @@ pub struct Settings {
     pub images: crate::media_settings::ImageSettings,
     #[serde(default)]
     pub timer_widget: Box<crate::TimerWidgetSettings>,
+    #[serde(default)]
+    pub notifications: crate::NotificationSettings,
 }
 /// Validated configuration, ready to install without another storage operation.
 pub struct PreparedSettings {
@@ -237,7 +239,7 @@ pub enum Command {
         note_id: String,
         path: PathBuf,
     },
-    SaveSettings(Settings),
+    SaveSettings(Box<Settings>),
     SaveLearningSettings {
         interval_minutes: u32,
         answer_minutes: u32,

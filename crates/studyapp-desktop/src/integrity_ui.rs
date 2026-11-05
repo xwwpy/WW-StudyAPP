@@ -35,18 +35,31 @@ impl StudyApp {
             Ok(report) => Err(report.summary()),
             Err(message) => Err(message.clone()),
         };
+        let severity = if notice.is_ok() {
+            studyapp_core::NoticeSeverity::Success
+        } else {
+            studyapp_core::NoticeSeverity::Error
+        };
+        let mut event = studyapp_core::NoticeEvent::new(
+            studyapp_core::NoticeCategory::IntegrityResult,
+            severity,
+            notice.as_ref().unwrap_or_else(|error| error).clone(),
+        );
+        event.action = Some(studyapp_core::NoticeAction::OpenIntegrity);
+        event.anchor = Some("integrity-check".into());
+        event.dedupe_key = Some("integrity-result".into());
         self.storage_ui.integrity_result = Some(result);
-        self.push_notice(notice, cx);
+        self.emit_notification(event, cx);
         cx.notify();
     }
     pub(crate) fn integrity_controls(&self, cx: &mut Context<Self>) -> Div {
         column().gap_2().child(heading("应用诊断"))
             .child(muted("对照当前版本的已签名发行基线，只读检查程序文件。需要连接发布服务获取基线，不会下载安装包。"))
             .child(row().flex_wrap()
-                .child(Button::new("check-file-integrity").small()
+                .child(studyapp_ui::notification_anchor::NotificationAnchor::new("integrity-check", self.notifications.clone(), Button::new("check-file-integrity").small()
                     .label(if self.storage_ui.integrity_busy { "正在检查…" } else { "检查文件完整性" })
                     .disabled(self.storage_ui.integrity_busy || self.storage_busy || self.update_panel.read(cx).relocation_blocked())
-                    .on_click(cx.listener(|this, _, _, cx| this.request_integrity_check(cx))))
+                    .on_click(cx.listener(|this, _, _, cx| this.request_integrity_check(cx)))))
                 .when(self.storage_ui.integrity_result.is_some(), |row| row.child(
                     Button::new("view-integrity-result").small().ghost().label("查看检查结果")
                         .on_click(cx.listener(|this, _, _, cx| {

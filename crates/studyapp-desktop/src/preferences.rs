@@ -15,6 +15,8 @@ use studyapp_core::{Engine, LayoutSettings, PreparedSettings, Settings};
 
 const MAX_JSON: u64 = 1024 * 1024;
 const SCHEMA: u32 = 1;
+// Interface marker distinguishes a genuine old generation from a missing new category.
+const CATEGORIES_VERSION: u32 = 1;
 
 #[derive(Clone)]
 pub struct PreferenceSnapshot {
@@ -68,6 +70,8 @@ struct LearningFile {
 }
 #[derive(Serialize, Deserialize)]
 struct Interface {
+    #[serde(default)]
+    categories_version: u32,
     show_file_paths: bool,
     layout: LayoutSettings,
 }
@@ -82,6 +86,11 @@ struct AppearanceFile {
 #[derive(Serialize, Deserialize)]
 struct TimerWidgetFile {
     timer_widget: Box<studyapp_core::TimerWidgetSettings>,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NotificationsFile {
+    notifications: studyapp_core::NotificationSettings,
 }
 #[derive(Serialize, Deserialize)]
 struct ImagesFile {
@@ -180,6 +189,7 @@ fn category_files(snapshot: &PreferenceSnapshot) -> Result<Vec<(&'static str, Ve
             "interface.json",
             serde_json::to_vec_pretty(&InterfaceFile {
                 interface: Interface {
+                    categories_version: CATEGORIES_VERSION,
                     show_file_paths: settings.show_file_paths,
                     layout: settings.layout.clone(),
                 },
@@ -201,6 +211,12 @@ fn category_files(snapshot: &PreferenceSnapshot) -> Result<Vec<(&'static str, Ve
             "timer-widget.json",
             serde_json::to_vec_pretty(&TimerWidgetFile {
                 timer_widget: settings.timer_widget.clone(),
+            })?,
+        ),
+        (
+            "notifications.json",
+            serde_json::to_vec_pretty(&NotificationsFile {
+                notifications: settings.notifications.clone(),
             })?,
         ),
         (
@@ -414,7 +430,18 @@ impl PreferencesStore {
                 Self::read_generation(root, initial)?;
             }
         } else {
+            let defaults_interface: InterfaceFile =
+                read_category(&root.join("defaults/interface.json"))?;
+            ensure!(
+                defaults_interface.interface.categories_version <= CATEGORIES_VERSION,
+                "默认配置分类版本暂不受支持，原文件已保留"
+            );
             for (name, _) in category_files(&PreferenceSnapshot::defaults())? {
+                if name == "notifications.json"
+                    && defaults_interface.interface.categories_version == 0
+                {
+                    continue;
+                }
                 read_category::<serde_json::Value>(&root.join("defaults").join(name))?;
             }
         }
@@ -457,6 +484,15 @@ impl PreferencesStore {
     ) -> Result<(PreferenceSnapshot, CredentialPayload)> {
         let learning: LearningFile = read_category(&directory.join("learning.json"))?;
         let interface: InterfaceFile = read_category(&directory.join("interface.json"))?;
+        ensure!(
+            interface.interface.categories_version <= CATEGORIES_VERSION,
+            "配置分类版本暂不受支持，原文件已保留"
+        );
+        let notifications = if interface.interface.categories_version >= 1 {
+            read_category::<NotificationsFile>(&directory.join("notifications.json"))?.notifications
+        } else {
+            studyapp_core::NotificationSettings::default()
+        };
         // A missing category is a pre-theme generation. Never write during load.
         let appearance = if !legacy || directory.join("appearance.json").try_exists()? {
             read_category::<AppearanceFile>(&directory.join("appearance.json"))?.appearance
@@ -487,6 +523,7 @@ impl PreferencesStore {
                 appearance,
                 images,
                 timer_widget,
+                notifications,
             },
             shortcuts: crate::shortcuts::resolved_bindings(&shortcuts.shortcuts),
             sync: sync.sync,
@@ -625,6 +662,7 @@ impl PreferencesStore {
                 "interface.json",
                 "appearance.json",
                 "timer-widget.json",
+                "notifications.json",
                 "images.json",
                 "shortcuts.json",
                 "sync.json",
@@ -1244,6 +1282,92 @@ mod tests {
     }
 
     #[test]
+    fn notification_rules_and_appearance_publish_atomically_and_reopen() {
+        let (root, mut engine, mut runtime, mut store) = library();
+        let baseline = store.snapshot();
+        let manifest = root.join("settings/manifest.json");
+        let before = std::fs::read(&manifest).unwrap();
+        let mut proposal = request(&store);
+        proposal.settings.notifications.rules.insert(
+            studyapp_core::NoticeCategory::TimerComplete,
+            studyapp_core::NoticeRule {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        proposal.settings.appearance.notifications.style = studyapp_core::NoticeStyle::Banner;
+        proposal.settings.appearance.notifications.background = Some("#FFFFFF80".into());
+        let expected = proposal.settings.clone();
+        let prepared = store.prepare(proposal, &engine, &runtime).unwrap();
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        assert_eq!(engine.snapshot().settings, baseline.settings);
+        let (settings, synchronization) = store.publish(prepared).unwrap();
+        engine.install_prepared_settings(settings);
+        runtime.install_configuration(synchronization);
+        let (reopened, _) =
+            PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+        assert_eq!(reopened.snapshot().settings, expected);
+        assert!(
+            reopened
+                .current_directory()
+                .join("notifications.json")
+                .is_file()
+        );
+        assert_eq!(
+            reopened.snapshot().settings.timer_widget,
+            baseline.settings.timer_widget
+        );
+    }
+
+    #[test]
+    fn legacy_notification_category_defaults_in_memory_but_new_missing_category_is_rejected() {
+        let (root, mut engine, _, store) = library();
+        let directory = store.current_directory();
+        let category = directory.join("notifications.json");
+        std::fs::remove_file(&category).unwrap();
+        assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
+        for base in [&directory, &root.join("settings/defaults")] {
+            let path = base.join("interface.json");
+            let mut interface: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            interface["interface"]
+                .as_object_mut()
+                .unwrap()
+                .remove("categories_version");
+            std::fs::write(&path, serde_json::to_vec(&interface).unwrap()).unwrap();
+        }
+        let manifest = root.join("settings/manifest.json");
+        let before = std::fs::read(&manifest).unwrap();
+        let interface_before = std::fs::read(directory.join("interface.json")).unwrap();
+        let (reopened, _) =
+            PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+        assert_eq!(
+            reopened.snapshot().settings.notifications,
+            studyapp_core::NotificationSettings::default()
+        );
+        assert!(!category.exists());
+        assert_eq!(std::fs::read(&manifest).unwrap(), before);
+        assert_eq!(
+            std::fs::read(directory.join("interface.json")).unwrap(),
+            interface_before
+        );
+    }
+
+    #[test]
+    fn malformed_notification_category_is_preserved_and_not_treated_as_legacy() {
+        let (root, mut engine, _, store) = library();
+        let path = store.current_directory().join("notifications.json");
+        for contents in [
+            "{broken",
+            r#"{"notifications":{"quiet_hours":{"start_minute":2000,"end_minute":10}}}"#,
+        ] {
+            std::fs::write(&path, contents).unwrap();
+            assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
+        }
+    }
+
+    #[test]
     fn appearance_is_a_separate_atomic_category_and_round_trips_only_after_save() {
         let (root, mut engine, mut runtime, mut store) = library();
         let old_revision = store.snapshot().revision;
@@ -1386,7 +1510,10 @@ mod tests {
         let mut settings = engine.snapshot().settings;
         settings.answer_minutes = 9;
         engine
-            .apply(studyapp_core::Command::SaveSettings(settings.clone()), 1000)
+            .apply(
+                studyapp_core::Command::SaveSettings(Box::new(settings.clone())),
+                1000,
+            )
             .unwrap();
         let legacy = br#"{"settings":{"target":"Disabled","auto_minutes":30},"protected_password":[],"baselines":{},"last_success":42}"#;
         std::fs::write(root.join("sync-config.json"), legacy).unwrap();

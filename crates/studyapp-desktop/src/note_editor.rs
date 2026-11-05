@@ -120,7 +120,7 @@ impl StudyApp {
                         }
                     }
                     for error in errors {
-                        self.push_notice(Err(error), cx);
+                        self.push_save_notice(Err(error), cx);
                     }
                     self.refresh_recoverable();
                 }
@@ -171,7 +171,7 @@ impl StudyApp {
                                 .update(cx, |editor, cx| editor.set_readonly(false, cx));
                         }
                         self.refresh_recoverable();
-                        self.push_notice(
+                        self.push_save_notice(
                             Ok("这一份草稿已删除，原笔记、历史及其他草稿均保留。".into()),
                             cx,
                         );
@@ -237,7 +237,7 @@ impl StudyApp {
                                 .update(cx, |editor, cx| editor.set_readonly(false, cx));
                         }
                     }
-                    self.push_notice(Err(message), cx);
+                    self.push_save_notice(Err(message), cx);
                 }
                 DraftUpdate::Drained {
                     library,
@@ -259,7 +259,7 @@ impl StudyApp {
                         Err(error) => {
                             self.close_requested = false;
                             self.clear_pending_updates();
-                            self.push_notice(Err(error), cx);
+                            self.push_save_notice(Err(error), cx);
                         }
                     }
                 }
@@ -328,7 +328,7 @@ impl StudyApp {
                 self.note_saving = false;
                 self.close_requested = false;
                 self.clear_pending_updates();
-                self.push_notice(Err(error.to_string()), cx);
+                self.push_save_notice(Err(error.to_string()), cx);
                 return false;
             }
         } else if same_reader {

@@ -319,10 +319,10 @@ fn unmanage_removes_current_interval_attribution_but_keeps_completed_sessions() 
     let (_, mut engine) = fixture();
     engine
         .apply(
-            Command::SaveSettings(studyapp_core::Settings {
+            Command::SaveSettings(Box::new(studyapp_core::Settings {
                 interval_minutes: 5,
                 ..Default::default()
-            }),
+            })),
             1000,
         )
         .unwrap();

@@ -11,6 +11,8 @@ pub mod markdown_format;
 pub mod markdown_view;
 pub mod modal_frame;
 pub mod notice_queue;
+pub mod notification_anchor;
+pub mod notification_card;
 pub mod notifications;
 pub mod release_notes;
 pub mod settings_color;

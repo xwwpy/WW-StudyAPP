@@ -75,7 +75,11 @@ fn unsafe_custom_appearance_cannot_be_saved() {
         let mut proposed = serde_json::to_value(&original).unwrap();
         proposed["appearance"] = json!({"mode":"custom","active_preset":"unsafe","custom_presets":[{"id":"unsafe","name":"Unsafe","palette":palette}],"font_size":14,"spacing":8});
         let proposed = serde_json::from_value(proposed).unwrap();
-        assert!(engine.apply(Command::SaveSettings(proposed), 1001).is_err());
+        assert!(
+            engine
+                .apply(Command::SaveSettings(Box::new(proposed)), 1001)
+                .is_err()
+        );
         assert_eq!(engine.snapshot().settings, original);
     }
 }
@@ -88,7 +92,7 @@ fn low_contrast_colors_save_and_resolve_exactly_as_requested() {
     proposed["appearance"] = json!({"mode":"custom","active_preset":"quiet","custom_presets":[{"id":"quiet","name":"Quiet","palette":{"accent":"#EEEEEE","background":"#FFFFFF","surface":"#FFFFFF","text":"#FFFFFF"},"markdown":{"reading_width":920,"colors":{"quote":"#FFFFFF","quote_background":"#FFFFFF","syntax_keyword":"#EEEEEE","code_background":"#FFFFFF"}}}]});
     let proposed: Settings = serde_json::from_value(proposed).unwrap();
     engine
-        .apply(Command::SaveSettings(proposed.clone()), 1001)
+        .apply(Command::SaveSettings(Box::new(proposed.clone())), 1001)
         .unwrap();
     assert_eq!(engine.snapshot().settings, proposed);
     let preset = &proposed.appearance.custom_presets[0];
@@ -112,6 +116,7 @@ fn custom_theme_presets_round_trip_and_reject_missing_selection_and_duplicates()
         }],
         font_size: 16,
         spacing: 12,
+        notifications: Default::default(),
     };
     assert!(appearance.validate().is_ok());
     assert_eq!(
@@ -225,7 +230,11 @@ fn invalid_workspace_widths_are_rejected_without_persisting_changes() {
         );
         let mut full = original.clone();
         full.layout = layout;
-        assert!(engine.apply(Command::SaveSettings(full), 1001).is_err());
+        assert!(
+            engine
+                .apply(Command::SaveSettings(Box::new(full)), 1001)
+                .is_err()
+        );
         assert_eq!(engine.snapshot().settings, original);
     }
     drop(engine);
@@ -267,7 +276,9 @@ fn file_path_visibility_persists_when_enabled_and_disabled() {
         let mut encoded = serde_json::to_value(engine.snapshot().settings).unwrap();
         encoded["show_file_paths"] = json!(visible);
         let settings = serde_json::from_value(encoded).unwrap();
-        engine.apply(Command::SaveSettings(settings), now).unwrap();
+        engine
+            .apply(Command::SaveSettings(Box::new(settings)), now)
+            .unwrap();
         drop(engine);
         engine = Engine::open(&database, now).unwrap();
         let restored = serde_json::to_value(engine.snapshot().settings).unwrap();
@@ -321,7 +332,9 @@ fn rapid_updates(learning_first: bool) {
         let mut engine = Engine::open(&database, 1000).unwrap();
         let mut initial = engine.snapshot().settings;
         initial.show_file_paths = initially_visible;
-        engine.apply(Command::SaveSettings(initial), 1000).unwrap();
+        engine
+            .apply(Command::SaveSettings(Box::new(initial)), 1000)
+            .unwrap();
         // Queue both intentions before accepting a refreshed worker snapshot.
         let learning = learning_update(30, 8, vec![2, 6, 15]);
         let visibility = Command::SetShowFilePaths(!initially_visible);
@@ -342,6 +355,7 @@ fn rapid_updates(learning_first: bool) {
             appearance: Default::default(),
             images: Default::default(),
             timer_widget: Default::default(),
+            notifications: Default::default(),
         };
         assert_eq!(
             engine.snapshot().settings,
@@ -429,7 +443,7 @@ fn rgba_theme_and_markdown_round_trip_through_save_and_reopen() {
     })).unwrap();
     settings.timer_widget.accent = Some("#FF000080".into());
     engine
-        .apply(Command::SaveSettings(settings.clone()), 1001)
+        .apply(Command::SaveSettings(Box::new(settings.clone())), 1001)
         .unwrap();
     assert_eq!(engine.snapshot().settings, settings);
     drop(engine);

@@ -1,0 +1,309 @@
+//! Native focus/visual acceptance. Invoked only by Windows runner smoke profiles.
+use crate::{
+    app::{Page, StudyApp},
+    settings_ui::SettingsSection,
+};
+use gpui_kit::{test::TestWindowExt, *};
+use std::{
+    path::Path,
+    time::{Duration, Instant},
+};
+use studyapp_core::{NoticeCategory, NoticeEvent, NoticeRule, NoticeSeverity, NoticeStyle};
+
+async fn settle(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    cx: &mut AsyncApp,
+    condition: impl Fn(&StudyApp, &Window, &App) -> bool,
+) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let ready = window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                condition(view.read(cx), window, cx)
+            })
+            .expect("notification main window exists");
+        if ready {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "notification state did not settle within 5 seconds"
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(50))
+            .await;
+    }
+}
+fn foreground() -> isize {
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize }
+}
+struct Witness;
+impl Render for Witness {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child("Notification focus witness")
+    }
+}
+fn configure(app: &mut StudyApp, style: NoticeStyle, cx: &mut Context<StudyApp>) {
+    let mut policy = studyapp_core::NotificationSettings::default();
+    policy.rules.insert(
+        NoticeCategory::SaveFailure,
+        NoticeRule {
+            style: Some(style),
+            ..Default::default()
+        },
+    );
+    let appearance = studyapp_core::NotificationAppearance {
+        reduce_motion: true,
+        max_visible: 1,
+        ..Default::default()
+    };
+    let saved = app
+        .preferences_ui
+        .saved
+        .as_mut()
+        .expect("saved native settings");
+    saved.settings.notifications = policy.clone();
+    saved.settings.appearance.notifications = appearance.clone();
+    let draft = app.preferences_ui.draft.as_mut().expect("settings draft");
+    draft.notifications = policy;
+    draft.appearance.notifications = appearance;
+    app.clear_notices(cx);
+    cx.notify();
+}
+fn event() -> NoticeEvent {
+    let mut event = NoticeEvent::new(
+        NoticeCategory::SaveFailure,
+        NoticeSeverity::Error,
+        "这是通知显示回归样例。关闭提示不会丢弃尚未保存的内容。\n长消息仍在卡片内部滚动，不移动下方页面。",
+    );
+    event.anchor = Some("settings-save".into());
+    event
+}
+
+pub async fn exercise(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    assert_eq!(
+        std::env::var("GITHUB_ACTIONS").as_deref(),
+        Ok("true"),
+        "native notification acceptance is runner-only"
+    );
+    let original = window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                assert!(!app.has_required_modal(cx));
+                let original = (
+                    app.preferences_ui.saved.clone(),
+                    app.preferences_ui.draft.clone(),
+                    app.page,
+                    app.preferences_ui.section,
+                );
+                app.page = Page::Settings;
+                app.preferences_ui.section = SettingsSection::Notifications;
+                window.activate_window();
+                cx.notify();
+                original
+            })
+        })
+        .unwrap();
+    settle(window, view, cx, |_, window, _| window.is_window_active()).await;
+    let mut accepted = Vec::new();
+    for style in NoticeStyle::ALL {
+        window
+            .update(cx, |_, _, cx| {
+                view.update(cx, |app, cx| configure(app, style, cx))
+            })
+            .unwrap();
+        settle(window, view, cx, |_, window, _| {
+            window.try_find("save-settings").is_some()
+        })
+        .await;
+        let event_id = window
+            .update(cx, |_, _, cx| {
+                view.update(cx, |app, cx| {
+                    let event = event();
+                    let id = event.id;
+                    assert_eq!(app.emit_notification(event, cx), Some(id));
+                    id
+                })
+            })
+            .unwrap();
+        settle(window, view, cx, |app, window, cx| {
+            let center = app.notifications.read(cx);
+            center
+                .test_state()
+                .first()
+                .is_some_and(|(id, _)| window.try_find(format!("notice-{id}")).is_some())
+        })
+        .await;
+        window
+            .update(cx, |_, window, cx| {
+                let center = view.read(cx).notifications.clone();
+                let id = center.read(cx).test_state()[0].0;
+                assert_eq!(
+                    center.read(cx).modal_visible(),
+                    style == NoticeStyle::ModalCard
+                );
+                let bounds = window.find(format!("notice-{id}")).bounds();
+                assert!(bounds.size.width > px(100.) && bounds.size.height > px(32.));
+                assert!(bounds.left() >= px(0.) && bounds.right() <= window.viewport_size().width);
+                crate::smoke::capture(
+                    window,
+                    database.with_file_name(format!("notification-{style:?}.png")),
+                )
+                .unwrap();
+                window.click(format!("dismiss-notice-{id}"), cx);
+            })
+            .unwrap();
+        settle(window, view, cx, |app, _, cx| {
+            app.notifications.read(cx).visible_count() == 0
+        })
+        .await;
+        accepted.push(event_id.to_string());
+    }
+    window
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, cx| configure(app, NoticeStyle::CornerCard, cx))
+        })
+        .unwrap();
+    let witness = cx
+        .update(|cx| {
+            cx.open_window(
+                WindowOptions {
+                    focus: true,
+                    show: true,
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let content = cx.new(|_| Witness);
+                    cx.new(|cx| gpui_kit::base::Root::new(content, window, cx))
+                },
+            )
+        })
+        .unwrap();
+    settle(window, view, cx, |_, window, _| !window.is_window_active()).await;
+    assert!(
+        witness
+            .update(cx, |_, window, _| window.is_window_active())
+            .unwrap()
+    );
+    let before = foreground();
+    assert_ne!(before, 0);
+    let event_id = window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                app.sync_notification_preferences(window, cx);
+                let event = event();
+                let id = event.id;
+                assert_eq!(app.emit_notification(event, cx), Some(id));
+                id
+            })
+        })
+        .unwrap();
+    settle(window, view, cx, |app, _, cx| {
+        app.notification_window.is_some() && app.notifications.read(cx).desktop_visible()
+    })
+    .await;
+    assert_eq!(
+        foreground(),
+        before,
+        "G creation must not change the native foreground window"
+    );
+    let (desktop, numeric_id) = window
+        .update(cx, |_, _, cx| {
+            let app = view.read(cx);
+            let entries = app.notifications.read(cx).desktop_items();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].0.event.as_ref().unwrap().id, event_id);
+            assert_eq!(app.notifications.read(cx).visible_count(), 0);
+            (app.notification_window.unwrap(), entries[0].0.id)
+        })
+        .unwrap();
+    desktop
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(!window.is_window_active());
+            assert!(
+                window
+                    .try_find(format!("desktop-notice-{numeric_id}"))
+                    .is_some()
+            );
+            crate::smoke::capture(
+                window,
+                database.with_file_name("notification-desktop-G.png"),
+            )
+            .unwrap();
+        })
+        .unwrap();
+    assert_eq!(foreground(), before, "painting G must not activate it");
+    window
+        .update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    settle(window, view, cx, |app, window, cx| {
+        window.is_window_active()
+            && app.notification_window.is_none()
+            && app.notifications.read(cx).visible_count() == 1
+    })
+    .await;
+    window
+        .update(cx, |_, _, cx| {
+            assert_eq!(
+                view.read(cx).notifications.read(cx).test_state()[0].0,
+                numeric_id
+            )
+        })
+        .unwrap();
+    witness
+        .update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    settle(window, view, cx, |app, window, _| {
+        !window.is_window_active() && app.notification_window.is_some()
+    })
+    .await;
+    let before_close = foreground();
+    let desktop = window
+        .update(cx, |_, _, cx| view.read(cx).notification_window.unwrap())
+        .unwrap();
+    desktop
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(format!("desktop-dismiss-{numeric_id}"), cx);
+        })
+        .unwrap();
+    settle(window, view, cx, |app, _, cx| {
+        app.notification_window.is_none() && !app.notifications.read(cx).desktop_visible()
+    })
+    .await;
+    assert_eq!(
+        foreground(),
+        before_close,
+        "closing G must not activate the main window"
+    );
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                app.preferences_ui.saved = original.0;
+                app.preferences_ui.draft = original.1;
+                app.page = original.2;
+                app.preferences_ui.section = original.3;
+                app.clear_notices(cx);
+                app.sync_notification_preferences(window, cx);
+                window.activate_window();
+                cx.notify();
+            })
+        })
+        .unwrap();
+    witness
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    std::fs::write(database.with_file_name("notification-native-result.json"),serde_json::to_vec_pretty(&serde_json::json!({
+        "foreground_styles":["A","B","C","D","E"],"desktop_style":"G","created_without_activation":true,
+        "painted_without_activation":true,"closed_without_activation":true,"same_event_on_foreground_return":event_id.to_string(),
+        "foreground_events":accepted,
+    })).unwrap()).unwrap();
+}

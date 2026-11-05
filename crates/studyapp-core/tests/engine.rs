@@ -15,7 +15,7 @@ fn fixture() -> (TestDir, Engine) {
 fn short(engine: &mut Engine, now: i64) {
     engine
         .apply(
-            Command::SaveSettings(Settings {
+            Command::SaveSettings(Box::new(Settings {
                 interval_minutes: 5,
                 answer_minutes: 1,
                 review_days: vec![1, 3],
@@ -24,7 +24,8 @@ fn short(engine: &mut Engine, now: i64) {
                 appearance: Default::default(),
                 images: Default::default(),
                 timer_widget: Default::default(),
-            }),
+                notifications: Default::default(),
+            })),
             now,
         )
         .unwrap();
@@ -204,7 +205,11 @@ fn validation_and_interval_changes_leave_state_consistent() {
     assert_eq!(engine.snapshot().timer.target_seconds, 3600);
     let mut invalid = engine.snapshot().settings;
     invalid.review_days = vec![0];
-    assert!(engine.apply(Command::SaveSettings(invalid), 1002).is_err());
+    assert!(
+        engine
+            .apply(Command::SaveSettings(Box::new(invalid)), 1002)
+            .is_err()
+    );
     assert_eq!(engine.snapshot().settings.review_days, vec![1, 3]);
     assert!(
         engine
@@ -367,7 +372,7 @@ fn review_history_survives_edits_defaults_change_and_completes_final_stage() {
         )
         .unwrap();
     engine
-        .apply(Command::SaveSettings(Settings::default()), 100001)
+        .apply(Command::SaveSettings(Box::default()), 100001)
         .unwrap();
     engine
         .apply(
@@ -428,7 +433,7 @@ fn failed_sql_write_rolls_back_memory_and_database() {
     assert!(
         engine
             .apply(
-                Command::SaveSettings(Settings {
+                Command::SaveSettings(Box::new(Settings {
                     interval_minutes: 5,
                     answer_minutes: 1,
                     review_days: vec![2],
@@ -437,7 +442,8 @@ fn failed_sql_write_rolls_back_memory_and_database() {
                     appearance: Default::default(),
                     images: Default::default(),
                     timer_widget: Default::default(),
-                }),
+                    notifications: Default::default(),
+                })),
                 1000
             )
             .is_err()
@@ -522,7 +528,7 @@ fn activity_ten_second_tick_splits_boundary_and_settings_take_next_cycle() {
     }
     engine
         .apply(
-            Command::SaveSettings(Settings {
+            Command::SaveSettings(Box::new(Settings {
                 interval_minutes: 10,
                 answer_minutes: 2,
                 review_days: vec![2],
@@ -531,7 +537,8 @@ fn activity_ten_second_tick_splits_boundary_and_settings_take_next_cycle() {
                 appearance: Default::default(),
                 images: Default::default(),
                 timer_widget: Default::default(),
-            }),
+                notifications: Default::default(),
+            })),
             1299,
         )
         .unwrap();

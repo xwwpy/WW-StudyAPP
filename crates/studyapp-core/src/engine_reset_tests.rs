@@ -8,7 +8,7 @@ fn fixture() -> (PathBuf, Engine) {
     settings.interval_minutes = 25;
     settings.show_file_paths = true;
     engine
-        .apply(Command::SaveSettings(settings), 1_000)
+        .apply(Command::SaveSettings(Box::new(settings)), 1_000)
         .unwrap();
     (database, engine)
 }

@@ -61,7 +61,7 @@ impl StudyApp {
                 self.note_content
                     .update(cx, |editor, cx| editor.set_readonly(false, cx));
             }
-            self.push_notice(Err("目标目录已变化，请重新选择。".into()), cx);
+            self.push_save_notice(Err("目标目录已变化，请重新选择。".into()), cx);
             return;
         }
         let mut record = self.draft_catalog[&id].clone();
