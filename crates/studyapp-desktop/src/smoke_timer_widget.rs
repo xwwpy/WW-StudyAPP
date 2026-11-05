@@ -91,7 +91,12 @@ fn gesture(raw: usize, start: POINT, dx: i32, dy: i32, expected: u32) {
         SetCursorPos(start.x, start.y).unwrap();
     }
     std::thread::sleep(Duration::from_millis(80));
-    assert_eq!(hit(raw, start), expected as isize);
+    assert_eq!(
+        hit(raw, start),
+        expected as isize,
+        "native widget gesture hit: point={start:?}, bounds={:?}",
+        rect(raw)
+    );
     button(true);
     struct Release;
     impl Drop for Release {
@@ -338,6 +343,10 @@ pub async fn exercise(
         x: moved.right - 2,
         y: moved.bottom - 2,
     };
+    // GPUI hit regions use the last delivered mouse position. A fixed sleep
+    // after SetCursorPos cannot prove delivery after the caption modal loop.
+    // Require actual OS coverage and matching GPUI hover before the edge hit.
+    pointer::hover(widget, corner, cx).await;
     cx.background_executor()
         .spawn(async move {
             gesture(handle, corner, 55, 45, HTBOTTOMRIGHT);
@@ -417,12 +426,7 @@ pub async fn exercise(
     ];
     let mut hits = Vec::new();
     for (name, point, expected) in points {
-        unsafe {
-            SetCursorPos(point.x, point.y).unwrap();
-        }
-        cx.background_executor()
-            .timer(Duration::from_millis(40))
-            .await;
+        pointer::hover(widget, point, cx).await;
         let actual = hit(handle, point);
         hits.push(json!({"edge":name,"hit":actual}));
         assert_eq!(

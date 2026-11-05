@@ -148,6 +148,21 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("'normalCloseDurable'", harness)
         self.assertIn("WaitForExit(120000)", harness)
 
+    def test_widget_resize_waits_for_actual_pointer_delivery_before_hit_testing(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/smoke_timer_widget.rs").read_text(encoding="utf-8")
+        corner = source.split("let corner = POINT", 1)[1].split("let resized = rect(handle)", 1)[0]
+        self.assertLess(corner.index("pointer::hover(widget, corner, cx).await"),
+                        corner.index("gesture(handle, corner, 55, 45, HTBOTTOMRIGHT)"))
+        edges = source.split("for (name, point, expected) in points {", 1)[1].split("#[cfg(not(test))]", 1)[0]
+        self.assertLess(edges.index("pointer::hover(widget, point, cx).await"),
+                        edges.index("let actual = hit(handle, point)"))
+        self.assertIn("actual, expected as isize", edges)
+        pointer = (root / "crates/studyapp-desktop/src/update_acceptance_pointer.rs").read_text(encoding="utf-8")
+        for check in ("assert_target(parent, target)", "window.mouse_position()", "ScreenToClient(parent",
+                      "native.x == target.x", "native.y == target.y", "Duration::from_secs(2)"):
+            self.assertIn(check, pointer)
+
     def test_native_settings_keep_notification_and_logging_receipts(self):
         root = Path(__file__).resolve().parents[1]
         workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
