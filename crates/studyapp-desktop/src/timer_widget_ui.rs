@@ -45,6 +45,21 @@ impl StudyApp {
                     })),
             );
         }
+        let mut presets = row().flex_wrap().gap_1();
+        if kind == TimerKind::CountDown {
+            for minutes in self.effective_widget_settings().countdown_presets {
+                presets = presets.child(
+                    Button::new(SharedString::from(format!("timer-setup-preset-{minutes}")))
+                        .small()
+                        .label(format!("{minutes} 分钟"))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.timer_duration.update(cx, |input, cx| {
+                                input.set_value(minutes.to_string(), window, cx);
+                            });
+                        })),
+                );
+            }
+        }
         Some(
             ModalFrame::new(
                 "设置计时",
@@ -61,6 +76,7 @@ impl StudyApp {
                             Input::new(&self.timer_duration),
                         ))
                     })
+                    .when(kind == TimerKind::CountDown, |c| c.child(presets))
                     .child(muted(if kind == TimerKind::Study {
                         "专注计时沿用学习设置的询问间隔，到点生成待确认记录。"
                     } else {

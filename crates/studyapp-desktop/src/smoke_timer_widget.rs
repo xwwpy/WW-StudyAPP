@@ -154,6 +154,7 @@ pub async fn exercise(
     .await;
     main.update(cx, |_, window, cx| {
         app.update(cx, |app, cx| {
+            app.navigate(crate::app::Page::Today, window, cx);
             app.timer_action(
                 TimerCardAction::ChooseKind(studyapp_core::TimerKind::CountUp),
                 window,
@@ -161,8 +162,15 @@ pub async fn exercise(
             );
             // A pre-upgrade tall window must compact to real card content.
             app.widget_state.height = 750;
-            app.open_widget(cx);
-        })
+        });
+        window.render_frame(cx);
+        let timer = window.find("today-timer").bounds();
+        let body = window.find("page-scroll").bounds();
+        assert!(timer.bottom() <= body.top());
+        assert!(body.size.height >= px(160.));
+        assert_eq!(window.find("timer-show-desktop").checked(), Some(false));
+        let center = window.find("timer-show-desktop").bounds().center();
+        pointer::click(window, center);
     })
     .unwrap();
     until(
@@ -177,6 +185,30 @@ pub async fn exercise(
         cx,
     )
     .await;
+    until(
+        main,
+        app,
+        "fixed timer opens desktop widget",
+        |app, _| app.timer_widget.is_some(),
+        cx,
+    )
+    .await;
+    main.update(cx, |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(window.find("timer-show-desktop").checked(), Some(true));
+        assert_eq!(window.find("timer-show-desktop").label(), Some("隐藏桌面小组件"));
+        let timer = window.find("today-timer").bounds();
+        let body = window.find("page-scroll").bounds();
+        assert!(timer.bottom() <= body.top());
+        assert_eq!(unsafe { GetForegroundWindow() }, HWND(raw(window) as *mut _), "opening the widget must not take focus");
+        pointer::capture(window, &database.parent().unwrap().join("timer-widget-today-fixed.bmp"));
+        std::fs::write(database.with_file_name("timer-widget-today-fixed.json"), serde_json::to_vec_pretty(&json!({
+            "fixedBounds": [f32::from(timer.left()), f32::from(timer.top()), f32::from(timer.size.width), f32::from(timer.size.height)],
+            "bodyTop": f32::from(body.top()),
+            "desktopOpen": window.find("timer-show-desktop").checked(),
+            "timerValue": window.find("today-timer-value").label()
+        })).unwrap()).unwrap();
+    }).unwrap();
     let sessions_before = app.read_with(cx, |app, _| app.snapshot.as_ref().unwrap().sessions.len());
     let widget = app.read_with(cx, |app, _| app.timer_widget.unwrap());
     settle(cx).await;

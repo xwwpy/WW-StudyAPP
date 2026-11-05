@@ -103,6 +103,8 @@ mod theme;
 mod timer_widget;
 mod timer_widget_ui;
 mod timer_widget_window;
+#[cfg(all(test, feature = "ui-test"))]
+mod today_timer_tests;
 #[cfg(feature = "update-acceptance")]
 mod update_acceptance;
 mod update_backend;

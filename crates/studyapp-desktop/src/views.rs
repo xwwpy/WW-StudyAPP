@@ -71,6 +71,36 @@ fn review_tip(review: &Review) -> String {
 }
 
 impl StudyApp {
+    /// Fixed sibling of the page scroller, including for an empty library.
+    pub(crate) fn today_timer(&self, snapshot: &Snapshot, cx: &mut Context<Self>) -> AnyElement {
+        let palette = crate::theme::palette();
+        let timer_owner = cx.weak_entity();
+        let segment = self.read_models.record_positions(&today_date(), 0).len() + 1;
+        let timer = studyapp_ui::timer_card::timer_card(
+            studyapp_ui::timer_card::TimerCardModel::from_timer(&snapshot.timer, segment),
+            studyapp_ui::timer_card::TimerCardStyle::from_widget_settings(
+                &snapshot.settings.timer_widget,
+                palette,
+            ),
+            studyapp_ui::timer_card::TimerCardVariant::Dashboard {
+                desktop_open: self.timer_widget.is_some(),
+            },
+            move |action, window, cx| {
+                let _ = timer_owner.update(cx, |app, cx| app.timer_action(action, window, cx));
+            },
+        );
+        column()
+            .id("today-timer-fixed")
+            .test_support()
+            .w_full()
+            .flex_shrink_0()
+            .items_center()
+            .px_8()
+            .pt_4()
+            .child(column().w_full().max_w(px(1120.)).child(timer))
+            .into_any_element()
+    }
+
     pub fn today(&self, snapshot: &Snapshot, window: &mut Window, cx: &mut Context<Self>) -> Div {
         use crate::design::space;
         use chrono::{Datelike, Timelike};
@@ -247,19 +277,6 @@ impl StudyApp {
                     ),
             );
         }
-        let timer_owner = cx.weak_entity();
-        let segment = self.read_models.record_positions(&today_date(), 0).len() + 1;
-        let timer = studyapp_ui::timer_card::timer_card(
-            studyapp_ui::timer_card::TimerCardModel::from_timer(&snapshot.timer, segment),
-            studyapp_ui::timer_card::TimerCardStyle::from_widget_settings(
-                &snapshot.settings.timer_widget,
-                palette,
-            ),
-            studyapp_ui::timer_card::TimerCardVariant::Inline,
-            move |action, window, cx| {
-                let _ = timer_owner.update(cx, |app, cx| app.timer_action(action, window, cx));
-            },
-        );
         let mut recent = card().min_w_0().child(
             row()
                 .child(heading("最近的学习记录"))
@@ -376,7 +393,6 @@ impl StudyApp {
                         .flex_1()
                         .min_w_0()
                         .gap(space(palette.spacing, 3.))
-                        .child(timer)
                         .child(recent),
                 )
                 .child(
@@ -390,7 +406,6 @@ impl StudyApp {
             column()
                 .min_w_0()
                 .gap(space(palette.spacing, 3.))
-                .child(timer)
                 .child(checklist)
                 .child(recent)
         })

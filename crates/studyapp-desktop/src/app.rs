@@ -1605,6 +1605,11 @@ impl Render for StudyApp {
         } else {
             self.startup_view(cx).into_any_element()
         };
+        let today_timer = self
+            .snapshot
+            .as_ref()
+            .filter(|_| self.page == Page::Today && self.storage_ui.migration_progress.is_none())
+            .map(|snapshot| self.today_timer(snapshot, cx));
         let modal_content = if let Some(settings) = self.settings_modal(cx) {
             Some(settings)
         } else if let Some(timer) = self.timer_modal(cx) {
@@ -1790,6 +1795,7 @@ impl Render for StudyApp {
                             .min_w_0()
                             .min_h_0()
                             .h_full()
+                            .children(today_timer)
                             .child(
                                 column()
                                     .id("page-scroll")

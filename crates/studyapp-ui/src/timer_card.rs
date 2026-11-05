@@ -74,6 +74,7 @@ impl TimerCardStyle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TimerCardVariant {
     Inline,
+    Dashboard { desktop_open: bool },
     Widget,
     Preview,
 }
@@ -147,7 +148,11 @@ fn render_card(
 ) -> impl IntoElement {
     let natural_height = Rc::new(Cell::new(None::<Pixels>));
     let action = Rc::new(on_action);
-    let widget = variant != TimerCardVariant::Inline;
+    let widget = matches!(
+        variant,
+        TimerCardVariant::Widget | TimerCardVariant::Preview
+    );
+    let dashboard = matches!(variant, TimerCardVariant::Dashboard { .. });
     let preview = variant == TimerCardVariant::Preview;
     let s = &style.settings;
     let compact = widget && s.layout == WidgetLayout::Compact;
@@ -173,6 +178,42 @@ fn render_card(
             .disabled(preview)
             .on_click(move |_, window, cx| action(value, window, cx))
     };
+    let value = if model.kind == TimerKind::CountUp {
+        model.elapsed
+    } else {
+        model.remaining
+    };
+    let digits = || {
+        typography(TypeRole::Display)
+            .id(if widget {
+                "widget-timer-value"
+            } else {
+                "today-timer-value"
+            })
+            .aria_label(format!(
+                "{} {}",
+                if model.kind == TimerKind::CountUp {
+                    "已用"
+                } else {
+                    "剩余"
+                },
+                clock(value, !widget || s.show_seconds)
+            ))
+            .test_support()
+            .font_family(MONO_FONT)
+            .text_size(px((if compact || dashboard { 32. } else { 42. })
+                * if widget {
+                    f32::from(s.scale) / 100.
+                } else {
+                    1.
+                }))
+            .font_features(FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
+            .text_color(rgb(palette.text))
+            .when(widget && s.opacity < 80, |c| {
+                c.bg(rgb(style.surface)).rounded_md().px_2()
+            })
+            .child(clock(value, !widget || s.show_seconds))
+    };
     let mut header = row().flex_wrap().gap_2().child(
         column()
             .flex_1()
@@ -194,8 +235,15 @@ fn render_card(
                         "inline-timer-status"
                     })
                     .aria_label(status)
+                    .test_support()
                     .tooltip(move |window, cx| Tooltip::new(status).build(window, cx))
                     .text_color(rgb(palette.muted))
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .when(dashboard, |view| {
+                        view.child(muted(format!("{} · {status}", model.kind.label())))
+                    })
                     .child(
                         Icon::new(if model.finished {
                             gpui_kit::assets::IconName::CircleCheck
@@ -208,20 +256,27 @@ fn render_card(
                     ),
             ),
     );
-    if !widget {
-        header = header.child(button(
-            "timer-show-desktop",
-            "在桌面显示",
-            TimerCardAction::ShowOnDesktop,
-        ));
+    if dashboard {
+        header = header.child(digits());
     }
-    let value = if model.kind == TimerKind::CountUp {
-        model.elapsed
-    } else {
-        model.remaining
-    };
+    if !widget {
+        let desktop_open = matches!(variant, TimerCardVariant::Dashboard { desktop_open: true });
+        header = header.child(
+            button(
+                "timer-show-desktop",
+                if desktop_open {
+                    "隐藏桌面小组件"
+                } else {
+                    "显示桌面小组件"
+                },
+                TimerCardAction::ShowOnDesktop,
+            )
+            .selected(desktop_open)
+            .toggled(desktop_open),
+        );
+    }
     let root_id = match variant {
-        TimerCardVariant::Inline => "today-timer",
+        TimerCardVariant::Inline | TimerCardVariant::Dashboard { .. } => "today-timer",
         TimerCardVariant::Widget => "timer-widget-card",
         TimerCardVariant::Preview => "timer-widget-preview",
     };
@@ -337,25 +392,21 @@ fn render_card(
         .flex_shrink_0()
         .gap_2()
         .child(header)
-        .child(
-            typography(TypeRole::Display)
-                .font_family(MONO_FONT)
-                .text_size(px((if compact { 32. } else { 42. })
-                    * if widget {
-                        f32::from(s.scale) / 100.
-                    } else {
-                        1.
-                    }))
-                .font_features(FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
-                .text_color(rgb(palette.text))
-                .when(widget && s.opacity < 80, |c| {
-                    c.bg(rgb(style.surface)).rounded_md().px_2()
-                })
-                .child(clock(value, !widget || s.show_seconds)),
-        )
+        .when(!dashboard, |card| card.child(digits()))
         .when(!compact && (!widget || s.show_segment), |c| {
             c.child(
-                muted(if model.kind == TimerKind::Study {
+                muted(if dashboard && model.kind != TimerKind::CountUp {
+                    format!(
+                        "{} · 已用 {} · 共 {}",
+                        if model.kind == TimerKind::Study {
+                            format!("第 {} 段", model.segment)
+                        } else {
+                            "倒计时".into()
+                        },
+                        clock(model.elapsed, true),
+                        clock(model.target, true)
+                    )
+                } else if model.kind == TimerKind::Study {
                     format!(
                         "第 {} 段 · 已用 {}",
                         model.segment,
@@ -364,6 +415,8 @@ fn render_card(
                 } else {
                     format!("已用 {} · 不会自动计入学习记录", clock(model.elapsed, true))
                 })
+                .id("timer-details")
+                .test_support()
                 .text_color(rgb(palette.muted)),
             )
         });
@@ -423,7 +476,7 @@ fn render_card(
         }
         card = card.child(actions);
     }
-    if !widget || s.layout == WidgetLayout::Expanded {
+    if !dashboard && (!widget || s.layout == WidgetLayout::Expanded) {
         let mut kinds = row().flex_wrap().gap_1();
         for kind in [TimerKind::Study, TimerKind::CountUp, TimerKind::CountDown] {
             kinds = kinds.child(
@@ -448,7 +501,7 @@ fn render_card(
             card = card.child(presets);
         }
     }
-    if !compact && model.kind == TimerKind::Study {
+    if !compact && !dashboard && model.kind == TimerKind::Study {
         card = card.child(muted(format!(
             "本段 {} 分钟 · 到时将邀请你确认收获",
             model.target / 60

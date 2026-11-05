@@ -79,6 +79,13 @@ impl AppButton {
         self
     }
 
+    /// Expose a real toggle operation to assistive technology. Selected styling
+    /// alone does not imply a pressed state for an ordinary operation button.
+    pub fn toggled(mut self, toggled: bool) -> Self {
+        self.inner = self.inner.toggled(toggled);
+        self
+    }
+
     pub fn loading(mut self, loading: bool) -> Self {
         self.loading = loading;
         self.inner = self.inner.loading(loading);
