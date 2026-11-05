@@ -85,6 +85,7 @@ pub(crate) fn transform(
         undo.review.note_ids.retain(|id| id != note_id);
     }
     state.notes.retain(|note| note.id != note_id);
+    Arc::make_mut(&mut state.table_views).remove(note_id);
     Arc::make_mut(&mut state.versions).retain(|v| v.note_id != note_id);
     state.active_versions.retain(|id| !removed.contains(id));
     state.candidates.remove(note_id);

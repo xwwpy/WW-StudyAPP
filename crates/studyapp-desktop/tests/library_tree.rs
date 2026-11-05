@@ -63,6 +63,7 @@ fn version(id: &str, hash: &str) -> NoteVersion {
 }
 fn snapshot() -> Snapshot {
     Snapshot {
+        table_views: Default::default(),
         settings: Settings::default(),
         notes: vec![note("note", Some("child"), false)],
         folders: vec![

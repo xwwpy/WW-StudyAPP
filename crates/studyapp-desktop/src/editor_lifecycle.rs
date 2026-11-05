@@ -117,6 +117,44 @@ impl StudyApp {
         cx: &mut Context<Self>,
     ) {
         match event {
+            MarkdownEvent::TableView {
+                epoch,
+                library,
+                document,
+                table,
+                value,
+            } => {
+                // Identity was captured by the native editor before a document
+                // switch. In-flight display writes may finish after navigation;
+                // they cannot choose another note or cross a library boundary.
+                let known =
+                    self.snapshot.as_ref().is_some_and(|snapshot| {
+                        snapshot.notes.iter().any(|note| note.id == document)
+                    }) || self.note_editor.as_ref().is_some_and(|draft| {
+                        draft.note_id.as_ref().unwrap_or(&draft.asset_group) == &document
+                    }) || self.draft_catalog.values().any(|record| {
+                        record
+                            .draft
+                            .note_id
+                            .as_ref()
+                            .unwrap_or(&record.draft.asset_group)
+                            == &document
+                    });
+                if library == self.last_library
+                    && known
+                    && !self.preferences_ui.replacing
+                    && epoch == self.note_content.read(cx).table_epoch()
+                {
+                    self.send(
+                        studyapp_core::Command::SetTableView {
+                            document,
+                            table,
+                            value,
+                        },
+                        cx,
+                    );
+                }
+            }
             MarkdownEvent::RequestInsertImage => self.request_insert_image(window, cx),
             MarkdownEvent::RequestNativeImagePaste { generation } => {
                 self.paste_native_image(generation, window, cx);
@@ -649,8 +687,17 @@ impl StudyApp {
                 && self.reader_key != version.id
             {
                 let text = version.content.clone();
+                let document = version.note_id.clone();
+                let library = self.last_library.clone();
+                let views = self
+                    .snapshot
+                    .as_ref()
+                    .and_then(|s| s.table_views.get(&document))
+                    .cloned()
+                    .unwrap_or_default();
                 self.reader_key = version.id.clone();
                 self.note_content.update(cx, |editor, cx| {
+                    editor.set_table_context(library, document, views);
                     editor.set_value(text, window, cx);
                     editor.set_readonly(true, cx);
                 });

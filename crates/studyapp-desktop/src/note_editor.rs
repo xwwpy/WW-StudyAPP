@@ -321,6 +321,17 @@ impl StudyApp {
                 })
             })
             && self.note_content.read(cx).value() == draft.content;
+        let document = draft.note_id.as_ref().unwrap_or(&draft.asset_group).clone();
+        let library = self.last_library.clone();
+        let views = self
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.table_views.get(&document))
+            .cloned()
+            .unwrap_or_default();
+        self.note_content.update(cx, |editor, _| {
+            editor.set_table_context(library, document, views)
+        });
         if saving {
             if let Err(error) = self.note_content.update(cx, |editor, cx| {
                 editor.rebase_saved_value(draft.content.clone(), cx)

@@ -886,6 +886,7 @@ impl StudyApp {
             self.pending_note_save = None;
             self.note_saving = false;
             self.note_content.update(cx, |editor, cx| {
+                editor.clear_table_context();
                 editor.set_readonly(false, cx);
                 editor.set_overlay_regions("note-menu", vec![], cx);
                 editor.set_overlay_regions("folder-menu", vec![], cx);

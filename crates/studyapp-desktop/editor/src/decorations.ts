@@ -6,16 +6,7 @@ import { completeFenceLanguage, normalizeFenceLanguage } from "./languages";
 import { isolateHistory } from "@codemirror/commands";
 import type { SyntaxNode } from "@lezer/common";
 
-type TableModel = { columns:number; alignment:string[]; firstLine:number };
-function tableModel(node:SyntaxNode,state:EditorView["state"]):TableModel {
-  const separator=node.getChild("TableDelimiter");
-  const alignment=separator ? state.sliceDoc(separator.from,separator.to).trim().replace(/^\||\|$/g,"").split("|").map(value=>/^\s*:.*:\s*$/.test(value)?"center":/:\s*$/.test(value)?"right":"left") : [];
-  return {
-    columns:alignment.length || node.getChild("TableHeader")?.getChildren("TableCell").length || 1,
-    alignment,
-    firstLine:state.doc.lineAt(node.from).number,
-  };
-}
+import { tableModel, TableModel, tablePresentationChanged } from "./tables";
 
 export const imageMapChanged = StateEffect.define<void>();
 const languageFocusChanged = StateEffect.define<void>();
@@ -172,12 +163,12 @@ class BulletWidget extends WidgetType {
 }
 
 class EmptyCellWidget extends WidgetType {
-  constructor(readonly columns:number, readonly alignment:string) { super(); }
-  eq(other:EmptyCellWidget) { return this.columns === other.columns && this.alignment === other.alignment; }
+  constructor(readonly width:number, readonly alignment:string) { super(); }
+  eq(other:EmptyCellWidget) { return this.width === other.width && this.alignment === other.alignment; }
   toDOM() {
     const cell = document.createElement("span");
     cell.className = "md-table-cell md-empty-cell";
-    cell.style.width = `${100/this.columns}%`;
+    cell.style.width = `${this.width/100}%`;
     cell.style.textAlign = this.alignment;
     cell.setAttribute("aria-label","空单元格");
     return cell;
@@ -254,7 +245,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
   }
   update(update: ViewUpdate) {
     const tree = syntaxTree(update.state);
-    if (update.transactions.some(transaction => transaction.effects.some(effect => effect.is(imageMapChanged) || effect.is(languageFocusChanged))) || update.docChanged || update.selectionSet || update.focusChanged || update.viewportChanged || tree !== this.tree ||
+    if (update.transactions.some(transaction => transaction.effects.some(effect => effect.is(imageMapChanged) || effect.is(languageFocusChanged) || effect.is(tablePresentationChanged))) || update.docChanged || update.selectionSet || update.focusChanged || update.viewportChanged || tree !== this.tree ||
         update.startState.readOnly !== update.state.readOnly) {
       this.tree = tree;
       this.decorations = this.build(update.view);
@@ -428,9 +419,9 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
             if (!parent) return;
             let model=tables.get(parent.from);
             if (!model) {model=tableModel(parent,state);tables.set(parent.from,model);}
-            const {columns,alignment}=model;
+            const {columns,alignment,widths,id}=model;
             const rowNumber = state.doc.lineAt(from).number-model.firstLine;
-            line(from, `md-table-row${name === "TableHeader" ? " md-table-header" : rowNumber%2===0 ? " md-table-stripe" : ""}`, {"data-table-columns":String(columns)});
+            line(from, `md-table-row${name === "TableHeader" ? " md-table-header" : rowNumber%2===0 ? " md-table-stripe" : ""}`, {"data-table-columns":String(columns),"data-table-id":id});
             const delimiters = node.getChildren("TableDelimiter");
             // Include cell whitespace so there are no anonymous text flex items.
             // The same source ranges remain decorated while the caret is inside.
@@ -438,16 +429,16 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
             let index = 0;
             for (const [delimiterIndex,delimiter] of delimiters.entries()) {
               if (delimiter.from > start || delimiterIndex > 0) {
-                if (delimiter.from === start) ranges.push(Decoration.widget({widget:new EmptyCellWidget(columns,alignment[index]||"left"),side:-1}).range(start));
-                else mark(start,delimiter.from,"md-table-cell",{style:`width:${100/columns}%;text-align:${alignment[index]||"left"}`});
+                if (delimiter.from === start) ranges.push(Decoration.widget({widget:new EmptyCellWidget(widths[index],alignment[index]||"left"),side:-1}).range(start));
+                else mark(start,delimiter.from,"md-table-cell",{style:`width:${widths[index]/100}%;text-align:${alignment[index]||"left"}`});
                 index++;
               }
               hide(delimiter.from,delimiter.to);
               start = delimiter.to;
             }
-            if (start < to) { mark(start,to,"md-table-cell",{style:`width:${100/columns}%;text-align:${alignment[index]||"left"}`}); index++; }
+            if (start < to) { mark(start,to,"md-table-cell",{style:`width:${widths[index]/100}%;text-align:${alignment[index]||"left"}`}); index++; }
             for (; index < columns; index++) {
-              ranges.push(Decoration.widget({widget:new EmptyCellWidget(columns,alignment[index]||"left"),side:1}).range(to));
+              ranges.push(Decoration.widget({widget:new EmptyCellWidget(widths[index],alignment[index]||"left"),side:1}).range(to));
             }
           } else if (name === "TableDelimiter") {
             const current = state.doc.lineAt(from);

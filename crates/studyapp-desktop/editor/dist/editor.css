@@ -173,3 +173,16 @@ main { display: flex; flex-direction: column; }
 .md-html-fragment pre { white-space:pre-wrap; }
 
 .toolbar-icon,.outline-header button svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; vertical-align:middle; }
+
+/* Presentation controls never enter CodeMirror's document or clipboard. */
+.md-table-controls { position:fixed; inset:0; z-index:85; pointer-events:none; }
+.md-table-controls[hidden] { display:none; }
+.md-table-actions { position:fixed; display:flex; flex-wrap:wrap; align-items:center; gap:2px; padding:4px; border:1px solid var(--editor-border); border-radius:8px; background:var(--editor-background); color:var(--editor-ui-text,var(--editor-text)); box-shadow:0 3px 12px #0002; pointer-events:auto; }
+.md-table-actions button,.md-table-actions select { display:inline-flex; align-items:center; justify-content:center; height:26px; min-width:26px; border:0; border-radius:4px; background:transparent; color:inherit; cursor:pointer; font:inherit; }
+.md-table-actions button { padding:0; flex:0 0 26px; }
+.md-table-actions select { flex:1 0 58px; max-width:85px; font-size:12px; }
+.md-table-actions button:hover,.md-table-actions button[aria-pressed=true] { background:var(--editor-selection); }
+.md-table-actions button:focus-visible,.md-table-resize:focus-visible { outline:2px solid var(--editor-accent); outline-offset:1px; }
+.md-table-resize { position:fixed; width:10px; padding:0; border:0; border-radius:0; cursor:col-resize; background:transparent; touch-action:none; pointer-events:auto; }
+.md-table-resize:hover,.md-table-resize:focus-visible { background:var(--editor-selection); }
+#editor .md-table-cell { box-sizing:border-box; }

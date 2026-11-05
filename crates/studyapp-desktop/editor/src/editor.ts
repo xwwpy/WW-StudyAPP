@@ -1,3 +1,4 @@
+import { setTableDocument, setTableDefaults, tableUpdates, tablePresentationChanged, installTableControls, syncTableAnchors, hideTableControls } from "./tables";
 import { sanitizeHtml, sanitizeStyle } from "./safe-html";
 import { htmlConfiguration, htmlRendering } from "./html-rendering";
 import { previewCaret, previewMouseSelection } from "./preview";
@@ -22,7 +23,7 @@ import { incompleteScalars, scalarText, splitsScalar } from "./unicode";
 import { eventBinding, resolveBindings, typingKeymap } from "./shortcuts";
 import { scanDocumentStatistics } from "./statistics";
 
-interface Load { outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
+interface Load { tableViews?:unknown; tableConfigurable?:boolean; outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
 interface Rebase extends Load { previousGeneration: number; previousRevision: number; changes: { from: number; to: number; insert: string }[]; }
 interface TestAction { type: string; request?: string | number; from?: number; to?: number; text?: string; anchor?: number; head?: number; name?: string; edits?: number; width?: number; height?: number; }
 interface Bridge {
@@ -305,7 +306,7 @@ function setShortcuts(values: Record<string, string>): void {
 }
 function extensions(readonly: boolean, rawText = ""): Extension[] {
   return [
-    outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : [renderedMarkdown, htmlRendering]),
+    tableUpdates, outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : [renderedMarkdown, htmlRendering]),
     themeMode.of([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)]), rawUrlWrapping,
     documentLimits(rawText, warning, clearWarning),
     markdown({ base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
@@ -319,7 +320,7 @@ function extensions(readonly: boolean, rawText = ""): Extension[] {
     EditorView.domEventHandlers({
       click(event, editor) {
         if (!loaded || !canRequestEdit || !editor.state.readOnly || pendingFlush || event.button !== 0 ||
-            (event.target as Element).closest("button,input,select,a,.md-language-control,.cm-panels,.cm-tooltip")) return false;
+            (event.target as Element).closest("button,input,select,a,.md-table-controls,.md-language-control,.cm-panels,.cm-tooltip")) return false;
         if (!(event.target as Element).closest(".cm-content")) return false;
         const position = previewCaret(editor, event);
         if (position !== null) post({type:"requestEdit",generation,position});
@@ -395,6 +396,7 @@ function setReadonly(value: boolean): void {
   updateToolbar();
 }
 function setSource(value: boolean): void {
+  hideTableControls();
   source = Boolean(value);
   document.documentElement.dataset.source = String(source);
   view.dispatch({ effects: renderingMode.reconfigure(source ? [] : [renderedMarkdown, htmlRendering]) });
@@ -415,6 +417,7 @@ function load(value: Load): void {
   status.textContent = "";
   status.classList.remove("error", "warning");
   // CM's Text uses LF internally. Only host canonical text owns raw CRLF/mixed EOL.
+  setTableDocument(value.tableViews, value.tableConfigurable === true);
   view.setState(EditorState.create({ doc: value.text.replace(/\r\n?/g, "\n"), extensions: extensions(Boolean(value.readonly), value.text) }));
   setOutlineEnabled(value.outlineEnabled !== false);
   refreshOutline();
@@ -493,6 +496,7 @@ async function flush(value: { request: number }): Promise<void> {
     else stableTicks = 0;
     stableRevision = revision;
   }
+  syncTableAnchors();
   setReadonly(true);
   pendingFlush = false;
   updateToolbar();
@@ -567,11 +571,12 @@ function restoreSelection(position: number): void {
   view.focus();
 }
 function setTheme(tokens: Record<string, unknown>): void {
+  setTableDefaults(tokens?.tableDefaults);
   themeWarning.hidden = !applyEditorTheme(tokens);
   // A changed style module invalidates CodeMirror's measured text geometry,
   // including its cursor layer, without replacing document/history/selection.
   htmlEnabled = tokens?.renderHtml !== false;
-  view.dispatch({effects:themeMode.reconfigure([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)])});
+  view.dispatch({effects:[themeMode.reconfigure([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)]),tablePresentationChanged.of()]});
   view.requestMeasure();
 }
 applyEditorTheme({});
@@ -713,5 +718,6 @@ window.studyappEditor = bridge;
 updateToolbar();
 post({ type: "ready" });
 
+installTableControls(view,(table,value)=>{ if(loaded) post({type:"tableView",generation,table,value}); });
 installOutline(view);
 installCopyMenu(view, warning);

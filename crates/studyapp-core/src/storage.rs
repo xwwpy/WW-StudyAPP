@@ -17,6 +17,8 @@ pub(crate) struct Undo {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct State {
+    #[serde(default)]
+    pub table_views: Arc<crate::LibraryTableViews>,
     pub settings: Settings,
     pub notes: Vec<Note>,
     #[serde(default)]
@@ -95,6 +97,7 @@ impl crate::LayoutSettings {
 impl State {
     pub fn new(now: i64) -> Self {
         Self {
+            table_views: Default::default(),
             settings: Settings::default(),
             notes: vec![],
             folders: vec![],
@@ -120,6 +123,7 @@ impl State {
     }
     pub fn snapshot(&self, path: String) -> Snapshot {
         Snapshot {
+            table_views: self.table_views.clone(),
             settings: self.settings.clone(),
             notes: self.notes.clone(),
             folders: self.folders.clone(),
@@ -142,6 +146,7 @@ impl State {
     }
     pub fn validate(&self) -> Result<()> {
         self.settings.validate()?;
+        crate::table_layout::validate_library(&self.table_views)?;
         crate::folders::validate(self)?;
         let timer = &self.timer;
         let valid = match timer.kind {

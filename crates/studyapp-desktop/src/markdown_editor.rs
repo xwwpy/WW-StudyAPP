@@ -15,6 +15,13 @@ use studyapp_desktop::editor_protocol::{EditPatch, EditorDocument};
 pub struct MarkdownChanged;
 #[derive(Clone)]
 pub enum MarkdownEvent {
+    TableView {
+        epoch: u64,
+        library: String,
+        document: String,
+        table: String,
+        value: Option<studyapp_core::TableView>,
+    },
     Save,
     RequestEdit(usize),
     RequestInsertImage,
@@ -40,6 +47,11 @@ pub enum MarkdownEvent {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Message {
+    TableView {
+        generation: u64,
+        table: String,
+        value: Option<studyapp_core::TableView>,
+    },
     Ready,
     Change {
         generation: u64,
@@ -107,6 +119,8 @@ enum Message {
 /// revisioned text transactions; no Markdown/HTML parsing runs while typing.
 pub struct MarkdownEditor {
     document: EditorDocument,
+    tables: TableBinding,
+    table_epoch: u64,
     sender: mpsc::Sender<String>,
     receiver: mpsc::Receiver<String>,
     host: Option<crate::web_editor_host::HostedEditor>,
@@ -143,6 +157,43 @@ fn schedule_editor_profile(
     executor.spawn(async move { resolve().map(|paths| paths.editor_profile()) })
 }
 
+#[derive(Default)]
+struct TableBinding {
+    current: Option<(String, String)>,
+    views: studyapp_core::DocumentTableViews,
+    pending: Option<((String, String), studyapp_core::DocumentTableViews)>,
+}
+impl TableBinding {
+    fn stage(
+        &mut self,
+        library: String,
+        document: String,
+        views: studyapp_core::DocumentTableViews,
+    ) {
+        let context = (library, document);
+        self.pending = (self.current.as_ref() != Some(&context)).then_some((context, views));
+    }
+    fn commit(&mut self) {
+        if let Some((context, views)) = self.pending.take() {
+            self.current = Some(context);
+            self.views = views;
+        }
+    }
+}
+
+fn valid_table_message(
+    generation: u64,
+    expected: u64,
+    document_bound: bool,
+    table: &str,
+    value: &Option<studyapp_core::TableView>,
+) -> bool {
+    generation == expected
+        && document_bound
+        && studyapp_core::valid_table_key(table)
+        && value.as_ref().is_none_or(|v| v.validate().is_ok())
+}
+
 impl MarkdownEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         crate::audit_log::stage(
@@ -173,6 +224,8 @@ impl MarkdownEditor {
         });
         Self {
             document: EditorDocument::new(String::new()),
+            tables: Default::default(),
+            table_epoch: 0,
             sender,
             receiver,
             host: None,
@@ -324,6 +377,26 @@ impl MarkdownEditor {
         self.readonly
     }
 
+    pub(crate) fn table_epoch(&self) -> u64 {
+        self.table_epoch
+    }
+
+    pub(crate) fn clear_table_context(&mut self) {
+        // A restore can replace a database without changing its path or note
+        // UUIDs. Old optimistic display values and queued events must not win.
+        self.tables = TableBinding::default();
+        self.table_epoch = self.table_epoch.wrapping_add(1);
+    }
+
+    pub(crate) fn set_table_context(
+        &mut self,
+        library: String,
+        document: String,
+        views: studyapp_core::DocumentTableViews,
+    ) {
+        self.tables.stage(library, document, views);
+    }
+
     pub fn set_value(&mut self, value: String, window: &mut Window, cx: &mut Context<Self>) {
         self.set_value_with_readonly(value, false, window, cx);
     }
@@ -337,6 +410,8 @@ impl MarkdownEditor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.poll(cx);
+        self.tables.commit();
         self.document.reset(value);
         self.images.clear();
         self.readonly = readonly;
@@ -396,7 +471,7 @@ impl MarkdownEditor {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled});
+        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled, "tableViews": self.tables.views, "tableConfigurable": self.tables.current.is_some()});
         let shortcuts = serde_json::to_string(&self.shortcuts).expect("string map serializes");
         let theme = &self.theme;
         if let Err(error) = self.evaluate(&format!("window.studyappEditor.setShortcuts({shortcuts}); window.studyappEditor.setTheme({theme}); window.studyappEditor.load({payload});")) {
@@ -685,6 +760,43 @@ impl MarkdownEditor {
                     // only the operating system drop callback supplies paths.
                     Message::ExternalDrag { phase, paths } => {
                         cx.emit(MarkdownEvent::ExternalDrag { phase, paths });
+                    }
+                    Message::TableView {
+                        generation,
+                        table,
+                        value,
+                    } => {
+                        if valid_table_message(
+                            generation,
+                            self.document.generation(),
+                            self.tables.current.is_some(),
+                            &table,
+                            &value,
+                        ) && let Some((library, document)) = self.tables.current.clone()
+                        {
+                            if value.is_some()
+                                && !self.tables.views.contains_key(&table)
+                                && self.tables.views.len() >= 128
+                            {
+                                cx.emit(MarkdownEvent::Error(
+                                    "该笔记的表格显示配置已达上限，请先恢复不再使用的表格默认显示"
+                                        .into(),
+                                ));
+                                return Ok(());
+                            }
+                            if let Some(value) = &value {
+                                self.tables.views.insert(table.clone(), value.clone());
+                            } else {
+                                self.tables.views.remove(&table);
+                            }
+                            cx.emit(MarkdownEvent::TableView {
+                                epoch: self.table_epoch,
+                                library,
+                                document,
+                                table,
+                                value,
+                            });
+                        }
                     }
                     Message::CancelResize { generation } => {
                         if generation == self.document.generation() && self.visible {
@@ -1044,6 +1156,47 @@ mod profile_tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+    #[test]
+    fn table_identity_stays_old_until_the_document_generation_is_replaced() {
+        let mut binding = super::TableBinding::default();
+        binding.stage("library".into(), "old-note".into(), Default::default());
+        assert!(binding.current.is_none());
+        binding.commit();
+        let old = binding.current.clone();
+        binding.stage("library".into(), "new-note".into(), Default::default());
+        // Queued old-generation events must still capture the OLD identity.
+        assert_eq!(binding.current, old);
+        binding.commit();
+        assert_eq!(binding.current, Some(("library".into(), "new-note".into())));
+        assert!(binding.pending.is_none());
+        // Same-path restores invalidate even a previously identical context.
+        binding = super::TableBinding::default();
+        binding.stage("library".into(), "new-note".into(), Default::default());
+        assert!(binding.current.is_none());
+        binding.commit();
+        assert!(binding.views.is_empty());
+    }
+    #[test]
+    fn table_protocol_rejects_stale_unbound_and_oversized_values_without_page_owned_identity() {
+        let table = "0".repeat(32);
+        assert!(super::valid_table_message(7, 7, true, &table, &None));
+        assert!(!super::valid_table_message(6, 7, true, &table, &None));
+        assert!(!super::valid_table_message(7, 7, false, &table, &None));
+        assert!(!super::valid_table_message(7, 7, true, "../foreign", &None));
+        let page = serde_json::json!({"type":"tableView","generation":7,"table":table,"value":null,"document":"foreign","library":"elsewhere"});
+        let super::Message::TableView {
+            generation,
+            table,
+            value,
+        } = serde_json::from_value(page).unwrap()
+        else {
+            panic!("table message");
+        };
+        assert!(super::valid_table_message(
+            generation, 7, true, &table, &value
+        ));
+        assert!(serde_json::from_value::<super::Message>(serde_json::json!({"type":"tableView","generation":7,"table":table,"value":{"anchor":{},"widths":[10000]}})).is_err());
+    }
     #[gpui_kit::test]
     fn profile_resolution_is_deferred_off_render(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap().keep();

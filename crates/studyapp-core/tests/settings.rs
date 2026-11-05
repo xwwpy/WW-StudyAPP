@@ -106,6 +106,7 @@ fn low_contrast_colors_save_and_resolve_exactly_as_requested() {
 fn custom_theme_presets_round_trip_and_reject_missing_selection_and_duplicates() {
     use studyapp_core::{AppearanceSettings, ThemeMode, ThemePalette, ThemePreset};
     let mut appearance = AppearanceSettings {
+        table_defaults: Default::default(),
         render_html: true,
         mode: ThemeMode::Custom,
         active_preset: Some("paper".into()),

@@ -2473,3 +2473,112 @@ test("safe ordered start attributes keep the same bounded integer grammar", asyn
   }
   assert.deepEqual(errors,[]); await page.close();
 });
+
+const tableSource = "# Table\n\n| Name | Explanation |\n| :--- | ---: |\n| A | A much longer explanation for automatic widths |\n| B | short |\n";
+async function tableSetup(text=tableSource, overrides={}, readonly=true) {
+  const result=await setup(text);
+  await result.page.evaluate(({text,overrides,readonly})=>window.studyappEditor.load({generation:42,text,readonly,tableViews:overrides,tableConfigurable:true}),{text,overrides,readonly});
+  await result.page.locator('.md-table-actions').waitFor({state:'visible'});
+  return result;
+}
+async function tableWidths(page,index=0) {
+  return page.locator('.md-table-header').nth(index).locator('.md-table-cell').evaluateAll(cells=>cells.map(c=>c.getBoundingClientRect().width));
+}
+async function tableMessages(page) {return page.evaluate(()=>window.messages.filter(m=>m.type==='tableView'));}
+
+test('table display alignment and adaptive width never modify readonly source or revision',async()=>{
+  const {page,errors}=await tableSetup();const before=await state(page), equal=await tableWidths(page);
+  assert.ok(Math.abs(equal[0]-equal[1])<2);
+  await page.getByRole('button',{name:'按内容自适应列宽',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelector('.md-table-cell').getBoundingClientRect().width<200);
+  const fitted=await tableWidths(page);assert.ok(fitted[1]>fitted[0]*2);
+  await page.getByLabel('选择表格列',{exact:true}).selectOption('1');
+  await page.getByRole('button',{name:'居中对齐',exact:true}).click();
+  await page.waitForFunction(()=>getComputedStyle(document.querySelectorAll('.md-table-header .md-table-cell')[1]).textAlign==='center');
+  const after=await state(page);assert.equal(after.text,before.text);assert.equal(after.revision,before.revision);
+  assert.equal((await tableMessages(page)).length,2);
+  assert.equal(await page.evaluate(()=>window.messages.some(m=>m.type==='change'||m.type==='requestEdit')),false);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('table drag previews live, commits once and cancel restores widths',async()=>{
+  const {page,errors}=await tableSetup();const original=await tableWidths(page);
+  let box=await page.getByRole('separator',{name:'调整第 1 列宽度'}).boundingBox();
+  await page.mouse.move(box.x+5,box.y+8);await page.mouse.down();await page.mouse.move(box.x+85,box.y+8,{steps:8});
+  await page.waitForTimeout(80);assert.equal((await tableMessages(page)).length,0);
+  assert.ok((await tableWidths(page))[0]>original[0]+50);await page.mouse.up();
+  assert.equal((await tableMessages(page)).length,1);const committed=await tableWidths(page);
+  box=await page.getByRole('separator',{name:'调整第 1 列宽度'}).boundingBox();
+  await page.mouse.move(box.x+5,box.y+8);await page.mouse.down();await page.mouse.move(box.x-60,box.y+8,{steps:4});
+  await page.getByRole('separator',{name:'调整第 1 列宽度'}).dispatchEvent('pointercancel',{pointerId:1});await page.mouse.up();await page.waitForTimeout(80);
+  assert.ok(Math.abs((await tableWidths(page))[0]-committed[0])<2);assert.equal((await tableMessages(page)).length,1);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('table overrides survive reload, prefix edits and identical headers without sharing settings',async()=>{
+  const second=tableSource.replace('A much longer explanation for automatic widths','different content');
+  const text=tableSource+'\n'+second;
+  const {page,errors}=await tableSetup(text,{},false);
+  await page.getByRole('button',{name:'居中对齐',exact:true}).click();
+  const saved=(await tableMessages(page)).at(-1);assert.ok(saved);
+  const headers=page.locator('.md-table-header');assert.equal(await headers.count(),2);
+  assert.notEqual(await headers.nth(0).getAttribute('data-table-id'),await headers.nth(1).getAttribute('data-table-id'));
+  const first=text.indexOf('Name');await action(page,{type:'replace',from:first,to:first+4,text:'Renamed'});
+  await action(page,{type:'replace',from:0,text:'前插中文🙂\n\n'});
+  await page.evaluate(()=>window.studyappEditor.flush({request:701}));
+  const latest=(await tableMessages(page)).at(-1);assert.equal(latest.table,saved.table);
+  const current=(await state(page)).text;
+  await page.evaluate(({text,saved})=>window.studyappEditor.load({generation:43,text,readonly:true,tableConfigurable:true,tableViews:{[saved.table]:saved.value}}),{text:current,saved:latest});
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.md-table-cell')).textAlign==='center');
+  const all=await headers.evaluateAll(rows=>rows.map(r=>getComputedStyle(r.querySelector('.md-table-cell')).textAlign));
+  assert.deepEqual(all,['center','left']);
+  await headers.nth(1).hover();
+  await page.waitForFunction(()=>document.querySelector('[data-alignment=source]').getAttribute('aria-pressed')==='true');
+  assert.equal(await page.getByRole('button',{name:'居中对齐',exact:true}).getAttribute('aria-pressed'),'false');
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('table keyboard widths, global defaults and reset remain independent from source and undo',async()=>{
+  const {page,errors}=await tableSetup();
+  await page.getByRole('separator',{name:'调整第 1 列宽度'}).focus();await page.keyboard.press('ArrowRight');
+  assert.equal((await tableMessages(page)).length,1);
+  const saved=(await tableMessages(page)).at(-1);assert.equal(saved.value.widths.reduce((a,b)=>a+b,0),10000);
+  await page.evaluate(()=>window.studyappEditor.setTheme({tableDefaults:{sizing:'adaptive',alignment:'center'}}));
+  await page.getByRole('button',{name:'恢复全局默认',exact:true}).click();
+  await page.waitForFunction(()=>getComputedStyle(document.querySelector('.md-table-cell')).textAlign==='center');
+  const widths=await tableWidths(page);assert.ok(widths[1]>widths[0]*2);
+  assert.equal((await tableMessages(page)).at(-1).value,null);assert.equal((await state(page)).revision,0);
+  await page.setViewportSize({width:350,height:410});await page.waitForTimeout(100);
+  const bounds=await page.locator('.md-table-actions').boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=350);
+  const header=await page.locator('.md-table-header').boundingBox();
+  assert.ok(bounds.height<=40);assert.ok(bounds.y+bounds.height<=header.y||bounds.y>=header.y+header.height,'floating controls must not cover the active table header');
+  await page.screenshot({path:fileURLToPath(new URL('../test-results/table-controls-narrow.png',import.meta.url))});
+  await page.evaluate(()=>window.studyappEditor.setSource(true));await page.locator('.md-table-controls').waitFor({state:'hidden'});
+  assert.equal((await state(page)).text,tableSource);assert.deepEqual(errors,[]);await page.close();
+});
+
+test('table Escape cancels a drag while content retains focus; new generation cannot receive old drag',async()=>{
+  const {page,errors}=await tableSetup();const before=await tableWidths(page);
+  const handle=page.getByRole('separator',{name:'调整第 1 列宽度'});
+  let b=await handle.boundingBox();await page.mouse.move(b.x+4,b.y+9);await page.mouse.down();await page.mouse.move(b.x+65,b.y+9);
+  await page.keyboard.press('Escape');await page.mouse.up();await page.waitForTimeout(80);
+  assert.ok(Math.abs((await tableWidths(page))[0]-before[0])<2);assert.equal((await tableMessages(page)).length,0);
+  b=await handle.boundingBox();await page.mouse.move(b.x+4,b.y+9);await page.mouse.down();await page.mouse.move(b.x+65,b.y+9);
+  await page.evaluate(text=>window.studyappEditor.load({generation:99,text,readonly:true,tableConfigurable:true}),tableSource.replaceAll('Name','Other'));
+  await page.mouse.up();await page.waitForTimeout(80);
+  assert.equal((await tableMessages(page)).length,0);assert.ok(Math.abs((await tableWidths(page))[0]-(await tableWidths(page))[1])<2);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('table empty cells retain widths across inline source selection and text undo',async()=>{
+  const text='| A | B | C |\n| --- | :---: | ---: |\n| | value | |\n| a | | c |\n';
+  const {page,errors}=await tableSetup(text,{},false);
+  await page.getByRole('separator',{name:'调整第 1 列宽度'}).focus();await page.keyboard.press('Shift+ArrowRight');
+  const before=await tableWidths(page);await select(page,text.indexOf('value'),text.indexOf('value')+5);
+  await page.keyboard.type('changed');await action(page,{type:'command',name:'undo'});await page.waitForTimeout(100);
+  assert.equal((await state(page)).text,text);
+  const widths=await tableWidths(page);assert.ok(Math.abs(widths[0]-before[0])<2);
+  const rows=await page.locator('.md-table-row').evaluateAll(rows=>rows.map(row=>[...row.querySelectorAll('.md-table-cell')].map(cell=>cell.getBoundingClientRect().width)));
+  for(const row of rows) {assert.equal(row.length,3);row.forEach((w,i)=>assert.ok(Math.abs(w-widths[i])<2));}
+  assert.deepEqual(errors,[]);await page.close();
+});

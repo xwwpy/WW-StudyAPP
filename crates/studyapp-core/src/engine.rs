@@ -359,6 +359,32 @@ impl Engine {
                 next.settings.show_file_paths = visible;
                 "显示设置已保存".into()
             }
+            Command::SetTableView {
+                document,
+                table,
+                value,
+            } => {
+                ensure!(
+                    uuid::Uuid::parse_str(&document).is_ok() && crate::valid_table_key(&table),
+                    "表格标识无效"
+                );
+                if let Some(value) = &value {
+                    value.validate()?;
+                }
+                let views = std::sync::Arc::make_mut(&mut next.table_views);
+                if let Some(value) = value {
+                    views.entry(document).or_default().insert(table, value);
+                } else if let Some(tables) = views.get_mut(&document) {
+                    tables.remove(&table);
+                    if tables.is_empty() {
+                        views.remove(&document);
+                    }
+                }
+                crate::table_layout::validate_library(views)?;
+                // Dragging commits only once; successful presentation-only writes
+                // are silent, while persistence errors use the normal notice path.
+                String::new()
+            }
             Command::SetTimerWidgetPinned(pinned) => {
                 next.settings.timer_widget.pinned = pinned;
                 "计时窗口设置已保存".into()

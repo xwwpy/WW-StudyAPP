@@ -8,6 +8,7 @@ use studyapp_core::{
 #[derive(Clone, Copy)]
 pub(crate) enum Context {
     Save,
+    Table,
     Sync,
     SyncConflict,
     Import,
@@ -23,6 +24,7 @@ impl Context {
         match work {
             Work::Scoped { work, .. } => Self::for_work(work),
             Work::Apply(command) => match command {
+                Command::SetTableView { .. } => Self::Table,
                 Command::CreateNote { .. }
                 | Command::CreateNoteInFolder { .. }
                 | Command::CreateNoteWithId { .. }
@@ -55,6 +57,13 @@ impl Context {
     pub(crate) fn event(self, outcome: &Result<String, String>) -> NoticeEvent {
         let failed = outcome.is_err();
         let (success, failure, key, action, failure_summary) = match self {
+            Self::Table => (
+                Category::SaveSuccess,
+                Category::SaveFailure,
+                "table-view",
+                Action::OpenStorage,
+                "表格显示设置未保存，笔记源文未改变。当前显示仍保留，请重试调整或检查资料库。",
+            ),
             Self::Save => (
                 Category::SaveSuccess,
                 Category::SaveFailure,
@@ -153,6 +162,12 @@ pub(crate) fn work_key(work: &Work, generation: u64) -> String {
             Work::Apply(command) => {
                 std::mem::discriminant(command).hash(hash);
                 match command {
+                    Command::SetTableView {
+                        document, table, ..
+                    } => {
+                        document.hash(hash);
+                        table.hash(hash);
+                    }
                     Command::SaveNote { note_id, .. }
                     | Command::RenameNote { note_id, .. }
                     | Command::MoveNote { note_id, .. }

@@ -270,6 +270,7 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
+            table_views: Default::default(),
             settings: Settings::default(),
             notes: vec![Note {
                 id: "note".into(),

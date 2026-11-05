@@ -11,6 +11,7 @@ use studyapp_core::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedTheme {
+    pub table_defaults: studyapp_core::TableDefaults,
     pub render_html: bool,
     pub dark: bool,
     pub background: u32,
@@ -164,6 +165,7 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
         },
         markdown_layout: markdown.layout,
         render_html: settings.render_html,
+        table_defaults: settings.table_defaults,
     }
 }
 
@@ -207,6 +209,7 @@ impl ResolvedTheme {
             .into();
         serde_json::json!({
             "renderHtml": self.render_html,
+            "tableDefaults": self.table_defaults,
             "mode": if self.dark { "dark" } else { "light" },
             "accent": hex(self.accent), "background": hex(self.surface),
             "surface": hex(self.surface), "text": hex(self.text),
@@ -649,5 +652,45 @@ mod tests {
         assert_ne!(palettes[0].chart, palettes[1].chart);
         assert_ne!(palettes[0].surface, palettes[0].inset);
         assert_ne!(palettes[1].surface, palettes[1].surface_raised);
+    }
+}
+
+#[cfg(test)]
+mod table_defaults_tests {
+    #[test]
+    fn global_table_defaults_are_independent_of_builtin_and_custom_themes() {
+        use studyapp_core::{
+            AppearanceSettings, TableAlignment, TableDefaults, TableSizing, ThemeMode, ThemePreset,
+        };
+        let defaults = TableDefaults {
+            sizing: TableSizing::Adaptive,
+            alignment: TableAlignment::Center,
+        };
+        let mut settings = AppearanceSettings {
+            table_defaults: defaults,
+            ..Default::default()
+        };
+        for mode in [
+            ThemeMode::System,
+            ThemeMode::Light,
+            ThemeMode::Dark,
+            ThemeMode::Custom,
+        ] {
+            settings.mode = mode;
+            if mode == ThemeMode::Custom {
+                settings.active_preset = Some("table-theme".into());
+                settings.custom_presets = vec![ThemePreset {
+                    id: "table-theme".into(),
+                    name: "Table theme".into(),
+                    palette: Default::default(),
+                    markdown: Default::default(),
+                }];
+            }
+            let theme = super::resolve(&settings, false);
+            assert_eq!(theme.table_defaults, defaults);
+            let tokens = theme.editor_tokens();
+            assert_eq!(tokens["tableDefaults"]["sizing"], "adaptive");
+            assert_eq!(tokens["tableDefaults"]["alignment"], "center");
+        }
     }
 }

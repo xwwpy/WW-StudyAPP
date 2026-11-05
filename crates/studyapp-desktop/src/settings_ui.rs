@@ -387,6 +387,7 @@ impl StudyApp {
                 // Presets and their editor fields belong to the theme editor.
                 draft.appearance.mode = defaults.settings.appearance.mode;
                 draft.appearance.render_html = defaults.settings.appearance.render_html;
+                draft.appearance.table_defaults = defaults.settings.appearance.table_defaults;
                 draft.appearance.font_size = defaults.settings.appearance.font_size;
                 draft.appearance.spacing = defaults.settings.appearance.spacing;
             }
@@ -2642,6 +2643,32 @@ impl StudyApp {
                             },
                         ),
                     ))
+                    .child(heading("Markdown 表格默认显示"))
+                    .child(row().flex_wrap().child("列宽").children([
+                        (studyapp_core::TableSizing::Equal, "equal", "等宽"),
+                        (studyapp_core::TableSizing::Adaptive, "adaptive", "按内容自适应"),
+                    ].into_iter().map(|(value, id, label)| {
+                        let button = Button::new(SharedString::from(format!("table-default-{id}"))).small().label(label).disabled(busy)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.table_defaults.sizing = value; }
+                                this.refresh_appearance(window, cx); cx.notify();
+                            }));
+                        if appearance.table_defaults.sizing == value { button.primary() } else { button }
+                    })))
+                    .child(row().flex_wrap().child("列对齐").children([
+                        (studyapp_core::TableAlignment::Source, "source", "沿用源文"),
+                        (studyapp_core::TableAlignment::Left, "left", "左对齐"),
+                        (studyapp_core::TableAlignment::Center, "center", "居中"),
+                        (studyapp_core::TableAlignment::Right, "right", "右对齐"),
+                    ].into_iter().map(|(value, id, label)| {
+                        let button = Button::new(SharedString::from(format!("table-align-{id}"))).small().label(label).disabled(busy)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.table_defaults.alignment = value; }
+                                this.refresh_appearance(window, cx); cx.notify();
+                            }));
+                        if appearance.table_defaults.alignment == value { button.primary() } else { button }
+                    })))
+                    .child(muted("适用于所有主题；正文中可为单张表格调整列宽与对齐，恢复默认后重新跟随此处。不会改写 Markdown。"))
                     .child(muted("修改可即时预览；保存全部设置后才会写入资料库。")),
             );
         }

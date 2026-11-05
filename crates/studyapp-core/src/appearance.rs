@@ -426,6 +426,7 @@ fn markdown_backdrop(index: usize, colors: &[RgbaColor; 26], surface: u32) -> u3
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppearanceSettings {
+    pub table_defaults: crate::TableDefaults,
     /// Formatting-only HTML; never grants resource or script access.
     pub render_html: bool,
     pub notifications: crate::NotificationAppearance,
@@ -441,6 +442,7 @@ impl Default for AppearanceSettings {
         Self {
             notifications: Default::default(),
             render_html: true,
+            table_defaults: Default::default(),
             mode: ThemeMode::System,
             active_preset: None,
             custom_presets: vec![],

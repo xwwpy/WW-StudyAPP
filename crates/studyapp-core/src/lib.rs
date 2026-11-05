@@ -15,6 +15,7 @@ mod safe_html;
 mod safe_html_document;
 mod stats;
 mod storage;
+mod table_layout;
 mod timer;
 pub use appearance::*;
 pub use color::*;
@@ -29,6 +30,7 @@ pub use purge::{
 };
 pub use safe_html::{sanitize_html, sanitize_html_style, sanitize_inline_html};
 pub use stats::daily_stats;
+pub use table_layout::*;
 pub use timer::*;
 /// Check SQLite integrity, application identity and stored state without modifying the backup.
 pub fn verify_backup_file(path: &std::path::Path) -> anyhow::Result<()> {

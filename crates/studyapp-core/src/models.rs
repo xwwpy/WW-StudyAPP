@@ -160,6 +160,8 @@ pub struct TimerState {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub table_views: std::sync::Arc<crate::LibraryTableViews>,
     pub settings: Settings,
     pub notes: Vec<Note>,
     #[serde(default)]
@@ -249,6 +251,11 @@ pub enum Command {
     },
     SetShowFilePaths(bool),
     SetTimerWidgetPinned(bool),
+    SetTableView {
+        document: String,
+        table: String,
+        value: Option<crate::TableView>,
+    },
     SaveLayout(LayoutSettings),
     SetPaused(bool),
     StartTimer {
