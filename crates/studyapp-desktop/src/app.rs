@@ -415,8 +415,8 @@ impl StudyApp {
         .detach();
         cx.observe(&sync_panel, |_, _, cx| cx.notify()).detach();
         let folders = cx.new(|cx| crate::folders_ui::FolderPanel::new(window, cx));
-        let interval = input("5–240 分钟", "60", window, cx);
-        let deadline = input("1–30 分钟", "5", window, cx);
+        let interval = input("正整数分钟", "60", window, cx);
+        let deadline = input("正整数分钟", "5", window, cx);
         let review_days = input("用逗号分隔天数", "1, 3, 7, 14, 30", window, cx);
         for setting in [&interval, &deadline, &review_days] {
             cx.subscribe(

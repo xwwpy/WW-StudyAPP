@@ -1379,14 +1379,14 @@ impl StudyApp {
                 .value()
                 .trim()
                 .parse()
-                .map_err(|_| anyhow::anyhow!("询问间隔必须是整数"))?;
+                .map_err(|_| anyhow::anyhow!("询问间隔请填写可安全表示的正整数分钟"))?;
             settings.answer_minutes = self
                 .deadline
                 .read(cx)
                 .value()
                 .trim()
                 .parse()
-                .map_err(|_| anyhow::anyhow!("回答期限必须是整数"))?;
+                .map_err(|_| anyhow::anyhow!("回答期限请填写可安全表示的正整数分钟"))?;
             settings.review_days = self
                 .review_days
                 .read(cx)
@@ -1845,13 +1845,13 @@ impl StudyApp {
                     "询问间隔",
                     row()
                         .child(form::input(&self.interval, busy).w(px(100.)))
-                        .child(muted("分钟 · 5–240")),
+                        .child(muted("分钟 · 正整数")),
                 ))
                 .child(form::settings_row(
                     "回答期限",
                     row()
                         .child(form::input(&self.deadline, busy).w(px(100.)))
-                        .child(muted("分钟 · 1–30")),
+                        .child(muted("分钟 · 正整数")),
                 ))
                 .child(form::settings_row(
                     "复习间隔",

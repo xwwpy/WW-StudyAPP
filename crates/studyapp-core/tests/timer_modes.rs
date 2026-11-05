@@ -284,3 +284,118 @@ fn countdown_input_and_presets_share_checked_minute_conversion() {
         serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
     assert_eq!(decoded, settings);
 }
+
+#[test]
+fn study_timer_accepts_positive_minutes_below_and_above_legacy_ranges() {
+    for minutes in [1, 4, 31, 241, 1500, u32::MAX] {
+        let (dir, mut engine) = fixture();
+        engine
+            .apply(
+                Command::SaveLearningSettings {
+                    interval_minutes: minutes,
+                    answer_minutes: minutes,
+                    review_days: vec![1, 3],
+                },
+                1000,
+            )
+            .unwrap();
+        let snapshot = engine.snapshot();
+        assert_eq!(snapshot.settings.interval_minutes, minutes);
+        assert_eq!(snapshot.settings.answer_minutes, minutes);
+        assert_eq!(snapshot.timer.target_seconds, u64::from(minutes) * 60);
+        let backup = dir.join("positive-minutes.sqlite");
+        engine.apply(Command::Backup(backup.clone()), 1000).unwrap();
+        studyapp_core::verify_backup_file(&backup).unwrap();
+        drop(engine);
+        let reopened = Engine::open(&dir.join("timers.sqlite"), 1000).unwrap();
+        assert_eq!(reopened.snapshot().settings, snapshot.settings);
+        assert_eq!(
+            reopened.snapshot().timer.target_seconds,
+            snapshot.timer.target_seconds
+        );
+    }
+}
+
+#[test]
+fn one_minute_study_finishes_with_an_unrestricted_answer_deadline() {
+    let (_, mut engine) = fixture();
+    engine
+        .apply(
+            Command::SaveLearningSettings {
+                interval_minutes: 1,
+                answer_minutes: 1500,
+                review_days: vec![1, 3],
+            },
+            1000,
+        )
+        .unwrap();
+    engine.apply(Command::SetPaused(false), 1000).unwrap();
+    for i in 1..=6 {
+        engine.tick(1000 + i * 10, 10).unwrap();
+    }
+    let snapshot = engine.snapshot();
+    assert_eq!(snapshot.sessions.len(), 1);
+    assert_eq!(snapshot.sessions[0].active_seconds, 60);
+    assert_eq!(snapshot.sessions[0].ended_at, 1060);
+    assert_eq!(snapshot.sessions[0].deadline, 1060 + 1500 * 60);
+    assert_eq!(snapshot.timer.target_seconds, 60);
+    assert_eq!(snapshot.timer.active_seconds, 0);
+}
+
+#[test]
+fn study_minute_representation_rejects_zero_and_overflow_without_mutation() {
+    let (_, mut engine) = fixture();
+    let original = engine.snapshot().settings;
+    for (interval_minutes, answer_minutes) in [(0, 1), (1, 0)] {
+        assert!(
+            engine
+                .apply(
+                    Command::SaveLearningSettings {
+                        interval_minutes,
+                        answer_minutes,
+                        review_days: vec![1, 3],
+                    },
+                    1000
+                )
+                .is_err()
+        );
+        assert_eq!(engine.snapshot().settings, original);
+    }
+    for field in ["interval_minutes", "answer_minutes"] {
+        let mut value = serde_json::to_value(&original).unwrap();
+        value[field] = serde_json::json!(u64::from(u32::MAX) + 1);
+        assert!(serde_json::from_value::<Settings>(value).is_err());
+    }
+}
+
+#[test]
+fn oversized_answer_deadline_fails_without_advancing_timer_or_creating_a_session() {
+    let (_, mut engine) = fixture();
+    engine
+        .apply(
+            Command::SaveLearningSettings {
+                interval_minutes: 1,
+                answer_minutes: u32::MAX,
+                review_days: vec![1, 3],
+            },
+            1000,
+        )
+        .unwrap();
+    engine.apply(Command::SetPaused(false), 1000).unwrap();
+    for i in 1..=5 {
+        engine.tick(1000 + i * 10, 10).unwrap();
+    }
+    let before = serde_json::to_value(engine.snapshot().timer).unwrap();
+    assert!(engine.tick(i64::MAX - 5, 10).is_err());
+    assert_eq!(
+        serde_json::to_value(engine.snapshot().timer).unwrap(),
+        before
+    );
+    assert!(engine.snapshot().sessions.is_empty());
+    engine.tick(1060, 10).unwrap();
+    assert_eq!(engine.snapshot().sessions.len(), 1);
+    assert_eq!(
+        engine.snapshot().sessions[0].deadline,
+        1060 + i64::from(u32::MAX) * 60
+    );
+}

@@ -67,14 +67,8 @@ impl Settings {
         self.notifications.validate()?;
         self.logging.validate()?;
         crate::media_settings::validate_images(&self.images)?;
-        ensure!(
-            (5..=240).contains(&self.interval_minutes),
-            "询问间隔应为 5–240 分钟"
-        );
-        ensure!(
-            (1..=30).contains(&self.answer_minutes),
-            "回答期限应为 1–30 分钟"
-        );
+        ensure!(self.interval_minutes > 0, "询问间隔请填写正整数分钟");
+        ensure!(self.answer_minutes > 0, "回答期限请填写正整数分钟");
         ensure!(
             (1..=20).contains(&self.review_days.len())
                 && self.review_days.iter().all(|d| (1..=3650).contains(d)),
@@ -151,7 +145,7 @@ impl State {
         let timer = &self.timer;
         let valid = match timer.kind {
             TimerKind::Study => {
-                (300..=14400).contains(&timer.target_seconds)
+                timer.target_seconds > 0
                     && timer.active_seconds < timer.target_seconds
                     && timer.finished_at.is_none()
             }

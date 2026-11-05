@@ -394,7 +394,7 @@ fn invalid_learning_update_preserves_visibility_and_all_saved_fields() {
     let mut engine = Engine::open(&database, 1000).unwrap();
     engine.apply(Command::SetShowFilePaths(true), 1001).unwrap();
     let saved = engine.snapshot().settings;
-    for (interval, answer, days) in [(4, 5, vec![1]), (60, 31, vec![1]), (60, 5, vec![0])] {
+    for (interval, answer, days) in [(0, 5, vec![1]), (60, 0, vec![1]), (60, 5, vec![0])] {
         assert!(
             engine
                 .apply(learning_update(interval, answer, days), 1002)
