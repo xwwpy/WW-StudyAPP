@@ -407,7 +407,9 @@ pub(crate) fn failure(kind: UpdateErrorKind) -> UpdateError {
         UpdateErrorKind::InstallationChanged => {
             "程序文件在准备更新后发生了变化，已停止替换。请重新启动程序后再试。"
         }
-        UpdateErrorKind::RepairRequired => "此便携版需要先在软件更新中修复安装文件，再下载更新。",
+        UpdateErrorKind::RepairRequired => {
+            "此便携版缺少可验证的安装记录，请退出后从发布页面完整解压当前版本，保留原资料库。"
+        }
         UpdateErrorKind::Launch => "无法启动更新辅助程序，当前程序未替换。请重试或手动更新。",
     };
     UpdateError { kind, message }
@@ -897,6 +899,23 @@ pub(crate) fn fetch_latest_manifest_text() -> UpdateResult<String> {
     })
 }
 
+/// Read only the exact installed version's signed metadata, never an installer.
+pub(crate) fn fetch_current_manifest_text(version: &str) -> UpdateResult<String> {
+    let parsed = Version::parse(version).map_err(|_| failure(UpdateErrorKind::InvalidRelease))?;
+    if parsed.to_string() != version || !parsed.pre.is_empty() || !parsed.build.is_empty() {
+        return Err(failure(UpdateErrorKind::InvalidRelease));
+    }
+    let url =
+        format!("https://github.com/xwwpy/WW-StudyAPP/releases/download/v{version}/latest.json");
+    let transport = RepairTransport::Live;
+    let client = client(Duration::from_secs(30), &transport)?;
+    retry_metadata(|| {
+        let response = download_response(&client, &url, &transport)?;
+        let bytes = read_bounded(response, 262_144)?;
+        String::from_utf8(bytes).map_err(|_| failure(UpdateErrorKind::InvalidRelease))
+    })
+}
+
 /// Replaying read-only metadata is safe; package writes and trust failures are
 /// intentionally not retried. Each attempt retains the same timeout/allowlist.
 fn retry_metadata<T>(mut request: impl FnMut() -> UpdateResult<T>) -> UpdateResult<T> {
@@ -1332,6 +1351,7 @@ fn protected_update_paths(
 }
 
 /// Read-only inspection for the settings repair action. No network or adoption.
+#[allow(dead_code)] // Retained internal legacy installation inspection.
 pub fn portable_repair_needed() -> UpdateResult<bool> {
     let target = current_installation()?;
     if crate::maintenance_runtime::current_payload_kind(&target)

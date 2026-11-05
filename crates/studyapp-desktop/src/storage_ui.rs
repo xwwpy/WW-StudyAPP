@@ -42,6 +42,9 @@ pub struct StorageUi {
     pub cleanup: Option<Arc<Vec<crate::app_migration::CopyRecord>>>,
     pub reviewing_cleanup: bool,
     pub migration_healthy: bool,
+    pub integrity_busy: bool,
+    pub integrity_result: Option<Result<crate::installation_integrity::Report, String>>,
+    pub integrity_dialog: bool,
     #[cfg(feature = "ui-test")]
     pub test_migration_choice: Option<std::path::PathBuf>,
     expanded_copy: Option<String>,
@@ -69,6 +72,9 @@ impl Default for StorageUi {
             cleanup: None,
             reviewing_cleanup: false,
             migration_healthy: false,
+            integrity_busy: false,
+            integrity_result: None,
+            integrity_dialog: false,
             #[cfg(feature = "ui-test")]
             test_migration_choice: None,
             expanded_copy: None,
@@ -388,6 +394,7 @@ impl StudyApp {
                 ),
         );
         if !copies_page {
+            view = view.child(self.integrity_controls(cx));
             let isolated = std::env::args_os().any(|a| a == "--data-dir");
             view = view
                 .child(heading("应用位置"))

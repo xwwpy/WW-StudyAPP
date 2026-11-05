@@ -46,7 +46,6 @@ enum UpdateReply {
     Progress(UpdateProgress),
     Prepared(String, Box<UpdateResult<PreparedUpdate>>),
     Previous(UpdateResult<Option<UpdateStatus>>),
-    RepairState(UpdateResult<bool>),
     Repaired(UpdateResult<()>),
 }
 
@@ -132,7 +131,6 @@ impl UpdatePanel {
     }
     pub(crate) fn relocation_blocked(&self) -> bool {
         self.busy
-            || self.repair_needed
             || self.prepared.is_some()
             || self.nsis_setup.is_some()
             || self.install_prepared.is_some()
@@ -186,9 +184,6 @@ impl UpdatePanel {
         let status_sender = sender.clone();
         std::thread::spawn(move || {
             let _ = status_sender.send(UpdateReply::Previous(read_last_update_status()));
-            if cfg!(windows) && !cfg!(test) && startup_check_allowed(std::env::args_os()) {
-                let _ = status_sender.send(UpdateReply::RepairState(portable_repair_needed()));
-            }
         });
         let poll = cx.spawn(async move |this, cx| {
             loop {
@@ -633,8 +628,6 @@ impl UpdatePanel {
                     }
                 }
                 UpdateReply::Previous(Ok(status)) => self.previous = status,
-                UpdateReply::RepairState(Ok(needed)) => self.repair_needed = needed,
-                UpdateReply::RepairState(Err(_)) => {}
                 UpdateReply::Repaired(result) => self.finish_repair(result),
                 UpdateReply::Previous(Err(_)) => {
                     // An unreadable old receipt must not block checks or show a
@@ -683,6 +676,7 @@ impl UpdatePanel {
         }
     }
 
+    #[allow(dead_code)] // Internal legacy maintenance acceptance, never a user action.
     fn repair(&mut self, cx: &mut Context<Self>) {
         if !self.checks_allowed() || self.busy || !self.repair_needed || self.library.is_empty() {
             return;
@@ -864,9 +858,6 @@ impl Render for UpdatePanel {
             .child(row().flex_wrap()
                 .child(Button::new("check-for-updates").label("检查更新").disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.check(CheckOrigin::Manual, cx))))
-                .children(self.repair_needed.then(|| Button::new("repair-installation")
-                    .label("修复安装文件").disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.repair(cx)))))
                 .children((self.release.is_some() && self.prepared.is_none()).then(||
                     Button::new("download-update").label("下载更新").disabled(self.busy)
                         .on_click(cx.listener(|this, _, _, cx| this.download(cx)))))
@@ -901,7 +892,6 @@ impl Render for UpdatePanel {
                     Button::new("reveal-update-distribution").ghost().label("查看发行文件")
                         .on_click(move |_, _, cx| cx.reveal_path(&path))
                 }))))
-            .children(self.repair_needed.then(|| muted("修复会下载当前版本并验证程序文件，补齐卸载程序及安装记录；不会改变笔记和资料库。")))
             .child(muted("安装前会保存草稿并处理未保存的设置。更新只处理属于当前安装的程序文件，保留资料库；安装目录不可写时可从发布页面手动更新。"))
             .into_any_element()
     }

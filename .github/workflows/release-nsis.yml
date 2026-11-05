@@ -135,6 +135,8 @@ jobs:
             "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name
           }
           [IO.File]::WriteAllLines((Join-Path 'release' 'SHA256SUMS.txt'), $sums, [Text.Encoding]::ASCII)
+          python scripts/file-integrity.py --root "dist/WW-StudyApp-$env:APP_VERSION-windows-x86_64" --platform windows-x86_64 --version $env:APP_VERSION --package $setup --output release/integrity-windows-x86_64.json
+          if ($LASTEXITCODE -ne 0) { throw 'Windows file baseline generation failed' }
           Get-ChildItem -LiteralPath release | Select-Object Name, Length | Format-Table -AutoSize
 
       - name: Preserve verified Windows release assets
@@ -181,8 +183,19 @@ jobs:
           tag = os.environ["RELEASE_TAG"]
           version = tag.removeprefix("v")
           root = pathlib.Path("release")
-          body = module.signed_manifest(version, tag, root / module.setup_asset_name(version), seed, pathlib.Path("docs/release-notes.md").read_text(encoding="utf-8").strip(), datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), packages_directory=root, history=__import__("json").loads((root / "history.json").read_text(encoding="utf-8")))
+          import json
+          baselines = {}
+          evidence = pathlib.Path(".scratch/release-integrity") / version
+          evidence.mkdir(parents=True, exist_ok=False)
+          for platform in ("windows-x86_64", "linux-x86_64", "macos-arm64", "macos-x86_64"):
+              source = root / f"integrity-{platform}.json"
+              if source.is_symlink() or not source.is_file() or source.stat().st_size > 65536:
+                  raise ValueError("Missing or excessive file baseline")
+              baselines[platform] = json.loads(source.read_text(encoding="utf-8"))
+          body = module.signed_manifest(version, tag, root / module.setup_asset_name(version), seed, pathlib.Path("docs/release-notes.md").read_text(encoding="utf-8").strip(), datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), packages_directory=root, history=json.loads((root / "history.json").read_text(encoding="utf-8")), integrity=baselines)
           module.write_manifest(body, root / "latest.json")
+          for platform in baselines:
+              (root / f"integrity-{platform}.json").rename(evidence / f"integrity-{platform}.json")
           (root / "history.json").unlink()
           PY
       - name: Verify complete release publication logic

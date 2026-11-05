@@ -86,6 +86,13 @@ def write_checksum(path):
     path.with_name(path.name + ".sha256").write_text(f"{digest}  {path.name}\n", encoding="ascii")
 
 
+def write_inventory(root, platform_name, release_version, package, destination):
+    import sys
+    run(sys.executable, ROOT / "scripts/file-integrity.py", "--root", root,
+        "--platform", platform_name, "--version", release_version, "--package", package,
+        "--output", destination / f"integrity-{platform_name}.json")
+
+
 def deb(binary, destination, release_version):
     if platform.system() != "Linux" or platform.machine() not in ("x86_64", "amd64"):
         raise ValueError("Debian package must be built on native Linux x86_64")
@@ -113,6 +120,7 @@ def deb(binary, destination, release_version):
     run("dpkg-deb", "--root-owner-group", "--build", stage, output)
     run("dpkg-deb", "--info", output)
     run("desktop-file-validate", stage / "usr/share/applications/studyapp.desktop")
+    write_inventory(stage / "usr", "linux-x86_64", release_version, output, destination)
     return output
 
 
@@ -143,6 +151,7 @@ def dmg(binary, destination, release_version):
     output = destination / f"{APP_NAME}-{release_version}-macos-{arch}.dmg"
     run("hdiutil", "create", "-volname", APP_NAME, "-srcfolder", stage, "-format", "UDZO", output)
     run("hdiutil", "verify", output)
+    write_inventory(app / "Contents", f"macos-{arch}", release_version, output, destination)
     return output
 
 

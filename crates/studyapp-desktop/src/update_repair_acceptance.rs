@@ -1,4 +1,4 @@
-//! Runner-only native repair acceptance through the real settings panel and repair worker.
+//! Runner-only internal maintenance acceptance; no user-facing repair command.
 use super::*;
 use anyhow::{Context as _, Result, ensure};
 use gpui_kit::component::{Theme, ThemeMode};
@@ -404,23 +404,23 @@ pub(crate) fn run_repair_acceptance(fixture_root: &Path, package: &Path) -> Resu
             .detach();
             cx.spawn(async move |cx| {
                 let outcome: Result<Value> = async {
-                    let mut repair_clicks = 0usize;
+                    let mut maintenance_attempts = 0usize;
                     cx.background_executor()
                         .timer(Duration::from_millis(500))
                         .await;
                     handle.update(cx, |_, window, cx| {
                         window.render_frame(cx);
-                        window.find("repair-installation");
+                        assert!(window.try_find("repair-installation").is_none());
                         assert!(window.try_find("download-update").is_none());
-                        window.click("repair-installation", cx);
                     })?;
-                    repair_clicks += 1;
+                    cx.update(|cx| panel.update(cx, |panel, cx| panel.repair(cx)));
+                    maintenance_attempts += 1;
                     wait_state(&panel, true, true, &counters, cx).await?;
                     ensure!(
                         counters.metadata.load(Ordering::SeqCst) == 1
                             && counters.checksum.load(Ordering::SeqCst) == 0
                             && counters.package.load(Ordering::SeqCst) == 0,
-                        "First click did not fail before download: counts(total,metadata,checksum,package)={:?}, panel_error={:?}",
+                        "First internal maintenance attempt did not fail before download: counts(total,metadata,checksum,package)={:?}, panel_error={:?}",
                         counters.snapshot(),
                         cx.update(|app| panel.read(app).error.clone())
                     );
@@ -438,11 +438,11 @@ pub(crate) fn run_repair_acceptance(fixture_root: &Path, package: &Path) -> Resu
                     );
                     handle.update(cx, |_, window, cx| {
                         window.render_frame(cx);
-                        window.find("repair-installation");
+                        assert!(window.try_find("repair-installation").is_none());
                         window.render_to_image().unwrap().save(&failed).unwrap();
-                        window.click("repair-installation", cx);
                     })?;
-                    repair_clicks += 1;
+                    cx.update(|cx| panel.update(cx, |panel, cx| panel.repair(cx)));
+                    maintenance_attempts += 1;
                     wait_state(&panel, false, false, &counters, cx).await?;
                     ensure!(
                         counters.metadata.load(Ordering::SeqCst) == 2
@@ -513,7 +513,7 @@ pub(crate) fn run_repair_acceptance(fixture_root: &Path, package: &Path) -> Resu
                         "package_requests":counters.package.load(Ordering::SeqCst),
                         "total_requests":counters.total.load(Ordering::SeqCst),
                         "automatic_network_downloads":automatic_network_downloads,
-                        "repair_clicks":repair_clicks,
+                        "maintenance_attempts":maintenance_attempts,
                         "failed_screenshot":failed, "success_screenshot":succeeded,
                         "verified_receipt":install.join(RECEIPT_PATH),
                         "preserved_sentinels":protected.len(), "available_new_version":false

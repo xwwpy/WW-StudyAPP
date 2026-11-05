@@ -17,6 +17,10 @@ _SIGNATURE_PATH = Path(__file__).with_name("update-signature.py")
 _spec = importlib.util.spec_from_file_location("update_signature", _SIGNATURE_PATH)
 signature_tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(signature_tool)
+_integrity_spec = importlib.util.spec_from_file_location("file_integrity", Path(__file__).with_name("file-integrity.py"))
+integrity_tool = importlib.util.module_from_spec(_integrity_spec)
+_integrity_spec.loader.exec_module(integrity_tool)
+
 
 PLATFORM = "windows-x86_64"
 
@@ -42,6 +46,7 @@ def signed_manifest(
     repository: str = "xwwpy/WW-StudyAPP",
     packages_directory: Path | None = None,
     history: list | None = None,
+    integrity: dict | None = None,
 ) -> dict:
     version = version.lstrip("v")
     if tag != f"v{version}" or repository != "xwwpy/WW-StudyAPP":
@@ -65,6 +70,13 @@ def signed_manifest(
             "sha256": hashlib.sha256(payload).hexdigest(),
         }
     body = {"schema": 1, "version": version, "notes": notes, "pub_date": pub_date, "platforms": platforms}
+    if integrity is not None:
+        if set(integrity) != set(platforms):
+            raise ValueError("Incomplete platform integrity baselines")
+        body["integrity"] = {
+            platform: integrity_tool.validate(integrity[platform], version, platform, entry["sha256"])
+            for platform, entry in platforms.items()
+        }
     if history is not None:
         body["history"] = release_history(version, notes, pub_date, history)
         body["notes"] = "\n\n---\n\n".join("## v{}\n\n{}".format(row["version"], row["notes"]) for row in body["history"])

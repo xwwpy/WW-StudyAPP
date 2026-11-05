@@ -22,6 +22,8 @@ mod folders_ui;
 mod history_preview;
 mod image_cloud;
 mod imports;
+mod installation_integrity;
+mod integrity_ui;
 mod maintenance_execute;
 mod maintenance_handoff;
 mod maintenance_runtime;

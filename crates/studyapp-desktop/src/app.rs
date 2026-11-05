@@ -1217,6 +1217,7 @@ impl StudyApp {
             || self.timer_pending.is_some()
             || self.confirmation.is_some()
             || self.storage_confirm.is_some()
+            || self.storage_ui.integrity_dialog
             || self.folders.read(cx).modal_open()
             || self.preferences_ui.leave.is_some()
             || self.preferences_ui.reset_confirmation
@@ -1239,6 +1240,7 @@ impl StudyApp {
         self.confirmation = None;
         self.storage_confirm = None;
         self.storage_ui.purge = None;
+        self.storage_ui.integrity_dialog = false;
         self.folders.update(cx, |panel, cx| panel.cancel_action(cx));
         cx.notify();
     }
@@ -1249,7 +1251,10 @@ impl StudyApp {
                 .update(cx, |panel, cx| panel.install_from_dialog(cx));
             return;
         }
-        if self.preferences_ui.leave.is_some() {
+        if self.storage_ui.integrity_dialog {
+            self.storage_ui.integrity_dialog = false;
+            cx.notify();
+        } else if self.preferences_ui.leave.is_some() {
             self.save_preferences(cx);
         } else if self.preferences_ui.reset_confirmation {
             // Reset is deliberately activated by its explicit dialog button.
@@ -1456,6 +1461,9 @@ impl Render for StudyApp {
             Some(self.confirmation_view(cx).into_any_element())
         } else if self.storage_confirm.is_some() {
             self.storage_confirmation_view(cx)
+                .map(IntoElement::into_any_element)
+        } else if self.storage_ui.integrity_dialog {
+            self.integrity_dialog_view(cx)
                 .map(IntoElement::into_any_element)
         } else if self.update_panel.read(cx).dialog_visible() {
             Some(self.update_dialog_view(cx))

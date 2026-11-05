@@ -65,7 +65,7 @@ pub fn parse_latest_json(text: &str) -> Result<UpdateManifest, String> {
     )
 }
 
-fn parse_with_key(
+pub(crate) fn parse_with_key(
     text: &str,
     platform_name: &str,
     key: &[u8; 32],

@@ -24,12 +24,16 @@ def verify_signed_packages(directory, version, key=RELEASE_KEY):
         body = json.loads(payload)
         if body["schema"] != 1 or body["version"] != version:
             raise ValueError("Wrong metadata version")
-        for field in ("schema", "version", "notes", "pub_date", "platforms", "history"):
+        for field in ("schema", "version", "notes", "pub_date", "platforms", "history", "integrity"):
             if envelope.get(field) != body.get(field):
                 raise ValueError("Legacy manifest fields differ")
         expected = {"windows-x86_64": "-Setup.exe", "linux-x86_64": ".deb", "macos-arm64": ".dmg", "macos-x86_64": ".dmg"}
         if set(body["platforms"]) != set(expected):
             raise ValueError("Missing platform")
+        integrity = body.get("integrity")
+        if tuple(map(int, version.split("."))) >= (0, 3, 0):
+            if not isinstance(integrity, dict) or set(integrity) != set(expected):
+                raise ValueError("Missing authenticated file baselines")
         for platform, suffix in expected.items():
             name = f"WW-StudyApp-{version}-{platform}{suffix}"
             entry = body["platforms"][platform]
@@ -41,6 +45,8 @@ def verify_signed_packages(directory, version, key=RELEASE_KEY):
             data = path.read_bytes()
             if entry["size"] != len(data) or entry["sha256"] != hashlib.sha256(data).hexdigest():
                 raise ValueError("Package digest mismatch")
+            if integrity is not None:
+                module.integrity_tool.validate(integrity[platform], version, platform, entry["sha256"])
             if not module.signature_tool.verify(key, data, base64.b64decode(entry["signature"], validate=True)):
                 raise ValueError("Invalid package signature")
     except (KeyError, TypeError, OSError) as error:

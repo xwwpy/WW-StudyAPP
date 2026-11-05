@@ -85,6 +85,7 @@ jobs:
       - name: Verify package and smoke evidence logic
         run: |
           python3 scripts/test-package-unix.py
+          python3 scripts/test-file-integrity.py
           python3 scripts/test-smoke-unix.py
           python3 scripts/test-macos-assessment.py
           node scripts/test-macos-approval-ui.js
@@ -285,5 +286,6 @@ jobs:
             dist/*.deb
             dist/*.dmg
             dist/*.sha256
+            dist/integrity-*.json
           if-no-files-found: error
           retention-days: 90
