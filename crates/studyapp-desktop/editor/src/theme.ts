@@ -1,8 +1,17 @@
 // Only declarative, bounded semantic tokens cross the native/WebView boundary.
-const color = (value:unknown): value is string => typeof value === "string" && /^#[a-f0-9]{6}$/i.test(value);
+const color = (value:unknown): value is string => typeof value === "string" && /^#(?:[a-f0-9]{6}|[a-f0-9]{8})$/i.test(value);
 const fonts = {sans:'"Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif',serif:'Georgia, "Noto Serif CJK SC", "SimSun", serif',mono:'"Cascadia Mono", Consolas, monospace'};
 const luminance = (hex:string) => [1,3,5].map(offset => parseInt(hex.slice(offset,offset+2),16)/255).map(value => value<=.04045 ? value/12.92 : ((value+.055)/1.055)**2.4).reduce((sum,value,index)=>sum+value*[.2126,.7152,.0722][index],0);
-const contrast = (a:string,b:string) => (Math.max(luminance(a),luminance(b))+.05)/(Math.min(luminance(a),luminance(b))+.05);
+// CSS source-over in sRGB. Keep raw tokens for painting; use opaque actual
+// backdrops only for contrast. Ignoring AA would hide fully transparent text.
+const over = (foreground:string, background:string) => {
+  const alpha=foreground.length===9 ? parseInt(foreground.slice(7,9),16)/255 : 1;
+  return "#"+[1,3,5].map(offset=>Math.round(parseInt(foreground.slice(offset,offset+2),16)*alpha+parseInt(background.slice(offset,offset+2),16)*(1-alpha)).toString(16).padStart(2,"0")).join("");
+};
+const contrast = (a:string,b:string) => {
+  const background=over(b,"#ffffff"), foreground=over(a,background);
+  return (Math.max(luminance(foreground),luminance(background))+.05)/(Math.min(luminance(foreground),luminance(background))+.05);
+};
 function readable(value:string, backgrounds:string[]):string {
   const passes = (candidate:string) => backgrounds.every(background => contrast(candidate,background)>=4.5);
   if (passes(value)) return value;
@@ -29,7 +38,7 @@ export function applyEditorTheme(tokens:Record<string,unknown>):boolean {
   }
   const computed = getComputedStyle(root);
   const base = (name:string,fallback:string) => { const value=computed.getPropertyValue(`--editor-${name}`).trim(); return color(value) ? value : fallback; };
-  const surface=base("surface","#f7f8fa"),text=base("text","#263344"),accent=base("accent","#177f80");
+  const surface=over(base("surface","#f7f8fa"),"#ffffff"),text=base("text","#263344"),accent=base("accent","#177f80");
   const token = (name:string,fallback:string) => color(tokens[name]) ? tokens[name] : fallback;
   const markdown = record(tokens.markdown), overrides=record(markdown.colors);
   const pick = (name:string,fallback:string) => color(overrides[name]) ? overrides[name] : fallback;
@@ -38,6 +47,9 @@ export function applyEditorTheme(tokens:Record<string,unknown>):boolean {
   const inlineBackground=color(overrides.code_background) ? codeBackground : token("inlineCodeBackground",codeBackground);
   const tableHeader=token("tableHeader",surface),tableBackground=pick("table_background",surface);
   const stripe=markdown.table_stripes===false ? tableBackground : pick("table_stripe",surface);
+  const quoteSurface=over(quoteBackground,surface),codeSurface=over(codeBackground,surface),inlineSurface=over(inlineBackground,surface);
+  // Rows replace, rather than overlay, the table background in editor.css.
+  const tableSurface=over(tableBackground,surface),stripeSurface=over(stripe,surface),headerSurface=over(tableHeader,surface);
   let lowContrast=false;
   // Explicit saved colors are author choices. Guard derived colors and report
   // low contrast without replacing a valid override or blocking persistence.
@@ -47,32 +59,33 @@ export function applyEditorTheme(tokens:Record<string,unknown>):boolean {
     return value;
   };
   const selection=pick("selection_background",token("selection",luminance(surface)<.18?"#3E6187":"#A3C9EE"));
-  if ([surface,quoteBackground,codeBackground,tableBackground,stripe].some(background=>contrast(selection,background)<1.5)) lowContrast=true;
-  const selectionText=foreground("selection_text",token("selectionText",text),[selection]);
-  const generalBackgrounds=[surface,quoteBackground,tableBackground,stripe];
+  const selectionBackdrops=[surface,quoteSurface,codeSurface,tableSurface,stripeSurface];
+  if (selectionBackdrops.some(background=>contrast(selection,background)<1.5)) lowContrast=true;
+  const selectionText=foreground("selection_text",token("selectionText",text),selectionBackdrops.map(background=>over(selection,background)));
+  const generalBackgrounds=[surface,quoteSurface,tableSurface,stripeSurface];
   const general = (name:string,fallback:string) => foreground(name,fallback,generalBackgrounds);
   const body=pick("body",text);
   if (contrast(body,surface)<4.5) lowContrast=true;
   const values:Record<string,string> = {
     selection,selection_text:selectionText,text:body,heading:foreground("heading",text,[surface]),link:general("link",accent),
-    muted:general("muted",base("muted",text)),quote:foreground("quote",text,[quoteBackground]),quote_background:quoteBackground,
-    toolbar_background:toolbarBackground,ui_text:readable(text,[surface,toolbarBackground]),ui_muted:readable(base("muted",text),[surface,toolbarBackground]),
+    muted:general("muted",base("muted",text)),quote:foreground("quote",text,[quoteSurface]),quote_background:quoteBackground,
+    toolbar_background:toolbarBackground,ui_text:readable(text,[surface,over(toolbarBackground,surface)]),ui_muted:readable(base("muted",text),[surface,over(toolbarBackground,surface)]),
     danger:readable(token("danger","#ac3a36"),[surface]),warning:readable(token("warning","#91631d"),[surface]),
     code_background:codeBackground,code_text:foreground("code",token("codeText",text),[codeBackground]),
     inline_code_background:inlineBackground,inline_code_text:foreground("code",token("codeText",text),[inlineBackground]),
-    table:foreground("table",text,[tableBackground,stripe,tableHeader]),table_header:foreground("table_header",text,[tableHeader]),
+    table:foreground("table",text,[tableSurface,stripeSurface,headerSurface]),table_header:foreground("table_header",text,[headerSurface]),
     table_header_background:tableHeader,table_background:tableBackground,table_stripe:stripe,list:general("list",accent),
     grid:pick("grid",token("grid",base("border",text))),code_border:pick("code_border",token("codeBorder",base("border",text))),
     check_text:readable(text,[accent]),check_background:surface,
   };
   for (const [name,value] of Object.entries(values)) set(name,value);
-  const dark = luminance(codeBackground)<.18;
+  const dark = luminance(codeSurface)<.18;
   for (const [name,light,darkColor] of [
     ["keyword","#854191","#d6a4e8"],["string","#28683e","#9bcea1"],["number","#91531a","#efbd83"],
     ["comment","#586b79","#b1bdc9"],["type","#7c5a19","#e7ce8b"],["property","#17677b","#8dcbd9"],
     ["tag","#9b4446","#f0aaad"],["function","#24648c","#99caec"],["punctuation","#536473","#c3cbd5"],
   ]) {
-    set(`syntax_${name}`,foreground(`syntax_${name}`,dark?darkColor:light,[codeBackground]));
+    set(`syntax_${name}`,foreground(`syntax_${name}`,dark?darkColor:light,[codeSurface]));
     set(`source_syntax_${name}`,foreground(`syntax_${name}`,luminance(surface)<.18?darkColor:light,[surface]));
   }
   const bounded=(value:unknown,min:number,max:number,fallback:number) => typeof value==="number" && Number.isFinite(value) && value>=min && value<=max ? value : fallback;

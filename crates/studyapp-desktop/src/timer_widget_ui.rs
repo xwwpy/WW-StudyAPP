@@ -143,7 +143,7 @@ impl StudyApp {
         for (key, placeholder, text) in [
             (
                 "widget-accent",
-                "留空跟随主题；或 #RRGGBB",
+                "留空跟随主题；或 #RRGGBB / #RRGGBBAA",
                 value.accent.clone().unwrap_or_default(),
             ),
             (
@@ -178,6 +178,36 @@ impl StudyApp {
             }
             self.preferences_ui.widget_fields[key]
                 .update(cx, |input, cx| input.set_value(text, window, cx));
+            if key == "widget-accent" {
+                if let Some(color) = self.preferences_ui.appearance_colors.get(key) {
+                    color.update(cx, |color, cx| color.dismiss(cx));
+                } else {
+                    let source = self.preferences_ui.widget_fields[key].clone();
+                    let color = cx.new(|cx| {
+                        crate::settings_color::ColorSetting::new(key, source, true, window, cx)
+                    });
+                    cx.subscribe(
+                        &color,
+                        |this, color, _: &crate::settings_color::ColorSettingChanged, cx| {
+                            let text = color.read(cx).preview_value(cx);
+                            if let Some(draft) = &mut this.preferences_ui.draft {
+                                draft.timer_widget.accent =
+                                    (!text.trim().is_empty()).then(|| text.trim().to_owned());
+                            }
+                            cx.notify();
+                        },
+                    )
+                    .detach();
+                    cx.subscribe(
+                        &color,
+                        |_, _, _: &crate::settings_color::ColorSettingPreviewChanged, cx| {
+                            cx.notify()
+                        },
+                    )
+                    .detach();
+                    self.preferences_ui.appearance_colors.insert(key, color);
+                }
+            }
         }
     }
     pub fn widget_settings_value(
@@ -246,7 +276,7 @@ impl StudyApp {
         )
     }
     pub fn widget_settings_controls(&self, cx: &mut Context<Self>) -> Div {
-        let settings = self.effective_widget_settings();
+        let settings = self.preview_widget_settings(cx);
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let timer = self
             .snapshot
@@ -353,7 +383,16 @@ impl StudyApp {
             ("widget-presets", "倒计时预设（1–180 分钟，最多 8 项）"),
         ] {
             if let Some(input) = self.preferences_ui.widget_fields.get(key) {
-                controls = controls.child(form::field(label, Input::new(input).disabled(busy)));
+                let field = if key == "widget-accent" {
+                    let color = &self.preferences_ui.appearance_colors[key];
+                    color.update(cx, |color, cx| {
+                        color.configure(crate::theme::palette().accent, busy, cx)
+                    });
+                    color.clone().into_any_element()
+                } else {
+                    Input::new(input).disabled(busy).into_any_element()
+                };
+                controls = controls.child(form::field(label, field));
             }
         }
         column().w_full().gap_3().child(controls)

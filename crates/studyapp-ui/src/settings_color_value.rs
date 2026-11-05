@@ -1,9 +1,10 @@
 //! Color draft rules, independent of GPUI and persistence.
+use studyapp_core::{RgbaColor, parse_rgba_color};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorChoice {
     Automatic,
-    Custom(u32),
+    Custom(RgbaColor),
     Invalid,
 }
 
@@ -39,19 +40,13 @@ impl ColorDraft {
         if value.is_empty() && self.allow_automatic {
             return ColorChoice::Automatic;
         }
-        let Some(hex) = value.strip_prefix('#') else {
-            return ColorChoice::Invalid;
-        };
-        if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return ColorChoice::Invalid;
-        }
-        u32::from_str_radix(hex, 16)
+        parse_rgba_color(value)
             .map(ColorChoice::Custom)
             .unwrap_or(ColorChoice::Invalid)
     }
 
-    pub fn choose_rgb(&mut self, rgb: u32) {
-        self.raw = format!("#{:06X}", rgb & 0xFFFFFF);
+    pub fn choose_rgba(&mut self, color: RgbaColor) {
+        self.raw = color.to_hex();
     }
 
     pub fn use_automatic(&mut self) -> bool {
@@ -66,16 +61,21 @@ impl ColorDraft {
 #[cfg(test)]
 mod tests {
     use super::{ColorChoice, ColorDraft};
+    use studyapp_core::RgbaColor;
 
     #[test]
     fn exact_opaque_hex_and_automatic_keep_existing_configuration_rules() {
         assert_eq!(
             ColorDraft::new(" #12AbEF ", false).choice(),
-            ColorChoice::Custom(0x12ABEF)
+            ColorChoice::Custom(RgbaColor::opaque(0x12ABEF))
+        );
+        assert_eq!(
+            ColorDraft::new("#12345678", false).choice(),
+            ColorChoice::Custom(RgbaColor::new(0x123456, 0x78))
         );
         assert_eq!(ColorDraft::new("", true).choice(), ColorChoice::Automatic);
         assert_eq!(ColorDraft::new("", false).choice(), ColorChoice::Invalid);
-        for text in ["#abc", "#12345678", "123456", "#12GG00", "#"] {
+        for text in ["#abc", "#1234567", "123456", "#12GG00", "#"] {
             let draft = ColorDraft::new(text, true);
             assert_eq!(draft.choice(), ColorChoice::Invalid);
             assert_eq!(draft.raw(), text, "invalid hand input was destroyed");
@@ -85,15 +85,21 @@ mod tests {
     #[test]
     fn choosing_and_inheriting_only_modify_the_draft_value() {
         let mut draft = ColorDraft::new("#", true);
-        draft.choose_rgb(0x1234AB);
+        draft.choose_rgba(RgbaColor::opaque(0x1234AB));
         assert_eq!(draft.raw(), "#1234AB");
-        assert_eq!(draft.choice(), ColorChoice::Custom(0x1234AB));
+        assert_eq!(
+            draft.choice(),
+            ColorChoice::Custom(RgbaColor::opaque(0x1234AB))
+        );
         assert!(draft.use_automatic());
         assert_eq!(draft.raw(), "");
         assert_eq!(draft.choice(), ColorChoice::Automatic);
         assert!(!draft.set_text(""));
         assert!(draft.set_text("#ABCDEF"));
-        assert_eq!(draft.choice(), ColorChoice::Custom(0xABCDEF));
+        assert_eq!(
+            draft.choice(),
+            ColorChoice::Custom(RgbaColor::opaque(0xABCDEF))
+        );
         let mut required = ColorDraft::new("#123456", false);
         assert!(!required.use_automatic());
         assert_eq!(required.raw(), "#123456");

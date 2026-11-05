@@ -2293,3 +2293,28 @@ test("readonly DOM hit testing preserves word, line, forward and reverse drag se
   assert.equal(await page.evaluate(()=>window.messages.filter(m=>m.type==='requestEdit').length),0);
   await page.close();
 });
+
+test("RGBA Markdown tokens preserve alpha, use composited contrast and never change the document", async () => {
+  const {page,errors,externalRequests}=await setup("# Alpha\n\n> Quote\n\n| A | B |\n| --- | --- |\n| one | two |\n\n```rust\nlet x = 1;\n```");
+  const before=await state(page);
+  await page.evaluate(()=>window.studyappEditor.setTheme({surface:"#ffffff",text:"#202020",markdown:{colors:{body:"#00000000",quote_background:"#FF000080",code_background:"#0000FF40",selection_background:"#33669966",selection_text:"#FFFFFFCC"}}}));
+  const colors=await page.evaluate(()=>{
+    const root=getComputedStyle(document.documentElement);
+    const read=name=>root.getPropertyValue("--editor-"+name).trim();
+    return Object.fromEntries(["text","quote-background","code-background","selection","selection-text"].map(name=>[name,read(name)]));
+  });
+  assert.deepEqual(colors,{text:"#00000000","quote-background":"#FF000080","code-background":"#0000FF40",selection:"#33669966","selection-text":"#FFFFFFCC"});
+  assert.equal(await page.locator("#editor-theme-warning").isVisible(),true,"fully transparent black is not readable black");
+  const quote=await page.locator(".md-quote").first().evaluate(node=>getComputedStyle(node).backgroundColor);
+  const channels=quote.match(/[\d.]+/g).map(Number);
+  assert.deepEqual(channels.slice(0,3),[255,0,0]);
+  assert.ok(Math.abs(channels[3]-128/255)<1/255,"computed alpha differs by more than one byte");
+  await page.evaluate(()=>window.studyappEditor.setTheme({surface:"#ffffff",text:"#202020",markdown:{colors:{body:"#000000",quote_background:"#FF000000",selection_background:"#336699FF",selection_text:"#FFFFFF"}}}));
+  assert.equal(await page.locator(".md-quote").first().evaluate(node=>getComputedStyle(node).backgroundColor),"rgba(255, 0, 0, 0)");
+  await page.evaluate(()=>window.studyappEditor.setTheme({markdown:{colors:{body:"#12345678;url(https://example.invalid/x)",quote_background:"#1234567"}}}));
+  assert.equal(await page.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue("--editor-quote-background").includes("url(")),false);
+  const after=await state(page);
+  assert.equal(after.text,before.text);assert.equal(after.revision,before.revision);assert.deepEqual(after.selection,before.selection);
+  assert.deepEqual(errors,[]);assert.deepEqual(externalRequests,[]);
+  await page.close();
+});

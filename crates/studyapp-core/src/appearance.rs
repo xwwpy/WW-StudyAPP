@@ -1,4 +1,5 @@
 //! Declarative appearance preferences. No CSS or executable content is accepted.
+use crate::{RgbaColor, parse_rgba_color};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
@@ -40,7 +41,7 @@ pub struct ThemePreset {
     pub markdown: MarkdownStyle,
 }
 
-/// Shared stable keys. Values are only six-digit colors, never CSS.
+/// Shared stable keys. Values are only RGB/RGBA hex colors, never CSS.
 pub const MARKDOWN_COLORS: [&str; 26] = [
     "body",
     "heading",
@@ -199,10 +200,13 @@ pub fn readable_theme_color(color: u32, backgrounds: &[u32]) -> u32 {
 
 impl MarkdownStyle {
     pub fn resolved_colors(&self, palette: &ThemePalette) -> [u32; 26] {
-        let background = parse_theme_color(&palette.background).unwrap_or(0xFFFFFF);
-        let surface = parse_theme_color(&palette.surface).unwrap_or(0xFFFFFF);
-        let text = parse_theme_color(&palette.text).unwrap_or(0x24272D);
-        let accent = parse_theme_color(&palette.accent).unwrap_or(0x2478D4);
+        let colors = self.resolved_rgba_colors(palette);
+        let surface = palette.composited(0xF4F5F7)[1];
+        std::array::from_fn(|index| colors[index].over(markdown_backdrop(index, &colors, surface)))
+    }
+
+    pub fn resolved_rgba_colors(&self, palette: &ThemePalette) -> [RgbaColor; 26] {
+        let [background, surface, text, accent] = palette.composited(0xF4F5F7);
         let dark = theme_contrast(surface, 0xFFFFFF) > theme_contrast(surface, 0);
         let syntax = if dark {
             [
@@ -273,11 +277,16 @@ impl MarkdownStyle {
             text,
         ];
         result[15..24].copy_from_slice(&syntax);
+        let mut result = result.map(RgbaColor::opaque);
+        if let Some(text) = parse_rgba_color(&palette.text) {
+            result[0] = text;
+            result[1] = text;
+        }
         for (index, key) in MARKDOWN_COLORS.iter().enumerate() {
             if let Some(value) = self
                 .colors
                 .get(*key)
-                .and_then(|value| parse_theme_color(value))
+                .and_then(|value| parse_rgba_color(value))
             {
                 result[index] = value;
             }
@@ -288,23 +297,27 @@ impl MarkdownStyle {
             if self.colors.contains_key(MARKDOWN_COLORS[index]) || matches!(index, 0 | 1) {
                 continue;
             }
+            let table = result[10].over(surface);
             let stripe = if self.layout.table_stripes {
-                result[11]
+                result[11].over(surface)
             } else {
-                result[10]
+                table
             };
             let backgrounds = match index {
                 5 | 7 | 10 | 11 | 13 | 14 | 24 => continue,
-                25 => vec![result[24]],
-                4 => vec![result[5]],
-                6 | 15..=23 => vec![result[7]],
-                8 => vec![result[10], stripe, surface],
+                25 => vec![result[24].over(surface)],
+                4 => vec![result[5].over(surface)],
+                6 | 15..=23 => vec![result[7].over(surface)],
+                8 => vec![table, stripe, surface],
                 9 => vec![surface],
                 // Inline semantics may occur in paragraphs, quotes and tables.
-                0 | 2 | 3 | 12 => vec![background, result[5], result[10], stripe, surface],
+                0 | 2 | 3 | 12 => vec![background, result[5].over(surface), table, stripe, surface],
                 _ => vec![background],
             };
-            result[index] = readable_theme_color(result[index], &backgrounds);
+            result[index] = RgbaColor::opaque(readable_theme_color(
+                result[index].over(backgrounds[0]),
+                &backgrounds,
+            ));
         }
         result
     }
@@ -332,14 +345,17 @@ impl MarkdownStyle {
             if !MARKDOWN_COLORS.contains(&key.as_str()) {
                 anyhow::bail!("未知 Markdown 颜色：{key}");
             }
-            parse_theme_color(value).ok_or_else(|| anyhow::anyhow!("{key}：颜色须使用 #RRGGBB"))?;
+            parse_rgba_color(value)
+                .ok_or_else(|| anyhow::anyhow!("{key}：颜色须使用 #RRGGBB 或 #RRGGBBAA"))?;
         }
         Ok(())
     }
 
     pub fn contrast_warnings(&self, palette: &ThemePalette) -> Vec<ContrastWarning> {
-        let resolved = self.resolved_colors(palette);
-        let surface = parse_theme_color(&palette.surface).unwrap_or(0xFFFFFF);
+        let rgba = self.resolved_rgba_colors(palette);
+        let surface = palette.composited(0xF4F5F7)[1];
+        let resolved: [u32; 26] =
+            std::array::from_fn(|index| rgba[index].over(markdown_backdrop(index, &rgba, surface)));
         let mut warnings = Vec::new();
         for (index, key) in MARKDOWN_COLORS.iter().enumerate() {
             let backgrounds: Vec<(&'static str, u32)> = match index {
@@ -387,13 +403,23 @@ impl MarkdownStyle {
             };
             for (background, color) in backgrounds {
                 if let Some(warning) =
-                    contrast_warning(key, background, resolved[index], color, 4.5)
+                    contrast_warning(key, background, rgba[index].over(color), color, 4.5)
                 {
                     warnings.push(warning);
                 }
             }
         }
         warnings
+    }
+}
+
+fn markdown_backdrop(index: usize, colors: &[RgbaColor; 26], surface: u32) -> u32 {
+    match index {
+        4 => colors[5].over(surface),
+        6 | 15..=23 => colors[7].over(surface),
+        8 => colors[10].over(surface),
+        25 => colors[24].over(surface),
+        _ => surface,
     }
 }
 
@@ -419,6 +445,8 @@ impl Default for AppearanceSettings {
     }
 }
 
+/// Opaque-only compatibility helper. RGBA consumers must use parse_rgba_color
+/// and choose an explicit backdrop rather than truncating packed RGBA.
 pub fn parse_theme_color(value: &str) -> Option<u32> {
     let hex = value.strip_prefix('#')?;
     (hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
@@ -446,31 +474,45 @@ pub fn theme_contrast(first: u32, second: u32) -> f64 {
 
 impl ThemePalette {
     pub fn validate(&self) -> Result<()> {
-        let text = parse_theme_color(&self.text);
-        let background = parse_theme_color(&self.background);
-        let surface = parse_theme_color(&self.surface);
-        let accent = parse_theme_color(&self.accent);
+        let text = parse_rgba_color(&self.text);
+        let background = parse_rgba_color(&self.background);
+        let surface = parse_rgba_color(&self.surface);
+        let accent = parse_rgba_color(&self.accent);
         ensure!(
             [text, background, surface, accent]
                 .iter()
                 .all(Option::is_some),
-            "颜色须使用 #RRGGBB 六位十六进制格式"
+            "颜色须使用 #RRGGBB 或 #RRGGBBAA 十六进制格式"
         );
         Ok(())
     }
 
+    /// Opaque native surfaces use explicit source-over, never parent opacity.
+    /// Ordering: application backdrop, page, card, then text/accent.
+    pub fn composited(&self, backdrop: u32) -> [u32; 4] {
+        let background = parse_rgba_color(&self.background)
+            .unwrap_or(RgbaColor::opaque(0xF4F5F7))
+            .over(backdrop);
+        let surface = parse_rgba_color(&self.surface)
+            .unwrap_or(RgbaColor::opaque(0xFFFFFF))
+            .over(background);
+        let text = parse_rgba_color(&self.text)
+            .unwrap_or(RgbaColor::opaque(0x24272D))
+            .over(surface);
+        let accent = parse_rgba_color(&self.accent)
+            .unwrap_or(RgbaColor::opaque(0x586D83))
+            .over(surface);
+        [background, surface, text, accent]
+    }
     pub fn contrast_warnings(&self) -> Vec<ContrastWarning> {
-        let (Some(text), Some(background), Some(surface), Some(accent)) = (
-            parse_theme_color(&self.text),
-            parse_theme_color(&self.background),
-            parse_theme_color(&self.surface),
-            parse_theme_color(&self.accent),
-        ) else {
+        if self.validate().is_err() {
             return Vec::new();
-        };
+        }
+        let [background, surface, _, accent] = self.composited(0xF4F5F7);
+        let text = parse_rgba_color(&self.text).expect("validated color");
         [
-            contrast_warning("文字", "背景", text, background, 4.5),
-            contrast_warning("文字", "卡片", text, surface, 4.5),
+            contrast_warning("文字", "背景", text.over(background), background, 4.5),
+            contrast_warning("文字", "卡片", text.over(surface), surface, 4.5),
             contrast_warning("强调色", "卡片", accent, surface, 3.),
         ]
         .into_iter()

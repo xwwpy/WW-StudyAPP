@@ -413,3 +413,31 @@ fn learning_update_preserves_current_timer_and_changes_the_next_cycle() {
     assert_eq!(snapshot.sessions[0].deadline, 1420);
     assert!(snapshot.settings.show_file_paths);
 }
+
+#[test]
+fn rgba_theme_and_markdown_round_trip_through_save_and_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let database = directory.path().join("rgba.sqlite");
+    let mut engine = Engine::open(&database, 1000).unwrap();
+    let mut settings = engine.snapshot().settings;
+    settings.appearance = serde_json::from_value(json!({
+        "mode":"custom", "active_preset":"rgba", "custom_presets":[{
+            "id":"rgba", "name":"Transparent",
+            "palette":{"accent":"#177F8080","background":"#00112200","surface":"#FFFFFF80","text":"#202020CC"},
+            "markdown":{"colors":{"selection_background":"#33669966","selection_text":"#FFFFFFCC","quote_background":"#00FF0040","body":"#202020E0"}}
+        }]
+    })).unwrap();
+    settings.timer_widget.accent = Some("#FF000080".into());
+    engine
+        .apply(Command::SaveSettings(settings.clone()), 1001)
+        .unwrap();
+    assert_eq!(engine.snapshot().settings, settings);
+    drop(engine);
+    let reopened = Engine::open(&database, 1002).unwrap();
+    assert_eq!(reopened.snapshot().settings, settings);
+    let exported = serde_json::to_value(&settings).unwrap();
+    assert_eq!(
+        serde_json::from_value::<Settings>(exported).unwrap(),
+        settings
+    );
+}

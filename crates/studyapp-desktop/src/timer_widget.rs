@@ -22,7 +22,7 @@ struct WidgetPresentation {
     bindings: std::collections::BTreeMap<String, String>,
 }
 impl WidgetPresentation {
-    fn from_app(app: &StudyApp) -> Self {
+    fn from_app(app: &StudyApp, cx: &App) -> Self {
         let fallback = studyapp_core::TimerState::default();
         let timer = app
             .snapshot
@@ -36,7 +36,7 @@ impl WidgetPresentation {
             + 1;
         Self {
             model: TimerCardModel::from_timer(timer, segment),
-            settings: app.effective_widget_settings(),
+            settings: app.preview_widget_settings(cx),
             bindings: app
                 .preferences_ui
                 .saved
@@ -80,7 +80,7 @@ impl TimerWidget {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&app, |this, app, cx| {
-            this.presentation = WidgetPresentation::from_app(app.read(cx));
+            this.presentation = WidgetPresentation::from_app(app.read(cx), cx);
             cx.notify();
         })
         .detach();
@@ -253,6 +253,18 @@ impl StudyApp {
             .map(|s| (*s.settings.timer_widget).clone())
             .unwrap_or_default()
     }
+    pub fn preview_widget_settings(&self, cx: &App) -> TimerWidgetSettings {
+        let mut settings = self.effective_widget_settings();
+        if self.page == Page::Settings
+            && let Some(color) = self.preferences_ui.appearance_colors.get("widget-accent")
+        {
+            let value = color.read(cx).preview_value(cx);
+            if value.trim().is_empty() || studyapp_core::parse_rgba_color(value.trim()).is_some() {
+                settings.accent = (!value.trim().is_empty()).then(|| value.trim().to_owned());
+            }
+        }
+        settings
+    }
     pub fn widget_state_path() -> Option<PathBuf> {
         studyapp_desktop::app_paths::AppPaths::runtime()
             .ok()
@@ -301,7 +313,7 @@ impl StudyApp {
         };
         let app = cx.entity();
         let initial = state.clone();
-        let presentation = WidgetPresentation::from_app(self);
+        let presentation = WidgetPresentation::from_app(self, cx);
         // Component roots supply an opaque theme surface by default. Override
         // only this window's root; a transparent child cannot erase its parent.
         match cx.open_window(options, move |window, cx| {

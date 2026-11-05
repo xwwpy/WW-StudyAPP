@@ -1,5 +1,5 @@
 //! Persistent color control. Configuration text stays in the existing draft
-//! input; the picker is a lazily allocated presentation of that same value.
+//! input; the lazy picker stages preview values until explicit Apply.
 use crate::{
     components::*,
     controls::Button,
@@ -16,12 +16,16 @@ use gpui_kit::{
     },
     *,
 };
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
+use studyapp_core::RgbaColor;
+thread_local! { static RECENT: RefCell<Vec<RgbaColor>> = const { RefCell::new(Vec::new()) }; }
 
 pub struct ColorSetting {
     key: &'static str,
     source: Entity<gpui_kit::component::input::InputState>,
     draft: ColorDraft,
+    last_source: String,
+    editor: Option<Entity<gpui_kit::component::input::InputState>>,
     automatic: bool,
     inherited: u32,
     disabled: bool,
@@ -36,6 +40,8 @@ pub struct ColorSetting {
 
 pub struct ColorSettingChanged;
 impl EventEmitter<ColorSettingChanged> for ColorSetting {}
+pub struct ColorSettingPreviewChanged;
+impl EventEmitter<ColorSettingPreviewChanged> for ColorSetting {}
 pub struct ColorSettingPopupChanged;
 impl EventEmitter<ColorSettingPopupChanged> for ColorSetting {}
 
@@ -49,15 +55,15 @@ impl ColorSetting {
     ) -> Self {
         let draft = ColorDraft::new(source.read(cx).value().to_string(), automatic);
         let subscription = cx.observe_in(&source, window, |this, source, window, cx| {
-            if this.draft.set_text(source.read(cx).value().to_string()) {
-                this.sync_picker(window, cx);
-                cx.notify();
-            }
+            let _ = source;
+            this.sync_source(window, cx);
         });
         Self {
             key,
             source,
+            last_source: draft.raw().to_owned(),
             draft,
+            editor: None,
             automatic,
             inherited: 0x233631,
             disabled: false,
@@ -87,6 +93,8 @@ impl ColorSetting {
             return;
         }
         self.open = false;
+        self.draft.set_text(self.last_source.clone());
+        cx.emit(ColorSettingPreviewChanged);
         self.layout_revision = self.layout_revision.wrapping_add(1);
         self.popup_bounds = None;
         self.popup_geometry = None;
@@ -98,17 +106,37 @@ impl ColorSetting {
         cx.notify();
     }
 
-    fn rgb(&self) -> u32 {
+    fn rgba(&self) -> RgbaColor {
         match self.draft.choice() {
-            ColorChoice::Custom(rgb) => rgb,
-            _ => self.inherited,
+            ColorChoice::Custom(color) => color,
+            _ => RgbaColor::opaque(self.inherited),
         }
     }
-
+    pub fn preview_value(&self, cx: &App) -> SharedString {
+        if self.open {
+            self.draft.raw().to_owned().into()
+        } else {
+            self.source.read(cx).value()
+        }
+    }
+    fn sync_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let raw = self.source.read(cx).value().to_string();
+        if raw == self.last_source {
+            return;
+        }
+        self.last_source = raw.clone();
+        self.draft.set_text(raw.clone());
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |input, cx| input.set_value(raw, window, cx));
+        }
+        self.sync_picker(window, cx);
+        cx.emit(ColorSettingPreviewChanged);
+        cx.notify();
+    }
     fn sync_picker(&self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(picker) = &self.picker {
             picker.update(cx, |picker, cx| {
-                picker.set_value(gpui_kit::rgb(self.rgb()), window, cx)
+                picker.set_value(gpui_kit::rgba(self.rgba().packed_rgba()), window, cx)
             });
         }
     }
@@ -117,21 +145,31 @@ impl ColorSetting {
         if self.disabled || self.open == open {
             return;
         }
+        if !open {
+            self.dismiss(cx);
+            return;
+        }
+        if self.editor.is_none() {
+            let editor = cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx));
+            self.subscriptions
+                .push(cx.observe_in(&editor, window, |this, editor, window, cx| {
+                    if this.open && this.draft.set_text(editor.read(cx).value().to_string()) {
+                        this.sync_picker(window, cx);
+                        cx.emit(ColorSettingPreviewChanged);
+                        cx.notify();
+                    }
+                }));
+            self.editor = Some(editor);
+        }
         if open && self.picker.is_none() {
             let picker = cx.new(|cx| ColorPickerState::new(window, cx));
             self.subscriptions.push(cx.subscribe_in(
                 &picker,
                 window,
                 |this, picker, event: &ColorPickerEvent, window, cx| {
-                    let was_open = this.open;
-                    this.open = picker.read(cx).is_open();
-                    if was_open != this.open {
-                        this.layout_revision = this.layout_revision.wrapping_add(1);
-                        this.popup_bounds = None;
-                        this.popup_geometry = None;
-                        this.popup_surface = None;
-                        cx.emit(ColorSettingPopupChanged);
-                    }
+                    // The application popup is transactional. A vendor palette
+                    // selection may close its own state, but only Apply commits.
+                    picker.update(cx, |picker, cx| picker.set_open(this.open, cx));
                     let ColorPickerEvent::Change(color) = event;
                     if let Some(color) = color {
                         this.select_color(*color, window, cx);
@@ -151,8 +189,13 @@ impl ColorSetting {
         if open {
             // Restore from the authoritative text when reopening, including a
             // source preset changed while this field was out of the viewport.
-            self.draft
-                .set_text(self.source.read(cx).value().to_string());
+            self.last_source = self.source.read(cx).value().to_string();
+            self.draft.set_text(self.last_source.clone());
+            if let Some(editor) = &self.editor {
+                editor.update(cx, |input, cx| {
+                    input.set_value(self.last_source.clone(), window, cx)
+                });
+            }
             self.sync_picker(window, cx);
         }
         if let Some(picker) = &self.picker {
@@ -166,25 +209,40 @@ impl ColorSetting {
         cx.notify();
     }
 
-    fn select_color(&mut self, mut color: Hsla, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_color(&mut self, color: Hsla, window: &mut Window, cx: &mut Context<Self>) {
         if self.disabled {
             self.sync_picker(window, cx);
             return;
         }
-        let translucent = color.a != 1.;
-        color.a = 1.;
         let rgba = Rgba::from(color);
         let channel = |value: f32| (value.clamp(0., 1.) * 255.).round() as u32;
         let rgb = (channel(rgba.r) << 16) | (channel(rgba.g) << 8) | channel(rgba.b);
-        let before = self.draft.raw().to_owned();
-        self.draft.choose_rgb(rgb);
-        if translucent {
-            self.sync_picker(window, cx);
+        self.draft
+            .choose_rgba(RgbaColor::new(rgb, channel(rgba.a) as u8));
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |input, cx| {
+                input.set_value(self.draft.raw().to_owned(), window, cx)
+            });
         }
-        if self.draft.raw() != before {
+        cx.emit(ColorSettingPreviewChanged);
+        cx.notify();
+    }
+
+    fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled || self.draft.choice() == ColorChoice::Invalid {
+            return;
+        }
+        if let ColorChoice::Custom(color) = self.draft.choice() {
+            RECENT.with_borrow_mut(|colors| {
+                colors.retain(|previous| *previous != color);
+                colors.insert(0, color);
+                colors.truncate(6);
+            });
+        }
+        if self.draft.raw() != self.last_source {
             self.write_source(window, cx);
         }
-        cx.notify();
+        self.dismiss(cx);
     }
 
     fn use_automatic(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -198,8 +256,9 @@ impl ColorSetting {
         }
     }
 
-    fn write_source(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn write_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.draft.raw().to_owned();
+        self.last_source = value.clone();
         self.source
             .update(cx, |input, cx| input.set_value(value, window, cx));
         // InputState::set_value intentionally suppresses InputEvent::Change.
@@ -299,7 +358,9 @@ impl ColorSetting {
                     .rounded_sm()
                     .border_1()
                     .border_color(crate::theme::color(BORDER))
-                    .bg(gpui_kit::rgb(self.rgb())),
+                    .child(checker_swatch(
+                        gpui_kit::rgba(self.rgba().packed_rgba()).into(),
+                    )),
             )
     }
 
@@ -332,7 +393,10 @@ impl ColorSetting {
                                 .border_1()
                                 .border_color(crate::theme::color(BORDER))
                                 .bg(color)
-                                .selected(self.draft.choice() == ColorChoice::Custom(rgb))
+                                .selected(
+                                    self.draft.choice()
+                                        == ColorChoice::Custom(RgbaColor::opaque(rgb)),
+                                )
                                 .on_hover(move |color, entered, window, cx| {
                                     preview_swatch(&preview, color, entered, window, cx)
                                 })
@@ -354,6 +418,7 @@ impl ColorSetting {
             (0, "色相", sliders.hue().clone(), color.h * 360.),
             (1, "饱和度", sliders.saturation().clone(), color.s * 100.),
             (2, "明度", sliders.lightness().clone(), color.l * 100.),
+            (3, "不透明度", sliders.alpha().clone(), color.a * 100.),
         ] {
             let track = if index == 0 {
                 row().gap_0().children((0..6).map(|segment| {
@@ -367,6 +432,20 @@ impl ColorSetting {
                     hsla(color.h, 0., color.l, 1.),
                     hsla(color.h, 1., color.l, 1.),
                 )
+            } else if index == 3 {
+                div()
+                    .relative()
+                    .flex_1()
+                    .h_full()
+                    .child(checkerboard())
+                    .child(
+                        gradient(
+                            hsla(color.h, color.s, color.l, 0.),
+                            hsla(color.h, color.s, color.l, 1.),
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
             } else {
                 gradient(
                     hsla(color.h, color.s, 0., 1.),
@@ -376,7 +455,7 @@ impl ColorSetting {
             panel = panel.child(
                 row()
                     .gap_2()
-                    .child(div().w(px(48.)).text_sm().child(label))
+                    .child(div().w(px(64.)).text_sm().child(label))
                     .child(
                         div()
                             .id(SharedString::from(format!(
@@ -404,30 +483,73 @@ impl ColorSetting {
             );
         }
         panel = panel.child(form::field(
-            "精确色值 · #RRGGBB",
+            "HEX · #RRGGBB / #RRGGBBAA",
             div()
                 .id(SharedString::from(format!("color-value-{}", self.key)))
                 .test_support()
-                .child(form::input(&self.source, self.disabled)),
+                .child(form::input(
+                    self.editor.as_ref().expect("open color editor"),
+                    self.disabled,
+                )),
         ));
+        let recent = RECENT.with_borrow(Clone::clone);
+        if !recent.is_empty() {
+            panel = panel.child(row().gap_2().child(muted("最近")).children(
+                recent.into_iter().enumerate().map(|(index, value)| {
+                    let picker = picker.clone();
+                    let color: Hsla = gpui_kit::rgba(value.packed_rgba()).into();
+                    Button::new(SharedString::from(format!(
+                        "color-recent-{}-{index}",
+                        self.key
+                    )))
+                    .small()
+                    .ghost()
+                    .accessibility_label(format!("使用最近颜色 {}", value.to_hex()))
+                    .child(div().size(px(20.)).child(checker_swatch(color)))
+                    .on_click(move |_, window, cx| {
+                        picker.update(cx, |picker, cx| picker.update_color(color, window, cx))
+                    })
+                }),
+            ));
+        }
+        let original: Hsla = gpui_kit::rgba(
+            studyapp_core::parse_rgba_color(&self.last_source)
+                .unwrap_or(RgbaColor::opaque(self.inherited))
+                .packed_rgba(),
+        )
+        .into();
         panel.child(
             row()
+                .gap_2()
                 .child(
-                    div()
-                        .size(px(28.))
-                        .rounded_md()
-                        .border_1()
-                        .border_color(crate::theme::color(BORDER))
-                        .bg(preview),
+                    column()
+                        .gap_1()
+                        .child(muted("原色"))
+                        .child(div().w(px(40.)).h(px(28.)).child(checker_swatch(original))),
+                )
+                .child(
+                    column()
+                        .gap_1()
+                        .child(muted("预览"))
+                        .child(div().w(px(40.)).h(px(28.)).child(checker_swatch(preview))),
                 )
                 .child(div().flex_1())
                 .child(
-                    Button::new(SharedString::from(format!("color-close-{}", self.key)))
+                    Button::new(SharedString::from(format!("color-cancel-{}", self.key)))
                         .small()
-                        .label("完成")
+                        .ghost()
+                        .label("取消")
                         .on_click(
                             cx.listener(|this, _, window, cx| this.set_open(false, window, cx)),
                         ),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("color-close-{}", self.key)))
+                        .small()
+                        .primary()
+                        .label("应用")
+                        .disabled(self.draft.choice() == ColorChoice::Invalid)
+                        .on_click(cx.listener(|this, _, window, cx| this.apply(window, cx))),
                 ),
         )
     }
@@ -436,7 +558,7 @@ impl ColorSetting {
         self.picker
             .as_ref()
             .and_then(|picker| picker.read(cx).value())
-            .unwrap_or_else(|| gpui_kit::rgb(self.rgb()).into())
+            .unwrap_or_else(|| gpui_kit::rgba(self.rgba().packed_rgba()).into())
     }
 }
 
@@ -458,6 +580,47 @@ fn preview_swatch(
     });
 }
 
+fn checkerboard() -> Div {
+    div().absolute().size_full().child(
+        canvas(
+            |_, _, _| {},
+            |bounds, _, window, _| {
+                // One paint element; no per-tile layout tree in every settings row.
+                let side = px(6.);
+                let rows = (f32::from(bounds.size.height) / 6.).ceil() as usize;
+                let columns = (f32::from(bounds.size.width) / 6.).ceil() as usize;
+                for y in 0..rows {
+                    for x in 0..columns {
+                        let origin = bounds.origin + point(side * x as f32, side * y as f32);
+                        let tile = Bounds::new(
+                            origin,
+                            size(
+                                side.min(bounds.right() - origin.x),
+                                side.min(bounds.bottom() - origin.y),
+                            ),
+                        );
+                        window.paint_quad(fill(
+                            tile,
+                            gpui_kit::rgb(if (x + y) % 2 == 0 { 0xFFFFFF } else { 0xB8BEC6 }),
+                        ));
+                    }
+                }
+            },
+        )
+        .absolute()
+        .size_full(),
+    )
+}
+fn checker_swatch(color: Hsla) -> Div {
+    div()
+        .relative()
+        .size_full()
+        .overflow_hidden()
+        .rounded_sm()
+        .child(checkerboard())
+        .child(div().absolute().size_full().bg(color))
+}
+
 fn gradient(start: Hsla, end: Hsla) -> Div {
     div().flex_1().h_full().bg(linear_gradient(
         90.,
@@ -468,12 +631,7 @@ fn gradient(start: Hsla, end: Hsla) -> Div {
 
 impl Render for ColorSetting {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self
-            .draft
-            .set_text(self.source.read(cx).value().to_string())
-        {
-            self.sync_picker(window, cx);
-        }
+        self.sync_source(window, cx);
         let revision = self.layout_revision;
         let surface = Rc::new(());
         let weak = cx.weak_entity();
@@ -510,7 +668,7 @@ impl Render for ColorSetting {
         }
         column().min_w_0().gap_1().child(field).children(
             (self.draft.choice() == ColorChoice::Invalid).then(|| {
-                muted("请输入六位 #RRGGBB 色值").text_color(crate::theme::color(0xBE3434))
+                muted("请输入 #RRGGBB 或 #RRGGBBAA 色值").text_color(crate::theme::color(0xBE3434))
             }),
         )
     }
@@ -721,6 +879,17 @@ mod tests {
         // Exercise the rendered ColorSwatch -> select_color -> Change event,
         // rather than directly closing the control or invoking its setter.
         cx.update(|window, cx| window.click("color-swatch-swatch-close-3", cx));
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_open(view);
+            assert_eq!(
+                view.source.read(cx).value().as_str(),
+                "#123456",
+                "preview committed without Apply"
+            );
+            assert_eq!(view.draft.raw(), "#EF4444");
+        });
+        cx.update(|window, cx| window.click("color-close-swatch-close", cx));
         view.read_with(cx, |view, cx| assert_closed(view, cx));
         for _ in 0..3 {
             draw(cx);
@@ -770,7 +939,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn color_picker_is_lazy_reused_and_keeps_opaque_draft_after_close(cx: &mut TestAppContext) {
+    fn color_picker_is_lazy_reused_and_applies_rgba_without_hover_commit(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#123456"));
@@ -793,7 +962,15 @@ mod tests {
         });
         draw(cx);
         view.read_with(cx, |view, cx| {
-            assert_eq!(view.source.read(cx).value().as_str(), "#FF0000");
+            assert_eq!(view.source.read(cx).value().as_str(), "#123456");
+            assert_eq!(view.draft.raw(), "#FF000033");
+            assert!(view.open);
+            assert_eq!(view.slider_color(cx).a, 0.2);
+        });
+        cx.update(|window, cx| window.click("color-close-test", cx));
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.source.read(cx).value().as_str(), "#FF000033");
             assert!(!view.open);
         });
         cx.update(|window, cx| view.update(cx, |view, cx| view.set_open(true, window, cx)));
@@ -812,7 +989,7 @@ mod tests {
         view.read_with(cx, |view, cx| {
             assert_eq!(
                 view.source.read(cx).value().as_str(),
-                "#FF0000",
+                "#FF000033",
                 "closing committed a hovered preview"
             )
         });
@@ -871,6 +1048,59 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn alpha_hex_cancel_invalid_and_external_replacement_never_dirty_the_source(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let input = cx.new(|cx| InputState::new(window, cx).default_value("#12345680"));
+            ColorSetting::new("transaction", input, false, window, cx)
+        });
+        cx.update(|window, cx| window.click("color-open-transaction", cx));
+        draw(cx);
+        let local = view.read_with(cx, |view, _| view.editor.clone().unwrap());
+        let source = view.read_with(cx, |view, _| view.source.clone());
+        cx.update(|window, cx| {
+            local.update(cx, |input, cx| input.set_value("#FF000000", window, cx))
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.preview_value(cx).as_str(), "#FF000000");
+            assert_eq!(source.read(cx).value().as_str(), "#12345680");
+            assert_eq!(view.slider_color(cx).a, 0.);
+        });
+        cx.update(|window, cx| window.click("color-cancel-transaction", cx));
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.preview_value(cx).as_str(), "#12345680")
+        });
+        cx.update(|window, cx| window.click("color-open-transaction", cx));
+        draw(cx);
+        cx.update(|window, cx| local.update(cx, |input, cx| input.set_value("#bad", window, cx)));
+        draw(cx);
+        cx.update(|window, cx| window.click("color-close-transaction", cx));
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert!(view.popup_open());
+            assert_eq!(view.draft.raw(), "#bad");
+            assert_eq!(source.read(cx).value().as_str(), "#12345680");
+        });
+        cx.update(|window, cx| {
+            source.update(cx, |input, cx| input.set_value("#ABCDEF40", window, cx))
+        });
+        draw(cx);
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.preview_value(cx).as_str(), "#ABCDEF40")
+        });
+        view.update(cx, |view, cx| view.dismiss(cx));
+        draw(cx);
+        assert_eq!(
+            source.read_with(cx, |input, _| input.value()).as_str(),
+            "#ABCDEF40"
+        );
+    }
+
+    #[gpui_kit::test]
     fn popup_children_accept_slider_and_hex_input_after_pointer_containment(
         cx: &mut TestAppContext,
     ) {
@@ -887,7 +1117,8 @@ mod tests {
         });
         draw(cx);
         view.read_with(cx, |view, cx| {
-            assert_eq!(view.source.read(cx).value().as_str(), "#00FFFF");
+            assert_eq!(view.source.read(cx).value().as_str(), "#FF0000");
+            assert_eq!(view.draft.raw(), "#00FFFF");
             assert!(view.popup_open());
         });
         cx.update(|window, cx| {
@@ -904,12 +1135,15 @@ mod tests {
         });
         draw(cx);
         view.read_with(cx, |view, cx| {
-            assert_eq!(view.source.read(cx).value().as_str(), "#AABBCC");
+            assert_eq!(view.source.read(cx).value().as_str(), "#FF0000");
             assert_eq!(view.draft.raw(), "#AABBCC");
         });
         cx.update(|window, cx| window.click("color-close-pointer", cx));
         draw(cx);
         assert!(!view.read_with(cx, |view, _| view.popup_open()));
+        view.read_with(cx, |view, cx| {
+            assert_eq!(view.source.read(cx).value().as_str(), "#AABBCC")
+        });
     }
 
     #[gpui_kit::test]
@@ -957,11 +1191,11 @@ mod tests {
             });
         });
         draw(cx);
-        view.read_with(cx, |view, cx| {
+        view.read_with(cx, |view, _| {
             assert_eq!(
-                view.source.read(cx).value().as_str(),
+                view.draft.raw(),
                 "#00FFFF",
-                "hue slider committed a color other than the displayed HSL state"
+                "hue slider staged a color other than the displayed HSL state"
             )
         });
     }

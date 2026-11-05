@@ -79,8 +79,8 @@ impl TimerWidgetSettings {
         ensure!((80..=140).contains(&self.scale), "小组件缩放应为 80–140%");
         if let Some(color) = &self.accent {
             ensure!(
-                crate::parse_theme_color(color).is_some(),
-                "小组件强调色须为 #RRGGBB"
+                crate::parse_rgba_color(color).is_some(),
+                "小组件强调色须为 #RRGGBB 或 #RRGGBBAA"
             );
         }
         ensure!(

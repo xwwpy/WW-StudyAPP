@@ -1,5 +1,6 @@
 //! Persistent learning rules, independent of the desktop interface.
 mod appearance;
+mod color;
 mod engine;
 mod folders;
 pub mod integration;
@@ -12,6 +13,7 @@ mod stats;
 mod storage;
 mod timer;
 pub use appearance::*;
+pub use color::*;
 pub use engine::Engine;
 pub use media_settings::{ImageSettings, ImageStorage};
 pub use models::*;

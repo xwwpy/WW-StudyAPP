@@ -49,7 +49,7 @@ pub struct TimerCardStyle {
     pub palette: ResolvedTheme,
     pub settings: TimerWidgetSettings,
     pub surface: u32,
-    pub accent: u32,
+    pub accent: Hsla,
 }
 impl TimerCardStyle {
     pub fn from_widget_settings(settings: &TimerWidgetSettings, palette: ResolvedTheme) -> Self {
@@ -60,8 +60,9 @@ impl TimerCardStyle {
         let accent = settings
             .accent
             .as_deref()
-            .and_then(studyapp_core::parse_theme_color)
-            .unwrap_or(palette.accent);
+            .and_then(studyapp_core::parse_rgba_color)
+            .map(|color| Hsla::from(rgba(color.packed_rgba())))
+            .unwrap_or_else(|| rgb(palette.accent).into());
         Self {
             palette,
             settings: settings.clone(),
@@ -128,7 +129,7 @@ pub fn timer_card(
         "▶ 正在计时"
     };
     let accent = if model.paused && !model.finished {
-        palette.warning
+        Hsla::from(rgb(palette.warning))
     } else {
         style.accent
     };
@@ -241,13 +242,13 @@ pub fn timer_card(
                 .w_full()
                 .h(px(6.))
                 .rounded_full()
-                .bg(Hsla::from(rgb(accent)).opacity(0.16))
+                .bg(accent.opacity(accent.a * 0.16))
                 .child(
                     div()
                         .w(relative(model.ratio))
                         .h_full()
                         .rounded_full()
-                        .bg(rgb(accent)),
+                        .bg(accent),
                 ),
         );
     }
@@ -326,6 +327,19 @@ pub fn timer_card(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[::core::prelude::v1::test]
+    fn widget_accent_alpha_does_not_change_surface_or_foreground_opacity() {
+        let palette = crate::theme::palette();
+        let settings = TimerWidgetSettings {
+            accent: Some("#FF000080".into()),
+            ..Default::default()
+        };
+        let style = TimerCardStyle::from_widget_settings(&settings, palette);
+        assert!((style.accent.a - 128. / 255.).abs() < 0.0001);
+        assert_eq!(style.surface, palette.surface);
+        assert_eq!(style.palette.text, palette.text);
+        assert_eq!(style.settings.opacity, settings.opacity);
+    }
     #[::core::prelude::v1::test]
     fn progress_and_remaining_are_bounded_and_countup_never_divides_by_zero() {
         for kind in [TimerKind::Study, TimerKind::CountUp, TimerKind::CountDown] {

@@ -175,12 +175,58 @@ fn exercise_color_controls(
                 .unwrap()
                 .save(database.with_file_name("settings-color-picker.png"))
                 .unwrap();
-            window.click("color-swatch-accent-3", cx);
+            window.click("color-value-accent", cx);
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-a"
+                } else {
+                    "ctrl-a"
+                },
+                cx,
+            );
+            window.input("#33669980", cx);
             picker
+        })
+        .unwrap();
+    window
+        .update(cx, |_, window, cx| {
+            assert_eq!(
+                accent.read(cx).value(),
+                original_accent,
+                "RGBA preview wrote the source before Apply"
+            );
+            assert_eq!(control.read(cx).preview_value(cx).as_str(), "#33669980");
+            assert_eq!(view.read(cx).preferences_ui.appearance_touched, touched);
+            window.render_frame(cx);
+            window
+                .render_to_image()
+                .unwrap()
+                .save(database.with_file_name("settings-color-picker-rgba.png"))
+                .unwrap();
+            window.click("color-cancel-accent", cx);
+        })
+        .unwrap();
+    window
+        .update(cx, |_, window, cx| {
+            assert_eq!(accent.read(cx).value(), original_accent);
+            assert!(!control.read(cx).popup_open());
+            assert_eq!(view.read(cx).preferences_ui.appearance_touched, touched);
+            assert_eq!(settings_files(&files_root), files);
+            window.click("color-open-accent", cx);
+            window.render_frame(cx);
+            window.click("color-swatch-accent-3", cx);
         })
         .unwrap();
     // Selection emits a component event. End each update before checking its
     // subscriber, exactly as real native event delivery does.
+    window
+        .update(cx, |_, window, cx| {
+            assert_eq!(accent.read(cx).value(), original_accent);
+            assert!(control.read(cx).popup_open());
+            window.render_frame(cx);
+            window.click("color-close-accent", cx);
+        })
+        .unwrap();
     window
         .update(cx, |_, window, cx| {
             assert_eq!(accent.read(cx).value().as_str(), "#EF4444");
@@ -218,7 +264,14 @@ fn exercise_color_controls(
         .unwrap();
     window
         .update(cx, |_, window, cx| {
-            window.click("color-swatch-md-body-0", cx)
+            window.click("color-swatch-md-body-0", cx);
+        })
+        .unwrap();
+    window
+        .update(cx, |_, window, cx| {
+            assert_eq!(body.read(cx).value(), original_body);
+            window.render_frame(cx);
+            window.click("color-close-md-body", cx);
         })
         .unwrap();
     window
@@ -1573,7 +1626,25 @@ async fn exercise_markdown_preview(
             window.click("color-swatch-text-3", cx);
         })
         .unwrap();
-    // The click queues a picker Change event. Its settings subscriber commits
+    window
+        .update(cx, |_, window, cx| {
+            assert!(
+                view.read(cx).preferences_ui.appearance_colors["text"]
+                    .read(cx)
+                    .popup_open()
+            );
+            assert_ne!(
+                view.read(cx).preferences_ui.appearance_fields["text"]
+                    .read(cx)
+                    .value()
+                    .as_str(),
+                "#EF4444"
+            );
+            window.render_frame(cx);
+            window.click("color-close-text", cx);
+        })
+        .unwrap();
+    // Apply queues a semantic Change event. Its settings subscriber commits
     // the field first; a later normal StudyApp render configures the preview.
     // A browser snapshot dispatched immediately here can overtake that render.
     let commit = window

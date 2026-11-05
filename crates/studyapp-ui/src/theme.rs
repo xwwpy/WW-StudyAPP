@@ -5,8 +5,8 @@ use gpui_kit::{
 };
 use std::cell::Cell;
 use studyapp_core::{
-    AppearanceSettings, MARKDOWN_COLORS, MarkdownLayout, ThemeMode, ThemePalette,
-    parse_theme_color, readable_theme_color, theme_contrast,
+    AppearanceSettings, MARKDOWN_COLORS, MarkdownLayout, RgbaColor, ThemeMode, ThemePalette,
+    readable_theme_color, theme_contrast,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +34,7 @@ pub struct ResolvedTheme {
     pub font_size: u16,
     pub spacing: u16,
     pub markdown_colors: [u32; 26],
+    pub markdown_rgba: [RgbaColor; 26],
     pub markdown_layout: MarkdownLayout,
 }
 
@@ -62,10 +63,7 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
             .active_palette()
             .filter(|custom| custom.validate().is_ok())
     {
-        background = parse_theme_color(&custom.background).unwrap_or(background);
-        surface = parse_theme_color(&custom.surface).unwrap_or(surface);
-        text = parse_theme_color(&custom.text).unwrap_or(text);
-        accent = parse_theme_color(&custom.accent).unwrap_or(accent);
+        [background, surface, text, accent] = custom.composited(background);
         dark = theme_contrast(background, 0xFFFFFF) > theme_contrast(background, 0x000000);
     }
     let markdown = if settings.mode == ThemeMode::Custom {
@@ -148,6 +146,21 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
         font_size: settings.font_size.clamp(12, 22),
         spacing: settings.spacing.clamp(4, 16),
         markdown_colors: markdown.resolved_colors(&resolved_palette),
+        markdown_rgba: {
+            let mut values = markdown.resolved_rgba_colors(&resolved_palette);
+            if let Some(custom) = settings
+                .active_palette()
+                .filter(|custom| settings.mode == ThemeMode::Custom && custom.validate().is_ok())
+            {
+                for index in [0, 1] {
+                    if !markdown.colors.contains_key(MARKDOWN_COLORS[index]) {
+                        values[index] =
+                            studyapp_core::parse_rgba_color(&custom.text).unwrap_or(values[index]);
+                    }
+                }
+            }
+            values
+        },
         markdown_layout: markdown.layout,
     }
 }
@@ -186,8 +199,8 @@ impl ResolvedTheme {
         let mut markdown = serde_json::to_value(self.markdown_layout).expect("safe style layout");
         markdown["colors"] = MARKDOWN_COLORS
             .into_iter()
-            .zip(self.markdown_colors)
-            .map(|(key, value)| (key.to_owned(), serde_json::Value::String(hex(value))))
+            .zip(self.markdown_rgba)
+            .map(|(key, value)| (key.to_owned(), serde_json::Value::String(value.to_hex())))
             .collect::<serde_json::Map<_, _>>()
             .into();
         serde_json::json!({
@@ -534,6 +547,41 @@ mod tests {
                 .contrast_warnings(&settings.custom_presets[0].palette)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn rgba_uses_composited_native_surfaces_and_exact_editor_overrides() {
+        let settings: AppearanceSettings = serde_json::from_value(serde_json::json!({
+            "mode":"custom","active_preset":"alpha","custom_presets":[{
+                "id":"alpha","name":"Alpha",
+                "palette":{"background":"#00000000","surface":"#00000080","text":"#FFFFFF80","accent":"#FF000080"},
+                "markdown":{"colors":{"quote_background":"#FF000080","selection_background":"#33669966","selection_text":"#FFFFFF00"}}
+            }]
+        })).unwrap();
+        settings.validate().unwrap();
+        let resolved = resolve(&settings, false);
+        let expected = settings.custom_presets[0].palette.composited(0xF4F5F7);
+        assert_eq!(
+            [
+                resolved.background,
+                resolved.surface,
+                resolved.text,
+                resolved.accent
+            ],
+            expected
+        );
+        assert!(resolved.surface <= 0xFFFFFF);
+        let tokens = resolved.editor_tokens();
+        assert_eq!(
+            tokens["markdown"]["colors"]["quote_background"],
+            "#FF000080"
+        );
+        assert_eq!(tokens["markdown"]["colors"]["body"], "#FFFFFF80");
+        assert_eq!(
+            tokens["markdown"]["colors"]["selection_background"],
+            "#33669966"
+        );
+        assert_eq!(tokens["markdown"]["colors"]["selection_text"], "#FFFFFF00");
     }
 
     #[test]

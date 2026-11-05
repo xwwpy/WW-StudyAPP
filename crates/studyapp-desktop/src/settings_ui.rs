@@ -480,13 +480,19 @@ impl StudyApp {
         let values = self
             .preferences_ui
             .appearance_fields
-            .values()
-            .map(|input| input.read(cx).value())
+            .iter()
+            .map(|(key, input)| {
+                self.preferences_ui
+                    .appearance_colors
+                    .get(key)
+                    .map(|color| color.read(cx).preview_value(cx))
+                    .unwrap_or_else(|| input.read(cx).value())
+            })
             .collect();
         self.preferences_ui.markdown_preview.get(
             (values, self.preferences_ui.appearance_layout),
             |_| {
-                let preset = self.custom_appearance_input(cx);
+                let preset = self.appearance_input(true, cx);
                 let colors = preset.markdown.resolved_colors(&preset.palette);
                 let palette_warnings = preset
                     .palette
@@ -639,6 +645,13 @@ impl StudyApp {
                     .detach();
                     cx.subscribe(
                         &color,
+                        |_, _, _: &crate::settings_color::ColorSettingPreviewChanged, cx| {
+                            cx.notify()
+                        },
+                    )
+                    .detach();
+                    cx.subscribe(
+                        &color,
                         |this, _, _: &crate::settings_color::ColorSettingPopupChanged, cx| {
                             let bounds = this.appearance_color_popup_shapes(cx);
                             if let Some(preview) = &this.preferences_ui.appearance_preview {
@@ -662,7 +675,13 @@ impl StudyApp {
     }
 
     fn custom_appearance_input(&self, cx: &Context<Self>) -> studyapp_core::ThemePreset {
+        self.appearance_input(false, cx)
+    }
+    fn appearance_input(&self, preview: bool, cx: &Context<Self>) -> studyapp_core::ThemePreset {
         let value = |key| {
+            if preview && let Some(color) = self.preferences_ui.appearance_colors.get(key) {
+                return color.read(cx).preview_value(cx).trim().to_owned();
+            }
             self.preferences_ui
                 .appearance_fields
                 .get(key)
@@ -1831,8 +1850,9 @@ impl StudyApp {
             .gap_2()
             .p_3()
             .bg(gpui_kit::rgb(
-                studyapp_core::parse_theme_color(&preset.palette.surface)
-                    .unwrap_or(crate::theme::palette().surface),
+                preset
+                    .palette
+                    .composited(crate::theme::palette().background)[1],
             ))
             .text_color(color(0))
             .text_size(px(size))
@@ -1903,8 +1923,9 @@ impl StudyApp {
                         row()
                             .p_2()
                             .bg(gpui_kit::rgb(
-                                studyapp_core::parse_theme_color(&preset.palette.surface)
-                                    .unwrap_or(0xFFFFFF),
+                                preset
+                                    .palette
+                                    .composited(crate::theme::palette().background)[1],
                             ))
                             .text_color(color(9))
                             .child(div().flex_1().child("概念"))
@@ -1978,7 +1999,7 @@ impl StudyApp {
             if let Some(input) = self.preferences_ui.appearance_fields.get(key) {
                 let value = input.read(cx).value().trim().to_owned();
                 let invalid =
-                    !value.is_empty() && studyapp_core::parse_theme_color(&value).is_none();
+                    !value.is_empty() && studyapp_core::parse_rgba_color(&value).is_none();
                 let mut field = column().gap_1().child(
                     row()
                         .child(div().w(px(100.)).text_sm().child(*label))
@@ -1991,7 +2012,7 @@ impl StudyApp {
                 );
                 if invalid {
                     field = field.child(
-                        muted("请输入有效的六位十六进制颜色，例如 #586D83")
+                        muted("请输入 #RRGGBB 或 #RRGGBBAA，例如 #586D8380")
                             .text_color(rgb(crate::theme::palette().danger)),
                     );
                 }
@@ -2193,7 +2214,7 @@ impl StudyApp {
 
     pub fn appearance_preview_theme(&self, cx: &Context<Self>) -> crate::theme::ResolvedTheme {
         let mut appearance = self.effective_appearance();
-        let preset = self.custom_appearance_input(cx);
+        let preset = self.appearance_input(true, cx);
         appearance.mode = studyapp_core::ThemeMode::Custom;
         appearance.active_preset = Some(preset.id.clone());
         appearance.custom_presets = vec![preset];
@@ -2209,8 +2230,14 @@ impl StudyApp {
             (
                 self.preferences_ui
                     .appearance_fields
-                    .values()
-                    .map(|input| input.read(cx).value())
+                    .iter()
+                    .map(|(key, input)| {
+                        self.preferences_ui
+                            .appearance_colors
+                            .get(key)
+                            .map(|color| color.read(cx).preview_value(cx))
+                            .unwrap_or_else(|| input.read(cx).value())
+                    })
                     .collect(),
                 self.preferences_ui.appearance_layout,
             ),
@@ -3452,6 +3479,20 @@ mod scoped_tests {
             window.click("color-swatch-text-3", cx);
         });
         visual.run_until_parked();
+        visual.update(|window, cx| {
+            assert_ne!(
+                app.read(cx).preferences_ui.appearance_fields["text"]
+                    .read(cx)
+                    .value()
+                    .as_str(),
+                "#EF4444"
+            );
+            app.update(cx, |app, cx| {
+                assert_eq!(app.appearance_preview_theme(cx).text, 0xEF4444)
+            });
+            window.click("color-close-text", cx);
+        });
+        visual.run_until_parked();
         visual.update(|window, cx| window.draw(cx).clear(cx));
         app.read_with(visual, |app, cx| {
             assert_eq!(
@@ -3644,6 +3685,12 @@ mod scoped_tests {
             window.click("color-open-accent", cx);
             window.render_frame(cx);
             window.click("color-swatch-accent-3", cx);
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            assert_eq!(source.read(cx).value(), original);
+            assert!(control.read(cx).popup_open());
+            window.click("color-close-accent", cx);
         });
         cx.run_until_parked();
         cx.update(|window, cx| {
