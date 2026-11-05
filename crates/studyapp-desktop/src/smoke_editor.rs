@@ -115,6 +115,138 @@ async fn dismiss_error_notice(window: AnyWindowHandle, view: &Entity<StudyApp>, 
     }
 }
 
+/// First readonly paint, before any theme picker or test-driven measurement.
+#[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
+pub async fn default_preview(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    crate::smoke_library::until(
+        window,
+        view,
+        "default appearance snapshot",
+        |app, _| app.snapshot.is_some(),
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, cx| {
+                let snapshot = app.snapshot.as_ref().unwrap();
+                assert_eq!(
+                    snapshot.settings.appearance.mode,
+                    studyapp_core::ThemeMode::System
+                );
+                assert!(snapshot.settings.appearance.active_preset.is_none());
+                assert!(snapshot.settings.appearance.custom_presets.is_empty());
+                app.selected_note = Some(snapshot.notes[0].id.clone());
+                app.page = Page::Notes;
+                cx.notify();
+            })
+        })
+        .unwrap();
+    let editor = view.read_with(cx, |app, _| app.note_content.clone());
+    crate::smoke_library::until(
+        window,
+        view,
+        "first default readonly editor",
+        |app, cx| {
+            let editor = app.note_content.read(cx);
+            assert!(editor.error().is_none(), "{:?}", editor.error());
+            editor.ready()
+        },
+        cx,
+    )
+    .await;
+    for label in ["first", "reopened"] {
+        cx.background_executor()
+            .timer(Duration::from_millis(700))
+            .await;
+        let native = window
+            .update(cx, |_, _, cx| editor.read(cx).native_state().unwrap())
+            .unwrap();
+        // Capture the compositor BEFORE any browser inspection, not Metal's
+        // GPUI-only readback (which omits the native WKWebView child).
+        let image = database.with_file_name(format!("native-markdown-editor-default-{label}.png"));
+        #[cfg(target_os = "macos")]
+        {
+            let output = std::process::Command::new("/usr/sbin/screencapture")
+                .args(["-x", "-m"])
+                .arg(&image)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        #[cfg(target_os = "linux")]
+        window
+            .update(cx, |_, window, _| {
+                crate::smoke::capture(window, image).unwrap()
+            })
+            .unwrap();
+        let dom = bridge(window, &editor, json!({"type":"passiveVisibility"}), cx).await;
+        let evidence = json!({"native":native,"dom":dom,"presetSelected":false});
+        std::fs::write(
+            database.with_file_name(format!("native-markdown-editor-default-{label}.json")),
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
+        for key in ["requestedVisible", "appliedVisible", "visible"] {
+            assert_eq!(native[key], true, "default readonly {label}: {evidence}");
+        }
+        assert_eq!(dom["readonly"], true, "{evidence}");
+        assert_eq!(dom["source"], false, "{evidence}");
+        assert!(
+            dom["text"].as_str().unwrap().starts_with("# Rust 所有权"),
+            "{evidence}"
+        );
+        assert!(
+            dom["editor"]["width"].as_f64().unwrap() > 100.,
+            "{evidence}"
+        );
+        assert!(
+            dom["editor"]["height"].as_f64().unwrap() > 100.,
+            "{evidence}"
+        );
+        assert!(
+            dom["firstLine"]["height"].as_f64().unwrap() > 0.,
+            "{evidence}"
+        );
+        assert_eq!(dom["firstLine"]["visibility"], "visible", "{evidence}");
+        if label == "first" {
+            window
+                .update(cx, |_, _, cx| {
+                    view.update(cx, |app, cx| {
+                        app.page = Page::Today;
+                        cx.notify();
+                    })
+                })
+                .unwrap();
+            cx.background_executor()
+                .timer(Duration::from_millis(250))
+                .await;
+            window
+                .update(cx, |_, _, cx| {
+                    assert_eq!(
+                        editor.read(cx).native_state().unwrap()["appliedVisible"],
+                        false
+                    );
+                    view.update(cx, |app, cx| {
+                        app.page = Page::Notes;
+                        cx.notify();
+                    });
+                })
+                .unwrap();
+        }
+    }
+}
+
 pub async fn exercise(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,

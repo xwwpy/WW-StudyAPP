@@ -538,6 +538,11 @@ impl HostedEditor {
             "parentXid": self.gtk_host.parent_id,
             "requestedVisible": self.requested_visible.get(),
             "appliedVisible": self.applied_visible.get(),
+            "bounds": self.bounds.get().map(|bounds| serde_json::json!({
+                "x": f32::from(bounds.origin.x), "y": f32::from(bounds.origin.y),
+                "width": f32::from(bounds.size.width), "height": f32::from(bounds.size.height),
+            })),
+            "occlusionCount": self.occlusions.borrow().len(),
             "visible": self.gtk_host.window.is_visible(),
             "mapped": self.gtk_host.window.is_mapped(),
             "viewable": self.gtk_host.native.is_viewable(),
@@ -550,6 +555,11 @@ impl HostedEditor {
         Ok(serde_json::json!({
             "requestedVisible": self.requested_visible.get(),
             "appliedVisible": self.applied_visible.get(),
+            "bounds": self.bounds.get().map(|bounds| serde_json::json!({
+                "x": f32::from(bounds.origin.x), "y": f32::from(bounds.origin.y),
+                "width": f32::from(bounds.size.width), "height": f32::from(bounds.size.height),
+            })),
+            "occlusionCount": self.occlusions.borrow().len(),
             "visible": !self.webview.webview().isHiddenOrHasHiddenAncestor(),
             "parentVisible": self.webview.ns_window().isVisible(),
             "parentKey": self.webview.ns_window().isKeyWindow(),

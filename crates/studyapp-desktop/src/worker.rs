@@ -1343,6 +1343,86 @@ mod tests {
         assert_eq!(std::fs::read(&lock).unwrap(), b"retained lock content");
     }
 
+    // This is a unit-test child process, never a native application window.
+    #[test]
+    fn library_handoff_child_probe() {
+        let Some(ready) = std::env::var_os("WW_STUDYAPP_LOCK_HANDOFF_PROBE") else {
+            return;
+        };
+        std::fs::write(ready, b"ready").unwrap();
+        let mut input = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut input).unwrap();
+    }
+
+    #[test]
+    fn library_lock_is_released_without_deleting_it_while_helper_remains_alive() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let database = root.join("studyapp.sqlite3");
+        let lock = database.with_extension("lock");
+        std::fs::write(&lock, b"preserve this exact lock file").unwrap();
+        let owner = Worker::start(database.clone(), None);
+        assert!(initial_update(&owner).snapshot.is_some());
+        let saved = apply(
+            &owner,
+            Command::CreateNote {
+                title: "Handoff library".into(),
+                content: "Original data survives restart".into(),
+            },
+        );
+        let note_id = saved.snapshot.unwrap().notes[0].id.clone();
+        let ready = root.join("helper-ready");
+        let mut helper = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "worker::tests::library_handoff_child_probe",
+                "--nocapture",
+            ])
+            .env("WW_STUDYAPP_LOCK_HANDOFF_PROBE", &ready)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+        while !ready.exists() {
+            assert!(
+                helper.try_wait().unwrap().is_none(),
+                "helper exited before readiness"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "helper startup timed out"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        let contender = Worker::start(database.clone(), None);
+        assert_eq!(
+            initial_update(&contender).startup_failure.unwrap().kind,
+            startup::StartupFailureKind::InUse
+        );
+        drop(contender);
+        drop(owner);
+        assert!(
+            helper.try_wait().unwrap().is_none(),
+            "helper must still be alive at restart"
+        );
+        let restarted = Worker::start(database, None);
+        let update = initial_update(&restarted);
+        assert!(update.startup_failure.is_none());
+        let snapshot = update.snapshot.unwrap();
+        assert_eq!(snapshot.notes[0].id, note_id);
+        assert_eq!(
+            snapshot.versions[0].content,
+            "Original data survives restart"
+        );
+        drop(restarted);
+        assert_eq!(
+            std::fs::read(&lock).unwrap(),
+            b"preserve this exact lock file"
+        );
+        drop(helper.stdin.take());
+        assert!(helper.wait().unwrap().success());
+    }
+
     #[test]
     fn startup_retry_after_lock_release_reopens_original_data() {
         let root = tempfile::tempdir().unwrap().keep();

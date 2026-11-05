@@ -119,6 +119,8 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         }
         #[cfg(all(windows, feature = "ui-test"))]
         Box::pin(crate::smoke_visibility::first_open(window, &view, &database, cx)).await;
+        #[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
+        Box::pin(crate::smoke_editor::default_preview(window, &view, &database, cx)).await;
         for (index, page) in [Page::Today, Page::Notes, Page::Reviews, Page::Stats, Page::Settings].into_iter().enumerate() {
             let result = window.update(cx, |_, window, cx| {
                 view.update(cx, |app, cx| {

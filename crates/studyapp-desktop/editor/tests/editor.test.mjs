@@ -70,6 +70,34 @@ async function shortcuts(page, bindings) {
   await page.evaluate(bindings => window.studyappEditor.setShortcuts(bindings), bindings);
 }
 
+test("passive first readonly inspection never invokes corrective CodeMirror geometry", async () => {
+  const { page, errors } = await setup();
+  const text = `# 默认样式
+
+尚未选择任何预设的只读正文。
+`;
+  for (const tokens of [null, {}, { mode: "light" }, { mode: "dark" }]) {
+    await page.evaluate(({ text, tokens }) => {
+      window.studyappEditor.setTheme(tokens);
+      window.studyappEditor.load({ generation: 42, text, readonly: true });
+    }, { text, tokens });
+    await page.waitForTimeout(80);
+    const before = await action(page, { type: "passiveVisibility" });
+    assert.equal(before.text, text);
+    assert.equal(before.readonly, true);
+    assert.equal(before.revision, 0);
+    assert.ok(before.editor.width > 500);
+    assert.ok(before.editor.height > 100);
+    assert.ok(before.firstLine.height > 0);
+    assert.equal(before.firstLine.visibility, "visible");
+  }
+  const source = await readFile(new URL("../src/editor.ts", import.meta.url), "utf8");
+  const passive = source.split('action.type === "passiveVisibility"')[1].split('else if (action.type === "snapshot")')[0];
+  assert.doesNotMatch(passive, /view\.(?:requestMeasure|dispatch|focus|posAtCoords|coordsAtPos)\(/);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
 test("layout completion acknowledges readonly preview resize before the continuity baseline", async () => {
   const rust = await readFile(new URL("../../src/appearance_preview.rs", import.meta.url), "utf8");
   const text = rust.match(/PREVIEW_SAMPLE: &str = r#"([\s\S]*?)"#;/)[1];

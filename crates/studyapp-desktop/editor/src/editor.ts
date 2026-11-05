@@ -628,6 +628,22 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
       };
       result={guarded:true};
     }
+    else if (action.type === "passiveVisibility") {
+      // No CodeMirror geometry API, requestMeasure, dispatch or focus here:
+      // inspecting first paint must not repair a hidden-host layout failure.
+      const bounds = (node: Element) => {
+        const rect = node.getBoundingClientRect();
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      };
+      const line = view.contentDOM.querySelector(".cm-line");
+      result = { generation, revision, readonly: view.state.readOnly, source,
+        text: view.state.doc.toString(), viewport: { width: innerWidth, height: innerHeight },
+        editor: bounds(view.dom), content: bounds(view.contentDOM),
+        firstLine: line ? { ...bounds(line), text: line.textContent,
+          color: getComputedStyle(line).color, visibility: getComputedStyle(line).visibility } : null,
+        renderedLines: view.contentDOM.querySelectorAll(".cm-line").length,
+        mode: document.documentElement.dataset.theme };
+    }
     else if (action.type === "snapshot") result = snapshot();
     else if (action.type === "layout") {
       // Setup only: acknowledge the host's actual viewport and a completed CM
