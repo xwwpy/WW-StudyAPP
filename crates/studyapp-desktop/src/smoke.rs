@@ -102,6 +102,28 @@ pub fn prepare(database: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "ui-test")]
+fn reveal_learning_version(
+    window: &mut Window,
+    view: &Entity<StudyApp>,
+    version: &str,
+    cx: &mut App,
+) {
+    use gpui_kit::test::TestWindowExt;
+    let id = SharedString::from(format!("associate-version-{version}"));
+    window.render_frame(cx);
+    let scroll = view.read(cx).page_scroll.clone();
+    let target = window.find(id.clone()).bounds();
+    let viewport = scroll.bounds();
+    let overflow = (target.bottom() - viewport.bottom() + px(8.)).max(px(0.));
+    scroll.set_offset(scroll.offset() - point(px(0.), overflow));
+    window.render_frame(cx);
+    assert!(
+        window.find(id).visible(),
+        "learning version must be in the scroll viewport"
+    );
+}
+
 pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathBuf, cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor().timer(Duration::from_secs(2)).await;
@@ -284,6 +306,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 window.click("manual-top", cx);
                 let version = view.read(cx).snapshot.as_ref().unwrap().versions[0].id.clone();
                 assert!(view.read(cx).chosen_versions.contains(&version));
+                reveal_learning_version(window, &view, &version, cx);
                 window.click(SharedString::from(format!("associate-version-{version}")), cx);
                 assert!(!view.read(cx).chosen_versions.contains(&version));
                 view.update(cx, |app, cx| app.summary.update(cx, |s, cx| s.set_value("## 学习摘要\n\n- 确认阅读了**所有权**快照\n- `中文🧠`", window, cx)));
@@ -294,6 +317,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert!(view.read(cx).editor.is_some());
                 assert!(view.read(cx).notice.as_ref().is_some_and(Result::is_err));
                 let version = view.read(cx).snapshot.as_ref().unwrap().versions[0].id.clone();
+                reveal_learning_version(window, &view, &version, cx);
                 window.click(SharedString::from(format!("associate-version-{version}")), cx);
                 capture(window, database.with_file_name("learning-editor.png")).unwrap();
                 window.render_frame(cx);

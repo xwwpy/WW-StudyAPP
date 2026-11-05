@@ -2548,6 +2548,13 @@ test('table keyboard widths, global defaults and reset remain independent from s
   await page.evaluate(()=>window.studyappEditor.setTheme({tableDefaults:{sizing:'adaptive',alignment:'center'}}));
   await page.getByRole('button',{name:'恢复全局默认',exact:true}).click();
   await page.waitForFunction(()=>getComputedStyle(document.querySelector('.md-table-cell')).textAlign==='center');
+  // Reset schedules the presentation redraw on the next animation frame.
+  // Alignment may already reflect the earlier theme update while widths still
+  // belong to the explicit keyboard override. Await the actual reset geometry.
+  await page.waitForFunction(()=>{
+    const cells=[...document.querySelectorAll('.md-table-header .md-table-cell')];
+    return cells.length===2&&cells[1].getBoundingClientRect().width>cells[0].getBoundingClientRect().width*2;
+  });
   const widths=await tableWidths(page);assert.ok(widths[1]>widths[0]*2);
   assert.equal((await tableMessages(page)).at(-1).value,null);assert.equal((await state(page)).revision,0);
   await page.setViewportSize({width:350,height:410});await page.waitForTimeout(100);

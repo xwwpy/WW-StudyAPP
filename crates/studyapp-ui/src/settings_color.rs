@@ -338,6 +338,11 @@ impl ColorSetting {
     }
 
     #[cfg(any(test, feature = "ui-test"))]
+    pub fn popup_input(&self) -> Option<Entity<gpui_kit::component::input::InputState>> {
+        self.open.then(|| self.editor.clone()).flatten()
+    }
+
+    #[cfg(any(test, feature = "ui-test"))]
     pub fn picker_id(&self) -> Option<EntityId> {
         self.picker.as_ref().map(Entity::entity_id)
     }

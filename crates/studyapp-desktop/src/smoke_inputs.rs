@@ -1037,7 +1037,10 @@ pub async fn exercise(
             window.render_frame(cx);
             window.click("color-open-accent", cx);
             window.render_frame(cx);
-            let accent = view.read(cx).preferences_ui.appearance_fields["accent"].clone();
+            // Palette text is a transactional draft, not the unmounted source
+            // preference input. Exercise the actual mounted native input.
+            let control = view.read(cx).preferences_ui.appearance_colors["accent"].clone();
+            let accent = control.read(cx).popup_input().unwrap();
             accent.update(cx, |input, cx| input.set_value("", window, cx));
             accent
         })
@@ -1053,12 +1056,19 @@ pub async fn exercise(
     )
     .await;
     window
+        .update(cx, |_, window, cx| window.click("color-close-accent", cx))
+        .unwrap();
+    settle(cx).await;
+    let accent = window
         .update(cx, |_, window, cx| {
+            let source = view.read(cx).preferences_ui.appearance_fields["accent"].clone();
+            assert_eq!(source.read(cx).value().as_str(), "#215F99");
             view.update(cx, |app, cx| {
                 app.select_appearance_page(AppearancePage::Overview, cx);
                 app.select_appearance_page(AppearancePage::ThemeEditor, cx);
             });
             window.render_frame(cx);
+            source
         })
         .unwrap();
     evidence.push(json!({"stage":"appearance-color-popup:closed-reentry",

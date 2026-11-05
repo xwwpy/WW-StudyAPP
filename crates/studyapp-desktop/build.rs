@@ -6,6 +6,12 @@ const RT_GROUP_ICON: u16 = 14;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // Intel's linker otherwise emits unsigned debug/test images. Owner IPC
+    // requires a kernel CDHASH on both architectures, including local builds.
+    // Release packaging may replace this ad-hoc signature with its own identity.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-adhoc_codesign");
+    }
     // GPUI's native layout/paint traversal with the embedded editor exceeds
     // MSVC's default 1 MiB main-thread reserve in debug builds. Reserve 8 MiB
     // for the GUI executable; Windows commits pages only as they are touched.

@@ -1087,6 +1087,15 @@ impl StudyApp {
             event.action = Some(studyapp_core::NoticeAction::OpenTimer);
             self.emit_notification(event, cx);
         }
+        #[cfg(feature = "ui-test")]
+        if self.snapshot.as_ref().is_none_or(|old| {
+            old.settings.timer_widget.pinned != snapshot.settings.timer_widget.pinned
+        }) {
+            eprintln!(
+                "native snapshot pin accepted: {}",
+                snapshot.settings.timer_widget.pinned
+            );
+        }
         self.snapshot = Some(snapshot);
     }
 

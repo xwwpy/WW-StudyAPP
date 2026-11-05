@@ -73,15 +73,36 @@ pub async fn exercise(
             app.navigate(Page::Today, window, cx);
             assert_eq!(app.page, Page::Today);
             assert!(app.timer_widget.is_none());
+        });
+        // Complete the departure from the preceding native WebView before
+        // starting the worker acknowledgement deadline. Its hide/layout work
+        // must not be charged to a command that has not been sent yet.
+        window.render_frame(cx);
+        app.update(cx, |app, cx| {
             app.send(Command::SetTimerWidgetPinned(false), cx);
         });
     })
     .unwrap();
+    let mut last = None;
     until(
         main,
         app,
         "prepare unpinned widget",
-        |app, _| !app.snapshot.as_ref().unwrap().settings.timer_widget.pinned && !app.storage_busy,
+        |app, _| {
+            let state = (
+                app.snapshot.as_ref().unwrap().settings.timer_widget.pinned,
+                app.preferences_ui
+                    .saved
+                    .as_ref()
+                    .map(|p| p.settings.timer_widget.pinned),
+                app.storage_busy,
+            );
+            if last != Some(state) {
+                eprintln!("native pin preparation: snapshot/saved/busy={state:?}");
+                last = Some(state);
+            }
+            !state.0 && !state.2
+        },
         cx,
     )
     .await;

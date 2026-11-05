@@ -118,7 +118,7 @@ async fn exercise_save_shortcut(
     .await;
 }
 
-fn exercise_color_controls(
+async fn exercise_color_controls(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
     database: &Path,
@@ -184,9 +184,23 @@ fn exercise_color_controls(
                 },
                 cx,
             );
-            window.input("#33669980", cx);
             picker
         })
+        .unwrap();
+    crate::smoke_library::until(
+        window,
+        view,
+        "color HEX deferred select-all",
+        |_, cx| {
+            let editor = control.read(cx).popup_input().unwrap();
+            let input = editor.read(cx);
+            input.selected_range() == (0..input.text().len())
+        },
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, window, cx| window.input("#33669980", cx))
         .unwrap();
     window
         .update(cx, |_, window, cx| {
@@ -765,7 +779,7 @@ pub async fn exercise(
 ) {
     settled(window, view, cx).await;
     measure_appearance_cache(window, view, database, cx).await;
-    exercise_color_controls(window, view, database, cx);
+    Box::pin(exercise_color_controls(window, view, database, cx)).await;
     exercise_markdown_preview(window, view, database, cx).await;
     window
         .update(cx, |_, window, cx| {

@@ -1708,6 +1708,15 @@ mod tests {
         assert!(!patched.settings.layout.folders_visible);
         assert_eq!(patched.shortcuts, committed.shortcuts);
         let pinned = apply(&worker, Command::SetTimerWidgetPinned(false));
+        assert!(
+            !pinned
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .settings
+                .timer_widget
+                .pinned
+        );
         let pinned = pinned.preferences.unwrap();
         let mut expected = patched.settings.clone();
         expected.timer_widget.pinned = false;
