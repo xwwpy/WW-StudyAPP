@@ -1,3 +1,5 @@
+import { sanitizeHtml, sanitizeStyle } from "./safe-html";
+import { htmlConfiguration, htmlRendering } from "./html-rendering";
 import { previewCaret, previewMouseSelection } from "./preview";
 import { renderedSelection, copyMenuUpdates, installCopyMenu } from "./selection";
 import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled } from "./outline";
@@ -50,6 +52,7 @@ const readOnlyMode = new Compartment();
 const renderingMode = new Compartment();
 const shortcutsMode = new Compartment();
 const themeMode = new Compartment();
+let htmlEnabled = true;
 let bindings = resolveBindings({});
 let generation = 0;
 let revision = 0;
@@ -302,8 +305,8 @@ function setShortcuts(values: Record<string, string>): void {
 }
 function extensions(readonly: boolean, rawText = ""): Extension[] {
   return [
-    outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : renderedMarkdown),
-    themeMode.of(EditorView.theme({})), rawUrlWrapping,
+    outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : [renderedMarkdown, htmlRendering]),
+    themeMode.of([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)]), rawUrlWrapping,
     documentLimits(rawText, warning, clearWarning),
     markdown({ base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
     syntaxHighlighting(codeHighlighting), history(), renderedSelection, previewMouseSelection, copyMenuUpdates, EditorView.lineWrapping,
@@ -394,7 +397,7 @@ function setReadonly(value: boolean): void {
 function setSource(value: boolean): void {
   source = Boolean(value);
   document.documentElement.dataset.source = String(source);
-  view.dispatch({ effects: renderingMode.reconfigure(source ? [] : renderedMarkdown) });
+  view.dispatch({ effects: renderingMode.reconfigure(source ? [] : [renderedMarkdown, htmlRendering]) });
   updateToolbar();
 }
 function load(value: Load): void {
@@ -567,7 +570,8 @@ function setTheme(tokens: Record<string, unknown>): void {
   themeWarning.hidden = !applyEditorTheme(tokens);
   // A changed style module invalidates CodeMirror's measured text geometry,
   // including its cursor layer, without replacing document/history/selection.
-  view.dispatch({effects:themeMode.reconfigure(EditorView.theme({}))});
+  htmlEnabled = tokens?.renderHtml !== false;
+  view.dispatch({effects:themeMode.reconfigure([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)])});
   view.requestMeasure();
 }
 applyEditorTheme({});
@@ -620,7 +624,13 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
   bridge.test = async (action: TestAction) => {
     let result: unknown;
     const position = (value: number | undefined) => Math.max(0, Math.min(view.state.doc.length, value ?? 0));
-    if (action.type === "unavailablePreviewGeometry") {
+    if (action.type === "sanitizeHtml") {
+      const fragment = sanitizeHtml(action.text ?? "");
+      const container = document.createElement("div");
+      if (fragment) container.append(fragment);
+      result = {html:fragment ? container.innerHTML : null,style:sanitizeStyle(action.text ?? "")};
+    }
+    else if (action.type === "unavailablePreviewGeometry") {
       const original=view.posAndSideAtCoords.bind(view);
       view.posAndSideAtCoords=coords => {
         if(view.state.readOnly) throw new TypeError("Cannot read properties of null (reading 'length')");

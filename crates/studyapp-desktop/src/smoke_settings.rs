@@ -1416,6 +1416,21 @@ async fn exercise_markdown_preview(
     assert_eq!(before["text"], crate::appearance_preview::PREVIEW_SAMPLE);
     assert_eq!(before["readonly"], true);
     assert_eq!(before["canRequestEdit"], false);
+    let html_safety = crate::smoke_editor::bridge(
+        window, &preview,
+        serde_json::json!({"type":"sanitizeHtml","text":"<div style='color:red;position:fixed'><strong>HTML 排版</strong><img src='https://outside/image' alt='图'><script>bad()</script></div>"}), cx,
+    ).await;
+    let safe_html = html_safety["html"].as_str().expect("bounded HTML rendered");
+    assert!(safe_html.contains("<strong>HTML 排版</strong>"));
+    assert!(safe_html.contains("color:red"));
+    assert!(safe_html.contains("[图片：图]"));
+    for forbidden in ["<script", "src=", "position:", "https://outside"] {
+        assert!(
+            !safe_html.contains(forbidden),
+            "unsafe native WebView HTML output"
+        );
+    }
+
     let native = crate::smoke_visibility::visible(window, &preview, cx).await;
     assert!(
         native["bounds"]["height"].as_i64().unwrap() >= 300,

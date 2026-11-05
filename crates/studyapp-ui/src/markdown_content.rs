@@ -1,21 +1,84 @@
 //! Offline Markdown presentation for compact learning text.
 
 pub fn markdown_preview(source: &str) -> String {
-    preview(source, false)
+    preview(source, false, false)
 }
 
-fn preview(source: &str, safe_links: bool) -> String {
+/// HTML is sanitized within the original Markdown token boundaries. Keeping the
+/// Markdown stream preserves ordered starts, task lists, tables and fenced code.
+pub fn markdown_preview_with_html(source: &str, enabled: bool) -> String {
+    use std::{cell::RefCell, collections::VecDeque};
+    struct CachedPreview {
+        source: String,
+        rendered: String,
+    }
+    thread_local! {
+        static CACHE: RefCell<VecDeque<CachedPreview>> = const { RefCell::new(VecDeque::new()) };
+    }
+    if !enabled || !source.contains('<') || source.len() > 65_536 {
+        return preview(source, false, enabled);
+    }
+    CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(index) = cache.iter().position(|entry| entry.source == source) {
+            let entry = cache.remove(index).expect("cached preview index");
+            let rendered = entry.rendered.clone();
+            cache.push_back(entry);
+            return rendered;
+        }
+        let rendered = preview(source, false, true);
+        if rendered.len() <= 524_288 {
+            if cache.len() >= 16 {
+                cache.pop_front();
+            }
+            cache.push_back(CachedPreview {
+                source: source.into(),
+                rendered: rendered.clone(),
+            });
+        }
+        rendered
+    })
+}
+
+fn preview(source: &str, safe_links: bool, render_html: bool) -> String {
     use pulldown_cmark::{Event, Tag};
-    let mut events = parser(source).into_offset_iter();
+    let mut events = parser(source).into_offset_iter().peekable();
     let mut output = String::new();
     let mut cursor = 0;
-    while let Some((event, range)) = events.next() {
+    while let Some((event, mut range)) = events.next() {
         match event {
             Event::Start(Tag::Link { ref dest_url, .. })
                 if safe_links
                     && (dest_url.starts_with("https://") || dest_url.starts_with("http://")) => {}
             Event::Html(_) | Event::InlineHtml(_) => {
+                if matches!(event, Event::Html(_)) {
+                    while let Some((Event::Html(_), next)) = events.peek() {
+                        if next.start != range.end {
+                            break;
+                        }
+                        range.end = next.end;
+                        events.next();
+                    }
+                }
                 output.push_str(&source[cursor..range.start]);
+                if render_html {
+                    let raw = &source[range.clone()];
+                    let safe = if matches!(event, Event::InlineHtml(_)) {
+                        studyapp_core::sanitize_inline_html(raw)
+                    } else {
+                        studyapp_core::sanitize_html(raw).map(|clean| {
+                            format!(
+                                "<div>{clean}</div>
+"
+                            )
+                        })
+                    };
+                    if let Some(safe) = safe {
+                        output.push_str(&safe);
+                        cursor = range.end;
+                        continue;
+                    }
+                }
                 // Preserve the boundary as literal text: removing it (or adding
                 // whitespace) can create a new inline or reference-style image.
                 push_literal(&mut output, &source[range.clone()]);
@@ -200,7 +263,7 @@ pub fn release_notes(source: &str) -> gpui_kit::SharedString {
         {
             return rendered.clone();
         }
-        let rendered: gpui_kit::SharedString = preview(source, true).into();
+        let rendered: gpui_kit::SharedString = preview(source, true, false).into();
         *cache = Some((source.to_owned(), rendered.clone()));
         rendered
     })
@@ -220,5 +283,51 @@ mod release_tests {
         assert!(!safe.contains("javascript:"));
         assert!(!safe.contains("<script>"));
         assert_eq!(safe, super::release_notes(source));
+    }
+}
+
+#[cfg(test)]
+mod html_tests {
+    use super::*;
+    use pulldown_cmark::{Event, Tag};
+    #[test]
+    fn safe_html_keeps_markdown_order_tasks_and_fenced_html() {
+        let source = "3. **第三项**\n4. 第四项\n\n- [x] 完成\n\n<span style='color:red' onclick='bad()'>**重点**</span>\n\n```html\n<img src='file:///private'>\n```";
+        let safe = markdown_preview_with_html(source, true);
+        assert!(safe.contains("3. **第三项**"));
+        assert!(safe.contains("- [x] 完成"));
+        assert!(safe.contains("<span style=\"color:red\">**重点**</span>"));
+        assert!(!safe.contains("onclick"));
+        assert!(safe.contains("```html\n<img src='file:///private'>\n```"));
+        assert_eq!(
+            markdown_preview_with_html(source, false),
+            markdown_preview(source)
+        );
+    }
+    #[test]
+    fn native_html_blocks_remain_one_safe_block_without_resource_reinterpretation() {
+        for source in [
+            "<div style='color:red'>\n<strong>正文</strong>\n</div>",
+            "<unknown>![a](https://outside)</unknown>",
+            "<a href='https://outside'>![a](file:///private)</a>",
+            "![图]<span></span>(https://outside)",
+            "![图]<script></script>[ref]\n\n[ref]:https://outside",
+        ] {
+            let safe = markdown_preview_with_html(source, true);
+            assert!(
+                parser(&safe).all(|event| !matches!(
+                    event,
+                    Event::Start(Tag::Image { .. } | Tag::Link { .. })
+                )),
+                "{safe}"
+            );
+            for (event, _) in parser(&safe).into_offset_iter() {
+                if let Event::Html(raw) | Event::InlineHtml(raw) = event {
+                    for forbidden in ["src=", "href=", "onclick=", "<script"] {
+                        assert!(!raw.contains(forbidden), "{safe}");
+                    }
+                }
+            }
+        }
     }
 }

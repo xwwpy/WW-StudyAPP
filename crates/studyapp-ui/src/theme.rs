@@ -11,6 +11,7 @@ use studyapp_core::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedTheme {
+    pub render_html: bool,
     pub dark: bool,
     pub background: u32,
     pub surface: u32,
@@ -162,6 +163,7 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
             values
         },
         markdown_layout: markdown.layout,
+        render_html: settings.render_html,
     }
 }
 
@@ -204,6 +206,7 @@ impl ResolvedTheme {
             .collect::<serde_json::Map<_, _>>()
             .into();
         serde_json::json!({
+            "renderHtml": self.render_html,
             "mode": if self.dark { "dark" } else { "light" },
             "accent": hex(self.accent), "background": hex(self.surface),
             "surface": hex(self.surface), "text": hex(self.text),

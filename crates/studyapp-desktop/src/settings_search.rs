@@ -33,6 +33,11 @@ impl SettingResult {
 
 static SETTINGS: &[SettingResult] = &[
     SettingResult::new(
+        SettingsSection::Appearance,
+        "Markdown HTML 渲染开关",
+        "md markdown html 行内 样式 安全 渲染 源文 关闭",
+    ),
+    SettingResult::new(
         SettingsSection::Logging,
         "日志等级与保存目录",
         "log 日志 诊断 error warn info debug trace 开启 关闭 位置 目录 路径",

@@ -28,6 +28,14 @@ pub const PREVIEW_SAMPLE: &str = r#"# 让阅读更清晰
 | 例子与练习 | 复习中 | 8 |
 | 下一步计划 | 待开始 | 3 |
 
+## 安全 HTML
+
+普通文字与 <span style="color:#586D83;font-weight:bold">行内排版</span>。
+
+<div style="text-align:center;padding:8px;border-width:1px;border-style:solid;border-color:#586D83">
+<strong>这是安全的 HTML 排版样例</strong><br>可以在主题与阅读中关闭 HTML 渲染。
+</div>
+
 ## 代码与语法颜色
 
 ```rust

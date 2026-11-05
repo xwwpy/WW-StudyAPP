@@ -7848,6 +7848,8 @@ version = "0.2.5"
 dependencies = [
  "anyhow",
  "chrono",
+ "html5ever 0.27.0",
+ "markup5ever_rcdom",
  "rusqlite",
  "serde",
  "serde_json",

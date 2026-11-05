@@ -100,7 +100,7 @@ test("passive first readonly inspection never invokes corrective CodeMirror geom
 
 test("layout completion acknowledges readonly preview resize before the continuity baseline", async () => {
   const rust = await readFile(new URL("../../src/appearance_preview.rs", import.meta.url), "utf8");
-  const text = rust.match(/PREVIEW_SAMPLE: &str = r#"([\s\S]*?)"#;/)[1];
+  const text = rust.match(/PREVIEW_SAMPLE: &str = r#"([\s\S]*?)"#;/)[1].replaceAll(String.fromCharCode(13), "");
   const { page, errors } = await setup(text);
   await page.setViewportSize({ width: 830, height: 371 });
   await page.evaluate(text => {
@@ -2317,4 +2317,114 @@ test("RGBA Markdown tokens preserve alpha, use composited contrast and never cha
   assert.equal(after.text,before.text);assert.equal(after.revision,before.revision);assert.deepEqual(after.selection,before.selection);
   assert.deepEqual(errors,[]);assert.deepEqual(externalRequests,[]);
   await page.close();
+});
+
+test("HTML inline formatting preserves Markdown text selection, and the switch restores literal source", async()=>{
+  const source='before <span style="color:#123456;font-size:24px" onclick="bad()">**重点中文**</span> after';
+  const {page,errors,externalRequests}=await setup(source);
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  const span=page.locator('.cm-content span[style*="color: rgb(18, 52, 86)"], .cm-content span[style*="color:#123456"]');
+  await span.first().waitFor();
+  assert.equal(await span.first().evaluate(e=>getComputedStyle(e).fontSize),'24px');
+  assert.equal(await page.locator('.cm-content [onclick]').count(),0);
+  assert.ok(await page.locator('.cm-content .md-strong').count()>0);
+  assert.equal((await state(page)).text,source);
+  await page.evaluate(()=>window.studyappEditor.setTheme({renderHtml:false}));
+  assert.equal(await span.count(),0);
+  assert.ok((await page.locator('.cm-content').innerText()).includes('<span style='));
+  await page.evaluate(()=>window.studyappEditor.setTheme({renderHtml:true}));
+  await span.first().waitFor();
+  assert.equal((await state(page)).text,source);
+  assert.deepEqual(errors,[]);assert.deepEqual(externalRequests,[]);await page.close();
+});
+
+test("HTML blocks render across source lines without illegal plugin replacements",async()=>{
+  const source='<div style="text-align:center;background-color:#123456;color:white">\n<strong>HTML 正文</strong><br>\n第二行\n</div>\n\n```html\n<span style="color:red">围栏代码</span>\n```';
+  const {page,errors}=await setup(source);
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  const block=page.locator('.md-html-fragment');await block.first().waitFor();
+  assert.ok((await block.first().innerText()).includes('HTML 正文'));
+  assert.equal(await block.locator('strong').innerText(),'HTML 正文');
+  assert.equal(await block.locator('div').first().evaluate(e=>getComputedStyle(e).textAlign),'center');
+  assert.ok((await page.locator('.cm-content').innerText()).includes('<span style="color:red">围栏代码</span>'));
+  assert.equal((await state(page)).text,source);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test("active HTML, untrusted images, host attributes and layout escaping never reach the document",async()=>{
+  const source='<div id="toolbar" data-action="save" onclick="window.pwned=1" style="position:fixed;z-index:99999;background-image:url(https://outside/secret);color:red"><script>window.pwned=2</script><iframe src="https://outside/frame"></iframe><svg onload="window.pwned=3"><text>hidden</text></svg><img src="https://outside/image" onerror="window.pwned=4" alt="图片"><a href="file:///private">label</a><b>safe</b></div>';
+  const {page,errors,externalRequests}=await setup(source);
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  const block=page.locator('.md-html-fragment');await block.waitFor();
+  assert.equal(await block.locator('script,style,iframe,svg,math,img,[onclick],[onerror],[data-action],[id],[href],[src]').count(),0);
+  assert.equal(await page.evaluate(()=>window.pwned),undefined);
+  assert.ok((await block.innerText()).includes('[图片：图片]'));
+  assert.equal(await block.locator('div').evaluate(e=>getComputedStyle(e).position),'static');
+  assert.deepEqual(errors,[]);assert.deepEqual(externalRequests,[]);await page.close();
+});
+
+test("browser and native share the same CSS rejection and HTML safety corpus",async()=>{
+  const corpus=JSON.parse(await readFile(new URL('../../../studyapp-core/tests/fixtures/html-safety.json',import.meta.url),'utf8'));
+  const {page,errors,externalRequests}=await setup('corpus');
+  for(const [source,expected] of corpus.styles) assert.equal((await action(page,{type:'sanitizeHtml',text:source})).style,expected,source);
+  for(const source of corpus.html){
+    const {html}=await action(page,{type:'sanitizeHtml',text:source});
+    assert.notEqual(html,null,source);
+    assert.equal((await action(page,{type:'sanitizeHtml',text:html})).html,html,source);
+    for(const forbidden of [' src=',' href=',' data-',' onclick=',' onerror=','<script','<svg','<math','<iframe','<img','<form','<object']) assert.ok(!html.includes(forbidden),html);
+  }
+  for(const source of ['x'.repeat(65537),'<br>'.repeat(4097),'<div>'.repeat(40)+'text'+'</div>'.repeat(40)]){
+    assert.equal((await action(page,{type:'sanitizeHtml',text:source})).html,null);
+  }
+  assert.deepEqual(errors,[]);assert.deepEqual(externalRequests,[]);await page.close();
+});
+
+test("HTML inline readonly selection and explicit copy retain exact source positions",async()=>{
+  const source='before <span style="color:red">**重点中文🙂**</span> after';
+  const {page,errors}=await setup(source);
+  await page.evaluate(()=>{window.studyappEditor.setReadonly(true);window.studyappEditor.setCanRequestEdit(false);window.copied=[];document.execCommand=command=>{if(command!=='copy')return false;const data=new DataTransfer();document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('copy',{clipboardData:data,bubbles:true,cancelable:true}));window.copied.push(data.getData('text/plain'));return true;};});
+  const start=source.indexOf('重点'),end=start+'重点中文🙂'.length;
+  await select(page,start,end);
+  assert.equal(await page.evaluate(()=>getSelection().toString()),'重点中文🙂');
+  await page.locator('.cm-content').dispatchEvent('contextmenu',{clientX:300,clientY:150});
+  await page.locator('#editor-copy-menu button').click();
+  assert.deepEqual(await page.evaluate(()=>window.copied),['重点中文🙂']);
+  assert.deepEqual((await state(page)).selection,{anchor:start,head:end});
+  assert.equal((await state(page)).text,source);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test("HTML setting changes preserve undo history and raw source while editing",async()=>{
+  const source='before <span style="color:red">text</span> after';
+  const {page,errors}=await setup(source);
+  await select(page,source.length);
+  await page.keyboard.type('!');
+  for(const renderHtml of [false,true,false,true]) await page.evaluate(renderHtml=>window.studyappEditor.setTheme({renderHtml}),renderHtml);
+  assert.equal((await state(page)).text,source+'!');
+  await page.keyboard.press('Control+z');
+  assert.equal((await state(page)).text,source);
+  await page.evaluate(()=>window.studyappEditor.setSource(true));
+  assert.equal(await page.locator('.md-html-fragment').count(),0);
+  assert.ok((await page.locator('.cm-content').innerText()).includes('<span style='));
+  await page.evaluate(()=>{window.studyappEditor.setSource(false);window.studyappEditor.setReadonly(true);});
+  assert.ok(!(await page.locator('.cm-content').innerText()).includes('<span style='));
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test("HTML block native selection copies visible text without hidden source markup",async()=>{
+  const source='<div style="color:red"><strong>HTML 选择中文🙂</strong><br>第二行</div>';
+  const {page,errors}=await setup(source);
+  await page.evaluate(()=>{window.studyappEditor.setReadonly(true);window.studyappEditor.setCanRequestEdit(true);window.copied=[];document.execCommand=command=>{if(command!=='copy')return false;const data=new DataTransfer();document.dispatchEvent(new ClipboardEvent('copy',{clipboardData:data,bubbles:true,cancelable:true}));window.copied.push(data.getData('text/plain'));return true;};});
+  const text=page.locator('.md-html-fragment strong');await text.waitFor();
+  await text.evaluate(element=>{const range=document.createRange();range.selectNodeContents(element);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);});
+  await page.waitForTimeout(80);
+  assert.equal(await page.evaluate(()=>getSelection().toString()),'HTML 选择中文🙂');
+  await text.dispatchEvent('contextmenu',{clientX:300,clientY:150});
+  assert.equal(await page.locator('#editor-copy-menu button').isDisabled(),false);
+  await page.locator('#editor-copy-menu button').click();
+  assert.deepEqual(await page.evaluate(()=>window.copied),['HTML 选择中文🙂']);
+  assert.equal(await page.evaluate(()=>getSelection().toString()),'HTML 选择中文🙂');
+  assert.equal((await state(page)).text,source);
+  assert.equal(await page.evaluate(()=>window.messages.filter(m=>m.type==='requestEdit').length),0);
+  assert.deepEqual(errors,[]);await page.close();
 });

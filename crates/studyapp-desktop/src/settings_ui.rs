@@ -386,6 +386,7 @@ impl StudyApp {
             SettingsResetScope::Appearance => {
                 // Presets and their editor fields belong to the theme editor.
                 draft.appearance.mode = defaults.settings.appearance.mode;
+                draft.appearance.render_html = defaults.settings.appearance.render_html;
                 draft.appearance.font_size = defaults.settings.appearance.font_size;
                 draft.appearance.spacing = defaults.settings.appearance.spacing;
             }
@@ -2525,6 +2526,20 @@ impl StudyApp {
             return column().gap_3().child(
                 form::section("主题与阅读")
                     .child(
+                        Checkbox::new("markdown-render-html")
+                            .label("渲染 Markdown 中的安全 HTML 与行内样式")
+                            .checked(appearance.render_html)
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, checked, window, cx| {
+                                if let Some(draft) = &mut this.preferences_ui.draft {
+                                    draft.appearance.render_html = *checked;
+                                }
+                                this.refresh_appearance(window, cx);
+                                cx.notify();
+                            })),
+                    )
+                    .child(muted("仅支持安全排版，不执行脚本或加载 HTML 资源。关闭后显示原文；围栏中的 HTML 始终为代码。"))
+                    .child(
                         row().flex_wrap().children(
                             [
                                 (ThemeMode::System, "system", "跟随系统"),
@@ -4040,6 +4055,73 @@ mod scoped_tests {
             SettingsFixture { app: entity }
         });
         (app.unwrap(), visual)
+    }
+
+    struct HtmlPreferenceFixture {
+        app: Entity<StudyApp>,
+    }
+    impl Render for HtmlPreferenceFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| app.appearance_part(0, cx))
+        }
+    }
+    #[gpui_kit::test]
+    fn html_preference_is_a_live_discardable_draft_and_reset_preserves_other_pages(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(1000.)));
+        visual.replace_root_view(|_, _| HtmlPreferenceFixture { app: app.clone() });
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click("markdown-render-html", cx);
+            app.update(cx, |app, cx| {
+                assert!(
+                    !app.preferences_ui
+                        .draft
+                        .as_ref()
+                        .unwrap()
+                        .appearance
+                        .render_html
+                );
+                assert!(
+                    app.preferences_ui
+                        .saved
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .appearance
+                        .render_html
+                );
+                assert!(!app.effective_appearance().render_html);
+                assert!(app.settings_dirty(cx));
+                assert!(
+                    !crate::theme::palette().editor_tokens()["renderHtml"]
+                        .as_bool()
+                        .unwrap()
+                );
+                assert!(
+                    app.preferences_ui
+                        .appearance_preview
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .editor()
+                        .is_none()
+                );
+                app.discard_settings(window, cx);
+                assert!(app.effective_appearance().render_html);
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                draft.appearance.render_html = false;
+                draft.notifications.do_not_disturb = true;
+                draft.logging.enabled = false;
+                app.reset_settings_page(SettingsResetScope::Appearance, window, cx);
+                let draft = app.preferences_ui.draft.as_ref().unwrap();
+                assert!(draft.appearance.render_html);
+                assert!(draft.notifications.do_not_disturb);
+                assert!(!draft.logging.enabled);
+            });
+        });
     }
 
     struct LoggingFixture {

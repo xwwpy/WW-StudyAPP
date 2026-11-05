@@ -166,3 +166,8 @@ main { display: flex; flex-direction: column; }
 #editor-copy-menu button:hover:not(:disabled) { background:var(--editor-selection); }
 #editor-copy-menu button:disabled { opacity:.5; cursor:default; }
 #editor .cm-secondary-selected-text { background:var(--editor-selection) !important; color:var(--editor-selection-text) !important; }
+
+/* Authored HTML is confined to its own formatting surface, never host UI. */
+.md-html-fragment { max-width:100%; min-width:0; overflow:auto; isolation:isolate; box-sizing:border-box; white-space:normal; }
+.md-html-fragment * { box-sizing:border-box; max-width:100%; overflow-wrap:anywhere; }
+.md-html-fragment pre { white-space:pre-wrap; }

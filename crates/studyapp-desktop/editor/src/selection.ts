@@ -30,6 +30,16 @@ export const copyMenuUpdates = EditorView.updateListener.of(update => {
   if (update.docChanged || update.selectionSet || update.transactions.some(transaction => transaction.reconfigured)) closeOnChange();
 });
 
+// HTML widgets contain selectable rendered text, not a one-to-one CM source
+// mapping. Keep their native DOM selection rather than copying hidden HTML.
+function htmlSelection(view:EditorView):string|null {
+  const selection=view.contentDOM.ownerDocument.getSelection();
+  if(!selection || selection.isCollapsed || !selection.anchorNode || !selection.focusNode ||
+      !view.contentDOM.contains(selection.anchorNode) || !view.contentDOM.contains(selection.focusNode)) return null;
+  const widget=(node:Node)=> (node instanceof Element ? node : node.parentElement)?.closest(".md-html-fragment");
+  return widget(selection.anchorNode) || widget(selection.focusNode) ? selection.toString() : null;
+}
+
 export function installCopyMenu(view: EditorView, failed: (message: string) => void): void {
   const menu = document.createElement("div");
   menu.id = "editor-copy-menu";
@@ -44,7 +54,7 @@ export function installCopyMenu(view: EditorView, failed: (message: string) => v
   document.body.append(menu);
   const close = () => { menu.hidden = true; };
   const open = (x: number, y: number) => {
-    copy.disabled = view.state.selection.ranges.every(range => range.empty);
+    copy.disabled = !htmlSelection(view) && view.state.selection.ranges.every(range => range.empty);
     menu.hidden = false;
     const box = menu.getBoundingClientRect();
     menu.style.left = `${Math.max(8, Math.min(x, innerWidth - box.width - 8))}px`;
@@ -54,12 +64,23 @@ export function installCopyMenu(view: EditorView, failed: (message: string) => v
   // using the browser's normal copy event, never ambient clipboard permission.
   menu.addEventListener("mousedown", event => event.preventDefault());
   copy.addEventListener("click", () => {
-    if (!copy.disabled && view.state.selection.ranges.some(range => !range.empty)) {
-      view.focus();
+    const rendered = htmlSelection(view);
+    if (!copy.disabled && (rendered || view.state.selection.ranges.some(range => !range.empty))) {
+      if (!rendered) view.focus();
       if (!document.execCommand("copy")) failed("复制未完成，请按 Ctrl+C（macOS 为 ⌘C）复制所选文字。");
     }
     close();
   });
+  // Only a user copy event is handled; no ambient clipboard API or permission.
+  document.addEventListener("copy", event => {
+    const text=htmlSelection(view);
+    if(!text) return;
+    if(event.clipboardData) {
+      event.clipboardData.setData("text/plain",text);
+      event.preventDefault();
+    }
+    event.stopPropagation();
+  },true);
   view.dom.addEventListener("contextmenu", event => {
     if (!(event.target as Element).closest(".cm-content")) return;
     event.preventDefault();

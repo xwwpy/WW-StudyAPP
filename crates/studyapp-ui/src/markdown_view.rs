@@ -36,7 +36,10 @@ pub fn summary(id: impl Into<ElementId>, source: &str) -> impl IntoElement {
         id,
         TextView::markdown(
             "summary-content",
-            crate::markdown_content::markdown_preview(source),
+            crate::markdown_content::markdown_preview_with_html(
+                source,
+                crate::theme::palette().render_html,
+            ),
         )
         .style(crate::compact_markdown::summary_markdown_style())
         .on_link_click(|_, _, _, _| {})

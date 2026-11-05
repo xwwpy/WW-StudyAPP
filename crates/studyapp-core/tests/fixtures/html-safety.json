@@ -1,0 +1,33 @@
+{
+  "styles": [
+    ["COLOR: RED; text-align: center", "color:red;text-align:center"],
+    ["color:#12345678;background-color:rgba(1,2,3,0.5)", "background-color:rgba(1,2,3,0.5);color:#12345678"],
+    ["font-size:24px;line-height:1.5;margin:0 8px;padding:2px 3px 4px 5px", "font-size:24px;line-height:1.5;margin:0 8px;padding:2px 3px 4px 5px"],
+    ["color:red;color:blue;font-weight:700", "color:blue;font-weight:700"],
+    ["constructor:x;__proto__:x;toString:x;color:red", "color:red"],
+    ["color:var(--secret);background-image:url(file:///private)", ""],
+    ["position:fixed;z-index:99999;display:none;visibility:hidden;opacity:0", ""],
+    ["font-size:4em;line-height:4em;margin:20em;width:120%;height:999px", ""],
+    ["font-size:1e2px;font-size:NaNpx;font-size:Infinitypx", ""],
+    ["color:r/**/ed;color:red!important;color:currentColor", ""],
+    ["color:rgb(256,0,0);color:rgba(1,2,3,1.1)", ""],
+    ["color:rgb(255,0,0);border-width:4px;border-style:dotted", "border-style:dotted;border-width:4px;color:rgb(255,0,0)"],
+    ["width:100%;max-width:800px;height:480px;letter-spacing:6px", "height:480px;letter-spacing:6px;max-width:800px;width:100%"],
+    ["font-family:monospace;text-decoration:underline line-through", "font-family:monospace;text-decoration:underline line-through"],
+    ["color:&#114;ed", ""],
+    ["background-color:transparent;color:#abc;border-color:#abcd", "background-color:transparent;border-color:#abcd;color:#abc"]
+  ],
+  "html": [
+    "<p onclick=bad() id=toolbar data-action=save><b>safe</b></p>",
+    "<img src=https://outside/image onerror=bad() alt='图片'>",
+    "<svg onload=bad()><foreignObject><iframe src=file:///private></iframe></foreignObject></svg><b>safe</b>",
+    "<math><mtext><table><mglyph><style><!--</style><img title='--><img src=x onerror=bad>'>",
+    "<div style='constructor:x;__proto__:x;color:red'><a href=javascript:bad()>label</a></div>",
+    "<script src=https://outside/script>bad()</script><style>@import url(https://outside/css)</style>",
+    "<form action=https://outside><input autofocus><button>submit</button></form>",
+    "<template><img src=file:///private></template><object data=file:///private>hidden</object>",
+    "<div><b><i>repair</b>text</i></div>",
+    "&lt;script&gt;literal&lt;/script&gt;",
+    "<div style='color:&#114;ed;background-image:u&#114;l(file:///private)'>safe</div>"
+  ]
+}

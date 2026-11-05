@@ -1,0 +1,253 @@
+{
+  "inputBytes": 65536,
+  "outputBytes": 524288,
+  "nodes": 4096,
+  "depth": 32,
+  "tags": [
+    "span",
+    "div",
+    "p",
+    "strong",
+    "b",
+    "em",
+    "i",
+    "u",
+    "s",
+    "del",
+    "mark",
+    "small",
+    "sub",
+    "sup",
+    "code",
+    "pre",
+    "kbd",
+    "br",
+    "hr",
+    "blockquote",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ul",
+    "ol",
+    "li",
+    "table",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "th",
+    "td",
+    "dl",
+    "dt",
+    "dd"
+  ],
+  "blocked": [
+    "script",
+    "style",
+    "iframe",
+    "frame",
+    "frameset",
+    "object",
+    "embed",
+    "applet",
+    "svg",
+    "math",
+    "template",
+    "form",
+    "input",
+    "button",
+    "select",
+    "option",
+    "textarea",
+    "video",
+    "audio",
+    "source",
+    "track",
+    "canvas",
+    "noscript",
+    "noembed",
+    "noframes",
+    "head",
+    "link",
+    "meta",
+    "base"
+  ],
+  "colors": [
+    "transparent",
+    "black",
+    "white",
+    "red",
+    "green",
+    "blue",
+    "yellow",
+    "gray",
+    "grey",
+    "silver",
+    "maroon",
+    "purple",
+    "fuchsia",
+    "lime",
+    "olive",
+    "navy",
+    "teal",
+    "aqua",
+    "orange",
+    "pink",
+    "brown"
+  ],
+  "colorProperties": [
+    "color",
+    "background-color",
+    "border-color"
+  ],
+  "enums": {
+    "text-align": [
+      "left",
+      "center",
+      "right",
+      "justify"
+    ],
+    "font-weight": [
+      "normal",
+      "bold",
+      "100",
+      "200",
+      "300",
+      "400",
+      "500",
+      "600",
+      "700",
+      "800",
+      "900"
+    ],
+    "font-style": [
+      "normal",
+      "italic",
+      "oblique"
+    ],
+    "font-family": [
+      "sans-serif",
+      "serif",
+      "monospace"
+    ],
+    "text-decoration": [
+      "none",
+      "underline",
+      "line-through",
+      "underline line-through"
+    ],
+    "border-style": [
+      "none",
+      "solid",
+      "dashed",
+      "dotted"
+    ]
+  },
+  "numbers": {
+    "font-size": {
+      "count": 1,
+      "units": {
+        "px": [
+          8,
+          72
+        ]
+      }
+    },
+    "line-height": {
+      "count": 1,
+      "units": {
+        "": [
+          1,
+          2.5
+        ],
+        "px": [
+          12,
+          100
+        ]
+      }
+    },
+    "letter-spacing": {
+      "count": 1,
+      "units": {
+        "px": [
+          0,
+          6
+        ]
+      }
+    },
+    "margin": {
+      "count": 4,
+      "units": {
+        "px": [
+          0,
+          24
+        ]
+      }
+    },
+    "padding": {
+      "count": 4,
+      "units": {
+        "px": [
+          0,
+          24
+        ]
+      }
+    },
+    "border-width": {
+      "count": 1,
+      "units": {
+        "px": [
+          0,
+          4
+        ]
+      }
+    },
+    "border-radius": {
+      "count": 1,
+      "units": {
+        "px": [
+          0,
+          24
+        ]
+      }
+    },
+    "width": {
+      "count": 1,
+      "units": {
+        "px": [
+          0,
+          800
+        ],
+        "%": [
+          0,
+          100
+        ]
+      }
+    },
+    "max-width": {
+      "count": 1,
+      "units": {
+        "px": [
+          0,
+          800
+        ],
+        "%": [
+          0,
+          100
+        ]
+      }
+    },
+    "height": {
+      "count": 1,
+      "units": {
+        "px": [
+          0,
+          480
+        ]
+      }
+    }
+  }
+}
