@@ -49,6 +49,8 @@ pub struct StudyApp {
     pub snapshot: Option<Arc<Snapshot>>,
     pub startup_failure: Option<crate::worker::startup::StartupFailure>,
     pub startup_busy: bool,
+    pub owner_recovery: crate::library_owner_ui::Recovery,
+    pub owner_close: Option<Arc<crate::library_owner::Control>>,
     pub read_models: Arc<studyapp_desktop::read_models::SnapshotReadModels>,
     pub page: Page,
     pub notice: Option<Result<String, String>>,
@@ -480,6 +482,8 @@ impl StudyApp {
         let summary_editor =
             cx.new(|cx| studyapp_ui::compact_markdown::CompactMarkdown::new(summary.clone(), cx));
         Self {
+            owner_recovery: Default::default(),
+            owner_close: None,
             sync_panel,
             folders,
             history_preview: Default::default(),
@@ -633,11 +637,15 @@ impl StudyApp {
             self.capture_note_draft(cx);
         }
         while let Ok(update) = self.worker.receiver.try_recv() {
+            if let Some(control) = update.owner_close {
+                self.accept_owner_close(control, window, cx);
+            }
             let startup_failed = update.startup_failure.is_some();
             let structured_feedback = !update.notifications.is_empty();
             if let Some(failure) = update.startup_failure {
                 self.snapshot = None;
                 self.pending_library = None;
+                self.owner_recovery.reset();
                 self.startup_failure = Some(failure);
                 self.startup_busy = false;
                 self.draft_loading = false;
@@ -823,6 +831,7 @@ impl StudyApp {
         }
         self.restore_widget(cx);
         self.continue_close(window, cx);
+        self.update_owner_close();
         if changed {
             cx.notify();
         }

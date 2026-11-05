@@ -871,7 +871,7 @@ mod native {
     fn wide(text: &std::ffi::OsStr) -> Vec<u16> {
         text.encode_wide().chain(Some(0)).collect()
     }
-    fn sid(process: HANDLE) -> Result<String> {
+    pub(super) fn sid(process: HANDLE) -> Result<String> {
         let mut token = std::ptr::null_mut();
         // SAFETY: valid borrowed process handle, writable token handle slot.
         ensure!(
@@ -1167,4 +1167,9 @@ mod native {
     pub(super) fn bind_parent(_: u32, _: u64, _: &Path) -> Result<Process> {
         anyhow::bail!("维护进程仅支持 Windows")
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn process_user_sid(process: windows_sys::Win32::Foundation::HANDLE) -> Result<String> {
+    native::sid(process)
 }

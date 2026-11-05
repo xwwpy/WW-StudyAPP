@@ -60,6 +60,10 @@ impl StudyApp {
                                 })),
                         ),
                 )
+                .children(
+                    (failure.kind == crate::worker::startup::StartupFailureKind::InUse)
+                        .then(|| self.owner_controls(cx)),
+                )
                 .child(muted(
                     "原目录中的笔记和学习记录会保留。选择已有资料库可继续使用其中的内容。",
                 ))
@@ -77,6 +81,7 @@ impl StudyApp {
         if self.startup_busy {
             return;
         }
+        self.owner_recovery.reset();
         match self.worker.sender.send(work) {
             Ok(()) => self.startup_busy = true,
             Err(_) => {

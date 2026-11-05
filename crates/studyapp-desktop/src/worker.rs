@@ -139,6 +139,7 @@ pub enum Work {
 #[derive(Default)]
 pub struct Update {
     pub startup_failure: Option<StartupFailure>,
+    pub owner_close: Option<Arc<crate::library_owner::Control>>,
     pub snapshot: Option<Arc<Snapshot>>,
     pub read_models: Option<Arc<studyapp_desktop::read_models::SnapshotReadModels>>,
     pub notice: Option<Result<String, String>>,
@@ -179,10 +180,37 @@ fn launch_sync(
     Ok(())
 }
 
-struct LibraryLock(Option<std::fs::File>);
+struct LibraryLock {
+    file: Option<std::fs::File>,
+    owner: Option<crate::library_owner::Server>,
+    owner_attempted: bool,
+    database: PathBuf,
+}
+impl LibraryLock {
+    fn serve(&mut self, updates: &mpsc::Sender<Update>) {
+        if self.owner_attempted {
+            return;
+        }
+        self.owner_attempted = true;
+        let updates = updates.clone();
+        self.owner = self.file.as_ref().and_then(|file| {
+            crate::library_owner::Server::start(&self.database, file, move |control| {
+                let _ = updates.send(Update {
+                    owner_close: Some(control),
+                    ..Default::default()
+                });
+            })
+            .map_err(|_| {
+                audit_log::stage(LogLevel::Warn, Phase::LibraryOwnerService, Outcome::Failure)
+            })
+            .ok()
+        });
+    }
+}
 impl Drop for LibraryLock {
     fn drop(&mut self) {
-        drop(self.0.take());
+        drop(self.owner.take());
+        drop(self.file.take());
         audit_log::stage(LogLevel::Info, Phase::LibraryLockReleased, Outcome::Success);
     }
 }
@@ -251,7 +279,13 @@ fn open_library(
                 Outcome::Rejected,
             );
             match error {
-                std::fs::TryLockError::WouldBlock => StartupFailure::in_use(path, &lock_path),
+                std::fs::TryLockError::WouldBlock => {
+                    let mut failure = StartupFailure::in_use(path, &lock_path);
+                    failure.owner = crate::library_owner::inspect(path, &lock)
+                        .ok()
+                        .map(Arc::new);
+                    failure
+                }
                 std::fs::TryLockError::Error(error) => StartupFailure::from_error(
                     path,
                     StartupStage::LibraryLock,
@@ -275,7 +309,12 @@ fn open_locked_library(
     now: i64,
     lock: std::fs::File,
 ) -> Result<OpenLibrary, StartupFailure> {
-    let lock = LibraryLock(Some(lock));
+    let mut lock = LibraryLock {
+        file: Some(lock),
+        owner: None,
+        owner_attempted: false,
+        database: path.to_owned(),
+    };
     audit_log::stage(LogLevel::Info, Phase::LibraryLockAcquired, Outcome::Success);
     let mut engine = startup_step!(
         result,
@@ -288,6 +327,7 @@ fn open_locked_library(
         ))
     )?;
     let database = PathBuf::from(engine.snapshot().data_path);
+    lock.database = database.clone();
     let settings_path = database.parent().unwrap_or(path).join("settings");
     let (preferences, synchronization) = startup_step!(
         result,
@@ -600,8 +640,10 @@ impl Worker {
                     preferences_result: None,
                     media_result: None,
                     image_cloud_busy: Some(image_cloud_busy),
+                    owner_close: None,
                 })
             );
+            library_lock.serve(&updates);
             let mut last_tick = Instant::now();
             let mut last_scan = Instant::now();
             let mut last_checkpoint = Instant::now();
@@ -693,6 +735,7 @@ impl Worker {
                                 preferences_result,
                                 media_result,
                                 image_cloud_busy: Some(image_cloud_busy),
+                                owner_close: None,
                             });
                             continue;
                         }
@@ -751,6 +794,7 @@ impl Worker {
                                 storage_event: None,
                                 preferences: None,
                                 preferences_result: None,
+                                owner_close: None,
                                 media_result: Some(crate::media::MediaResponse {
                                     library,
                                     generation,
@@ -1304,13 +1348,20 @@ impl Worker {
                             preferences_result,
                             media_result: None,
                             image_cloud_busy: Some(image_cloud_busy),
+                            owner_close: None,
                         })
                         .is_err()
                     {
                         break;
                     }
                 }
+                library_lock.serve(&updates);
             }
+            // The SQLite connection must be gone before advertising lock release.
+            drop(engine);
+            // Drain existing exit diagnostics before another instance acquires
+            // this library. The writer itself is shut down by the application.
+            let _ = audit_log::flush();
             drop(library_lock);
         });
         Self {
@@ -1323,10 +1374,13 @@ impl Worker {
     }
 }
 
-impl Drop for Worker {
-    fn drop(&mut self) {
-        #[cfg(test)]
-        self.startup_probe.observe("Drop", "enter");
+impl Worker {
+    /// Stop the database owner deterministically, even while a GPUI view still
+    /// has references. Drop remains a fallback for all other lifetime paths.
+    pub(crate) fn shutdown(&mut self) {
+        if self.handle.is_none() {
+            return;
+        }
         let _ = self.sender.send(Work::Shutdown);
         if let Some(handle) = self.handle.take() {
             #[cfg(test)]
@@ -1337,10 +1391,15 @@ impl Drop for Worker {
                 .observe("Join", if joined.is_ok() { "exit" } else { "error" });
             let _ = joined;
         }
+    }
+}
+impl Drop for Worker {
+    fn drop(&mut self) {
         #[cfg(test)]
-        {
-            self.startup_probe.observe("Drop", "exit");
-        }
+        self.startup_probe.observe("Drop", "enter");
+        self.shutdown();
+        #[cfg(test)]
+        self.startup_probe.observe("Drop", "exit");
     }
 }
 

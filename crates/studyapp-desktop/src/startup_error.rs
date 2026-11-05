@@ -109,6 +109,7 @@ pub enum StartupFailureKind {
 #[derive(Clone, Debug)]
 pub struct StartupFailure {
     pub database: PathBuf,
+    pub owner: Option<std::sync::Arc<crate::library_owner::Offer>>,
     pub path: PathBuf,
     pub kind: StartupFailureKind,
     pub stage: StartupStage,
@@ -211,6 +212,7 @@ impl StartupFailure {
         };
         Self {
             database: database.to_owned(),
+            owner: None,
             path: path.to_owned(),
             kind,
             stage,

@@ -25,6 +25,8 @@ mod image_cloud;
 mod imports;
 mod installation_integrity;
 mod integrity_ui;
+mod library_owner;
+mod library_owner_ui;
 mod logging_settings;
 mod maintenance_execute;
 mod maintenance_handoff;

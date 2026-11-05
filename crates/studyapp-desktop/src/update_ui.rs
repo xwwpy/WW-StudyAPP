@@ -1105,6 +1105,13 @@ impl crate::app::StudyApp {
             self.close_widget(true, cx);
         }
         self.close_notification_desktop(cx);
+        if let Some(control) = &self.owner_close {
+            control.mark(crate::library_owner::Phase::Closing);
+        }
+        // Window removal need not drop its view immediately. Release the real
+        // database owner here, only after durable close and successful handoff.
+        // A helper-launch failure above leaves the original worker usable.
+        self.worker.shutdown();
         self.close_allowed = true;
         window.remove_window();
     }

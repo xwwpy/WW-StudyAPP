@@ -20,6 +20,8 @@ pub(crate) enum Phase {
     LibraryLockAcquired,
     LibraryLockRejected,
     LibraryLockReleased,
+    LibraryOwnerService,
+    LibraryOwnerRequest,
     EditorCreated,
     EditorReady,
     EditorVisibility,
