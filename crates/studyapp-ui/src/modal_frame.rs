@@ -104,6 +104,9 @@ impl RenderOnce for ModalFrame {
             .w(px(self.width.pixels()).min(window.viewport_size().width * 0.9))
             .max_h((window.viewport_size().height - px(48.)).max(px(120.)))
             .rounded(px(16.))
+            .border_1()
+            .border_color(rgb(palette.border))
+            .shadow_lg()
             .overflow_hidden()
             .bg(rgb(palette.surface_raised))
             .child(
@@ -143,7 +146,8 @@ impl RenderOnce for ModalFrame {
                             button
                                 .small()
                                 .ghost()
-                                .label("×")
+                                .icon(gpui_kit::assets::IconName::Close)
+                                .tooltip("关闭弹窗")
                                 .accessibility_label("关闭弹窗")
                                 .tab_index(-1)
                         }),

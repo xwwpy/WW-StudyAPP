@@ -154,7 +154,7 @@ impl StudyApp {
                             Button::new(SharedString::from(format!("{key}-options")))
                                 .small()
                                 .ghost()
-                                .label(if selected { "收起" } else { "设置" })
+                                .action(if selected { "收起" } else { "设置" })
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.preferences_ui.notification_category =
@@ -514,8 +514,8 @@ impl StudyApp {
         };
         column().gap_3().child(controls).child(heading("即时预览"))
             .child(studyapp_ui::notification_card::notification_card(model,&appearance,&self.preferences_ui.notification_preview_scroll,
-                Button::new("notification-preview-close").small().ghost().label("×").accessibility_label("示例关闭按钮").disabled(true),
-                Some(Button::new("notification-preview-action").small().label("记录这段").disabled(true))))
+                Button::new("notification-preview-close").small().ghost().action("关闭通知").accessibility_label("示例关闭按钮").disabled(true),
+                Some(Button::new("notification-preview-action").small().action("记录这段").disabled(true))))
             .child(muted("预览不产生真实通知、不播放声音，也不改变分类开关。严重错误会保留到关闭或处理；停留时间只影响普通提示。修改后请保存全部设置。"))
     }
 }

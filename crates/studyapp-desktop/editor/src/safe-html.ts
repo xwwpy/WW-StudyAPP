@@ -51,6 +51,13 @@ export function sanitizeHtml(source:string):DocumentFragment|null {
       if(policy.tags.includes(tag)) {
         const clean=document.createElement(tag),style=sanitizeStyle(node.getAttribute("style")||"");
         if(style) clean.setAttribute("style",style);
+        if(Object.hasOwn(policy.integerAttributes,tag)) {
+          const rules=(policy.integerAttributes as Record<string,Record<string,number[]>>)[tag];
+          for(const [key,[min,max]] of Object.entries(rules)) {
+            const raw=node.getAttribute(key);
+            if(raw && /^\d+$/.test(raw) && Number(raw)>=min && Number(raw)<=max) clean.setAttribute(key,String(Number(raw)));
+          }
+        }
         output+=tag.length*2+style.length+20;
         parent.appendChild(clean); target=clean;
       }

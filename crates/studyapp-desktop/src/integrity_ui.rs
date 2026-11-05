@@ -57,11 +57,11 @@ impl StudyApp {
             .child(muted("对照当前版本的已签名发行基线，只读检查程序文件。需要连接发布服务获取基线，不会下载安装包。"))
             .child(row().flex_wrap()
                 .child(studyapp_ui::notification_anchor::NotificationAnchor::new("integrity-check", self.notifications.clone(), Button::new("check-file-integrity").small()
-                    .label(if self.storage_ui.integrity_busy { "正在检查…" } else { "检查文件完整性" })
+                    .icon_action(gpui_kit::assets::IconName::ShieldCheck, if self.storage_ui.integrity_busy { "正在检查…" } else { "检查文件完整性" })
                     .disabled(self.storage_ui.integrity_busy || self.storage_busy || self.update_panel.read(cx).relocation_blocked())
                     .on_click(cx.listener(|this, _, _, cx| this.request_integrity_check(cx)))))
                 .when(self.storage_ui.integrity_result.is_some(), |row| row.child(
-                    Button::new("view-integrity-result").small().ghost().label("查看检查结果")
+                    Button::new("view-integrity-result").small().ghost().action("查看检查结果")
                         .on_click(cx.listener(|this, _, _, cx| {
                             if !this.has_modal(cx) { this.storage_ui.integrity_dialog = true; cx.notify(); }
                         })))))
@@ -101,7 +101,7 @@ impl StudyApp {
                 .footer(
                     row().child(
                         Button::new("close-integrity-result")
-                            .label("关闭")
+                            .action("关闭")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.storage_ui.integrity_dialog = false;
                                 cx.notify();

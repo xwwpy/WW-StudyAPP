@@ -49,7 +49,7 @@ pub struct TimerWidgetSettings {
     pub show_progress: bool,
     pub show_segment: bool,
     pub show_controls: bool,
-    pub countdown_presets: Vec<u32>,
+    pub countdown_presets: Vec<u64>,
 }
 impl Default for TimerWidgetSettings {
     fn default() -> Self {
@@ -86,8 +86,11 @@ impl TimerWidgetSettings {
         ensure!(
             !self.countdown_presets.is_empty()
                 && self.countdown_presets.len() <= 8
-                && self.countdown_presets.iter().all(|n| (1..=180).contains(n)),
-            "倒计时预设须为 1–180 分钟，共 1–8 项"
+                && self
+                    .countdown_presets
+                    .iter()
+                    .all(|&n| countdown_seconds(n).is_ok()),
+            "倒计时预设须为可安全表示的正整数分钟，共 1–8 项"
         );
         let unique: std::collections::BTreeSet<_> = self.countdown_presets.iter().collect();
         ensure!(
@@ -96,4 +99,26 @@ impl TimerWidgetSettings {
         );
         Ok(())
     }
+}
+
+/// Countdown minutes have no product-defined range. Keep the representation
+/// boundary explicit instead of wrapping, saturating or truncating the target.
+pub fn countdown_seconds(minutes: u64) -> Result<u64> {
+    ensure!(minutes > 0, "倒计时请填写正整数分钟");
+    minutes
+        .checked_mul(60)
+        .ok_or_else(|| anyhow::anyhow!("倒计时数值过大，无法安全表示"))
+}
+
+pub fn parse_countdown_minutes(value: &str) -> Result<u64> {
+    let value = value.trim();
+    ensure!(
+        !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()),
+        "倒计时请填写正整数分钟"
+    );
+    let minutes = value
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("倒计时数值过大，无法安全表示"))?;
+    countdown_seconds(minutes)?;
+    Ok(minutes)
 }

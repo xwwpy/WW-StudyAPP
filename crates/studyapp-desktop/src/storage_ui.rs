@@ -383,11 +383,14 @@ impl StudyApp {
                     Button::new("refresh-storage")
                         .small()
                         .disabled(self.storage_action_blocked(true, cx))
-                        .label(if self.storage_busy {
-                            "正在统计…"
-                        } else {
-                            "刷新统计"
-                        })
+                        .icon_action(
+                            gpui_kit::assets::IconName::RefreshCw,
+                            if self.storage_busy {
+                                "正在统计…"
+                            } else {
+                                "刷新统计"
+                            },
+                        )
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.storage_work(Work::RefreshStorage, cx)
                         })),
@@ -406,7 +409,7 @@ impl StudyApp {
                 .child(
                     Button::new("migrate-application")
                         .small()
-                        .label("更改应用位置")
+                        .action("更改应用位置")
                         .disabled(
                             isolated
                                 || self.storage_action_blocked(false, cx)
@@ -600,7 +603,7 @@ impl StudyApp {
                     .child(
                         Button::new("storage-manage-copies")
                             .small()
-                            .label("管理托管副本")
+                            .icon_action(gpui_kit::assets::IconName::Files, "管理托管副本")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.select_storage_page(StoragePage::Copies, cx)
                             })),
@@ -609,7 +612,7 @@ impl StudyApp {
                         Button::new("storage-manage-images")
                             .small()
                             .ghost()
-                            .label("图片存储设置")
+                            .action("图片存储设置")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.select_storage_page(StoragePage::Images, cx)
                             })),
@@ -770,7 +773,7 @@ impl StudyApp {
                         Button::new(SharedString::from(format!("copy-details-{id}")))
                             .small()
                             .ghost()
-                            .label(if expanded { "收起" } else { "详情" })
+                            .action(if expanded { "收起" } else { "详情" })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.storage_ui.expanded_copy = if this
                                     .storage_ui
@@ -790,7 +793,7 @@ impl StudyApp {
                         Button::new(SharedString::from(format!("copy-reveal-{id}")))
                             .small()
                             .ghost()
-                            .label("定位文件")
+                            .action("定位文件")
                             .disabled(!copy.deletable)
                             .on_click(move |_, _, cx| {
                                 cx.reveal_path(std::path::Path::new(&reveal_path))
@@ -800,7 +803,7 @@ impl StudyApp {
                         Button::new(SharedString::from(format!("copy-history-{id}")))
                             .small()
                             .ghost()
-                            .label("历史与恢复")
+                            .action("历史与恢复")
                             .disabled(blocked)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if this.guard_settings(
@@ -831,7 +834,7 @@ impl StudyApp {
                         Button::new(SharedString::from(format!("purge-copy-{id}")))
                             .small()
                             .ghost()
-                            .label("彻底删除")
+                            .icon_action(gpui_kit::assets::IconName::Trash, "彻底删除")
                             .disabled(blocked)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 if this.guard_settings(
@@ -849,7 +852,7 @@ impl StudyApp {
                         Button::new(SharedString::from(format!("delete-copy-{id}")))
                             .small()
                             .ghost()
-                            .label("清理副本")
+                            .icon_action(gpui_kit::assets::IconName::ArchiveX, "清理副本")
                             .text_color(crate::theme::color(0xBE3434))
                             .disabled(blocked || !copy.deletable || in_draft)
                             .on_click(cx.listener(move |this, _, _, cx| {

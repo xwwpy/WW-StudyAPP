@@ -32,8 +32,7 @@ export function installOutline(view: EditorView): void {
   const path = document.createElementNS(icon.namespaceURI, "path");
   path.setAttribute("d", "M3 4h14v12H3z M8 4v12 M11 8h3 M11 11h3");
   icon.append(path);
-  const toggleLabel = document.createElement("span");
-  toggle.append(icon, toggleLabel);
+  toggle.append(icon);
   toggle.setAttribute("aria-label", "笔记目录");
   toggle.setAttribute("aria-expanded", "false");
   toggle.setAttribute("aria-controls", "note-outline");
@@ -49,10 +48,18 @@ export function installOutline(view: EditorView): void {
   caption.textContent = "大纲";
   const expand = document.createElement("button");
   expand.type = "button";
-  expand.textContent = "全部展开";
+  expand.setAttribute("aria-label", "全部展开");
+  expand.title = "全部展开";
+  const expandIcon = icon.cloneNode(true) as SVGElement;
+  expandIcon.querySelector("path")!.setAttribute("d", "m6 6 4-4 4 4m-8 8 4 4 4-4");
+  expand.append(expandIcon);
   const collapse = document.createElement("button");
   collapse.type = "button";
-  collapse.textContent = "全部收起";
+  collapse.setAttribute("aria-label", "全部收起");
+  collapse.title = "全部收起";
+  const collapseIcon = icon.cloneNode(true) as SVGElement;
+  collapseIcon.querySelector("path")!.setAttribute("d", "m6 2 4 4 4-4m-8 16 4-4 4 4");
+  collapse.append(collapseIcon);
   const position = document.createElement("select");
   position.id = "outline-position";
   position.setAttribute("aria-label", "目录位置");
@@ -108,7 +115,6 @@ export function installOutline(view: EditorView): void {
     toggle.setAttribute("aria-expanded", String(!panel.hidden));
     toggle.setAttribute("aria-label", panel.hidden ? "显示目录" : "隐藏目录");
     toggle.title = panel.hidden ? "显示目录" : "隐藏目录";
-    toggleLabel.textContent = panel.hidden ? "目录" : "收起";
   }
   new ResizeObserver(layout).observe(workspace);
   position.onchange = () => { preference = position.value; persist(); layout(); };

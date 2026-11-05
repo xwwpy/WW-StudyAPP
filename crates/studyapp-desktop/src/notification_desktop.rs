@@ -77,7 +77,7 @@ impl Render for DesktopNotifications {
             let close = Button::new(SharedString::from(format!("desktop-dismiss-{id}")))
                 .small()
                 .ghost()
-                .label("×")
+                .action("关闭通知")
                 .accessibility_label("关闭通知")
                 .on_click(move |_, _, cx| {
                     let _ = close_owner.update(cx, |center, cx| center.dismiss(id, cx));
@@ -86,7 +86,7 @@ impl Render for DesktopNotifications {
             let action = event.action.map(|action| {
                 Button::new(SharedString::from(format!("desktop-action-{id}")))
                     .small()
-                    .label(action.label())
+                    .action(action.label())
                     .on_click(move |_, _, cx| {
                         let _ = action_owner.update(cx, |center, cx| center.activate(id, cx));
                     })

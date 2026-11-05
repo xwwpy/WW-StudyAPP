@@ -39,6 +39,30 @@ impl AppButton {
         self
     }
 
+    /// Icon-first operation with an explicit name. Unknown operations remain
+    /// readable text; parameter values and destructive confirmations use label().
+    pub fn action(self, label: impl Into<SharedString>) -> Self {
+        let label = label.into();
+        match crate::action_icons::action_icon(&label) {
+            Some(icon) => self.icon_action(
+                icon,
+                match label.as_ref() {
+                    "+" | "＋" => "增加".into(),
+                    "−" => "减少".into(),
+                    _ => label,
+                },
+            ),
+            None => self.label(label),
+        }
+    }
+
+    pub fn icon_action(self, icon: impl Into<Icon>, label: impl Into<SharedString>) -> Self {
+        let label = label.into();
+        self.icon(icon)
+            .accessibility_label(label.clone())
+            .tooltip(label)
+    }
+
     pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
         self.inner = self.inner.accessibility_label(label);
         self
@@ -332,6 +356,78 @@ mod tests {
                 assert!(button.bottom() <= card.bottom());
             });
         }
+    }
+
+    #[cfg(feature = "ui-test")]
+    #[gpui_kit::test]
+    fn icon_actions_keep_names_keyboard_activation_and_disabled_inertia(cx: &mut TestAppContext) {
+        use gpui_kit::{px, test::TestWindowExt};
+        use std::{cell::Cell, rc::Rc};
+        struct Fixture(Rc<Cell<usize>>);
+        impl Render for Fixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let enabled = self.0.clone();
+                let disabled = self.0.clone();
+                let loading = self.0.clone();
+                crate::components::column()
+                    .tab_group()
+                    .child(
+                        Button::new("pause-icon")
+                            .small()
+                            .action("暂停")
+                            .on_click(move |_, _, _| enabled.set(enabled.get() + 1)),
+                    )
+                    .child(
+                        Button::new("disabled-icon")
+                            .small()
+                            .action("保存")
+                            .disabled(true)
+                            .on_click(move |_, _, _| disabled.set(1000)),
+                    )
+                    .child(
+                        Button::new("loading-icon")
+                            .small()
+                            .action("保存")
+                            .loading(true)
+                            .on_click(move |_, _, _| loading.set(1000)),
+                    )
+                    .child(Button::new("duration-value").action("25 分钟"))
+                    .child(Button::new("confirm-text").label("确认重新开始"))
+            }
+        }
+        cx.update(gpui_kit::init);
+        let count = Rc::new(Cell::new(0));
+        let (_, visual) = cx.add_window_view({
+            let count = count.clone();
+            move |_, _| Fixture(count)
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("pause-icon").label(), Some("暂停"));
+            assert_eq!(window.find("duration-value").label(), Some("25 分钟"));
+            assert_eq!(window.find("confirm-text").label(), Some("确认重新开始"));
+            assert!(window.find("pause-icon").bounds().size.width < px(60.));
+            window.click("pause-icon", cx);
+            assert_eq!(count.get(), 1);
+            window.focus_next(cx);
+            window.render_frame(cx);
+            assert!(window.focused(cx).is_some());
+        });
+        for key in ["enter", "space"] {
+            let keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+            visual.simulate_event(gpui_kit::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            });
+            visual.simulate_event(gpui_kit::KeyUpEvent { keystroke });
+        }
+        assert_eq!(count.get(), 3);
+        visual.update(|window, cx| {
+            window.click("disabled-icon", cx);
+            window.click("loading-icon", cx);
+            assert_eq!(count.get(), 3);
+        });
     }
 
     #[::core::prelude::v1::test]

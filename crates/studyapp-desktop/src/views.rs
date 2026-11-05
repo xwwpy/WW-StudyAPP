@@ -91,7 +91,7 @@ impl StudyApp {
         let primary = Button::new("today-primary")
             .when(self.editor.is_none(), |button| button.primary())
             .when(self.editor.is_some(), |button| button.ghost())
-            .label(label)
+            .action(label)
             .on_click(cx.listener(move |this, _, window, cx| match action {
                 TodayAction::Answer => {
                     if let Some(id) = &pending_id {
@@ -146,7 +146,7 @@ impl StudyApp {
                             .child(
                                 Button::new(SharedString::from(format!("answer-{id}")))
                                     .ghost()
-                                    .label("填写学习内容")
+                                    .action("填写学习内容")
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.open_editor(
                                             EditorMode::Pending(id.clone()),
@@ -185,7 +185,7 @@ impl StudyApp {
                             .child(
                                 Button::new("onboarding-library")
                                     .ghost()
-                                    .label("选择目录")
+                                    .action("选择目录")
                                     .on_click(
                                         cx.listener(|this, _, _, _| this.picker("library", None)),
                                     ),
@@ -207,7 +207,7 @@ impl StudyApp {
                             .child(
                                 Button::new("first-import")
                                     .ghost()
-                                    .label("选择 Markdown 笔记")
+                                    .action("选择 Markdown 笔记")
                                     .on_click(
                                         cx.listener(|this, _, _, _| this.picker("import", None)),
                                     ),
@@ -231,11 +231,14 @@ impl StudyApp {
                             .child(
                                 Button::new("onboarding-start")
                                     .ghost()
-                                    .label(if snapshot.timer.paused {
-                                        "开始计时"
-                                    } else {
-                                        "计时进行中"
-                                    })
+                                    .icon_action(
+                                        gpui_kit::assets::IconName::Play,
+                                        if snapshot.timer.paused {
+                                            "开始计时"
+                                        } else {
+                                            "计时进行中"
+                                        },
+                                    )
                                     .disabled(!snapshot.timer.paused)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.send(Command::SetPaused(false), cx)
@@ -264,7 +267,7 @@ impl StudyApp {
                 .child(
                     Button::new("all-records")
                         .ghost()
-                        .label("查看全部")
+                        .icon_action(gpui_kit::assets::IconName::ArrowUpRight, "查看全部学习记录")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.navigate(Page::Stats, window, cx)
                         })),
@@ -406,7 +409,7 @@ impl StudyApp {
                 Button::new("cancel-editor")
                     .ghost()
                     .small()
-                    .label("收起")
+                    .action("收起")
                     .disabled(self.saving)
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.editor = None;
@@ -512,7 +515,7 @@ impl StudyApp {
                                             )))
                                             .ghost()
                                             .small()
-                                            .label("预览")
+                                            .action("预览")
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.show_version(
                                                     note_id.clone(),
@@ -544,11 +547,14 @@ impl StudyApp {
                 .child(
                     Button::new("save-learning")
                         .primary()
-                        .label(if self.saving {
-                            "正在保存…"
-                        } else {
-                            "保存学习记录"
-                        })
+                        .icon_action(
+                            gpui_kit::assets::IconName::Save,
+                            if self.saving {
+                                "正在保存…"
+                            } else {
+                                "保存学习记录"
+                            },
+                        )
                         .disabled(self.saving)
                         .on_click(cx.listener(|this, _, _, cx| this.save_editor(cx))),
                 )
@@ -611,7 +617,7 @@ impl StudyApp {
                     .opacity(0.)
                     .group_hover("session-row", |style| style.opacity(1.))
                     .focus_visible(|style| style.opacity(1.))
-                    .label("编辑")
+                    .action("编辑")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_editor(mode.clone(), window, cx)
                     })),
@@ -768,7 +774,7 @@ impl StudyApp {
                     Button::new(SharedString::from(format!("undo-{review_id}")))
                         .ghost()
                         .small()
-                        .label("撤销最近一次复习")
+                        .action("撤销最近一次复习")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.send(
                                 Command::UndoReview {
@@ -795,7 +801,7 @@ impl StudyApp {
             Some("观察节奏与变化，找到适合自己的学习步调。".into()),
             Button::new("stats-record")
                 .ghost()
-                .label("记录学习")
+                .action("记录学习")
                 .on_click(cx.listener(|this, _, window, cx| {
                     this.open_editor(EditorMode::Manual, window, cx)
                 })),
@@ -813,7 +819,7 @@ impl StudyApp {
                 .child(
                     Button::new("stats-first-record")
                         .primary()
-                        .label("补记一次学习")
+                        .action("补记一次学习")
                         .on_click(cx.listener(|this, _, window, cx| {
                             this.open_editor(EditorMode::Manual, window, cx)
                         })),
@@ -1091,7 +1097,7 @@ impl StudyApp {
                         .map(|&position| self.session_row(&snapshot.sessions[position], cx)),
                 )
                 .when(sessions.len() > self.record_limit, |c| {
-                    c.child(Button::new("more-records").label("再显示 50 条").on_click(
+                    c.child(Button::new("more-records").action("再显示 50 条").on_click(
                         cx.listener(|this, _, _, cx| {
                             this.record_limit += 50;
                             cx.notify();
@@ -1143,11 +1149,11 @@ impl StudyApp {
                         .child(muted("本地优先的学习笔记"))
                         .child(muted("记录、理解，然后按自己的节奏复习。"))))
                 .child(row().flex_wrap()
-                    .child(Button::new("about-project").ghost().label("项目主页")
+                    .child(Button::new("about-project").ghost().action("项目主页")
                         .on_click(|_, _, cx| cx.open_url("https://github.com/xwwpy/WW-StudyAPP")))
-                    .child(Button::new("about-guide").ghost().label("使用指南")
+                    .child(Button::new("about-guide").ghost().action("使用指南")
                         .on_click(|_, _, cx| cx.open_url("https://github.com/xwwpy/WW-StudyAPP/blob/main/docs/user-guide.md")))
-                    .child(Button::new("about-license").ghost().label("MIT 许可")
+                    .child(Button::new("about-license").ghost().action("MIT 许可")
                         .on_click(|_, _, cx| cx.open_url("https://github.com/xwwpy/WW-StudyAPP/blob/main/LICENSE"))))))
             .children((section == SettingsSection::AboutAccount).then(|| self.update_panel.clone()))
             .children((section == SettingsSection::AboutAccount).then(|| card().child(heading("账户与微信登录"))

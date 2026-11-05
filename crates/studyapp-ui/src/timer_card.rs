@@ -6,11 +6,11 @@ use crate::{
     theme::ResolvedTheme,
 };
 use gpui_kit::{
-    component::{Disableable, Selectable, Sizable, button::ButtonVariants},
+    component::{Disableable, Icon, Selectable, Sizable, button::ButtonVariants, tooltip::Tooltip},
     prelude::FluentBuilder,
     *,
 };
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc};
 use studyapp_core::{TimerKind, TimerState, TimerWidgetSettings, WidgetBackground, WidgetLayout};
 
 #[derive(Clone, Debug)]
@@ -84,11 +84,12 @@ pub enum TimerCardAction {
     Reset,
     Record,
     ChooseKind(TimerKind),
-    Countdown(u32),
+    Countdown(u64),
     Configure,
     ShowOnDesktop,
     OpenSettings,
     OpenMain,
+    TogglePinned,
     CloseWidget,
     ExitApp,
 }
@@ -115,6 +116,36 @@ pub fn timer_card(
     variant: TimerCardVariant,
     on_action: impl Fn(TimerCardAction, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    render_card(model, style, variant, on_action, None)
+}
+
+/// Reports natural client height, including the measured padding and tools.
+/// The host may defer a resize; settings previews never resize their window.
+pub fn timer_widget_card(
+    model: TimerCardModel,
+    style: TimerCardStyle,
+    on_action: impl Fn(TimerCardAction, &mut Window, &mut App) + 'static,
+    on_content_height: impl Fn(Pixels, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    render_card(
+        model,
+        style,
+        TimerCardVariant::Widget,
+        on_action,
+        Some(Rc::new(on_content_height)),
+    )
+}
+
+type HeightListener = Rc<dyn Fn(Pixels, &mut Window, &mut App)>;
+
+fn render_card(
+    model: TimerCardModel,
+    style: TimerCardStyle,
+    variant: TimerCardVariant,
+    on_action: impl Fn(TimerCardAction, &mut Window, &mut App) + 'static,
+    on_content_height: Option<HeightListener>,
+) -> impl IntoElement {
+    let natural_height = Rc::new(Cell::new(None::<Pixels>));
     let action = Rc::new(on_action);
     let widget = variant != TimerCardVariant::Inline;
     let preview = variant == TimerCardVariant::Preview;
@@ -122,11 +153,11 @@ pub fn timer_card(
     let compact = widget && s.layout == WidgetLayout::Compact;
     let palette = style.palette;
     let status = if model.finished {
-        "✓ 计时已结束"
+        "计时已结束"
     } else if model.paused {
-        "Ⅱ 计时已暂停"
+        "计时已暂停"
     } else {
-        "▶ 正在计时"
+        "正在计时"
     };
     let accent = if model.paused && !model.finished {
         Hsla::from(rgb(palette.warning))
@@ -138,7 +169,7 @@ pub fn timer_card(
         Button::new(SharedString::from(id.to_owned()))
             .small()
             .ghost()
-            .label(label.to_owned())
+            .action(label.to_owned())
             .disabled(preview)
             .on_click(move |_, window, cx| action(value, window, cx))
     };
@@ -156,7 +187,25 @@ pub fn timer_card(
                 .truncate(),
             )
             .child(
-                muted(format!("{} · {status}", model.kind.label())).text_color(rgb(palette.muted)),
+                div()
+                    .id(if widget {
+                        "widget-timer-status"
+                    } else {
+                        "inline-timer-status"
+                    })
+                    .aria_label(status)
+                    .tooltip(move |window, cx| Tooltip::new(status).build(window, cx))
+                    .text_color(rgb(palette.muted))
+                    .child(
+                        Icon::new(if model.finished {
+                            gpui_kit::assets::IconName::CircleCheck
+                        } else if model.paused {
+                            gpui_kit::assets::IconName::Pause
+                        } else {
+                            gpui_kit::assets::IconName::Play
+                        })
+                        .small(),
+                    ),
             ),
     );
     if !widget {
@@ -188,7 +237,21 @@ pub fn timer_card(
     } else {
         1.
     };
-    let mut card = card()
+    let measured = natural_height.clone();
+    let mut surface = card()
+        .on_children_prepainted(move |children, window, cx| {
+            if let (Some(listener), Some(natural), Some(viewport)) =
+                (on_content_height.as_ref(), measured.get(), children.last())
+            {
+                // Replace only allocated body height with natural height.
+                // Border, padding, gaps and tools come from actual layout.
+                listener(
+                    window.viewport_size().height - viewport.size.height + natural,
+                    window,
+                    cx,
+                );
+            }
+        })
         .id(root_id)
         .test_support()
         .w_full()
@@ -202,6 +265,76 @@ pub fn timer_card(
         .border_color(rgb(palette.border))
         .text_color(rgb(palette.text))
         .p(px(if compact { 12. } else { 16. }))
+        .gap_2()
+        .overflow_hidden()
+        .when(variant == TimerCardVariant::Widget, |card| card.h_full());
+
+    if widget {
+        use gpui_kit::assets::IconName;
+        let mut drag = div()
+            .id(if preview {
+                "timer-preview-drag"
+            } else {
+                "timer-widget-drag"
+            })
+            .test_support()
+            .flex()
+            .items_center()
+            .flex_1()
+            .min_w_0()
+            .h(px(32.))
+            .aria_label("拖动小组件")
+            .tooltip(|window, cx| Tooltip::new("拖动小组件").build(window, cx))
+            .child(Icon::new(IconName::GripVertical).small());
+        if !preview {
+            drag = drag
+                .cursor_move()
+                .window_control_area(WindowControlArea::Drag);
+            if !cfg!(windows) {
+                drag = drag
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
+            }
+        }
+        surface = surface.child(
+            row()
+                .id("widget-tools")
+                .test_support()
+                .flex_shrink_0()
+                .gap_1()
+                .child(drag)
+                .child(
+                    button(
+                        "widget-pin",
+                        if s.pinned { "取消置顶" } else { "置顶" },
+                        TimerCardAction::TogglePinned,
+                    )
+                    .selected(s.pinned)
+                    .disabled(preview || !cfg!(windows)),
+                )
+                .child(button(
+                    "widget-open-main",
+                    "主界面",
+                    TimerCardAction::OpenMain,
+                ))
+                .child(button(
+                    "widget-settings",
+                    "外观",
+                    TimerCardAction::OpenSettings,
+                ))
+                .child(button("widget-exit", "退出应用", TimerCardAction::ExitApp))
+                .child(button("widget-close", "关闭", TimerCardAction::CloseWidget)),
+        );
+    }
+    let mut card = column()
+        .id(if widget {
+            "timer-widget-content"
+        } else {
+            "timer-inline-body"
+        })
+        .test_support()
+        .w_full()
+        .min_w_0()
+        .flex_shrink_0()
         .gap_2()
         .child(header)
         .child(
@@ -321,7 +454,25 @@ pub fn timer_card(
             model.target / 60
         )));
     }
-    card
+    if variant == TimerCardVariant::Widget {
+        surface
+            .child(
+                column()
+                    .on_children_prepainted(move |children, _, _| {
+                        natural_height.set(children.first().map(|bounds| bounds.size.height));
+                    })
+                    .id("timer-widget-scroll")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .child(card),
+            )
+            .into_any_element()
+    } else {
+        surface.child(card).into_any_element()
+    }
 }
 
 #[cfg(test)]
@@ -354,6 +505,182 @@ mod tests {
             assert_eq!(m.remaining, if kind == TimerKind::CountUp { 0 } else { 50 });
         }
         assert_eq!(clock(3661, true), "1:01:01");
+        assert_eq!(clock(90061, true), "25:01:01");
+        assert_eq!(clock(u64::MAX, true), "5124095576030431:00:15");
+        assert_eq!(clock(u64::MAX, false), "307445734561825861 分钟");
         assert_eq!(clock(61, false), "2 分钟");
+    }
+}
+
+#[cfg(all(test, feature = "ui-test"))]
+mod widget_geometry_tests {
+    use super::{TimerCardModel, TimerCardStyle, TimerCardVariant, timer_card};
+    use gpui_kit::{
+        Context, IntoElement, ParentElement, Render, Styled, TestAppContext, Window, div, px, size,
+        test::TestWindowExt,
+    };
+    use studyapp_core::{TimerState, TimerWidgetSettings, WidgetLayout};
+    struct Fixture(TimerWidgetSettings);
+    impl Render for Fixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(timer_card(
+                TimerCardModel::from_timer(&TimerState::default(), 1),
+                TimerCardStyle::from_widget_settings(&self.0, crate::theme::palette()),
+                TimerCardVariant::Widget,
+                |_, _, _| {},
+            ))
+        }
+    }
+    struct MeasuredFixture {
+        settings: TimerWidgetSettings,
+        height: std::rc::Rc<std::cell::Cell<gpui_kit::Pixels>>,
+    }
+    impl Render for MeasuredFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let height = self.height.clone();
+            div().size_full().child(super::timer_widget_card(
+                TimerCardModel::from_timer(&TimerState::default(), 1),
+                TimerCardStyle::from_widget_settings(&self.settings, crate::theme::palette()),
+                |_, _, _| {},
+                move |measured, _, _| height.set(measured),
+            ))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn widget_natural_height_is_independent_of_old_window_height_and_scroll(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let measured = std::rc::Rc::new(std::cell::Cell::new(px(0.)));
+        let (view, visual) = cx.add_window_view(|_, _| MeasuredFixture {
+            settings: TimerWidgetSettings::default(),
+            height: measured.clone(),
+        });
+        for (width, font) in [(280., 14), (280., 22), (480., 22)] {
+            for layout in [
+                WidgetLayout::Compact,
+                WidgetLayout::Standard,
+                WidgetLayout::Expanded,
+            ] {
+                view.update(visual, |view, cx| {
+                    view.settings.layout = layout;
+                    cx.notify();
+                });
+                visual.simulate_resize(size(px(width), px(900.)));
+                visual.update(|window, cx| {
+                    crate::theme::apply(
+                        &studyapp_core::AppearanceSettings {
+                            font_size: font,
+                            ..Default::default()
+                        },
+                        false,
+                        cx,
+                    );
+                    window.render_frame(cx);
+                });
+                let natural = measured.get();
+                assert!(
+                    natural > px(100.) && natural < px(850.),
+                    "{layout:?}: {natural:?}"
+                );
+                let fitted = px(f32::from(natural).ceil().max(200.));
+                visual.simulate_resize(size(px(width), fitted));
+                visual.update(|window, cx| {
+                    window.render_frame(cx);
+                    assert!((measured.get() - natural).abs() < px(1.));
+                    let content = window.find("timer-widget-content").bounds();
+                    let viewport = window.find("timer-widget-scroll").bounds();
+                    assert!(content.size.height <= viewport.size.height + px(1.));
+                    assert!(viewport.size.height - content.size.height < px(70.));
+                });
+                visual.simulate_resize(size(px(width), px(200.)));
+                visual.update(|window, cx| {
+                    window.render_frame(cx);
+                    assert!((measured.get() - natural).abs() < px(1.));
+                    let before = window.find("timer-widget-content").bounds();
+                    let viewport = window.find("timer-widget-scroll").bounds();
+                    window.scroll(
+                        "timer-widget-scroll",
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-2000.))),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert!((measured.get() - natural).abs() < px(1.));
+                    let after = window.find("timer-widget-content").bounds();
+                    if before.size.height > viewport.size.height + px(1.) {
+                        assert!(
+                            after.top() < before.top(),
+                            "short widget must really scroll"
+                        );
+                        assert!(after.bottom() <= viewport.bottom() + px(1.));
+                    }
+                });
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn window_is_exactly_one_card_and_all_chrome_is_inside_it(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, visual) = cx.add_window_view(|_, _| Fixture(TimerWidgetSettings::default()));
+        for (width, height, font) in [
+            (280., 200., 14),
+            (280., 200., 22),
+            (380., 300., 14),
+            (480., 360., 22),
+        ] {
+            visual.simulate_resize(size(px(width), px(height)));
+            for layout in [
+                WidgetLayout::Compact,
+                WidgetLayout::Standard,
+                WidgetLayout::Expanded,
+            ] {
+                view.update(visual, |view, cx| {
+                    view.0.layout = layout;
+                    cx.notify();
+                });
+                visual.update(|window, cx| {
+                    crate::theme::apply(
+                        &studyapp_core::AppearanceSettings {
+                            font_size: font,
+                            ..Default::default()
+                        },
+                        false,
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    let card = window.find("timer-widget-card").bounds();
+                    assert_eq!(card.origin, gpui_kit::point(px(0.), px(0.)));
+                    assert_eq!(card.size, size(px(width), px(height)));
+                    for id in [
+                        "timer-widget-drag",
+                        "widget-pin",
+                        "widget-open-main",
+                        "widget-settings",
+                        "widget-close",
+                        "widget-exit",
+                    ] {
+                        let bounds = window.find(id).bounds();
+                        assert!(
+                            bounds.size.width > px(0.) && bounds.size.height > px(0.),
+                            "{id}: {bounds:?}"
+                        );
+                        assert!(
+                            bounds.left() >= card.left() && bounds.right() <= card.right(),
+                            "{id}: {bounds:?}"
+                        );
+                        assert!(
+                            bounds.top() >= card.top() && bounds.bottom() <= card.bottom(),
+                            "{id}: {bounds:?}"
+                        );
+                    }
+                    assert!(
+                        window.find("widget-tools").bounds().bottom()
+                            <= window.find("timer-widget-scroll").bounds().top()
+                    );
+                });
+            }
+        }
     }
 }

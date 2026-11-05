@@ -346,11 +346,14 @@ impl ColorSetting {
         Button::new(SharedString::from(format!("color-open-{}", self.key)))
             .small()
             .disabled(self.disabled)
-            .label(match self.draft.choice() {
-                ColorChoice::Automatic => "自动适配",
-                ColorChoice::Custom(_) => "自定义",
-                ColorChoice::Invalid => "修正颜色",
-            })
+            .icon_action(
+                gpui_kit::assets::IconName::Palette,
+                match self.draft.choice() {
+                    ColorChoice::Automatic => "自动适配",
+                    ColorChoice::Custom(_) => "自定义",
+                    ColorChoice::Invalid => "修正颜色",
+                },
+            )
             .accessibility_label("打开颜色选择器")
             .child(
                 div()
@@ -547,7 +550,7 @@ impl ColorSetting {
                     Button::new(SharedString::from(format!("color-close-{}", self.key)))
                         .small()
                         .primary()
-                        .label("应用")
+                        .action("应用")
                         .disabled(self.draft.choice() == ColorChoice::Invalid)
                         .on_click(cx.listener(|this, _, window, cx| this.apply(window, cx))),
                 ),

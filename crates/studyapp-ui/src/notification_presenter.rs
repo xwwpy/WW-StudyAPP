@@ -300,13 +300,13 @@ impl NotificationCenter {
         let action = entry.event.as_ref().and_then(|e| e.action).map(|action| {
             Button::new(SharedString::from(format!("notice-action-{id}")))
                 .small()
-                .label(action.label())
+                .action(action.label())
                 .on_click(cx.listener(move |this, _, _, cx| this.activate(id, cx)))
         });
         let close = Button::new(SharedString::from(format!("dismiss-notice-{id}")))
             .small()
             .ghost()
-            .label("×")
+            .action("关闭通知")
             .accessibility_label("关闭通知")
             .on_click(cx.listener(move |this, _, _, cx| this.dismiss(id, cx)));
         let scroll = self.scrolls.entry(id).or_default().clone();

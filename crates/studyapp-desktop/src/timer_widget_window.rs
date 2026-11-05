@@ -81,6 +81,36 @@ impl WidgetWindowState {
     }
 }
 
+/// Fit on opening or changed content/width, not every timer tick or manual
+/// vertical resize. Round once to avoid subpixel oscillation.
+#[derive(Default)]
+pub struct WidgetContentFit {
+    last: Option<(u32, u32)>,
+}
+impl WidgetContentFit {
+    pub fn height(&mut self, width: Pixels, natural: Pixels, available: Pixels) -> Option<Pixels> {
+        let (width, natural, available) =
+            (f32::from(width), f32::from(natural), f32::from(available));
+        if !width.is_finite()
+            || !natural.is_finite()
+            || !available.is_finite()
+            || width <= 0.
+            || natural <= 0.
+            || available <= 0.
+        {
+            return None;
+        }
+        let maximum = available.floor().clamp(1., 1000.) as u32;
+        let desired = (natural.ceil().min(1000.) as u32).clamp(200.min(maximum), maximum);
+        let key = (width.round() as u32, desired);
+        if self.last == Some(key) {
+            return None;
+        }
+        self.last = Some(key);
+        Some(px(desired as f32))
+    }
+}
+
 pub fn decorate(window: &mut gpui_kit::Window, pinned: bool) -> Result<()> {
     #[cfg(all(windows, not(test)))]
     {
@@ -107,6 +137,16 @@ pub fn decorate(window: &mut gpui_kit::Window, pinned: bool) -> Result<()> {
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             )?;
+            let applied = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            ensure!(
+                applied & WS_EX_TOOLWINDOW.0 as isize != 0
+                    && applied & WS_EX_APPWINDOW.0 as isize == 0,
+                "计时窗口装饰未生效"
+            );
+            ensure!(
+                (applied & WS_EX_TOPMOST.0 as isize != 0) == pinned,
+                "计时窗口置顶状态未生效"
+            );
         }
     }
     #[cfg(any(not(windows), test))]
@@ -144,6 +184,23 @@ mod tests {
             assert!(WidgetWindowState::load(&path).is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
         }
+    }
+
+    #[test]
+    fn content_fit_compacts_old_height_without_fighting_manual_vertical_resize() {
+        let mut fit = WidgetContentFit::default();
+        assert_eq!(fit.height(px(380.), px(283.25), px(900.)), Some(px(284.)));
+        // Old/manual window height is deliberately not part of the key.
+        assert_eq!(fit.height(px(380.), px(283.25), px(900.)), None);
+        assert_eq!(fit.height(px(380.), px(283.26), px(900.)), None);
+        // Moving the window must not undo a manual height when content fits.
+        assert_eq!(fit.height(px(380.), px(283.25), px(800.)), None);
+        assert_eq!(fit.height(px(420.), px(283.25), px(900.)), Some(px(284.)));
+        assert_eq!(fit.height(px(420.), px(190.), px(900.)), Some(px(200.)));
+        assert_eq!(fit.height(px(420.), px(1200.), px(430.)), Some(px(430.)));
+        assert_eq!(fit.height(px(420.), px(190.), px(150.)), Some(px(150.)));
+        assert_eq!(fit.height(px(420.), px(f32::NAN), px(900.)), None);
+        assert_eq!(fit.height(px(420.), px(0.), px(900.)), None);
     }
 
     #[test]

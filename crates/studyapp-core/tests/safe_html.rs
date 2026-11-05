@@ -161,3 +161,60 @@ fn shared_browser_and_native_css_corpus() {
         }
     }
 }
+
+#[test]
+fn native_tree_has_only_sanitized_presentation_nodes_and_keeps_ordered_starts() {
+    use studyapp_core::{SafeHtmlNode, safe_html_document};
+    let source = "<ol start='3' onclick='bad()'><li><span style='color:red;font-size:24px;position:fixed'>正文</span><img src='file:///private' alt='图'></li></ol>";
+    let nodes = safe_html_document(source).unwrap();
+    let SafeHtmlNode::Element {
+        tag,
+        start,
+        children,
+        ..
+    } = &nodes[0]
+    else {
+        panic!("ordered list")
+    };
+    assert_eq!(tag, "ol");
+    assert_eq!(*start, Some(3));
+    assert!(!children.is_empty());
+    let dump = format!("{nodes:?}");
+    assert!(dump.contains("font-size:24px"));
+    assert!(dump.contains("图片：图"));
+    for forbidden in ["file:///", "position", "onclick", "src="] {
+        assert!(!dump.contains(forbidden));
+    }
+    assert!(safe_html_document(&"<div>".repeat(40)).is_none());
+    assert_eq!(
+        studyapp_core::sanitize_html("<ol start='1000001'><li>x</li></ol>").unwrap(),
+        "<ol><li>x</li></ol>"
+    );
+}
+
+#[test]
+fn ordered_start_attributes_use_the_shared_bounded_decimal_grammar() {
+    for (raw, expected) in [
+        ("0", Some("0")),
+        ("0003", Some("3")),
+        ("1000000", Some("1000000")),
+        ("+3", None),
+        ("-1", None),
+        (" 3", None),
+        ("3 ", None),
+        ("3.0", None),
+        ("1e3", None),
+        ("1000001", None),
+        ("", None),
+    ] {
+        let source = format!("<ol start=\"{raw}\"><li>entry</li></ol>");
+        let attr = expected
+            .map(|value| format!(" start=\"{value}\""))
+            .unwrap_or_default();
+        assert_eq!(
+            studyapp_core::sanitize_html(&source).unwrap(),
+            format!("<ol{attr}><li>entry</li></ol>"),
+            "{raw}"
+        );
+    }
+}

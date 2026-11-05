@@ -92,7 +92,7 @@ impl StudyApp {
                         .child(
                             Button::new("purge-prev")
                                 .small()
-                                .label("上一页")
+                                .action("上一页")
                                 .disabled(page == 0)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.storage_ui.purge_page = page.saturating_sub(1);
@@ -102,7 +102,7 @@ impl StudyApp {
                         .child(
                             Button::new("purge-next")
                                 .small()
-                                .label("下一页")
+                                .action("下一页")
                                 .disabled((page + 1) * 8 >= count)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.storage_ui.purge_page = page + 1;

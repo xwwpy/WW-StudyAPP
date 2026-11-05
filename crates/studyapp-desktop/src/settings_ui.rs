@@ -1505,7 +1505,7 @@ impl StudyApp {
                     .child(Button::new("cancel-reset-settings").label("取消").on_click(cx.listener(|this, _, _, cx| {
                         this.preferences_ui.reset_confirmation = false; cx.notify();
                     })))
-                    .child(Button::new("confirm-reset-settings").primary().label("恢复本页默认草稿").on_click(cx.listener(move |this, _, window, cx| {
+                    .child(Button::new("confirm-reset-settings").primary().action("恢复本页默认草稿").on_click(cx.listener(move |this, _, window, cx| {
                         this.preferences_ui.reset_confirmation = false;
                         this.reset_settings_page(scope, window, cx);
                     }))))
@@ -1527,7 +1527,7 @@ impl StudyApp {
                     .justify_end()
                     .child(
                         Button::new("settings-continue-editing")
-                            .label("继续编辑")
+                            .action("继续编辑")
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 if matches!(
@@ -1593,7 +1593,7 @@ impl StudyApp {
                 .children(self.settings_reset_scope().map(|_| {
                     Button::new("reset-settings")
                         .small()
-                        .label("恢复本页默认")
+                        .action("恢复本页默认")
                         .disabled(busy || self.sync_panel.read(cx).status.busy)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.preferences_ui.recording = None;
@@ -1607,11 +1607,14 @@ impl StudyApp {
                     Button::new("save-settings")
                         .primary()
                         .small()
-                        .label(if self.preferences_ui.busy {
-                            "正在保存…"
-                        } else {
-                            "保存全部设置"
-                        })
+                        .icon_action(
+                            gpui_kit::assets::IconName::Save,
+                            if self.preferences_ui.busy {
+                                "正在保存…"
+                            } else {
+                                "保存全部设置"
+                            },
+                        )
                         .disabled(
                             !dirty
                                 || busy
@@ -1772,7 +1775,7 @@ impl StudyApp {
                             Button::new("library-directory-expand")
                                 .small()
                                 .ghost()
-                                .label(if expanded {
+                                .action(if expanded {
                                     "隐藏路径"
                                 } else {
                                     "显示路径"
@@ -1786,7 +1789,7 @@ impl StudyApp {
                         .child(
                             Button::new("migrate-library")
                                 .small()
-                                .label("更改位置")
+                                .action("更改位置")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.choose_storage(window, cx)
@@ -1801,7 +1804,7 @@ impl StudyApp {
                 "其他资料库",
                 Button::new("switch-library")
                     .small()
-                    .label("选择资料库文件夹")
+                    .action("选择资料库文件夹")
                     .disabled(busy)
                     .on_click(
                         cx.listener(|this, _, _, cx| this.settings_picker("library", None, cx)),
@@ -1813,7 +1816,7 @@ impl StudyApp {
                     .child(
                         Button::new("backup")
                             .small()
-                            .label("导出备份")
+                            .action("导出备份")
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.settings_picker("backup", None, cx)
@@ -1822,7 +1825,7 @@ impl StudyApp {
                     .child(
                         Button::new("restore")
                             .small()
-                            .label("从备份恢复")
+                            .action("从备份恢复")
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.settings_picker("restore", None, cx)
@@ -2185,7 +2188,7 @@ impl StudyApp {
                 .child(
                     Button::new("reset-markdown-style")
                         .small()
-                        .label("恢复 Markdown 默认样式")
+                        .action("恢复 Markdown 默认样式")
                         .disabled(busy)
                         .on_click(cx.listener(|this, _, window, cx| {
                             let mut preset = this.custom_appearance_input(cx);
@@ -2344,24 +2347,37 @@ impl StudyApp {
         cx: &mut Context<Self>,
     ) -> Div {
         if self.preferences_ui.appearance_page == AppearancePage::Notifications {
-            return div().flex().flex_1().min_h_0().min_w_0().child(
-                scroll_body("notification-appearance-scroll", &self.settings_scroll)
-                    .flex_1()
-                    .min_h_0()
-                    .pr_4()
-                    .pb_4()
-                    .child(self.notification_appearance_controls(cx)),
-            );
+            return column()
+                .w(available.width)
+                .h(available.height)
+                .min_h_0()
+                .min_w_0()
+                .overflow_hidden()
+                .child(
+                    scroll_body("notification-appearance-scroll", &self.settings_scroll)
+                        .flex_1()
+                        .min_h_0()
+                        .pr_4()
+                        .pb_4()
+                        .child(self.notification_appearance_controls(cx)),
+                );
         }
         if self.preferences_ui.appearance_page == AppearancePage::Widget {
-            return div().flex().flex_1().min_h_0().min_w_0().child(
-                scroll_body("timer-widget-settings-scroll", &self.settings_scroll)
-                    .flex_1()
-                    .min_h_0()
-                    .pr_4()
-                    .pb_4()
-                    .child(self.widget_settings_controls(cx)),
-            );
+            return column()
+                .w(available.width)
+                .h(available.height)
+                .min_h_0()
+                .min_w_0()
+                .overflow_hidden()
+                .child(
+                    scroll_body("timer-widget-settings-scroll", &self.settings_scroll)
+                        .test_support()
+                        .flex_1()
+                        .min_h_0()
+                        .pr_4()
+                        .pb_4()
+                        .child(self.widget_settings_controls(cx)),
+                );
         }
         // Keep programmatic field changes reflected even when the sample is
         // outside the viewport; cached resolution is independent of row layout.
@@ -2574,7 +2590,7 @@ impl StudyApp {
                             .child(
                                 Button::new("theme-font-smaller")
                                     .small()
-                                    .label("−")
+                                    .action("−")
                                     .disabled(busy || appearance.font_size <= 12)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if let Some(draft) = &mut this.preferences_ui.draft {
@@ -2592,7 +2608,7 @@ impl StudyApp {
                             .child(
                                 Button::new("theme-font-larger")
                                     .small()
-                                    .label("+")
+                                    .action("+")
                                     .disabled(busy || appearance.font_size >= 22)
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         if let Some(draft) = &mut this.preferences_ui.draft {
@@ -2637,7 +2653,7 @@ impl StudyApp {
                     .child(
                         Button::new("preview-custom-theme")
                             .small()
-                            .label("应用到界面")
+                            .action("应用到界面")
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if this.stage_custom_appearance(cx) {
@@ -2648,7 +2664,7 @@ impl StudyApp {
                     .child(
                         Button::new("new-custom-theme")
                             .small()
-                            .label("+ 新建")
+                            .action("+ 新建")
                             .disabled(busy)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if this.preferences_ui.appearance_touched
@@ -2713,7 +2729,7 @@ impl StudyApp {
                     row().child(select).child(div().flex_1()).child(
                         Button::new(SharedString::from(format!("delete-theme-{delete_id}")))
                             .small()
-                            .label("删除")
+                            .icon_action(gpui_kit::assets::IconName::Trash, "删除主题草稿")
                             .disabled(busy)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 if let Some(draft) = &mut this.preferences_ui.draft {
@@ -2906,7 +2922,7 @@ impl StudyApp {
                             Button::new("image-directory-expand")
                                 .small()
                                 .ghost()
-                                .label(if expanded { "收起" } else { "编辑路径" })
+                                .action(if expanded { "收起" } else { "编辑路径" })
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.preferences_ui.image_directory_expanded = Some(!expanded);
@@ -2916,7 +2932,7 @@ impl StudyApp {
                         .child(
                             Button::new("pick-image-root")
                                 .small()
-                                .label("选择文件夹")
+                                .action("选择文件夹")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     let raw = this
@@ -3008,7 +3024,7 @@ impl StudyApp {
                     })))
                     .child(muted("虚拟主机：bucket.endpoint/key；路径：endpoint/bucket/key。不同服务的兼容范围与要求不同，请按服务商文档选择。"))
                     .child(row().child(muted(if cloud.clear_secret { "保存后将清除当前密钥" } else if cloud.secret_saved { "当前目标的密钥已加密保存；留空保留。更换目标需重新填写。" } else { "请填写 Secret；它只会加密保存，不进入笔记或编辑器。" }))
-                        .child(Button::new("clear-image-secret").small().ghost().label("清除已保存密钥").disabled(busy)
+                        .child(Button::new("clear-image-secret").small().ghost().icon_action(gpui_kit::assets::IconName::KeyRound, "清除已保存密钥").disabled(busy)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(cloud) = &mut this.preferences_ui.image_cloud {
                                     cloud.clear_secret = true;
@@ -3031,7 +3047,7 @@ impl StudyApp {
                 panel = panel.child(muted(target)).child(
                     Button::new("image-open-sync-settings")
                         .small()
-                        .label("查看同步配置")
+                        .action("查看同步配置")
                         .disabled(busy)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.select_settings_section(SettingsSection::Sync, cx);
@@ -3046,7 +3062,7 @@ impl StudyApp {
                         .child(
                             Button::new("test-image-cloud")
                                 .small()
-                                .label("测试图片云端连接")
+                                .action("测试图片云端连接")
                                 .disabled(running || dirty)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if this
@@ -3065,7 +3081,7 @@ impl StudyApp {
                         .child(
                             Button::new("retry-image-cloud")
                                 .small()
-                                .label("重试图片上传")
+                                .action("重试图片上传")
                                 .disabled(running || dirty)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if this
@@ -3344,7 +3360,7 @@ impl StudyApp {
                         Button::new(SharedString::from(format!("append-shortcut-{id}")))
                             .small()
                             .ghost()
-                            .label("＋")
+                            .action("＋")
                             .tooltip("追加快捷键")
                             .disabled(busy || recording)
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -3355,7 +3371,7 @@ impl StudyApp {
                         Button::new(SharedString::from(format!("clear-shortcut-{id}")))
                             .small()
                             .ghost()
-                            .label("×")
+                            .action("关闭")
                             .tooltip("清空快捷键")
                             .disabled(busy || recording)
                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -4684,6 +4700,119 @@ mod scoped_tests {
             app.update(cx, |app, cx| app.close_widget(false, cx));
             assert!(app.read(cx).timer_widget.is_none());
         });
+    }
+
+    #[gpui_kit::test]
+    fn widget_pin_icon_updates_only_the_preview_draft_and_discard_restores_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.update(|_, cx| app.update(cx, |app, cx| app.open_widget(cx)));
+        let widget = app.read_with(visual, |app, _| app.timer_widget.unwrap());
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            widget
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert_eq!(window.find("widget-pin").label(), Some("取消置顶"));
+                    window.click("widget-pin", cx);
+                })
+                .unwrap()
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert!(!app.effective_widget_settings().pinned);
+                assert!(
+                    app.preferences_ui
+                        .saved
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .timer_widget
+                        .pinned
+                );
+                assert!(app.settings_dirty(cx));
+                app.discard_settings(window, cx);
+                assert!(app.effective_widget_settings().pinned);
+                assert!(!app.settings_dirty(cx));
+            });
+        });
+        visual.run_until_parked();
+        visual.update(|_, cx| {
+            widget
+                .update(cx, |_, window, cx| {
+                    window.render_frame(cx);
+                    assert_eq!(window.find("widget-pin").label(), Some("取消置顶"));
+                })
+                .unwrap();
+            app.update(cx, |app, cx| app.close_widget(false, cx));
+        });
+    }
+
+    #[gpui_kit::test]
+    fn widget_settings_scroll_keeps_every_group_and_preview_reachable(cx: &mut TestAppContext) {
+        let (app, visual) = fixture(cx);
+        visual.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.select_appearance_page(AppearancePage::Widget, cx);
+            })
+        });
+        let surface = visual.replace_root_view(|_, _| AppearanceFixture {
+            app: app.clone(),
+            width: 360.,
+            height: 240.,
+        });
+        for (width, height, font) in [(360., 240., 14), (720., 320., 22)] {
+            visual.simulate_resize(gpui_kit::size(gpui_kit::px(width), gpui_kit::px(height)));
+            surface.update(visual, |surface, cx| {
+                surface.width = width;
+                surface.height = height;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                crate::theme::apply(
+                    &studyapp_core::AppearanceSettings {
+                        font_size: font,
+                        ..Default::default()
+                    },
+                    false,
+                    cx,
+                );
+                window.render_frame(cx);
+                let viewport = window.find("timer-widget-settings-scroll").bounds();
+                assert!(
+                    viewport.size.height > gpui_kit::px(0.)
+                        && viewport.bottom() <= gpui_kit::px(height),
+                    "viewport={viewport:?}, height={height}"
+                );
+                let scroll = app.read(cx).settings_scroll.clone();
+                assert!(
+                    scroll.max_offset().y > gpui_kit::px(100.),
+                    "all settings must have a real bounded scroll range: {:?}",
+                    scroll.max_offset()
+                );
+                scroll.set_offset(gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)));
+                window.render_frame(cx);
+                window.scroll(
+                    "timer-widget-settings-scroll",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                        gpui_kit::px(0.),
+                        gpui_kit::px(-80.),
+                    )),
+                    cx,
+                );
+                assert!(
+                    scroll.offset().y < gpui_kit::px(0.),
+                    "a real wheel event must move the widget settings"
+                );
+                scroll.set_offset(gpui_kit::point(gpui_kit::px(0.), -scroll.max_offset().y));
+                window.render_frame(cx);
+                let last = window.find("widget-settings-end").bounds();
+                assert!(last.bottom() <= viewport.bottom() && last.bottom() > viewport.top());
+            });
+        }
     }
 
     #[gpui_kit::test]

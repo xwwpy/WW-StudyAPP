@@ -12,6 +12,7 @@ mod notes;
 mod notifications;
 mod purge;
 mod safe_html;
+mod safe_html_document;
 mod stats;
 mod storage;
 mod timer;
@@ -33,3 +34,5 @@ pub use timer::*;
 pub fn verify_backup_file(path: &std::path::Path) -> anyhow::Result<()> {
     storage::verified_backup(path).map(drop)
 }
+
+pub use safe_html_document::{SafeHtmlNode, safe_html_document};

@@ -109,7 +109,7 @@ impl Render for ResultView {
             .border_color(rgb(BORDER))
             .child(
                 Button::new("maintenance-result-close")
-                    .label("关闭")
+                    .action("关闭")
                     .on_click(|_, window, _| window.remove_window()),
             );
         if matches!(self.mode, Mode::Recover(_)) && !pending_only {

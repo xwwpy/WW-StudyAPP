@@ -1,19 +1,12 @@
 //! The desktop window observes the existing StudyApp; it owns no worker or clock.
 use crate::{
     app::{EditorMode, Page, StudyApp},
-    components::*,
-    controls::Button,
-    timer_widget_window::WidgetWindowState,
+    timer_widget_window::{WidgetContentFit, WidgetWindowState},
 };
-use gpui_kit::{
-    component::{Sizable, button::ButtonVariants},
-    *,
-};
-use std::{path::PathBuf, time::Duration};
+use gpui_kit::*;
+use std::{cell::RefCell, path::PathBuf, rc::Rc, time::Duration};
 use studyapp_core::{Command, TimerKind, TimerWidgetSettings};
-use studyapp_ui::timer_card::{
-    TimerCardAction, TimerCardModel, TimerCardStyle, TimerCardVariant, timer_card,
-};
+use studyapp_ui::timer_card::{TimerCardAction, TimerCardModel, TimerCardStyle, timer_widget_card};
 
 #[derive(Clone)]
 struct WidgetPresentation {
@@ -54,6 +47,7 @@ pub struct TimerWidget {
     save_task: Option<Task<()>>,
     pinned: Option<bool>,
     presentation: WidgetPresentation,
+    content_fit: Rc<RefCell<WidgetContentFit>>,
 }
 
 fn forward(app: WeakEntity<StudyApp>, action: TimerCardAction, cx: &mut App) {
@@ -115,6 +109,7 @@ impl TimerWidget {
             save_task: None,
             pinned: None,
             presentation,
+            content_fit: Rc::default(),
         }
     }
     fn persist(&self, cx: &mut Context<Self>) {
@@ -141,34 +136,13 @@ impl Render for TimerWidget {
             self.pinned = Some(settings.pinned);
         }
         let app = self.app.downgrade();
-        let button = |id: &str, label: &str, action: TimerCardAction| {
-            let app = app.clone();
-            Button::new(SharedString::from(id.to_owned()))
-                .small()
-                .ghost()
-                .label(label.to_owned())
-                .on_click(move |_, _, cx| forward(app.clone(), action, cx))
-        };
         let card_owner = app.clone();
         let keys_owner = app.clone();
-        let mut drag = div()
-            .id("timer-widget-drag")
-            .test_support()
-            .flex_1()
-            .h(px(28.))
-            .min_w_0()
-            .window_control_area(WindowControlArea::Drag)
-            .cursor_move()
-            .child(muted("⋮⋮ 计时"));
-        if !cfg!(windows) {
-            drag = drag.on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move());
-        }
-        column()
+        let content_fit = self.content_fit.clone();
+        div()
             .id("timer-widget")
             .test_support()
             .size_full()
-            .gap_1()
-            .p_2()
             .bg(rgba(0))
             .font_family(crate::design::UI_FONT)
             .text_color(rgb(crate::theme::palette().text))
@@ -196,48 +170,36 @@ impl Render for TimerWidget {
                     cx.stop_propagation();
                 }
             })
-            .child(
-                row()
-                    .gap_1()
-                    .flex_shrink_0()
-                    .rounded_md()
-                    .bg(rgb(crate::theme::palette().surface))
-                    .px_2()
-                    .child(drag)
-                    .child(button(
-                        "widget-open-main",
-                        "主界面",
-                        TimerCardAction::OpenMain,
-                    ))
-                    .child(button(
-                        "widget-settings",
-                        "外观",
-                        TimerCardAction::OpenSettings,
-                    ))
-                    .child(button("widget-close", "关闭", TimerCardAction::CloseWidget)),
-            )
-            .child(
-                div()
-                    .id("timer-widget-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_y_scroll()
-                    .child(timer_card(
-                        model,
-                        TimerCardStyle::from_widget_settings(&settings, crate::theme::palette()),
-                        TimerCardVariant::Widget,
-                        move |action, _, cx| forward(card_owner.clone(), action, cx),
-                    )),
-            )
-            .child(
-                row().flex_shrink_0().justify_end().child(
-                    div()
-                        .rounded_md()
-                        .bg(rgb(crate::theme::palette().surface))
-                        .child(button("widget-exit", "退出应用", TimerCardAction::ExitApp)),
-                ),
-            )
+            .child(timer_widget_card(
+                model,
+                TimerCardStyle::from_widget_settings(&settings, crate::theme::palette()),
+                move |action, _, cx| forward(card_owner.clone(), action, cx),
+                move |natural, window, cx| {
+                    let current = window.viewport_size();
+                    let available = window
+                        .display(cx)
+                        .map(|display| {
+                            let area = display.visible_bounds();
+                            (area.bottom() - window.window_bounds().get_bounds().top())
+                                .max(px(200.))
+                                .min(area.size.height)
+                        })
+                        .unwrap_or(px(1000.));
+                    if let Some(height) =
+                        content_fit
+                            .borrow_mut()
+                            .height(current.width, natural, available)
+                        && (height - current.height).abs() >= px(1.)
+                    {
+                        // Never resize in layout or reenter the owner lease.
+                        window.defer(cx, move |window, _| {
+                            if window.viewport_size().width == current.width {
+                                window.resize(size(current.width, height));
+                            }
+                        });
+                    }
+                },
+            ))
     }
 }
 
@@ -296,11 +258,7 @@ impl StudyApp {
         );
         let options = WindowOptions {
             kind: WindowKind::Normal,
-            titlebar: Some(TitlebarOptions {
-                title: Some("WW-StudyApp 计时".into()),
-                appears_transparent: true,
-                ..Default::default()
-            }),
+            titlebar: None,
             app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Transparent,
             window_bounds: Some(WindowBounds::Windowed(state.bounds())),
@@ -372,6 +330,22 @@ impl StudyApp {
     ) {
         match action {
             TimerCardAction::OpenMain => window.activate_window(),
+            TimerCardAction::TogglePinned => {
+                if self.has_modal(cx) || self.storage_busy || self.preferences_ui.busy {
+                    return;
+                }
+                if self.page == Page::Settings {
+                    if let Some(draft) = &mut self.preferences_ui.draft {
+                        draft.timer_widget.pinned = !draft.timer_widget.pinned;
+                        cx.notify();
+                    }
+                } else if let Some(snapshot) = &self.snapshot {
+                    self.send(
+                        Command::SetTimerWidgetPinned(!snapshot.settings.timer_widget.pinned),
+                        cx,
+                    );
+                }
+            }
             TimerCardAction::CloseWidget => self.close_widget(false, cx),
             TimerCardAction::ShowOnDesktop => {
                 if self.timer_widget.is_some() {
@@ -423,14 +397,19 @@ impl StudyApp {
                             );
                         }
                     }
-                    TimerCardAction::Countdown(minutes) => self.request_timer_change(
-                        Command::StartTimer {
-                            kind: TimerKind::CountDown,
-                            target_seconds: Some(u64::from(minutes) * 60),
-                            label: timer.label,
-                        },
-                        cx,
-                    ),
+                    TimerCardAction::Countdown(minutes) => {
+                        match studyapp_core::countdown_seconds(minutes) {
+                            Ok(seconds) => self.request_timer_change(
+                                Command::StartTimer {
+                                    kind: TimerKind::CountDown,
+                                    target_seconds: Some(seconds),
+                                    label: timer.label,
+                                },
+                                cx,
+                            ),
+                            Err(error) => self.push_notice(Err(error.to_string()), cx),
+                        }
+                    }
                     TimerCardAction::Configure => {
                         self.timer_name
                             .update(cx, |input, cx| input.set_value(timer.label, window, cx));
@@ -460,14 +439,23 @@ impl StudyApp {
                                 .finished_at
                                 .unwrap_or_else(|| chrono::Utc::now().timestamp());
                             let minutes = timer.active_seconds.div_ceil(60).max(1);
-                            let started =
-                                chrono::DateTime::from_timestamp(ended - minutes as i64 * 60, 0)
-                                    .map(|t| {
-                                        t.with_timezone(&chrono::Local)
-                                            .format("%Y-%m-%d %H:%M")
-                                            .to_string()
-                                    })
-                                    .unwrap_or_default();
+                            let started = minutes
+                                .checked_mul(60)
+                                .and_then(|seconds| i64::try_from(seconds).ok())
+                                .and_then(|seconds| ended.checked_sub(seconds))
+                                .and_then(|started| chrono::DateTime::from_timestamp(started, 0))
+                                .map(|t| {
+                                    t.with_timezone(&chrono::Local)
+                                        .format("%Y-%m-%d %H:%M")
+                                        .to_string()
+                                });
+                            if started.is_none() {
+                                self.push_notice(
+                                    Err("计时起点超出日历可表示范围，请手动填写学习起点".into()),
+                                    cx,
+                                );
+                            }
+                            let started = started.unwrap_or_default();
                             self.start
                                 .update(cx, |input, cx| input.set_value(started, window, cx));
                             self.minutes.update(cx, |input, cx| {

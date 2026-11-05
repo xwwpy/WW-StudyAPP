@@ -34,7 +34,10 @@ impl StudyApp {
                         .flex_wrap()
                         .child(
                             Button::new("startup-select-library")
-                                .label("重新选择资料库")
+                                .icon_action(
+                                    gpui_kit::assets::IconName::FolderOpen,
+                                    "重新选择资料库",
+                                )
                                 .disabled(self.startup_busy)
                                 .on_click(
                                     cx.listener(|this, _, _, _| this.picker("library", None)),
@@ -43,11 +46,14 @@ impl StudyApp {
                         .child(
                             Button::new("startup-retry")
                                 .primary()
-                                .label(if self.startup_busy {
-                                    "正在重试…"
-                                } else {
-                                    "重试"
-                                })
+                                .icon_action(
+                                    gpui_kit::assets::IconName::RefreshCw,
+                                    if self.startup_busy {
+                                        "正在重试…"
+                                    } else {
+                                        "重试"
+                                    },
+                                )
                                 .disabled(self.startup_busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.startup_work(Work::RetryOpenLibrary, cx)

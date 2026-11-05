@@ -77,7 +77,7 @@ main { display: flex; flex-direction: column; }
 .cm-search { font:13px var(--editor-body-font); }
 
 :root[data-theme="dark"] { color-scheme: dark; }
-#toolbar #format-toggle { font-size:13px; min-width:54px; }
+#toolbar #format-toggle { display:inline-flex; align-items:center; justify-content:center; }
 #format-menu { position:absolute; z-index:30; top:calc(var(--editor-toolbar-height) - 1px); left:12px; min-width:190px; max-height:calc(100vh - 76px); overflow:auto; padding:6px; border:1px solid var(--editor-border); border-radius:10px; background:var(--editor-surface); box-shadow:0 8px 28px #0002; }
 #format-menu[hidden] { display:none; }
 #toolbar #format-menu button { display:block; width:100%; text-align:left; padding:3px 10px; font-size:13px; }
@@ -171,3 +171,5 @@ main { display: flex; flex-direction: column; }
 .md-html-fragment { max-width:100%; min-width:0; overflow:auto; isolation:isolate; box-sizing:border-box; white-space:normal; }
 .md-html-fragment * { box-sizing:border-box; max-width:100%; overflow-wrap:anywhere; }
 .md-html-fragment pre { white-space:pre-wrap; }
+
+.toolbar-icon,.outline-header button svg { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; vertical-align:middle; }

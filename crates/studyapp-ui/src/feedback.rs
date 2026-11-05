@@ -130,6 +130,15 @@ fn modal_backdrop() -> Rgba {
     rgb(0).opacity(if palette.dark { 0.64 } else { 0.48 })
 }
 
+// Framed content paints its own outline and rounded surface. A second opaque
+// popup (even with no padding) leaks through cards with a larger corner radius.
+fn framed_popup(max_width: Pixels) -> DialogPopup {
+    DialogPopup::new()
+        .max_w(max_width)
+        .bg(rgba(0))
+        .text_color(rgb(crate::theme::palette().text))
+}
+
 /// The frame owns padding and its body viewport; no second scroll container.
 pub fn modal_frame_shell(
     content: impl IntoElement,
@@ -148,19 +157,11 @@ pub fn modal_frame_shell(
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
         )
         .popup(
-            DialogPopup::new()
-                .max_w(window.viewport_size().width * 0.9)
-                .rounded(px(16.))
-                .shadow_lg()
-                .border_1()
-                .border_color(rgb(crate::theme::palette().border))
-                .bg(rgb(crate::theme::palette().surface_raised))
-                .text_color(rgb(crate::theme::palette().text))
-                .child(
-                    div()
-                        .child(content)
-                        .text_selection_scope(TextSelectionScopeId::default()),
-                ),
+            framed_popup(window.viewport_size().width * 0.9).child(
+                div()
+                    .child(content)
+                    .text_selection_scope(TextSelectionScopeId::default()),
+            ),
         )
 }
 
@@ -379,5 +380,22 @@ mod tests {
             assert!(view.read(cx).outside.is_focused(window));
         })
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod framed_surface_tests {
+    use super::framed_popup;
+    use gpui_kit::{StyleRefinement, Styled, px, rgba};
+    #[test]
+    fn framed_host_is_transparent_and_does_not_add_a_second_card_outline() {
+        let mut popup = framed_popup(px(480.));
+        let style = popup.style();
+        let empty = StyleRefinement::default();
+        assert_eq!(style.background, Some(rgba(0).into()));
+        assert_eq!(style.border_widths, empty.border_widths);
+        assert_eq!(style.corner_radii, empty.corner_radii);
+        assert_eq!(style.padding, empty.padding);
+        assert_eq!(style.box_shadow, empty.box_shadow);
     }
 }

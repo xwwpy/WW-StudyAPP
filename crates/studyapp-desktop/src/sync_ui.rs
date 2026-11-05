@@ -311,7 +311,7 @@ impl Render for SyncPanel {
                     row()
                         .child(
                             Button::new("sync-directory-expand")
-                                .label(if self.folder_expanded {
+                                .action(if self.folder_expanded {
                                     "收起"
                                 } else {
                                     "编辑路径"
@@ -325,7 +325,7 @@ impl Render for SyncPanel {
                         )
                         .child(
                             Button::new("pick-sync-folder")
-                                .label("选择文件夹")
+                                .action("选择文件夹")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     if this.editing_locked || this.status.busy || this.target != 1 {
@@ -367,11 +367,14 @@ impl Render for SyncPanel {
                 }));
         }
         let sync_now = Button::new("sync-now")
-            .label(if busy {
-                "正在同步…"
-            } else {
-                "立即同步"
-            })
+            .icon_action(
+                gpui_kit::assets::IconName::RefreshCw,
+                if busy {
+                    "正在同步…"
+                } else {
+                    "立即同步"
+                },
+            )
             .disabled(
                 busy || unsaved || matches!(self.status.settings.target, SyncTarget::Disabled),
             )
@@ -392,7 +395,7 @@ impl Render for SyncPanel {
                 this.automatic = *checked; cx.notify();
             })))
             .child(form::input(&self.interval, busy || !self.automatic).w(px(150.))).child(muted("分钟")))
-            .child(row().child(Button::new("test-sync").label("测试连接").disabled(busy || unsaved || matches!(self.status.settings.target, SyncTarget::Disabled)).on_click(cx.listener(|this, _, _, cx| this.start(true, cx))))
+            .child(row().child(Button::new("test-sync").action("测试连接").disabled(busy || unsaved || matches!(self.status.settings.target, SyncTarget::Disabled)).on_click(cx.listener(|this, _, _, cx| this.start(true, cx))))
                 .child(sync_now))
             .child(muted(if unsaved { "同步设置有未保存的修改，请先保存。" } else { "使用已保存的同步设置" }))
             .child(muted(if busy { "正在处理同步任务…" }

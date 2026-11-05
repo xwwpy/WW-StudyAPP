@@ -980,7 +980,7 @@ impl Render for UpdatePanel {
                 ))
                 .child(
                     Button::new("open-releases")
-                        .label("打开发布页面")
+                        .action("打开发布页面")
                         .on_click(|_, _, cx| {
                             cx.open_url("https://github.com/xwwpy/WW-StudyAPP/releases/latest")
                         }),
@@ -1003,40 +1003,40 @@ impl Render for UpdatePanel {
             .child(div().child(self.status.clone()))
 
             .child(row().flex_wrap()
-                .child(Button::new("check-for-updates").label("检查更新").disabled(self.busy)
+                .child(Button::new("check-for-updates").action("检查更新").disabled(self.busy)
                     .on_click(cx.listener(|this, _, _, cx| this.check(CheckOrigin::Manual, cx))))
                 .children((self.release.is_some() && self.prepared.is_none()).then(||
-                    Button::new("download-update").label("下载更新").disabled(self.busy)
+                    Button::new("download-update").action("下载更新").disabled(self.busy)
                         .on_click(cx.listener(|this, _, _, cx| this.download(cx)))))
                 .children(self.prepared.as_ref().map(|_| Button::new("restart-to-update")
-                    .label("重启并安装").disabled(self.busy)
+                    .action("重启并安装").disabled(self.busy)
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(UpdateEvent::InstallRequested)))))
-                .child(Button::new("open-releases").ghost().label("发布页面")
+                .child(Button::new("open-releases").ghost().action("发布页面")
                     .on_click(move |_, _, cx| cx.open_url(&release_url))))
             .children(self.available_version().map(|_| Button::new("view-update-notes")
-                .label("查看更新内容")
+                .action("查看更新内容")
                 .on_click(cx.listener(|this, _, _, cx| this.show_dialog(cx)))))
             .children(self.prepared.as_ref().map(|(_, update)| {
                 let status = update.status_path.clone();
                 column().gap_1().child(muted(format!("安装位置：{}", studyapp_desktop::presentation::display_path(&update.installation_directory.to_string_lossy()))))
-                    .child(Button::new("reveal-update-record").ghost().label("查看更新记录")
+                    .child(Button::new("reveal-update-record").ghost().action("查看更新记录")
                         .on_click(move |_, _, cx| cx.reveal_path(&status)))
             }))
             .children(self.previous.as_ref().map(|status| column().gap_1()
                 .child(muted(format!("{} · {}", status.version, status.user_message())))
                 .children((!status.record_path.is_empty()).then(|| {
                     let path = PathBuf::from(&status.record_path);
-                    Button::new("reveal-maintenance-record").ghost().label("查看维护记录")
+                    Button::new("reveal-maintenance-record").ghost().action("查看维护记录")
                         .on_click(move |_, _, cx| cx.reveal_path(&path))
                 }))
                 .children((!status.backup_path.is_empty()).then(|| {
                     let path = PathBuf::from(&status.backup_path);
-                    Button::new("reveal-update-backup").ghost().label("定位旧版本备份")
+                    Button::new("reveal-update-backup").ghost().action("定位旧版本备份")
                         .on_click(move |_, _, cx| cx.reveal_path(&path))
                 }))
                 .children((!status.distribution_path.is_empty()).then(|| {
                     let path = PathBuf::from(&status.distribution_path);
-                    Button::new("reveal-update-distribution").ghost().label("查看发行文件")
+                    Button::new("reveal-update-distribution").ghost().action("查看发行文件")
                         .on_click(move |_, _, cx| cx.reveal_path(&path))
                 }))))
             .child(muted("安装前会保存草稿并处理未保存的设置。更新只处理属于当前安装的程序文件，保留资料库；安装目录不可写时可从发布页面手动更新。"))

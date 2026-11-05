@@ -2428,3 +2428,48 @@ test("HTML block native selection copies visible text without hidden source mark
   assert.equal(await page.evaluate(()=>window.messages.filter(m=>m.type==='requestEdit').length),0);
   assert.deepEqual(errors,[]);await page.close();
 });
+
+test("icon toolbar keeps accessible names, tooltips, keyboard controls and source unchanged", async () => {
+  const text = "# 根章节\n\n## 子章节\n\n正文";
+  const { page, errors, externalRequests } = await setup(text);
+  for (const width of [1100, 360]) {
+    await page.setViewportSize({ width, height: 700 });
+    for (const id of ["format-toggle", "source-toggle", "outline-toggle"]) {
+      const control = page.locator(`#${id}`);
+      assert.ok(await control.getAttribute("aria-label"));
+      assert.ok(await control.getAttribute("title"));
+      assert.equal((await control.innerText()).trim(), "");
+      assert.equal(await control.locator('svg[aria-hidden="true"]').count(), 1);
+      const bounds = await control.boundingBox();
+      assert.ok(bounds.width >= 28 && bounds.height >= 28);
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
+    }
+  }
+  await page.locator("#format-toggle").focus();
+  await page.keyboard.press("Enter");
+  assert.equal(await page.locator("#format-toggle").getAttribute("aria-expanded"), "true");
+  await page.keyboard.press("Escape");
+  await page.locator("#outline-toggle").click();
+  for (const name of ["全部收起", "全部展开"]) {
+    const control = page.getByRole("button", { name, exact: true });
+    assert.equal((await control.innerText()).trim(), "");
+    assert.equal(await control.getAttribute("title"), name);
+    await control.click();
+  }
+  await page.locator("#source-toggle").click();
+  assert.equal(await page.locator("#source-toggle").getAttribute("aria-pressed"), "true");
+  await page.locator("#source-toggle").click();
+  assert.equal((await state(page)).text, text);
+  assert.deepEqual(errors, []);
+  assert.deepEqual(externalRequests, []);
+  await page.close();
+});
+
+test("safe ordered start attributes keep the same bounded integer grammar", async () => {
+  const {page, errors}=await setup("integer attributes");
+  for (const [raw, expected] of [["0","0"],["0003","3"],["1000000","1000000"],["+3",null],["-1",null],[" 3",null],["3 ",null],["3.0",null],["1e3",null],["1000001",null],["",null]]) {
+    const result=await action(page,{type:"sanitizeHtml",text:`<ol start="${raw}"><li>entry</li></ol>`});
+    assert.equal(result.html, `<ol${expected===null?"":` start="${expected}"`}><li>entry</li></ol>`,raw);
+  }
+  assert.deepEqual(errors,[]); await page.close();
+});

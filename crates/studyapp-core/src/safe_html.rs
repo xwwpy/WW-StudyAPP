@@ -17,6 +17,7 @@ struct Policy {
     color_properties: Vec<String>,
     enums: BTreeMap<String, Vec<String>>,
     numbers: BTreeMap<String, NumberRule>,
+    integer_attributes: BTreeMap<String, BTreeMap<String, [u32; 2]>>,
 }
 #[derive(Deserialize)]
 struct NumberRule {
@@ -173,6 +174,22 @@ fn visit(node: &Handle, depth: usize, remaining: &mut usize, output: &mut String
                         output.push_str(" style=\"");
                         escaped(output, &style);
                         output.push('"');
+                    }
+                }
+                if let Some(rules) = policy().integer_attributes.get(tag) {
+                    for (key, [min, max]) in rules {
+                        if let Some(value) = attrs
+                            .borrow()
+                            .iter()
+                            .find(|a| a.name.ns == ns!() && a.name.local.as_ref() == key)
+                            .filter(|a| {
+                                !a.value.is_empty() && a.value.bytes().all(|b| b.is_ascii_digit())
+                            })
+                            .and_then(|a| a.value.parse::<u32>().ok())
+                            .filter(|n| (*min..=*max).contains(n))
+                        {
+                            output.push_str(&format!(" {key}=\"{value}\""));
+                        }
                     }
                 }
                 output.push('>');

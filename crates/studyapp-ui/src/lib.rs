@@ -1,4 +1,5 @@
 //! Shared visual system and reusable GPUI controls. No application IO or business workers.
+pub mod action_icons;
 pub mod bubble;
 pub mod compact_markdown;
 pub mod components;
@@ -30,3 +31,7 @@ pub mod window_chrome;
 mod modal_selection_regression;
 #[cfg(all(test, feature = "ui-test"))]
 mod scroll_regression;
+
+// The native renderer is not wired yet; keep its pure model test-only.
+#[cfg(test)]
+mod native_markdown_model;

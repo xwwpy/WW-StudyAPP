@@ -558,7 +558,7 @@ impl StudyApp {
             timer_setup: None,
             timer_pending: None,
             timer_name: input("计时名称（可选）", "", window, cx),
-            timer_duration: input("1–180 分钟", "25", window, cx),
+            timer_duration: input("正整数分钟", "25", window, cx),
             worker,
             snapshot: None,
             startup_failure: None,
@@ -1059,10 +1059,8 @@ impl StudyApp {
                 && previous.timer.started_at == snapshot.timer.started_at
                 && previous.timer.finished_at.is_none()
                 && snapshot.timer.finished_at.is_some()
-                && ((snapshot.timer.kind == studyapp_core::TimerKind::CountDown
-                    && snapshot.timer.active_seconds == snapshot.timer.target_seconds)
-                    || (snapshot.timer.kind == studyapp_core::TimerKind::CountUp
-                        && snapshot.timer.active_seconds == 86400))
+                && snapshot.timer.kind == studyapp_core::TimerKind::CountDown
+                && snapshot.timer.active_seconds == snapshot.timer.target_seconds
         });
         if just_finished {
             let mut event = studyapp_core::NoticeEvent::new(
@@ -1672,8 +1670,23 @@ impl Render for StudyApp {
                 Button::new("titlebar-save-status")
                     .small()
                     .ghost()
-                    .label(label)
-                    .tooltip("查看保存与同步设置")
+                    .icon_action(
+                        if syncing {
+                            gpui_kit::assets::IconName::RefreshCw
+                        } else if sync_failed {
+                            gpui_kit::assets::IconName::CircleAlert
+                        } else if self.note_saving || self.preferences_ui.busy {
+                            gpui_kit::assets::IconName::Save
+                        } else if (self.page == Page::Settings && self.settings_dirty(cx))
+                            || self.note_editor.is_some()
+                        {
+                            gpui_kit::assets::IconName::Pencil
+                        } else {
+                            gpui_kit::assets::IconName::CircleCheck
+                        },
+                        label,
+                    )
+                    .tooltip(format!("{label} · 查看保存与同步设置"))
                     .text_color(rgb(if sync_failed {
                         crate::theme::palette().danger
                     } else {

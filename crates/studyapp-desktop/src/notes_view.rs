@@ -1017,7 +1017,7 @@ impl StudyApp {
                             Button::new("record-note")
                                 .small()
                                 .primary()
-                                .label("记录学习")
+                                .action("记录学习")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.open_editor(EditorMode::Manual, window, cx)
                                 })),
@@ -1025,7 +1025,7 @@ impl StudyApp {
                         .child(
                             Button::new("edit-note")
                                 .small()
-                                .label(if historical {
+                                .action(if historical {
                                     "复制版本"
                                 } else if managed {
                                     "编辑"
@@ -1047,7 +1047,7 @@ impl StudyApp {
                                         .small()
                                         .ghost()
                                         .selected(!self.history)
-                                        .label("阅读")
+                                        .action("阅读")
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.history = false;
                                             cx.notify();
@@ -1058,7 +1058,7 @@ impl StudyApp {
                                         .small()
                                         .ghost()
                                         .selected(self.history)
-                                        .label("历史")
+                                        .action("历史")
                                         .tooltip(format!("变更历史 · {} 个版本", versions.len()))
                                         .on_click(cx.listener(|this, _, _, cx| {
                                             this.history = true;
@@ -1199,7 +1199,7 @@ impl StudyApp {
                         .child(
                             Button::new("new-note-empty")
                                 .primary()
-                                .label("新建笔记")
+                                .action("新建笔记")
                                 .disabled(self.library_controls_busy(cx))
                                 .on_click(
                                     cx.listener(|this, _, window, cx| this.new_note(window, cx)),
@@ -1207,7 +1207,7 @@ impl StudyApp {
                         )
                         .child(
                             Button::new("import-note-empty")
-                                .label("导入文件")
+                                .action("导入文件")
                                 .disabled(self.library_controls_busy(cx))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.settings_picker("import", None, cx)
@@ -1247,7 +1247,7 @@ impl StudyApp {
             .when(self.draft_loading, |c| c.child(muted("正在检查本地草稿…")))
             .when(self.draft_failed, |c| c.child(card().child(heading("草稿文件暂时无法读取或保存"))
                 .child(muted("当前草稿尚未可靠保存；当前正文仍保留。其他草稿不会被覆盖，修复目录权限后可重试。"))
-                .child(Button::new("retry-note-draft").label("重试草稿读取").on_click(cx.listener(|this, _, _, cx| {
+                .child(Button::new("retry-note-draft").action("重试草稿读取").on_click(cx.listener(|this, _, _, cx| {
                     if this.note_editor.is_none() { this.draft_failed = false; this.draft_loading = true; this.update_health.reset_catalog(); this.drafts.load(&this.last_library); }
                     cx.notify();
                 })))))
@@ -1283,26 +1283,31 @@ mod document_header_tests {
                             Button::new("header-record-test")
                                 .small()
                                 .primary()
-                                .label("记录学习"),
+                                .action("记录学习"),
                         )
                         .child(
                             Button::new("header-edit-test")
                                 .small()
-                                .label("创建托管副本"),
+                                .action("创建托管副本"),
                         )
                         .child(
                             Button::new("header-preview-test")
                                 .small()
                                 .ghost()
-                                .label("阅读"),
+                                .action("阅读"),
                         )
                         .child(
                             Button::new("header-history-test")
                                 .small()
                                 .ghost()
-                                .label("历史"),
+                                .action("历史"),
                         )
-                        .child(Button::new("header-more-test").small().ghost().label("⋯")),
+                        .child(
+                            Button::new("header-more-test")
+                                .small()
+                                .ghost()
+                                .icon_action(gpui_kit::assets::IconName::Ellipsis, "更多操作"),
+                        ),
                 ))
             }
         }

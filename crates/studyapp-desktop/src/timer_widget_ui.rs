@@ -7,7 +7,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        Disableable, Sizable,
+        Disableable, Selectable, Sizable,
         button::ButtonVariants,
         input::{Input, InputEvent, InputState},
     },
@@ -57,7 +57,7 @@ impl StudyApp {
                     ))
                     .when(kind == TimerKind::CountDown, |c| {
                         c.child(form::field(
-                            "倒计时分钟数（1–180）",
+                            "倒计时分钟数（正整数）",
                             Input::new(&self.timer_duration),
                         ))
                     })
@@ -82,7 +82,7 @@ impl StudyApp {
                     .child(
                         Button::new("timer-start-setup")
                             .primary()
-                            .label("开始计时")
+                            .action("开始计时")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 let Some(kind) = this.timer_setup else {
                                     return;
@@ -97,23 +97,17 @@ impl StudyApp {
                                     return;
                                 }
                                 let target_seconds = if kind == TimerKind::CountDown {
-                                    let Ok(minutes) =
-                                        this.timer_duration.read(cx).value().trim().parse::<u64>()
-                                    else {
-                                        this.push_notice(
-                                            Err("倒计时请填写 1–180 的整数分钟".into()),
-                                            cx,
-                                        );
-                                        return;
-                                    };
-                                    if !(1..=180).contains(&minutes) {
-                                        this.push_notice(
-                                            Err("倒计时请填写 1–180 的整数分钟".into()),
-                                            cx,
-                                        );
-                                        return;
+                                    match studyapp_core::parse_countdown_minutes(
+                                        &this.timer_duration.read(cx).value(),
+                                    )
+                                    .and_then(studyapp_core::countdown_seconds)
+                                    {
+                                        Ok(seconds) => Some(seconds),
+                                        Err(error) => {
+                                            this.push_notice(Err(error.to_string()), cx);
+                                            return;
+                                        }
                                     }
-                                    Some(minutes * 60)
                                 } else {
                                     None
                                 };
@@ -148,11 +142,11 @@ impl StudyApp {
             ),
             (
                 "widget-presets",
-                "1–180 分钟，用逗号分隔",
+                "正整数分钟，用逗号分隔",
                 value
                     .countdown_presets
                     .iter()
-                    .map(u32::to_string)
+                    .map(u64::to_string)
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
@@ -247,7 +241,7 @@ impl StudyApp {
                 .child(
                     Button::new(SharedString::from(format!("{key}-less")))
                         .small()
-                        .label("−")
+                        .icon_action(gpui_kit::assets::IconName::Minus, format!("减少{label}"))
                         .disabled(busy || value <= min)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(draft) = &mut this.preferences_ui.draft {
@@ -262,7 +256,7 @@ impl StudyApp {
                 .child(
                     Button::new(SharedString::from(format!("{key}-more")))
                         .small()
-                        .label("+")
+                        .icon_action(gpui_kit::assets::IconName::Plus, format!("增加{label}"))
                         .disabled(busy || value >= max)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(draft) = &mut this.preferences_ui.draft {
@@ -293,6 +287,7 @@ impl StudyApp {
                 Button::new(SharedString::from(format!("widget-layout-{value:?}")))
                     .small()
                     .label(label)
+                    .selected(settings.layout == value)
                     .disabled(busy)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(draft) = &mut this.preferences_ui.draft {
@@ -322,6 +317,7 @@ impl StudyApp {
             );
         }
         let mut toggles = column().gap_2();
+        let mut behavior = column().gap_2();
         type BoolField = fn(&mut TimerWidgetSettings) -> &mut bool;
         let fields: [(&str, &str, bool, BoolField); 5] = [
             (
@@ -356,62 +352,101 @@ impl StudyApp {
             ),
         ];
         for (key, label, checked, field) in fields {
-            toggles = toggles.child(
-                Checkbox::new(SharedString::from(key.to_owned()))
-                    .label(label)
-                    .checked(checked)
-                    .disabled(busy || (key == "widget-pinned" && !cfg!(windows)))
-                    .on_click(cx.listener(move |this, checked, _, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            *field(&mut draft.timer_widget) = *checked;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        let mut controls=card().gap_3().child(heading("桌面计时小组件"))
-            .child(muted("窗口和今日页共享同一计时。外观修改可实时预览，保存后保留；窗口位置仅保存在当前设备。"))
-            .child(Button::new("settings-toggle-timer-widget").label(if self.timer_widget.is_some(){"隐藏桌面小组件"}else{"显示桌面小组件"}).disabled(busy)
-                .on_click(cx.listener(|this,_,window,cx|this.timer_action(TimerCardAction::ShowOnDesktop,window,cx))))
-            .child(form::field("布局",layouts)).child(form::field("背景",backgrounds))
-            .child(self.widget_number("widget-opacity","背景不透明度（%）",settings.opacity,(30,100,5),|s|&mut s.opacity,cx))
-            .child(self.widget_number("widget-radius","圆角",settings.corner_radius,(0,28,2),|s|&mut s.corner_radius,cx))
-            .child(self.widget_number("widget-scale","数字缩放（%）",settings.scale,(80,140,5),|s|&mut s.scale,cx))
-            .child(toggles);
-        for (key, label) in [
-            ("widget-accent", "强调色（留空跟随主题）"),
-            ("widget-presets", "倒计时预设（1–180 分钟，最多 8 项）"),
-        ] {
-            if let Some(input) = self.preferences_ui.widget_fields.get(key) {
-                let field = if key == "widget-accent" {
-                    let color = &self.preferences_ui.appearance_colors[key];
-                    color.update(cx, |color, cx| {
-                        color.configure(crate::theme::palette().accent, busy, cx)
-                    });
-                    color.clone().into_any_element()
-                } else {
-                    Input::new(input).disabled(busy).into_any_element()
-                };
-                controls = controls.child(form::field(label, field));
+            let toggle = Checkbox::new(SharedString::from(key.to_owned()))
+                .label(label)
+                .checked(checked)
+                .disabled(busy || (key == "widget-pinned" && !cfg!(windows)))
+                .on_click(cx.listener(move |this, checked, _, cx| {
+                    if let Some(draft) = &mut this.preferences_ui.draft {
+                        *field(&mut draft.timer_widget) = *checked;
+                    }
+                    cx.notify();
+                }));
+            if key == "widget-pinned" {
+                behavior = behavior.child(toggle);
+            } else {
+                toggles = toggles.child(toggle);
             }
         }
-        column().w_full().gap_3().child(controls)
-            .child(heading("实时预览"))
-            .child(div().max_w(px(480.)).child(timer_card(TimerCardModel::from_timer(&timer,1),TimerCardStyle::from_widget_settings(&settings,crate::theme::palette()),TimerCardVariant::Preview,|_,_,_|{})))
-            .child(muted("小组件开启时，关闭主窗口只会最小化；需要真正退出，请使用小组件的“退出应用”。背景透明度不会降低文字或按钮的不透明度。"))
+        let mut colors = form::section("颜色与透明度")
+            .id("widget-settings-colors")
+            .test_support()
+            .child(self.widget_number(
+                "widget-opacity",
+                "背景不透明度（%）",
+                settings.opacity,
+                (30, 100, 5),
+                |s| &mut s.opacity,
+                cx,
+            ));
+        if let Some(color) = self.preferences_ui.appearance_colors.get("widget-accent") {
+            color.update(cx, |color, cx| {
+                color.configure(crate::theme::palette().accent, busy, cx)
+            });
+            colors = colors.child(form::field("强调色（留空跟随主题）", color.clone()));
+        }
+        let mut presets = form::section("计时预设")
+            .id("widget-settings-presets")
+            .test_support();
+        if let Some(input) = self.preferences_ui.widget_fields.get("widget-presets") {
+            presets = presets.child(form::field(
+                "倒计时预设（正整数分钟，最多 8 项）",
+                Input::new(input).disabled(busy),
+            ));
+        }
+        column().w_full().min_w_0().flex_shrink_0().gap_4()
+            .child(heading("桌面计时小组件"))
+            .child(muted("窗口和今日页共享同一计时。外观修改可实时预览，保存后保留；窗口位置仅保存在当前设备。"))
+            .child(form::section("布局与显示").id("widget-settings-display").test_support()
+                .child(form::field("布局", layouts)).child(toggles))
+            .child(form::section("尺寸与背景").id("widget-settings-size").test_support()
+                .child(form::field("背景", backgrounds))
+                .child(self.widget_number("widget-radius", "圆角", settings.corner_radius, (0,28,2), |s| &mut s.corner_radius, cx))
+                .child(self.widget_number("widget-scale", "数字缩放（%）", settings.scale, (80,140,5), |s| &mut s.scale, cx)))
+            .child(colors)
+            .child(presets)
+            .child(form::section("窗口行为").id("widget-settings-behavior").test_support()
+                .child(behavior)
+                .child(Button::new("settings-toggle-timer-widget")
+                    .action(if self.timer_widget.is_some() { "隐藏桌面小组件" } else { "显示桌面小组件" }).disabled(busy)
+                    .on_click(cx.listener(|this, _, window, cx| this.timer_action(TimerCardAction::ShowOnDesktop, window, cx)))))
+            .child(form::section("实时预览").id("widget-settings-preview").test_support()
+                .child(div().max_w(px(480.)).child(timer_card(TimerCardModel::from_timer(&timer,1), TimerCardStyle::from_widget_settings(&settings, crate::theme::palette()), TimerCardVariant::Preview, |_,_,_|{}))))
+            .child(muted("小组件开启时，关闭主窗口只会最小化；需要真正退出，请使用卡片内的退出图标。背景透明度不会降低文字或按钮的不透明度。")
+                .id("widget-settings-end").test_support().flex_shrink_0())
     }
 }
-fn parse_presets(text: &str) -> anyhow::Result<Vec<u32>> {
+fn parse_presets(text: &str) -> anyhow::Result<Vec<u64>> {
     let values = text
         .replace('，', ",")
         .split(',')
-        .map(|v| v.trim().parse::<u32>())
+        .map(studyapp_core::parse_countdown_minutes)
         .collect::<Result<Vec<_>, _>>()?;
     anyhow::ensure!(
-        !values.is_empty() && values.len() <= 8 && values.iter().all(|v| (1..=180).contains(v)),
-        "倒计时预设须为 1–180 分钟，共 1–8 项"
+        !values.is_empty() && values.len() <= 8,
+        "倒计时预设须为正整数分钟，共 1–8 项"
     );
     let unique: std::collections::BTreeSet<_> = values.iter().collect();
     anyhow::ensure!(unique.len() == values.len(), "倒计时预设不能重复");
     Ok(values)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_presets;
+    #[test]
+    fn presets_allow_long_durations_but_never_wrap_or_truncate() {
+        assert_eq!(
+            parse_presets("181，1500, 4294967296").unwrap(),
+            vec![181, 1500, 4294967296]
+        );
+        assert_eq!(
+            parse_presets(&(u64::MAX / 60).to_string()).unwrap(),
+            vec![u64::MAX / 60]
+        );
+        for text in ["", "0", "1,1", "-1", "1.5", "1,2,3,4,5,6,7,8,9"] {
+            assert!(parse_presets(text).is_err(), "{text}");
+        }
+        assert!(parse_presets(&(u64::MAX / 60 + 1).to_string()).is_err());
+    }
 }

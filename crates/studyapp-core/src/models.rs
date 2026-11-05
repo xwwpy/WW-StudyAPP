@@ -248,6 +248,7 @@ pub enum Command {
         review_days: Vec<u32>,
     },
     SetShowFilePaths(bool),
+    SetTimerWidgetPinned(bool),
     SaveLayout(LayoutSettings),
     SetPaused(bool),
     StartTimer {

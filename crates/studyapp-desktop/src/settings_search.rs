@@ -202,7 +202,7 @@ impl StudyApp {
                 Button::new("settings-clear-search")
                     .small()
                     .ghost()
-                    .label("清除")
+                    .action("清除")
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(input) = &this.preferences_ui.search {
                             input.update(cx, |input, cx| input.set_value("", window, cx));

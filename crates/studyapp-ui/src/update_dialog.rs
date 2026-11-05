@@ -173,7 +173,7 @@ impl RenderOnce for UpdateDialog {
         };
         let close = Button::new("update-dialog-close")
             .ghost()
-            .icon(IconName::Close)
+            .icon_action(IconName::Close, "关闭更新卡片")
             .disabled(busy);
         let close = match self.on_dismiss.clone() {
             Some(handler) => close.on_click(move |event, window, cx| handler(event, window, cx)),
@@ -181,15 +181,17 @@ impl RenderOnce for UpdateDialog {
         };
 
         let install = Button::new("update-dialog-install")
-            .label(if busy {
-                "正在更新"
-            } else if failed {
-                "重试更新"
-            } else {
-                "立即更新"
-            })
-            .disabled(busy)
-            .icon(IconName::ArrowUp);
+            .icon_action(
+                gpui_kit::assets::IconName::PackageCheck,
+                if busy {
+                    "正在更新"
+                } else if failed {
+                    "重试更新"
+                } else {
+                    "立即更新"
+                },
+            )
+            .disabled(busy);
         let install = match self.on_install {
             Some(handler) => install.on_click(move |event, window, cx| handler(event, window, cx)),
             None => install,
@@ -203,6 +205,7 @@ impl RenderOnce for UpdateDialog {
             .flex_col()
             .w((window.viewport_size().width - px(32.)).min(px(440.)))
             .rounded(px(28.))
+            .shadow_lg()
             .border_1()
             .border_color(rgb(colors.border))
             .bg(rgb(colors.surface))

@@ -151,7 +151,7 @@ impl StudyApp {
                             Button::new("logging-directory-expand")
                                 .small()
                                 .ghost()
-                                .label(if expanded { "收起" } else { "编辑路径" })
+                                .action(if expanded { "收起" } else { "编辑路径" })
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.preferences_ui.logging_directory_expanded = !expanded;
@@ -161,7 +161,7 @@ impl StudyApp {
                         .child(
                             Button::new("pick-logging-directory")
                                 .small()
-                                .label("选择文件夹")
+                                .action("选择文件夹")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     let current = this
@@ -182,7 +182,7 @@ impl StudyApp {
                             Button::new("logging-use-default")
                                 .small()
                                 .ghost()
-                                .label("使用默认位置")
+                                .action("使用默认位置")
                                 .disabled(busy)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.preferences_ui.logging_picker.invalidate();

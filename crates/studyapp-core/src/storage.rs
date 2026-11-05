@@ -151,15 +151,11 @@ impl State {
                     && timer.finished_at.is_none()
             }
             TimerKind::CountDown => {
-                (60..=10800).contains(&timer.target_seconds)
+                timer.target_seconds > 0
                     && timer.active_seconds <= timer.target_seconds
                     && (timer.active_seconds < timer.target_seconds || timer.finished_at.is_some())
             }
-            TimerKind::CountUp => {
-                timer.target_seconds == 0
-                    && timer.active_seconds <= 86400
-                    && (timer.active_seconds < 86400 || timer.finished_at.is_some())
-            }
+            TimerKind::CountUp => timer.target_seconds == 0,
         };
         ensure!(
             valid

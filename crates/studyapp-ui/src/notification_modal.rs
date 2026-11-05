@@ -63,7 +63,7 @@ impl Render for NotificationModal {
         let close = Button::new(SharedString::from(format!("dismiss-notice-{id}")))
             .small()
             .ghost()
-            .label("×")
+            .action("关闭通知")
             .accessibility_label("关闭通知")
             .on_click(move |_, _, cx| {
                 let _ = close_owner.update(cx, |owner, cx| owner.dismiss(id, cx));
@@ -71,7 +71,7 @@ impl Render for NotificationModal {
         let action = event.action.map(|action| {
             Button::new(SharedString::from(format!("notice-action-{id}")))
                 .small()
-                .label(action.label())
+                .action(action.label())
                 .on_click(move |_, _, cx| {
                     let _ = action_owner.update(cx, |owner, cx| owner.activate(id, cx));
                 })

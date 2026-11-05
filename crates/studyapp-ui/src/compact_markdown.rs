@@ -100,7 +100,7 @@ impl Render for CompactMarkdown {
                 ]
                 .into_iter()
                 .map(|(id, label, kind)| {
-                    Button::new(id).ghost().small().label(label).on_click(
+                    Button::new(id).ghost().small().action(label).on_click(
                         cx.listener(move |this, _, window, cx| this.format(kind, window, cx)),
                     )
                 }),
@@ -121,7 +121,7 @@ impl Render for CompactMarkdown {
                         Button::new("summary-preview")
                             .ghost()
                             .small()
-                            .label(if self.preview {
+                            .action(if self.preview {
                                 "隐藏预览"
                             } else {
                                 "显示预览"

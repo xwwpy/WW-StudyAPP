@@ -7926,6 +7926,7 @@ dependencies = [
  "pulldown-cmark",
  "serde_json",
  "studyapp-core",
+ "unicode-segmentation",
 ]
 
 [[package]]

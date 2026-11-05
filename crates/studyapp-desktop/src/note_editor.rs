@@ -646,7 +646,7 @@ impl StudyApp {
         let overflow = Button::new("note-editor-menu")
             .small()
             .ghost()
-            .label("⋯")
+            .icon_action(gpui_kit::assets::IconName::Ellipsis, "更多操作")
             .accessibility_label("笔记更多操作")
             .tooltip("笔记更多操作")
             .disabled(busy)
@@ -740,13 +740,16 @@ impl StudyApp {
                             .small()
                             .primary()
                             .disabled(busy)
-                            .label(if self.note_saving {
-                                "保存中…"
-                            } else if self.media_busy() {
-                                "图片处理中…"
-                            } else {
-                                "保存"
-                            })
+                            .icon_action(
+                                gpui_kit::assets::IconName::Save,
+                                if self.note_saving {
+                                    "保存中…"
+                                } else if self.media_busy() {
+                                    "图片处理中…"
+                                } else {
+                                    "保存"
+                                },
+                            )
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.save_note(window, cx)),
                             ),

@@ -12,7 +12,7 @@
   <main aria-label="Markdown 笔记编辑器">
     <div id="toolbar" role="toolbar" aria-label="笔记格式">
       <div class="toolbar-group" role="group" aria-label="段落与标题">
-        <button type="button" id="format-toggle" aria-label="格式菜单" aria-haspopup="menu" aria-expanded="false" aria-controls="format-menu">格式⌄</button>
+        <button type="button" id="format-toggle" aria-label="格式菜单" aria-haspopup="menu" aria-expanded="false" aria-controls="format-menu" title="格式菜单"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h12M9 5v14M5 19h8m4-8 3 3 3-3"/></svg></button>
       </div>
       <div class="toolbar-group format-controls" role="group" aria-label="文字样式">
         <button type="button" data-command="bold" aria-label="粗体"><strong>B</strong></button>
@@ -58,7 +58,7 @@
         <button type="button" role="menuitem" data-menu-command="insert-image" aria-label="插入图片">▧　插入图片</button>
         <button type="button" role="menuitem" data-menu-command="table" aria-label="插入表格">▦　插入表格</button>
       </div>
-      <button type="button" id="source-toggle" data-command="source" aria-label="源码模式" aria-pressed="false">Markdown</button>
+      <button type="button" id="source-toggle" data-command="source" aria-label="源码模式" aria-pressed="false"><svg class="toolbar-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 7-5 5 5 5m8-10 5 5-5 5m-3-13-2 16"/></svg></button>
     </div>
     <div id="editor"></div>
     <div id="editor-footer" aria-label="写作信息">

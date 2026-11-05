@@ -415,6 +415,7 @@ fn save_scoped_settings(
         }
         Command::SetShowFilePaths(visible) => settings.show_file_paths = visible,
         Command::SaveLayout(layout) => settings.layout = layout,
+        Command::SetTimerWidgetPinned(pinned) => settings.timer_widget.pinned = pinned,
         Command::Restore(path) => return engine.restore_preserving_settings(&path, now),
         other => return engine.apply(other, now),
     }
@@ -1647,6 +1648,14 @@ mod tests {
         assert_eq!(patched.settings.answer_minutes, 9);
         assert!(!patched.settings.layout.folders_visible);
         assert_eq!(patched.shortcuts, committed.shortcuts);
+        let pinned = apply(&worker, Command::SetTimerWidgetPinned(false));
+        let pinned = pinned.preferences.unwrap();
+        let mut expected = patched.settings.clone();
+        expected.timer_widget.pinned = false;
+        assert_eq!(pinned.settings, expected);
+        assert_eq!(pinned.shortcuts, patched.shortcuts);
+        assert_eq!(pinned.sync, patched.sync);
+        let patched = pinned;
         worker
             .sender
             .send(Work::SavePreferences(Box::new(SavePreferences {

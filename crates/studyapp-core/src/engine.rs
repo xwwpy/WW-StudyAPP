@@ -359,6 +359,10 @@ impl Engine {
                 next.settings.show_file_paths = visible;
                 "显示设置已保存".into()
             }
+            Command::SetTimerWidgetPinned(pinned) => {
+                next.settings.timer_widget.pinned = pinned;
+                "计时窗口设置已保存".into()
+            }
             Command::SaveLayout(layout) => {
                 layout.validate()?;
                 next.settings.layout = layout;
@@ -381,7 +385,7 @@ impl Engine {
                     }
                     TimerKind::CountDown => {
                         let target = target_seconds.context("请设置倒计时时长")?;
-                        ensure!((60..=10800).contains(&target), "倒计时应为 1–180 分钟");
+                        ensure!(target > 0, "倒计时时长必须大于零");
                         target
                     }
                 };
@@ -688,12 +692,15 @@ impl Engine {
             let mut cursor = now.saturating_sub(elapsed as i64);
             let mut remaining = elapsed;
             while remaining > 0 {
-                let limit = if next.timer.kind == TimerKind::CountUp {
-                    86400
+                let part = if next.timer.kind == TimerKind::CountUp {
+                    remaining
                 } else {
-                    next.timer.target_seconds
+                    remaining.min(
+                        next.timer
+                            .target_seconds
+                            .saturating_sub(next.timer.active_seconds),
+                    )
                 };
-                let part = remaining.min(limit.saturating_sub(next.timer.active_seconds));
                 if part == 0 {
                     break;
                 }
@@ -703,10 +710,16 @@ impl Engine {
                 } else {
                     next.timer.spans.push(ActiveSpan { start: cursor, end });
                 }
-                next.timer.active_seconds += part;
+                next.timer.active_seconds = next
+                    .timer
+                    .active_seconds
+                    .checked_add(part)
+                    .context("计时累计数值超出可安全表示的范围")?;
                 cursor = end;
                 remaining -= part;
-                if next.timer.active_seconds == limit {
+                if next.timer.kind != TimerKind::CountUp
+                    && next.timer.active_seconds == next.timer.target_seconds
+                {
                     if next.timer.kind == TimerKind::Study {
                         Self::finish_segment(&mut next, end)?;
                     } else {

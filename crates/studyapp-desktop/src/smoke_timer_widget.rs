@@ -159,6 +159,8 @@ pub async fn exercise(
                 window,
                 cx,
             );
+            // A pre-upgrade tall window must compact to real card content.
+            app.widget_state.height = 750;
             app.open_widget(cx);
         })
     })
@@ -181,6 +183,29 @@ pub async fn exercise(
     let (handle, caption) = widget
         .update(cx, |_, window, cx| {
             window.activate_window();
+            let card = window.find("timer-widget-card").bounds();
+            assert_eq!(card.origin, gpui_kit::point(px(0.), px(0.)));
+            assert_eq!(card.size, window.viewport_size());
+            assert!(
+                card.size.height < px(700.),
+                "old blank height must be removed"
+            );
+            let content = window.find("timer-widget-content").bounds();
+            let body = window.find("timer-widget-scroll").bounds();
+            assert!(content.size.height <= body.size.height + px(1.));
+            assert!(body.size.height - content.size.height < px(70.));
+            for id in [
+                "timer-widget-drag",
+                "widget-pin",
+                "widget-open-main",
+                "widget-settings",
+                "widget-close",
+                "widget-exit",
+            ] {
+                let bounds = window.find(id).bounds();
+                assert!(bounds.left() >= card.left() && bounds.right() <= card.right());
+                assert!(bounds.top() >= card.top() && bounds.bottom() <= card.bottom());
+            }
             (raw(window), point(window, "timer-widget-drag", cx))
         })
         .unwrap();
@@ -189,20 +214,51 @@ pub async fn exercise(
     assert_ne!(style & WS_EX_TOOLWINDOW.0 as isize, 0);
     assert_ne!(style & WS_EX_TOPMOST.0 as isize, 0);
     widget
-        .update(cx, |_, window, _| {
-            crate::timer_widget_window::decorate(window, false).unwrap()
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            let center = window.find("widget-pin").bounds().center();
+            pointer::click(window, center);
         })
         .unwrap();
-    assert_eq!(
-        unsafe { GetWindowLongPtrW(HWND(handle as *mut _), GWL_EXSTYLE) }
-            & WS_EX_TOPMOST.0 as isize,
-        0
-    );
+    until(
+        main,
+        app,
+        "widget pin button persists off",
+        |app, _| {
+            app.snapshot
+                .as_ref()
+                .is_some_and(|snapshot| !snapshot.settings.timer_widget.pinned)
+        },
+        cx,
+    )
+    .await;
+    until_native("native widget unpin", cx, || unsafe {
+        GetWindowLongPtrW(HWND(handle as *mut _), GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize == 0
+    })
+    .await;
     widget
-        .update(cx, |_, window, _| {
-            crate::timer_widget_window::decorate(window, true).unwrap()
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            let center = window.find("widget-pin").bounds().center();
+            pointer::click(window, center);
         })
         .unwrap();
+    until(
+        main,
+        app,
+        "widget pin button persists on",
+        |app, _| {
+            app.snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.settings.timer_widget.pinned)
+        },
+        cx,
+    )
+    .await;
+    until_native("native widget pin", cx, || unsafe {
+        GetWindowLongPtrW(HWND(handle as *mut _), GWL_EXSTYLE) & WS_EX_TOPMOST.0 as isize != 0
+    })
+    .await;
     assert_eq!(
         handle,
         widget.update(cx, |_, window, _| raw(window)).unwrap()
@@ -315,11 +371,9 @@ pub async fn exercise(
             "native widget resize edge: {name}"
         );
     }
-    // Compare a clear padding pixel with the exact same underlying desktop
-    // pixel while only this widget is hidden. No wallpaper or desktop setting
-    // is changed, and the timer's opaque text remains unaffected.
-    // GetWindowRect includes invisible resize borders. Sample the actual
-    // client padding, not the DWM shadow outside the painted client surface.
+    // The card now fills the client area; only its rounded corner is clear.
+    // Compare that corner with the same pixel behind the hidden widget.
+    // Never require a separate transparent toolbar/padding outside the card.
     let clear = widget
         .update(cx, |_, window, _| {
             let mut client = RECT::default();
@@ -327,8 +381,8 @@ pub async fn exercise(
                 GetClientRect(HWND(handle as *mut _), &mut client).unwrap();
             }
             let mut point = POINT {
-                x: (client.right - client.left) / 2,
-                y: (4. * window.scale_factor()).round() as i32,
+                x: (0.5 * window.scale_factor()).floor() as i32,
+                y: (0.5 * window.scale_factor()).floor() as i32,
             };
             assert!(unsafe { ClientToScreen(HWND(handle as *mut _), &mut point) }.as_bool());
             point
@@ -380,7 +434,7 @@ pub async fn exercise(
         .unwrap();
     assert_eq!(
         through, behind,
-        "transparent widget padding must expose the underlying desktop"
+        "the rounded card corner must expose the underlying desktop"
     );
     widget
         .update(cx, |_, window, _| {
@@ -469,9 +523,20 @@ pub async fn exercise(
     settle(cx).await;
     let reopened = app.read_with(cx, |app, _| app.widget_state.clone());
     assert_eq!(
-        (state.x, state.y, state.width, state.height),
-        (reopened.x, reopened.y, reopened.width, reopened.height)
+        (state.x, state.y, state.width),
+        (reopened.x, reopened.y, reopened.width)
     );
+    // Opening compacts height again; manual resizing remains available while
+    // open, but does not bring old blank window regions back on reopening.
+    app.read_with(cx, |app, _| app.timer_widget.unwrap())
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            let body = window.find("timer-widget-scroll").bounds();
+            let content = window.find("timer-widget-content").bounds();
+            assert!(content.size.height <= body.size.height + px(1.));
+            assert!(body.size.height - content.size.height < px(70.));
+        })
+        .unwrap();
     // End through the real explicit-exit path, not cx.quit: it must drain the
     // current native editor, then remove both windows and retain restore state.
     main.update(cx, |_, window, cx| {

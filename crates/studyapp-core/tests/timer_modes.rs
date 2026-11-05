@@ -100,20 +100,18 @@ fn generic_timers_keep_targets_when_preferences_change_and_ignore_sleep() {
 #[test]
 fn timer_and_appearance_inputs_are_validated_without_mutating_progress() {
     let (_, mut engine) = fixture();
-    for target in [0, 59, 10801, u64::MAX] {
-        assert!(
-            engine
-                .apply(
-                    Command::StartTimer {
-                        kind: TimerKind::CountDown,
-                        target_seconds: Some(target),
-                        label: String::new()
-                    },
-                    1000
-                )
-                .is_err()
-        );
-    }
+    assert!(
+        engine
+            .apply(
+                Command::StartTimer {
+                    kind: TimerKind::CountDown,
+                    target_seconds: Some(0),
+                    label: String::new(),
+                },
+                1000
+            )
+            .is_err()
+    );
     assert!(engine.apply(Command::FinishTimer, 1000).is_err());
     assert_eq!(engine.snapshot().timer.kind, TimerKind::Study);
     let legacy: Settings =
@@ -128,21 +126,40 @@ fn timer_and_appearance_inputs_are_validated_without_mutating_progress() {
     assert!(settings.validate().is_err());
     settings.timer_widget.accent = Some("#227799".into());
     assert!(settings.validate().is_ok());
-    settings.timer_widget.countdown_presets = vec![181];
+    settings.timer_widget.countdown_presets = vec![181, 1500, u64::MAX / 60];
+    assert!(settings.validate().is_ok());
+    settings.timer_widget.countdown_presets = vec![u64::MAX / 60 + 1];
     assert!(settings.validate().is_err());
 }
 
 #[test]
-fn countup_defensive_day_limit_stops_without_creating_learning_records() {
-    let (_, mut engine) = fixture();
+fn countup_continues_past_a_day_and_survives_backup_restore_and_restart() {
+    let (dir, mut engine) = fixture();
     start(&mut engine, TimerKind::CountUp, None);
     for i in 1..=8641 {
         engine.tick(1000 + i * 10, 10).unwrap();
     }
     let timer = engine.snapshot().timer;
-    assert_eq!(timer.active_seconds, 86400);
-    assert!(timer.paused);
-    assert_eq!(timer.finished_at, Some(87400));
+    assert_eq!(timer.active_seconds, 86410);
+    assert!(!timer.paused);
+    assert!(timer.finished_at.is_none());
+    assert!(engine.snapshot().sessions.is_empty());
+    let backup = dir.join("beyond-day.sqlite");
+    engine
+        .apply(Command::Backup(backup.clone()), 87410)
+        .unwrap();
+    studyapp_core::verify_backup_file(&backup).unwrap();
+    engine.apply(Command::Restore(backup), 87500).unwrap();
+    assert_eq!(engine.snapshot().timer.active_seconds, 86410);
+    assert!(engine.snapshot().timer.finished_at.is_none());
+    drop(engine);
+    let mut engine = Engine::open(&dir.join("timers.sqlite"), 87600).unwrap();
+    assert_eq!(engine.snapshot().timer.active_seconds, 86410);
+    engine.apply(Command::SetPaused(false), 87600).unwrap();
+    engine.tick(87601, 1).unwrap();
+    assert_eq!(engine.snapshot().timer.active_seconds, 86411);
+    engine.apply(Command::FinishTimer, 87601).unwrap();
+    assert_eq!(engine.snapshot().timer.finished_at, Some(87601));
     assert!(engine.snapshot().sessions.is_empty());
 }
 
@@ -208,4 +225,62 @@ fn notes_from_a_generic_timer_do_not_leak_into_the_next_study_segment() {
     assert!(!snapshot.sessions[0].version_ids.contains(&generic_version));
     assert_eq!(snapshot.timer.kind, TimerKind::Study);
     assert_eq!(snapshot.timer.active_seconds, 0);
+}
+
+#[test]
+fn countdown_has_no_artificial_range_and_preserves_large_targets() {
+    for target in [1, 59, 10801, 90061, u64::MAX] {
+        let (dir, mut engine) = fixture();
+        start(&mut engine, TimerKind::CountDown, Some(target));
+        engine.tick(1010, 10).unwrap();
+        let before = engine.snapshot().timer;
+        assert_eq!(before.active_seconds, target.min(10));
+        assert_eq!(before.finished_at.is_some(), target <= 10);
+        let backup = dir.join("large-countdown.sqlite");
+        engine.apply(Command::Backup(backup.clone()), 1010).unwrap();
+        studyapp_core::verify_backup_file(&backup).unwrap();
+        engine.apply(Command::Restore(backup), 1020).unwrap();
+        assert_eq!(engine.snapshot().timer.target_seconds, target);
+        assert_eq!(
+            engine.snapshot().timer.active_seconds,
+            before.active_seconds
+        );
+        assert_eq!(engine.snapshot().timer.finished_at, before.finished_at);
+        drop(engine);
+        let engine = Engine::open(&dir.join("timers.sqlite"), 1030).unwrap();
+        assert_eq!(engine.snapshot().timer.target_seconds, target);
+        assert_eq!(
+            engine.snapshot().timer.active_seconds,
+            before.active_seconds
+        );
+    }
+}
+
+#[test]
+fn countdown_input_and_presets_share_checked_minute_conversion() {
+    use studyapp_core::{countdown_seconds, parse_countdown_minutes};
+    for (input, minutes) in [("1", 1), (" 000181 ", 181), ("1500", 1500)] {
+        assert_eq!(parse_countdown_minutes(input).unwrap(), minutes);
+        assert_eq!(countdown_seconds(minutes).unwrap(), minutes * 60);
+    }
+    let largest = u64::MAX / 60;
+    assert_eq!(
+        parse_countdown_minutes(&largest.to_string()).unwrap(),
+        largest
+    );
+    assert_eq!(countdown_seconds(largest).unwrap(), largest * 60);
+    assert!(countdown_seconds(largest + 1).is_err());
+    for invalid in ["", "0", "-1", "+1", "1.5", "1e3", "1 0", "１８１"] {
+        assert!(parse_countdown_minutes(invalid).is_err(), "{invalid}");
+    }
+    assert!(parse_countdown_minutes(&(largest + 1).to_string()).is_err());
+    assert!(parse_countdown_minutes("18446744073709551616").is_err());
+    let settings = TimerWidgetSettings {
+        countdown_presets: vec![181, largest],
+        ..Default::default()
+    };
+    settings.validate().unwrap();
+    let decoded: TimerWidgetSettings =
+        serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+    assert_eq!(decoded, settings);
 }

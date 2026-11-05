@@ -977,7 +977,7 @@ impl Render for MarkdownEditor {
                         c.child(
                             Button::new("recover-editor-bridge")
                                 .primary()
-                                .label("重试同步并恢复输入")
+                                .action("重试同步并恢复输入")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.error = None;
                                     this.recovering = true;
