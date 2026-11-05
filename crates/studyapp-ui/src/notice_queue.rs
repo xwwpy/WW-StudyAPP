@@ -291,6 +291,11 @@ impl NoticeQueue {
         }
     }
 
+    pub fn routes(&self) -> impl Iterator<Item = (studyapp_core::NoticeEventId, NoticeRoute)> + '_ {
+        self.entries
+            .iter()
+            .filter_map(|entry| entry.event.as_ref().map(|event| (event.id, entry.route)))
+    }
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }

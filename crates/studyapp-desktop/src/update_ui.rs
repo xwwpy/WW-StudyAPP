@@ -306,6 +306,11 @@ impl UpdatePanel {
                     }
                 }
                 UpdateProgress::Verifying | UpdateProgress::Preparing => {
+                    crate::audit_log::stage(
+                        studyapp_core::LogLevel::Debug,
+                        crate::audit_log::Phase::UpdateVerify,
+                        crate::audit_log::Outcome::Attempt,
+                    );
                     UpdateDialogPhase::Installing
                 }
             }
@@ -414,6 +419,11 @@ impl UpdatePanel {
     }
 
     fn start_nsis_download(&mut self, cx: &mut Context<Self>) {
+        crate::audit_log::stage(
+            studyapp_core::LogLevel::Info,
+            crate::audit_log::Phase::UpdateDownload,
+            crate::audit_log::Outcome::Attempt,
+        );
         self.cancel_install_preparation();
         self.nsis_setup = None;
         let Some(manifest) = self.nsis.clone() else {
@@ -497,6 +507,11 @@ impl UpdatePanel {
     }
 
     fn check(&mut self, origin: CheckOrigin, cx: &mut Context<Self>) {
+        crate::audit_log::stage(
+            studyapp_core::LogLevel::Info,
+            crate::audit_log::Phase::UpdateCheck,
+            crate::audit_log::Outcome::Attempt,
+        );
         if !self.checks_allowed() {
             return;
         }
@@ -536,6 +551,11 @@ impl UpdatePanel {
     }
 
     fn download(&mut self, cx: &mut Context<Self>) {
+        crate::audit_log::stage(
+            studyapp_core::LogLevel::Info,
+            crate::audit_log::Phase::UpdateDownload,
+            crate::audit_log::Outcome::Attempt,
+        );
         #[cfg(feature = "ui-test")]
         if let Some(fixture) = &self.fixture {
             fixture.downloads.fetch_add(1, Ordering::Relaxed);
@@ -1040,6 +1060,15 @@ impl crate::app::StudyApp {
 
     /// Called only after settings and the active editor's durable-close barrier.
     pub fn complete_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_update.is_some() || self.pending_nsis_update.is_some() {
+            crate::audit_log::stage(
+                studyapp_core::LogLevel::Info,
+                crate::audit_log::Phase::UpdateInstall,
+                crate::audit_log::Outcome::Attempt,
+            );
+            let _ = crate::audit_log::flush();
+        }
+
         #[cfg(feature = "update-acceptance")]
         if self.pending_nsis_update.is_some() {
             crate::update_acceptance::before_helper();

@@ -16,7 +16,7 @@ use studyapp_core::{Engine, LayoutSettings, PreparedSettings, Settings};
 const MAX_JSON: u64 = 1024 * 1024;
 const SCHEMA: u32 = 1;
 // Interface marker distinguishes a genuine old generation from a missing new category.
-const CATEGORIES_VERSION: u32 = 1;
+const CATEGORIES_VERSION: u32 = 2;
 
 #[derive(Clone)]
 pub struct PreferenceSnapshot {
@@ -93,6 +93,11 @@ struct NotificationsFile {
     notifications: studyapp_core::NotificationSettings,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoggingFile {
+    logging: studyapp_core::LoggingSettings,
+}
+#[derive(Serialize, Deserialize)]
 struct ImagesFile {
     images: studyapp_core::ImageSettings,
 }
@@ -103,6 +108,42 @@ struct ShortcutsFile {
 #[derive(Serialize, Deserialize)]
 struct SyncFile {
     sync: SyncSettings,
+}
+
+// Read-only startup choice before the Worker acquires a library. Failure does
+// not repair or rewrite settings; the normal startup recovery remains authoritative.
+pub(crate) fn logging_choice(database: &Path) -> Result<studyapp_core::LoggingSettings> {
+    let root = database
+        .parent()
+        .context("资料库目录不存在")?
+        .join("settings");
+    if !root.join("manifest.json").try_exists()? {
+        return Ok(Default::default());
+    }
+    let manifest: Manifest = read_json(&root.join("manifest.json"))?;
+    ensure!(manifest.schema_version == SCHEMA, "配置版本不支持");
+    validate_revision(&manifest.current)?;
+    let directory = if let Some(slot) = manifest.slot {
+        let directory = PreferencesStore::slot_directory(&root, slot)?;
+        let revision: String = read_json(&directory.join("revision.json"))?;
+        ensure!(revision == manifest.current, "配置槽位版本不一致");
+        directory
+    } else {
+        root.join("generations").join(&manifest.current)
+    };
+    let interface: InterfaceFile = read_category(&directory.join("interface.json"))?;
+    ensure!(
+        interface.interface.categories_version <= CATEGORIES_VERSION,
+        "配置分类版本不支持"
+    );
+    let path = directory.join("logging.json");
+    let value = if interface.interface.categories_version >= 2 || path.try_exists()? {
+        read_category::<LoggingFile>(&path)?.logging
+    } else {
+        Default::default()
+    };
+    value.validate()?;
+    Ok(value)
 }
 
 pub struct PreferencesStore {
@@ -217,6 +258,12 @@ fn category_files(snapshot: &PreferenceSnapshot) -> Result<Vec<(&'static str, Ve
             "notifications.json",
             serde_json::to_vec_pretty(&NotificationsFile {
                 notifications: settings.notifications.clone(),
+            })?,
+        ),
+        (
+            "logging.json",
+            serde_json::to_vec_pretty(&LoggingFile {
+                logging: settings.logging.clone(),
             })?,
         ),
         (
@@ -436,9 +483,19 @@ impl PreferencesStore {
                 defaults_interface.interface.categories_version <= CATEGORIES_VERSION,
                 "默认配置分类版本暂不受支持，原文件已保留"
             );
+            let default_logging = root.join("defaults/logging.json");
+            if defaults_interface.interface.categories_version >= 2
+                || default_logging.try_exists()?
+            {
+                read_category::<LoggingFile>(&default_logging)?
+                    .logging
+                    .validate()?;
+            }
             for (name, _) in category_files(&PreferenceSnapshot::defaults())? {
-                if name == "notifications.json"
-                    && defaults_interface.interface.categories_version == 0
+                if (name == "notifications.json"
+                    && defaults_interface.interface.categories_version == 0)
+                    || (name == "logging.json"
+                        && defaults_interface.interface.categories_version < 2)
                 {
                     continue;
                 }
@@ -493,6 +550,13 @@ impl PreferencesStore {
         } else {
             studyapp_core::NotificationSettings::default()
         };
+        let logging = if interface.interface.categories_version >= 2
+            || directory.join("logging.json").try_exists()?
+        {
+            read_category::<LoggingFile>(&directory.join("logging.json"))?.logging
+        } else {
+            studyapp_core::LoggingSettings::default()
+        };
         // A missing category is a pre-theme generation. Never write during load.
         let appearance = if !legacy || directory.join("appearance.json").try_exists()? {
             read_category::<AppearanceFile>(&directory.join("appearance.json"))?.appearance
@@ -524,6 +588,7 @@ impl PreferencesStore {
                 images,
                 timer_widget,
                 notifications,
+                logging,
             },
             shortcuts: crate::shortcuts::resolved_bindings(&shortcuts.shortcuts),
             sync: sync.sync,
@@ -663,6 +728,7 @@ impl PreferencesStore {
                 "appearance.json",
                 "timer-widget.json",
                 "notifications.json",
+                "logging.json",
                 "images.json",
                 "shortcuts.json",
                 "sync.json",
@@ -1365,6 +1431,96 @@ mod tests {
             assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
         }
+    }
+
+    #[test]
+    fn logging_category_publishes_atomically_and_keeps_other_categories() {
+        let (root, mut engine, mut runtime, mut store) = library();
+        let before = store.snapshot();
+        let manifest = root.join("settings/manifest.json");
+        let bytes = std::fs::read(&manifest).unwrap();
+        let mut proposal = request(&store);
+        proposal.settings.logging.enabled = false;
+        proposal.settings.logging.minimum_level = studyapp_core::LogLevel::Trace;
+        proposal.settings.logging.directory =
+            Some(root.join("custom-logs").to_string_lossy().into_owned());
+        let expected = proposal.settings.clone();
+        let prepared = store.prepare(proposal, &engine, &runtime).unwrap();
+        assert_eq!(std::fs::read(&manifest).unwrap(), bytes);
+        assert_eq!(engine.snapshot().settings, before.settings);
+        let (settings, sync) = store.publish(prepared).unwrap();
+        engine.install_prepared_settings(settings);
+        runtime.install_configuration(sync);
+        let (reopened, _) =
+            PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+        assert_eq!(reopened.snapshot().settings, expected);
+        assert_eq!(expected.notifications, before.settings.notifications);
+        assert!(reopened.current_directory().join("logging.json").is_file());
+    }
+
+    #[test]
+    fn old_zero_and_one_categories_default_logging_without_writes_but_two_requires_it() {
+        for version in [0, 1] {
+            let (root, mut engine, _, store) = library();
+            let directory = store.current_directory();
+            for base in [&directory, &root.join("settings/defaults")] {
+                // Each operation removes one explicitly named fixture file only.
+                std::fs::remove_file(base.join("logging.json")).unwrap();
+                let path = base.join("interface.json");
+                let mut value: serde_json::Value = read_json(&path).unwrap();
+                value["interface"]["categories_version"] = version.into();
+                std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            let before = disk_files(&root.join("settings"));
+            let (reopened, _) =
+                PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+            assert_eq!(reopened.snapshot().settings.logging, Default::default());
+            assert_eq!(disk_files(&root.join("settings")), before);
+            if version == 1 {
+                std::fs::remove_file(directory.join("notifications.json")).unwrap();
+                assert!(
+                    PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err()
+                );
+            }
+        }
+        let (root, mut engine, _, store) = library();
+        std::fs::remove_file(store.current_directory().join("logging.json")).unwrap();
+        let before = disk_files(&root.join("settings"));
+        assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
+        assert_eq!(disk_files(&root.join("settings")), before);
+    }
+
+    #[test]
+    fn invalid_logging_and_future_markers_preserve_files_and_reject_load() {
+        for contents in [
+            "{broken",
+            r#"{"logging":{"minimum_level":"verbose"}}"#,
+            r#"{"logging":{"unknown":true}}"#,
+            r#"{"logging":{"directory":"relative"}}"#,
+        ] {
+            for version in [1, 2] {
+                let (root, mut engine, _, store) = library();
+                let directory = store.current_directory();
+                let interface = directory.join("interface.json");
+                let mut value: serde_json::Value = read_json(&interface).unwrap();
+                value["interface"]["categories_version"] = version.into();
+                std::fs::write(interface, serde_json::to_vec(&value).unwrap()).unwrap();
+                std::fs::write(directory.join("logging.json"), contents).unwrap();
+                let before = disk_files(&root.join("settings"));
+                assert!(
+                    PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err()
+                );
+                assert_eq!(disk_files(&root.join("settings")), before);
+            }
+        }
+        let (root, mut engine, _, store) = library();
+        let interface = store.current_directory().join("interface.json");
+        let mut value: serde_json::Value = read_json(&interface).unwrap();
+        value["interface"]["categories_version"] = 3.into();
+        std::fs::write(interface, serde_json::to_vec(&value).unwrap()).unwrap();
+        let before = disk_files(&root.join("settings"));
+        assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
+        assert_eq!(disk_files(&root.join("settings")), before);
     }
 
     #[test]

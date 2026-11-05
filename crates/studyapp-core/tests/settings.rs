@@ -356,6 +356,7 @@ fn rapid_updates(learning_first: bool) {
             images: Default::default(),
             timer_widget: Default::default(),
             notifications: Default::default(),
+            logging: Default::default(),
         };
         assert_eq!(
             engine.snapshot().settings,

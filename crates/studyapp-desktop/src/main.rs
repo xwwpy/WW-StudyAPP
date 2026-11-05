@@ -7,6 +7,7 @@ mod app_usage;
 mod appearance_preview;
 mod appearance_ui;
 mod assets;
+mod audit_log;
 mod components;
 mod controls;
 mod credentials;
@@ -24,6 +25,7 @@ mod image_cloud;
 mod imports;
 mod installation_integrity;
 mod integrity_ui;
+mod logging_settings;
 mod maintenance_execute;
 mod maintenance_handoff;
 mod maintenance_runtime;
@@ -67,6 +69,8 @@ mod smoke_inputs;
 mod smoke_interactions;
 #[cfg(feature = "ui-test")]
 mod smoke_library;
+#[cfg(all(windows, feature = "ui-test"))]
+mod smoke_logging;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_note_rename;
 #[cfg(all(windows, feature = "ui-test"))]
@@ -259,6 +263,9 @@ fn run() -> anyhow::Result<()> {
         None
     };
     app_migration::set_startup_pending(resume.is_some());
+    // A thread failure must not prevent the library or application from opening.
+    let mut logging = audit_log::initialize(&database, config.is_some()).ok();
+
     let worker = worker::Worker::start_resuming(database.clone(), config, resume);
     #[cfg(target_os = "linux")]
     let desktop = gpui_kit::platform::linux(WindowingModes::X11);
@@ -310,6 +317,14 @@ fn run() -> anyhow::Result<()> {
         }
         cx.activate(true);
     });
+    audit_log::stage(
+        studyapp_core::LogLevel::Info,
+        audit_log::Phase::ApplicationStop,
+        audit_log::Outcome::Success,
+    );
+    if let Some(runtime) = &mut logging {
+        let _ = runtime.shutdown(std::time::Duration::from_secs(2));
+    }
     Ok(())
 }
 

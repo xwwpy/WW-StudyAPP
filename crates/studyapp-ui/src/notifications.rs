@@ -20,7 +20,8 @@ mod modal;
 #[path = "notification_presenter.rs"]
 mod presenter;
 pub use presenter::{
-    NotificationActionRequested, NotificationActivityChanged, NotificationPresented,
+    NotificationActionRequested, NotificationActivityChanged, NotificationDelivered,
+    NotificationPresented, NotificationRouted,
 };
 
 pub struct NotificationCenter {

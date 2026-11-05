@@ -60,6 +60,7 @@ pub enum SettingsSection {
     Learning,
     Appearance,
     Notifications,
+    Logging,
     Shortcuts,
     Storage,
     Sync,
@@ -67,10 +68,11 @@ pub enum SettingsSection {
 }
 
 impl SettingsSection {
-    pub const ALL: [(Self, &'static str, &'static str); 7] = [
+    pub const ALL: [(Self, &'static str, &'static str); 8] = [
         (Self::Learning, "learning", "学习"),
         (Self::Appearance, "appearance", "外观"),
         (Self::Notifications, "notifications", "通知"),
+        (Self::Logging, "logging", "日志"),
         (Self::Shortcuts, "shortcuts", "快捷键"),
         (Self::Storage, "storage", "存储"),
         (Self::Sync, "sync", "同步"),
@@ -112,6 +114,7 @@ pub enum StoragePage {
 enum SettingsResetScope {
     Learning,
     Notifications,
+    Logging,
     NotificationAppearance,
     Appearance,
     ThemeEditor,
@@ -127,6 +130,7 @@ impl SettingsResetScope {
         match self {
             Self::Learning => "学习",
             Self::Notifications => "通知",
+            Self::Logging => "日志",
             Self::NotificationAppearance => "外观 · 通知",
             Self::Appearance => "外观 · 主题与阅读",
             Self::ThemeEditor => "外观 · 主题编辑器",
@@ -247,6 +251,9 @@ pub struct PreferencesUi {
     #[cfg(feature = "ui-test")]
     shortcut_frame_rows: std::cell::Cell<u64>,
     pub shortcut_search: Option<Entity<InputState>>,
+    pub logging_directory: Option<Entity<InputState>>,
+    pub logging_picker: crate::folder_picker::FolderPicker,
+    pub logging_directory_expanded: bool,
     pub notification_category: Option<studyapp_core::NoticeCategory>,
     pub notification_fields: BTreeMap<&'static str, Entity<InputState>>,
     pub notification_preview_scroll: ScrollHandle,
@@ -305,6 +312,7 @@ impl StudyApp {
         Some(match self.preferences_ui.section {
             SettingsSection::Learning => SettingsResetScope::Learning,
             SettingsSection::Notifications => SettingsResetScope::Notifications,
+            SettingsSection::Logging => SettingsResetScope::Logging,
             SettingsSection::Appearance => match self.preferences_ui.appearance_page {
                 AppearancePage::Overview => SettingsResetScope::Appearance,
                 AppearancePage::ThemeEditor => SettingsResetScope::ThemeEditor,
@@ -365,6 +373,10 @@ impl StudyApp {
             }
             SettingsResetScope::Notifications => {
                 draft.notifications = defaults.settings.notifications;
+            }
+            SettingsResetScope::Logging => {
+                draft.logging = defaults.settings.logging.clone();
+                self.fill_logging_fields(&defaults.settings.logging, window, cx);
             }
             SettingsResetScope::NotificationAppearance => {
                 let value = defaults.settings.appearance.notifications;
@@ -541,6 +553,7 @@ impl StudyApp {
             color.update(cx, |color, cx| color.dismiss(cx));
         }
         if self.preferences_ui.section != section {
+            self.preferences_ui.logging_picker.invalidate();
             self.preferences_ui.section = section;
             self.preferences_ui.section_revision =
                 self.preferences_ui.section_revision.wrapping_add(1);
@@ -963,6 +976,14 @@ impl StudyApp {
                     input.read(cx).value().trim()
                         != baseline.settings.images.root.as_deref().unwrap_or("")
                 })
+            || self
+                .preferences_ui
+                .logging_directory
+                .as_ref()
+                .is_some_and(|input| {
+                    input.read(cx).value().trim()
+                        != baseline.settings.logging.directory.as_deref().unwrap_or("")
+                })
             || self.widget_fields_dirty(&baseline.settings.timer_widget, cx)
             || self.preferences_ui.draft.as_ref() != Some(&baseline.settings)
             || self.interval.read(cx).value().trim()
@@ -996,6 +1017,7 @@ impl StudyApp {
         self.preferences_ui.recording = None;
         self.preferences_ui.recording_error = None;
         self.fill_widget_fields(&value.settings.timer_widget, window, cx);
+        self.fill_logging_fields(&value.settings.logging, window, cx);
         if self.preferences_ui.search.is_none() {
             let input = cx
                 .new(|cx| InputState::new(window, cx).placeholder("搜索设置，如字号、同步、备份…"));
@@ -1374,6 +1396,12 @@ impl StudyApp {
                         .map_err(|_| anyhow::anyhow!("复习间隔请填写逗号分隔的正整数"))
                 })
                 .collect::<anyhow::Result<_>>()?;
+            settings.logging.directory = self
+                .preferences_ui
+                .logging_directory
+                .as_ref()
+                .map(|input| input.read(cx).value().trim().to_owned())
+                .filter(|value| !value.is_empty());
             settings.images.root = self
                 .preferences_ui
                 .image_root
@@ -1829,6 +1857,7 @@ impl StudyApp {
                 )),
             SettingsSection::Appearance => column(),
             SettingsSection::Notifications => self.notification_controls(cx),
+            SettingsSection::Logging => self.logging_controls(cx),
             // The shortcut list owns the bounded viewport, outside this
             // auto-height form used by the other categories.
             SettingsSection::Shortcuts => column(),
@@ -4011,6 +4040,110 @@ mod scoped_tests {
             SettingsFixture { app: entity }
         });
         (app.unwrap(), visual)
+    }
+
+    struct LoggingFixture {
+        app: Entity<StudyApp>,
+    }
+    impl Render for LoggingFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                div().size_full().child(app.logging_controls(cx))
+            })
+        }
+    }
+    #[gpui_kit::test]
+    fn logging_page_edits_only_draft_and_discard_or_reset_invalidates_late_picker(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(1000.)));
+        visual.replace_root_view(|_, _| LoggingFixture { app: app.clone() });
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_settings_section(SettingsSection::Logging, cx)
+            });
+            window.draw(cx).clear(cx);
+            window.click("logging-enabled", cx);
+            window.click("logging-level-Trace", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let draft = app.preferences_ui.draft.as_ref().unwrap();
+                assert!(!draft.logging.enabled);
+                assert_eq!(draft.logging.minimum_level, studyapp_core::LogLevel::Trace);
+                assert_eq!(
+                    app.preferences_ui.saved.as_ref().unwrap().settings.logging,
+                    Default::default()
+                );
+                let directory = app
+                    .preferences_ui
+                    .logging_directory
+                    .as_ref()
+                    .unwrap()
+                    .clone();
+                directory.update(cx, |input, cx| {
+                    input.set_value("C:/draft-only-logs", window, cx)
+                });
+                assert!(app.settings_dirty(cx));
+                let request = app.preferences_ui.logging_picker.begin(&app.last_library);
+                app.discard_settings(window, cx);
+                app.preferences_ui
+                    .logging_picker
+                    .reply_test(request, "C:/stale-reply");
+                app.poll_logging_settings(window, cx);
+                assert_eq!(directory.read(cx).value(), "");
+                assert!(!app.settings_dirty(cx));
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                draft.notifications.do_not_disturb = true;
+                draft.appearance.notifications.width = 444;
+                draft.logging.enabled = false;
+                directory.update(cx, |input, cx| {
+                    input.set_value("invalid-relative", window, cx)
+                });
+                app.reset_settings_page(SettingsResetScope::Logging, window, cx);
+                let draft = app.preferences_ui.draft.as_ref().unwrap();
+                assert_eq!(draft.logging, Default::default());
+                assert!(draft.notifications.do_not_disturb);
+                assert_eq!(draft.appearance.notifications.width, 444);
+                assert_eq!(directory.read(cx).value(), "");
+            })
+        });
+    }
+    #[gpui_kit::test]
+    fn invalid_logging_directory_preserves_draft_and_feedback_never_claims_save(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.preferences_ui
+                    .logging_directory
+                    .as_ref()
+                    .unwrap()
+                    .update(cx, |input, cx| {
+                        input.set_value("relative-private", window, cx)
+                    });
+                app.save_preferences(cx);
+                assert!(!app.preferences_ui.busy);
+                assert!(app.preferences_ui.error.is_some());
+                assert!(app.settings_dirty(cx));
+                assert_eq!(
+                    app.preferences_ui.saved.as_ref().unwrap().settings.logging,
+                    Default::default()
+                );
+                assert_eq!(
+                    app.preferences_ui
+                        .logging_directory
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .value(),
+                    "relative-private"
+                );
+            })
+        });
     }
 
     struct NotificationFixture {

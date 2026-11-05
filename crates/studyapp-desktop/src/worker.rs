@@ -1,3 +1,4 @@
+use crate::audit_log::{self, Outcome, Phase, Record};
 use crate::preferences::{PreferenceSnapshot, PreferencesStore, SavePreferences};
 use crate::storage_backend::StorageEvent;
 use std::{
@@ -6,6 +7,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use studyapp_core::LogLevel;
 use studyapp_core::{Command, Engine, Snapshot};
 
 #[path = "startup_error.rs"]
@@ -177,12 +179,26 @@ fn launch_sync(
     Ok(())
 }
 
+struct LibraryLock(Option<std::fs::File>);
+impl Drop for LibraryLock {
+    fn drop(&mut self) {
+        drop(self.0.take());
+        audit_log::stage(LogLevel::Info, Phase::LibraryLockReleased, Outcome::Success);
+    }
+}
+struct WorkerLifetime;
+impl Drop for WorkerLifetime {
+    fn drop(&mut self) {
+        audit_log::stage(LogLevel::Info, Phase::WorkerStop, Outcome::Success);
+    }
+}
+
 fn open_library(
     path: &std::path::Path,
     now: i64,
 ) -> Result<
     (
-        std::fs::File,
+        LibraryLock,
         Engine,
         PreferencesStore,
         crate::sync_runtime::SyncRuntime,
@@ -205,6 +221,7 @@ fn open_library(
             })
         )?;
     }
+    audit_log::stage(LogLevel::Info, Phase::LibraryLockAttempt, Outcome::Attempt);
     let lock_path = path.with_extension("lock");
     let lock = startup_step!(
         result,
@@ -227,15 +244,20 @@ fn open_library(
     startup_step!(
         result,
         LockAcquire,
-        lock.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => StartupFailure::in_use(path, &lock_path),
-            std::fs::TryLockError::Error(error) => {
-                StartupFailure::from_error(
+        lock.try_lock().map_err(|error| {
+            audit_log::stage(
+                LogLevel::Warn,
+                Phase::LibraryLockRejected,
+                Outcome::Rejected,
+            );
+            match error {
+                std::fs::TryLockError::WouldBlock => StartupFailure::in_use(path, &lock_path),
+                std::fs::TryLockError::Error(error) => StartupFailure::from_error(
                     path,
                     StartupStage::LibraryLock,
                     &lock_path,
                     &error.into(),
-                )
+                ),
             }
         })
     )?;
@@ -243,7 +265,7 @@ fn open_library(
 }
 
 type OpenLibrary = (
-    std::fs::File,
+    LibraryLock,
     Engine,
     PreferencesStore,
     crate::sync_runtime::SyncRuntime,
@@ -253,6 +275,8 @@ fn open_locked_library(
     now: i64,
     lock: std::fs::File,
 ) -> Result<OpenLibrary, StartupFailure> {
+    let lock = LibraryLock(Some(lock));
+    audit_log::stage(LogLevel::Info, Phase::LibraryLockAcquired, Outcome::Success);
     let mut engine = startup_step!(
         result,
         Engine,
@@ -283,6 +307,7 @@ fn relocate(
     updates: &mpsc::Sender<Update>,
     commands: &mpsc::Receiver<Work>,
 ) -> anyhow::Result<Option<(OpenLibrary, Vec<crate::app_migration::CopyRecord>)>> {
+    let _logging_pause = audit_log::pause_for_migration()?;
     let paths = crate::app_usage::runtime_paths()?;
     let now = chrono::Utc::now().timestamp();
     let migration = crate::app_migration::prepare(engine, paths, target, now, |message| {
@@ -424,6 +449,13 @@ impl Worker {
         #[cfg(test)]
         let startup_probe = startup_timing::Probe::new();
         let handle = thread::spawn(move || {
+            if audit_log::global().is_some() {
+                let choice = crate::preferences::logging_choice(&path).unwrap_or_default();
+                audit_log::configure(&choice);
+                audit_log::stage(LogLevel::Info, Phase::ApplicationStart, Outcome::Success);
+            }
+            let _lifetime = WorkerLifetime;
+            audit_log::stage(LogLevel::Info, Phase::WorkerStart, Outcome::Success);
             #[cfg(test)]
             startup_timing::thread_start(startup_probe);
             let mut requested_path = path;
@@ -503,6 +535,7 @@ impl Worker {
                     }
                 }
             };
+            audit_log::configure(&preferences.snapshot().settings.logging);
             let mut startup_notice = None;
             if let Some(target) = resume {
                 match relocate(&mut engine, &target, &updates, &commands) {
@@ -1119,6 +1152,7 @@ impl Worker {
                                     !synchronization.status.busy && !image_cloud_busy,
                                     "同步正在运行，请等待完成后再迁移资料库"
                                 );
+                                let _logging_pause = audit_log::pause_for_migration()?;
                                 let database = crate::storage_backend::migrate_library(
                                     &mut engine,
                                     &directory,
@@ -1242,6 +1276,10 @@ impl Worker {
                     last_checkpoint = Instant::now();
                 }
                 if changed {
+                    audit_log::configure(&preferences.snapshot().settings.logging);
+                    for event in &notifications {
+                        audit_log::record(Record::notice(event));
+                    }
                     let snapshot = Arc::new(engine.snapshot());
                     let read_models = read_model_cache.refresh(
                         &snapshot,

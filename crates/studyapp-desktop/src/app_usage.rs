@@ -308,6 +308,7 @@ fn scan_with_budget(
     report.incomplete = !report.issues.is_empty();
     report
 }
+#[cfg(test)]
 pub fn inspect(
     paths: &AppPaths,
     library: &Path,
@@ -315,7 +316,50 @@ pub fn inspect(
     native: bool,
     migration: Result<(Option<PathBuf>, Vec<PathBuf>)>,
 ) -> ApplicationReport {
-    let mut locations = vec![location("当前资料库", library.into(), true)];
+    inspect_with_logging(
+        paths,
+        library,
+        external,
+        native,
+        migration,
+        &Default::default(),
+    )
+}
+pub fn inspect_with_logging(
+    paths: &AppPaths,
+    library: &Path,
+    external: impl IntoIterator<Item = PathBuf>,
+    native: bool,
+    migration: Result<(Option<PathBuf>, Vec<PathBuf>)>,
+    logging: &studyapp_core::LoggingSettings,
+) -> ApplicationReport {
+    let directory = crate::audit_log::configuration(logging)
+        .map(|config| config.directory())
+        .unwrap_or_else(|| {
+            logging
+                .directory
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| paths.effective.local_data.join("logs"))
+        });
+    let mut locations = Vec::new();
+    let mut issues = Vec::new();
+    match crate::audit_log::inventory(&directory) {
+        Ok(files) if !files.is_empty() => {
+            let mut logs = location("本地日志", directory, false);
+            logs.file_only = true;
+            logs.members = files;
+            logs.reason =
+                "仅统计已登记的日志、所有权记录和写入锁；不扫描自定义目录的其他文件".into();
+            locations.push(logs);
+        }
+        Ok(_) => {}
+        Err(_) => issues.push(ApplicationIssue {
+            path: directory,
+            message: "日志目录所有权或访问权限无法核对；未扫描其中的其他文件。".into(),
+        }),
+    }
+    locations.push(location("当前资料库", library.into(), true));
     for (prefix, d) in [("当前", &paths.effective), ("默认/遗留", &paths.defaults)] {
         for (label, path) in [
             ("资料", &d.data),
@@ -362,7 +406,6 @@ pub fn inspect(
         row.reason = "仅统计图片索引登记的文件".into();
         locations.push(row);
     }
-    let mut issues = vec![];
     match migration {
         Ok((Some(stage), files)) => {
             let mut tx = location("迁移记录", stage.clone(), false);
@@ -676,6 +719,99 @@ mod safety_tests {
         assert!(!report.incomplete);
         assert_eq!(report.logical_bytes, 7);
         assert_eq!(report.distinct_file_bytes, 7);
+    }
+    #[test]
+    fn log_inventory_counts_only_owned_external_files_and_union_deduplicates_nested_roots() {
+        let root = tempfile::tempdir().unwrap();
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: root.path().join("data"),
+            config: root.path().join("config"),
+            local_data: root.path().join("local"),
+            cache: root.path().join("cache"),
+            updates: root.path().join("updates"),
+        };
+        let paths = AppPaths::from_defaults(dirs, root.path().join("location.json")).unwrap();
+        for directory in [
+            root.path().join("external"),
+            paths.effective.local_data.join("logs"),
+        ] {
+            let config = crate::audit_log::Configuration {
+                settings: Default::default(),
+                default_directory: directory.clone(),
+            };
+            let runtime = crate::audit_log::Runtime::start(Some(config)).unwrap();
+            runtime.logger.record(crate::audit_log::Record::new(
+                studyapp_core::LogLevel::Info,
+                crate::audit_log::Phase::ApplicationStart,
+                crate::audit_log::Outcome::Success,
+            ));
+            assert!(runtime.logger.flush(std::time::Duration::from_secs(5)));
+            let owned = crate::audit_log::inventory(&directory).unwrap();
+            let expected: u64 = owned
+                .iter()
+                .map(|path| std::fs::metadata(path).unwrap().len())
+                .sum();
+            // External unrelated content must never be registered or traversed.
+            let unrelated = root.path().join("external/unrelated");
+            if directory.ends_with("external") {
+                std::fs::write(&unrelated, b"private unrelated file").unwrap();
+            }
+            let settings = studyapp_core::LoggingSettings {
+                directory: Some(directory.to_string_lossy().into_owned()),
+                ..Default::default()
+            };
+            let report = inspect_with_logging(
+                &paths,
+                &root.path().join("library"),
+                [],
+                false,
+                Ok((None, vec![])),
+                &settings,
+            );
+            let logs = report
+                .locations
+                .iter()
+                .find(|row| row.label == "本地日志")
+                .unwrap();
+            assert_eq!(logs.bytes, expected);
+            assert_eq!(logs.files, owned.len() as u64);
+            assert!(!report.incomplete);
+            // When nested in local_data, the same owned paths occur in both rows,
+            // but the union still includes every byte exactly once.
+            assert_eq!(report.logical_bytes, expected);
+            assert_eq!(report.distinct_file_bytes, expected);
+            assert_eq!(report.files, owned.len() as u64);
+        }
+    }
+    #[test]
+    fn unverified_log_directory_reports_incomplete_instead_of_scanning_user_files() {
+        let root = tempfile::tempdir().unwrap();
+        let external = root.path().join("external");
+        std::fs::create_dir(&external).unwrap();
+        std::fs::write(external.join("user-file"), b"private").unwrap();
+        let dirs = studyapp_desktop::app_paths::AppDirectories {
+            data: root.path().join("data"),
+            config: root.path().join("config"),
+            local_data: root.path().join("local"),
+            cache: root.path().join("cache"),
+            updates: root.path().join("updates"),
+        };
+        let paths = AppPaths::from_defaults(dirs, root.path().join("location.json")).unwrap();
+        let settings = studyapp_core::LoggingSettings {
+            directory: Some(external.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let report = inspect_with_logging(
+            &paths,
+            &root.path().join("library"),
+            [],
+            false,
+            Ok((None, vec![])),
+            &settings,
+        );
+        assert!(report.incomplete);
+        assert_eq!(report.logical_bytes, 0);
+        assert_eq!(report.files, 0);
     }
     #[test]
     fn indexed_external_file_does_not_scan_sibling() {

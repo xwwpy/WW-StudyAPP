@@ -53,6 +53,7 @@ impl Default for Settings {
             images: Default::default(),
             timer_widget: Default::default(),
             notifications: Default::default(),
+            logging: Default::default(),
         }
     }
 }
@@ -62,6 +63,7 @@ impl Settings {
         self.appearance.validate()?;
         self.timer_widget.validate()?;
         self.notifications.validate()?;
+        self.logging.validate()?;
         crate::media_settings::validate_images(&self.images)?;
         ensure!(
             (5..=240).contains(&self.interval_minutes),

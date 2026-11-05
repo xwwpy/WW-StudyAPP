@@ -145,6 +145,11 @@ fn schedule_editor_profile(
 
 impl MarkdownEditor {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        crate::audit_log::stage(
+            studyapp_core::LogLevel::Debug,
+            crate::audit_log::Phase::EditorCreated,
+            crate::audit_log::Outcome::Success,
+        );
         #[cfg(target_os = "linux")]
         cx.on_app_quit(|this, _| {
             // This must run synchronously: GPUI clears its windows before it
@@ -478,6 +483,14 @@ impl MarkdownEditor {
         if self.visible == visible {
             return;
         }
+        crate::audit_log::record(crate::audit_log::Record {
+            count: Some(u64::from(visible)),
+            ..crate::audit_log::Record::new(
+                studyapp_core::LogLevel::Trace,
+                crate::audit_log::Phase::EditorVisibility,
+                crate::audit_log::Outcome::Success,
+            )
+        });
         self.visible = visible;
         if let Some(host) = &self.host
             && let Err(error) = host.set_visible(visible && self.ready)
@@ -542,6 +555,11 @@ impl MarkdownEditor {
                         if self.ready {
                             return Ok(());
                         }
+                        crate::audit_log::stage(
+                            studyapp_core::LogLevel::Debug,
+                            crate::audit_log::Phase::EditorReady,
+                            crate::audit_log::Outcome::Success,
+                        );
                         self.ready = true;
                         self.load(cx);
                         cx.notify();

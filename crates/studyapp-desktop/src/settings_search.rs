@@ -33,6 +33,11 @@ impl SettingResult {
 
 static SETTINGS: &[SettingResult] = &[
     SettingResult::new(
+        SettingsSection::Logging,
+        "日志等级与保存目录",
+        "log 日志 诊断 error warn info debug trace 开启 关闭 位置 目录 路径",
+    ),
+    SettingResult::new(
         SettingsSection::Notifications,
         "通知分类与免打扰",
         "通知 提示 计时 复习 更新 红点 前台 后台 隐私 声音 免打扰",

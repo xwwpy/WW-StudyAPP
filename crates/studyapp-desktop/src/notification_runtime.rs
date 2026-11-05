@@ -61,8 +61,23 @@ impl StudyApp {
                 Ok(event.summary.clone())
             },
         );
-        self.notifications
-            .update(cx, |center, cx| center.enqueue(event, cx))
+        let source = event.id;
+        crate::audit_log::record(crate::audit_log::Record::notice(&event));
+        let displayed = self
+            .notifications
+            .update(cx, |center, cx| center.enqueue(event, cx));
+        if let Some(target) = displayed.filter(|target| *target != source) {
+            crate::audit_log::record(crate::audit_log::Record {
+                event: Some(source),
+                related_event: Some(target),
+                ..crate::audit_log::Record::new(
+                    studyapp_core::LogLevel::Info,
+                    crate::audit_log::Phase::NotificationMerged,
+                    crate::audit_log::Outcome::Success,
+                )
+            });
+        }
+        displayed
     }
 
     pub fn handle_notification_action(
@@ -77,6 +92,7 @@ impl StudyApp {
             }
             NoticeAction::OpenSync | NoticeAction::RetrySync => Some(SettingsSection::Sync),
             NoticeAction::OpenPreferences => Some(self.preferences_ui.section),
+            NoticeAction::OpenLogging => Some(SettingsSection::Logging),
             NoticeAction::OpenStorage | NoticeAction::OpenIntegrity | NoticeAction::ShowDetails => {
                 Some(SettingsSection::Storage)
             }

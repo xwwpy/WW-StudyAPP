@@ -131,6 +131,7 @@ pub struct StudyApp {
     pub notifications: Entity<crate::notifications::NotificationCenter>,
     pub notification_window: Option<AnyWindowHandle>,
     pub notification_desktop_failed: bool,
+    pub logging_health_notified: bool,
     pub bubble_registry: Entity<studyapp_ui::bubble::BubbleRegistry>,
     #[cfg(feature = "ui-test")]
     pub smoke_pointer_bubble: Option<AnyView>,
@@ -212,6 +213,14 @@ impl StudyApp {
             &notifications,
             window,
             |this, _, event: &crate::notifications::NotificationActionRequested, window, cx| {
+                crate::audit_log::record(crate::audit_log::Record {
+                    event: Some(event.event_id),
+                    ..crate::audit_log::Record::new(
+                        studyapp_core::LogLevel::Info,
+                        crate::audit_log::Phase::NotificationAction,
+                        crate::audit_log::Outcome::Success,
+                    )
+                });
                 // Opening the main window is allowed only after an explicit action click.
                 window.activate_window();
                 this.handle_notification_action(event.action, window, cx);
@@ -231,6 +240,39 @@ impl StudyApp {
             &notifications,
             |_, _, _: &crate::notifications::NotificationPresented, _| {
                 crate::notification_sound::play();
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &notifications,
+            |_, _, event: &crate::notifications::NotificationDelivered, _| {
+                crate::audit_log::record(crate::audit_log::Record {
+                    event: Some(event.event_id),
+                    ..crate::audit_log::Record::new(
+                        studyapp_core::LogLevel::Info,
+                        crate::audit_log::Phase::NotificationPresented,
+                        crate::audit_log::Outcome::Success,
+                    )
+                });
+            },
+        )
+        .detach();
+        cx.subscribe(
+            &notifications,
+            |_, _, event: &crate::notifications::NotificationRouted, _| {
+                let outcome = match event.route {
+                    studyapp_core::NoticeRoute::Suppressed => crate::audit_log::Outcome::Suppressed,
+                    studyapp_core::NoticeRoute::Deferred => crate::audit_log::Outcome::Deferred,
+                    _ => crate::audit_log::Outcome::Success,
+                };
+                crate::audit_log::record(crate::audit_log::Record {
+                    event: Some(event.event_id),
+                    ..crate::audit_log::Record::new(
+                        studyapp_core::LogLevel::Debug,
+                        crate::audit_log::Phase::NotificationRoute,
+                        outcome,
+                    )
+                });
             },
         )
         .detach();
@@ -469,6 +511,7 @@ impl StudyApp {
             notifications,
             notification_window: None,
             notification_desktop_failed: false,
+            logging_health_notified: false,
             bubble_registry,
             #[cfg(feature = "ui-test")]
             smoke_pointer_bubble: None,
@@ -566,6 +609,8 @@ impl StudyApp {
             crate::update_install::acknowledge_health();
         }
         self.poll_image_settings(window, cx);
+        self.poll_logging_settings(window, cx);
+        self.poll_logging_health(cx);
         while !self.storage_busy
             && !self.media_jobs_active()
             && !self.preferences_ui.busy

@@ -52,6 +52,8 @@ pub struct Settings {
     pub timer_widget: Box<crate::TimerWidgetSettings>,
     #[serde(default)]
     pub notifications: crate::NotificationSettings,
+    #[serde(default)]
+    pub logging: crate::LoggingSettings,
 }
 /// Validated configuration, ready to install without another storage operation.
 pub struct PreparedSettings {

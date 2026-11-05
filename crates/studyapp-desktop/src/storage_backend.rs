@@ -806,12 +806,13 @@ pub fn inspect(snapshot: &Snapshot) -> Result<StorageReport> {
     };
     match application_paths {
         Ok(paths) => {
-            report.application = crate::app_usage::inspect(
+            report.application = crate::app_usage::inspect_with_logging(
                 &paths,
                 directory,
                 image_paths,
                 !cfg!(test) && !cfg!(feature = "ui-test"),
                 crate::app_migration::inventory_paths(&paths, snapshot),
+                &snapshot.settings.logging,
             )
         }
         Err(error) => {

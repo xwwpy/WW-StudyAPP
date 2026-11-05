@@ -32,6 +32,17 @@ pub struct NotificationActivityChanged {
 pub struct NotificationPresented {
     pub event_id: NoticeEventId,
 }
+#[derive(Clone, Copy, Debug)]
+pub struct NotificationDelivered {
+    pub event_id: NoticeEventId,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct NotificationRouted {
+    pub event_id: NoticeEventId,
+    pub route: NoticeRoute,
+}
+impl EventEmitter<NotificationDelivered> for NotificationCenter {}
+impl EventEmitter<NotificationRouted> for NotificationCenter {}
 impl EventEmitter<NotificationPresented> for NotificationCenter {}
 impl EventEmitter<NotificationActionRequested> for NotificationCenter {}
 impl EventEmitter<NotificationActivityChanged> for NotificationCenter {}
@@ -114,6 +125,7 @@ impl NotificationCenter {
         }
     }
     fn reroute_current(&mut self, cx: &mut Context<Self>) {
+        let previous: BTreeMap<_, _> = self.queue.routes().collect();
         let now = self.now();
         let policy = &self.policy;
         let appearance = &self.appearance;
@@ -139,6 +151,11 @@ impl NotificationCenter {
                 route
             }
         });
+        for (event_id, route) in self.queue.routes() {
+            if previous.get(&event_id) != Some(&route) {
+                cx.emit(NotificationRouted { event_id, route });
+            }
+        }
         self.start_timer(cx);
     }
     pub fn enqueue(&mut self, event: NoticeEvent, cx: &mut Context<Self>) -> Option<NoticeEventId> {
@@ -160,15 +177,24 @@ impl NotificationCenter {
             } else {
                 route
             };
+        let source_id = event.id;
         let result = self
             .queue
             .push_event(event, route, &self.appearance, self.now());
         // Re-evaluate the merged severity/anchor, not the lower-severity arrival.
         self.reroute_current(cx);
+        let event_id = result.unwrap_or(source_id);
+        let route = self
+            .queue
+            .routes()
+            .find(|(id, _)| *id == event_id)
+            .map_or(NoticeRoute::Suppressed, |(_, route)| route);
+        cx.emit(NotificationRouted { event_id, route });
         result
     }
     pub fn did_present(&mut self, ids: &[u64], route: NoticeRoute, cx: &mut Context<Self>) {
         for event_id in self.queue.did_present(ids, route) {
+            cx.emit(NotificationDelivered { event_id });
             if self.policy.sound {
                 cx.emit(NotificationPresented { event_id });
             }
