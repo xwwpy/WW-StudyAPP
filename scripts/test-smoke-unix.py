@@ -51,6 +51,18 @@ class SmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             smoke.verify(data, interactive=True)
 
+    def test_first_readiness_deadline_captures_evidence_without_silently_repairing(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/smoke_editor.rs").read_text(encoding="utf-8")
+        body = source.split("async fn first_readonly_ready(", 1)[1].split("async fn capture_default_preview(", 1)[0]
+        self.assertIn("Duration::from_secs(5)", body)
+        self.assertIn("native-markdown-editor-default-ready-deadline.json", body)
+        self.assertIn("panic!(", body)
+        for call in (".set_visible(", ".set_theme(", ".evaluate(", ".focus(", ".requestMeasure("):
+            self.assertNotIn(call, body)
+        self.assertIn("const TIMEOUT: Duration = Duration::from_secs(5)",
+                      (root / "crates/studyapp-desktop/src/smoke_library.rs").read_text(encoding="utf-8"))
+
     def test_native_failure_prints_captured_stderr_and_still_fails(self):
         root = Path(__file__).resolve().parents[1] / ".scratch/cross-platform-012"
         root.mkdir(parents=True, exist_ok=True)

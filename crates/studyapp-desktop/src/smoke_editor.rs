@@ -149,18 +149,7 @@ pub async fn default_preview(
         })
         .unwrap();
     let editor = view.read_with(cx, |app, _| app.note_content.clone());
-    crate::smoke_library::until(
-        window,
-        view,
-        "first default readonly editor",
-        |app, cx| {
-            let editor = app.note_content.read(cx);
-            assert!(editor.error().is_none(), "{:?}", editor.error());
-            editor.ready()
-        },
-        cx,
-    )
-    .await;
+    first_readonly_ready(window, &editor, database, cx).await;
     for label in ["first", "reopened"] {
         cx.background_executor()
             .timer(Duration::from_millis(700))
@@ -193,6 +182,77 @@ pub async fn default_preview(
         }
     }
     default_appearance_sample(window, view, database, cx).await;
+}
+
+#[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
+async fn first_readonly_ready(
+    window: AnyWindowHandle,
+    editor: &Entity<MarkdownEditor>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    let started = std::time::Instant::now();
+    // Preserve the existing five-second acceptance budget. Later observations
+    // are diagnostic only and can never turn a missed deadline into a pass.
+    loop {
+        let (ready, failed) = window
+            .update(cx, |_, _, cx| {
+                (editor.read(cx).ready(), editor.read(cx).error().is_some())
+            })
+            .unwrap();
+        if ready && !failed {
+            return;
+        }
+        if failed || started.elapsed() >= Duration::from_secs(5) {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(40))
+            .await;
+    }
+    let deadline_elapsed = started.elapsed().as_millis();
+    let before = window
+        .update(cx, |_, _, cx| editor.read(cx).startup_diagnostic())
+        .unwrap();
+    let image = database.with_file_name("native-markdown-editor-default-ready-deadline.png");
+    #[cfg(target_os = "macos")]
+    let captured = std::process::Command::new("/usr/sbin/screencapture")
+        .args(["-x", "-m"])
+        .arg(&image)
+        .status()
+        .is_ok_and(|status| status.success());
+    #[cfg(target_os = "linux")]
+    let captured = window
+        .update(cx, |_, window, _| {
+            crate::smoke::capture(window, image).is_ok()
+        })
+        .unwrap();
+    // No visibility/focus change, browser evaluation, dispatch or requestMeasure.
+    // Observe whether ordinary initialization completes naturally after failure.
+    let follow_started = std::time::Instant::now();
+    loop {
+        if window
+            .update(cx, |_, _, cx| editor.read(cx).ready())
+            .unwrap()
+            || follow_started.elapsed() >= Duration::from_secs(5)
+        {
+            break;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(40))
+            .await;
+    }
+    let after = window
+        .update(cx, |_, _, cx| editor.read(cx).startup_diagnostic())
+        .unwrap();
+    let evidence = json!({"deadlineMs":5000,"elapsedAtDeadlineMs":deadline_elapsed,"deadlineState":before,
+        "followupElapsedMs":follow_started.elapsed().as_millis(),"followupState":after,"deadlineImageCaptured":captured});
+    std::fs::write(
+        database.with_file_name("native-markdown-editor-default-ready-deadline.json"),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+    panic!("first default readonly editor missed its original readiness deadline: {evidence}");
 }
 
 #[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]

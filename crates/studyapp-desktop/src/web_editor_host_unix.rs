@@ -83,6 +83,33 @@ impl HasWindowHandle for ParentWindow {
     }
 }
 
+#[cfg(feature = "ui-test")]
+#[derive(Clone)]
+struct LoadTrace(std::sync::Arc<(std::time::Instant, std::sync::Mutex<Vec<serde_json::Value>>)>);
+#[cfg(feature = "ui-test")]
+impl LoadTrace {
+    fn new() -> Self {
+        Self(std::sync::Arc::new((
+            std::time::Instant::now(),
+            std::sync::Mutex::new(vec![]),
+        )))
+    }
+    fn record(&self, stage: &'static str) {
+        if let Ok(mut events) = self.0.1.lock()
+            && events.len() < 64
+        {
+            events.push(serde_json::json!({"stage":stage,"elapsedMs":self.0.0.elapsed().as_millis() as u64}));
+        }
+    }
+    fn snapshot(&self) -> serde_json::Value {
+        self.0
+            .1
+            .lock()
+            .map(|events| serde_json::json!(*events))
+            .unwrap_or(serde_json::Value::Null)
+    }
+}
+
 pub struct HostedEditor {
     webview: WebView,
     // Fields drop in declaration order: destroy WebKit before its GTK host.
@@ -94,6 +121,8 @@ pub struct HostedEditor {
     requested_visible: Cell<bool>,
     applied_visible: Cell<bool>,
     occlusions: RefCell<Vec<OverlayShape>>,
+    #[cfg(feature = "ui-test")]
+    load_trace: LoadTrace,
 }
 
 /// GTK owns this native window and its frame clock. Only the GPUI parent is
@@ -288,8 +317,25 @@ impl HostedEditor {
         let mut context = WebContext::new(Some(profile));
         #[cfg(target_os = "linux")]
         let gtk_host = LinuxHost::new(&parent)?;
+        #[cfg(feature = "ui-test")]
+        let load_trace = LoadTrace::new();
+        #[cfg(feature = "ui-test")]
+        let ipc_trace = load_trace.clone();
         let builder = WebViewBuilder::new_with_web_context(&mut context)
-            .with_custom_protocol("studyapp".into(), |_, request| embedded_response(request))
+            .with_custom_protocol("studyapp".into(), {
+                #[cfg(feature = "ui-test")]
+                let trace = load_trace.clone();
+                move |_, request| {
+                    #[cfg(feature = "ui-test")]
+                    trace.record(match super::editor_asset(&request.uri().to_string()) {
+                        Some(super::EditorAsset::Html) => "asset-html",
+                        Some(super::EditorAsset::Script) => "asset-script",
+                        Some(super::EditorAsset::Stylesheet) => "asset-stylesheet",
+                        None => "asset-rejected",
+                    });
+                    embedded_response(request)
+                }
+            })
             .with_url(EDITOR_PAGE)
             .with_visible(false)
             .with_focused(false)
@@ -307,6 +353,8 @@ impl HostedEditor {
             .with_drag_drop_handler(super::native_drag::handler(sender.clone()))
             .with_ipc_handler(move |request| {
                 if !ipc_allowed(&request.uri().to_string(), request.body().len()) {
+                    #[cfg(feature = "ui-test")]
+                    ipc_trace.record("ipc-rejected");
                     return;
                 }
                 // OS file paths must never be accepted from page JavaScript.
@@ -318,11 +366,23 @@ impl HostedEditor {
                 if serde_json::from_str::<Kind<'_>>(request.body())
                     .is_ok_and(|message| message.kind != "externalDrag")
                 {
+                    #[cfg(feature = "ui-test")]
+                    ipc_trace.record("ipc-accepted");
                     let _ = sender.send(request.into_body());
                 }
             });
         #[cfg(feature = "ui-test")]
-        let builder = builder.with_initialization_script("window.__STUDYAPP_EDITOR_TEST__ = true;");
+        let builder = builder
+            .with_initialization_script("window.__STUDYAPP_EDITOR_TEST__ = true;")
+            .with_on_page_load_handler({
+                let trace = load_trace.clone();
+                move |event, _url| {
+                    trace.record(match event {
+                        wry::PageLoadEvent::Started => "page-started",
+                        wry::PageLoadEvent::Finished => "page-finished",
+                    })
+                }
+            });
         #[cfg(not(target_os = "linux"))]
         let webview = builder
             .build_as_child(&parent)
@@ -386,6 +446,8 @@ impl HostedEditor {
             requested_visible: Cell::new(false),
             applied_visible: Cell::new(false),
             occlusions: RefCell::new(Vec::new()),
+            #[cfg(feature = "ui-test")]
+            load_trace,
         })
     }
 
@@ -543,6 +605,7 @@ impl HostedEditor {
                 "width": f32::from(bounds.size.width), "height": f32::from(bounds.size.height),
             })),
             "occlusionCount": self.occlusions.borrow().len(),
+            "loadTrace": self.load_trace.snapshot(),
             "visible": self.gtk_host.window.is_visible(),
             "mapped": self.gtk_host.window.is_mapped(),
             "viewable": self.gtk_host.native.is_viewable(),
@@ -560,6 +623,7 @@ impl HostedEditor {
                 "width": f32::from(bounds.size.width), "height": f32::from(bounds.size.height),
             })),
             "occlusionCount": self.occlusions.borrow().len(),
+            "loadTrace": self.load_trace.snapshot(),
             "visible": !self.webview.webview().isHiddenOrHasHiddenAncestor(),
             "parentVisible": self.webview.ns_window().isVisible(),
             "parentKey": self.webview.ns_window().isKeyWindow(),

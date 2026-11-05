@@ -889,6 +889,13 @@ impl MarkdownEditor {
             .unwrap();
     }
 
+    #[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
+    pub(crate) fn startup_diagnostic(&self) -> serde_json::Value {
+        serde_json::json!({"ready":self.ready,"creating":self.creating,"hostEpoch":self.host_epoch,
+            "visible":self.visible,"readonly":self.readonly,"themeInitialized":!self.theme.is_null(),
+            "error":self.error,"native":self.native_state().ok()})
+    }
+
     #[cfg(feature = "ui-test")]
     pub(crate) fn native_state(&self) -> anyhow::Result<serde_json::Value> {
         self.host
