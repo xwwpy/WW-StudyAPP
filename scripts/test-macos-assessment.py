@@ -172,6 +172,9 @@ class LaunchEvidence(unittest.TestCase):
         self.assertIn("runner_capture(window, path, require_foreground)",source)
         driver = (root / "crates/studyapp-desktop/src/update_acceptance.rs").read_text(encoding="utf-8")
         self.assertIn('pointer::observe(window, point)',driver)
+        capture = driver.split("pub(crate) fn runner_capture(",1)[1].split("fn capture(",1)[0]
+        self.assertIn('assert!(active()',capture)
+        self.assertNotIn('GITHUB_ACTIONS',capture)
         self.assertIn('result["window"], native["window"]',driver)
         self.assertIn('"Native control is covered: {state}"',driver)
         self.assertIn('observed_without_activation',Path(__file__).with_name("native-update-macos.py").read_text(encoding="utf-8"))

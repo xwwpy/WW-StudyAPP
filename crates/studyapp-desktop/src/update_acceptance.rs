@@ -167,7 +167,9 @@ pub(crate) fn editor_creation_failed(profile: &Path, error: &str) {
 // runner passively captures it while this fixture waits, before the next click.
 #[cfg(target_os = "macos")]
 pub(crate) fn runner_capture(window: &mut Window, path: &Path, require_foreground: bool) {
-    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    // A natural LaunchServices relaunch need not inherit runner environment;
+    // the validated private launch context remains the acceptance boundary.
+    assert!(active(), "capture requires an active acceptance fixture");
     let directory = directory().expect("active acceptance fixture");
     assert_eq!(path.parent(), Some(directory.as_path()));
     let name = path.file_name().unwrap().to_str().unwrap();
