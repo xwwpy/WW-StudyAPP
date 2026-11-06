@@ -414,6 +414,58 @@ pub(crate) fn scroll_settings(window: &mut Window, delta: f32, cx: &mut App) {
     window.render_frame(cx);
 }
 
+// Test diagnostics expose only bounded names, hashes and known fixture-marker
+// presence, never browser file contents. Run after preparation so observation
+// cannot give an in-memory marker extra time to flush before the tested close.
+fn migration_profile_evidence(profile: &Path) -> Value {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let marker = "studyapp-relocation-smoke";
+    let utf16 = |value: &str| {
+        value
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    let marker_wide = utf16(marker);
+    let persisted_wide = utf16("persisted");
+    let contains =
+        |bytes: &[u8], needle: &[u8]| bytes.windows(needle.len()).any(|value| value == needle);
+    let mut files = Vec::new();
+    let mut remaining = 8 * 1024 * 1024;
+    let result = crate::storage_backend::visit_migration_tree(
+        profile,
+        &|_| false,
+        &mut 0,
+        &mut |_, relative, file| {
+            anyhow::ensure!(files.len() < 64, "profile evidence file limit");
+            let metadata = file.metadata()?;
+            anyhow::ensure!(
+                metadata.len() <= remaining as u64,
+                "profile evidence byte limit"
+            );
+            let identity = crate::app_usage::identity(&file)?;
+            let mut bytes = Vec::new();
+            file.take(remaining as u64 + 1).read_to_end(&mut bytes)?;
+            anyhow::ensure!(
+                bytes.len() <= remaining,
+                "profile evidence grew beyond byte limit"
+            );
+            remaining -= bytes.len();
+            files.push(
+                json!({"path":relative,"size":metadata.len(),"readBytes":bytes.len(),
+                "identity":format!("{}:{}",identity.0,identity.1),
+                "sha256":format!("{:x}",Sha256::digest(&bytes)),
+                "hasMarker":contains(&bytes,marker.as_bytes())||contains(&bytes,&marker_wide),
+                "hasPersisted":contains(&bytes,b"persisted")||contains(&bytes,&persisted_wide)}),
+            );
+            Ok(())
+        },
+    );
+    json!({"profile":profile,"files":files,"complete":result.is_ok(),
+        "error":result.err().map(|error|format!("{error:#}"))})
+}
+
 /// Exercise the same settings buttons and native data preservation on all three
 /// runners, plus the platform browser-storage contract. Only the blocking OS
 /// directory chooser is substituted.
@@ -427,6 +479,7 @@ pub(crate) async fn application_migration(
         return;
     }
     let old = std::fs::canonicalize(database).unwrap();
+    let original_profile = crate::app_usage::runtime_paths().unwrap().editor_profile();
     let target = old
         .parent()
         .unwrap()
@@ -609,6 +662,17 @@ pub(crate) async fn application_migration(
     .await;
     let paths = crate::app_usage::runtime_paths().unwrap();
     assert_eq!(paths.effective.cache, target.join("cache"));
+    let profile_evidence = |stage: &str| {
+        std::fs::write(
+            database.with_file_name(format!("native-app-migration-profiles-{stage}.json")),
+            serde_json::to_vec_pretty(&json!({"stage":stage,
+                "source":migration_profile_evidence(&original_profile),
+                "target":migration_profile_evidence(&paths.editor_profile())}))
+            .unwrap(),
+        )
+        .unwrap();
+    };
+    profile_evidence("before-host");
     if !cfg!(target_os = "macos") {
         assert!(paths.effective.cache.join("editor").is_dir());
     }
@@ -678,6 +742,7 @@ pub(crate) async fn application_migration(
         .unwrap(),
     )
     .unwrap();
+    profile_evidence("after-host");
     assert_eq!(
         observed_marker, expected_marker,
         "relocated browser storage contract"
@@ -1756,6 +1821,47 @@ mod tests {
         Styled, TestAppContext, TestSupportExt, Window, div, px, test::TestWindowExt,
     };
     use studyapp_ui::settings_components::{VirtualRows, virtual_rows};
+
+    #[test]
+    fn migration_profile_diagnostics_bound_reads_and_never_include_browser_contents() {
+        use super::migration_profile_evidence;
+        use std::fs;
+        let root = tempfile::tempdir().unwrap().keep();
+        let private = "fixture-private-browser-content";
+        fs::write(
+            root.join("utf8.db"),
+            format!("{private}:studyapp-relocation-smoke:persisted"),
+        )
+        .unwrap();
+        let wide = "studyapp-relocation-smoke:persisted"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+        fs::write(root.join("utf16.db"), &wide).unwrap();
+        let evidence = migration_profile_evidence(&root);
+        assert_eq!(evidence["complete"], true);
+        let files = evidence["files"].as_array().unwrap();
+        assert_eq!(files.len(), 2);
+        for file in files {
+            assert_eq!(file["hasMarker"], true);
+            assert_eq!(file["hasPersisted"], true);
+            assert_eq!(file["sha256"].as_str().unwrap().len(), 64);
+            assert_eq!(file["size"], file["readBytes"]);
+        }
+        assert!(!evidence.to_string().contains(private));
+        assert_eq!(fs::read(root.join("utf16.db")).unwrap(), wide);
+        let large = tempfile::tempdir().unwrap().keep();
+        let path = large.join("bounded.db");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(8 * 1024 * 1024 + 1)
+            .unwrap();
+        let evidence = migration_profile_evidence(&large);
+        assert_eq!(evidence["complete"], false);
+        assert!(evidence["files"].as_array().unwrap().is_empty());
+        assert!(evidence["error"].as_str().unwrap().contains("byte limit"));
+        assert_eq!(fs::metadata(path).unwrap().len(), 8 * 1024 * 1024 + 1);
+    }
 
     #[gpui_kit::test]
     fn reveal_modal_footer_uses_its_fixed_bounds_and_dispatches_the_click(cx: &mut TestAppContext) {

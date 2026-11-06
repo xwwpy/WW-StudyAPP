@@ -1004,7 +1004,10 @@ impl MarkdownEditor {
                 }
             };
             #[cfg(feature = "ui-test")]
-            eprintln!("native editor: creating WebView");
+            eprintln!(
+                "native editor: creating WebView profile={}",
+                profile.display()
+            );
             #[cfg(all(windows, feature = "update-acceptance"))]
             crate::update_acceptance::editor_profile(&profile);
             #[cfg(all(windows, feature = "update-acceptance"))]

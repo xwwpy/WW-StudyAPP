@@ -234,6 +234,20 @@ class SmokeTests(unittest.TestCase):
         self.assertNotIn("prepare_relocating_profile",scenario)
         self.assertIn("Duration::from_secs(90)",scenario)
 
+    def test_profile_evidence_is_after_the_tested_close_and_preserves_browser_assertion(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/smoke_library.rs").read_text(encoding="utf-8")
+        body = source.split("pub(crate) async fn application_migration(",1)[1].split("#[cfg(windows)]",1)[0]
+        self.assertLess(body.index('"application migrated"'),body.index('profile_evidence("before-host")'))
+        self.assertLess(body.index('profile_evidence("before-host")'),body.index('"native data changed during application relocation"'))
+        self.assertLess(body.index('profile_evidence("after-host")'),body.index('"relocated browser storage contract"'))
+        self.assertIn("".join('assert_eq!(observed_marker, expected_marker'.split()), "".join(body.split()))
+        evidence = source.split("fn migration_profile_evidence(",1)[1].split("pub(crate) async fn application_migration(",1)[0]
+        for check in ('files.len() < 64', '8 * 1024 * 1024', '"sha256"', '"hasMarker"', '"hasPersisted"'):
+            self.assertIn(check,evidence)
+        for write in ('fs::write', 'remove_file', 'create_dir', 'localStorage.setItem'):
+            self.assertNotIn(write,evidence)
+
     def test_mac_bundled_document_keeps_exact_request_origin_and_compositor_capture(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "crates/studyapp-desktop/src/web_editor_host_unix.rs").read_text(encoding="utf-8")
