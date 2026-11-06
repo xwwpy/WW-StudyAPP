@@ -162,6 +162,47 @@ pub(crate) fn editor_creation_failed(profile: &Path, error: &str) {
             "probe_error":writable.err().map(|error|error.to_string())}),
     );
 }
+// Keep screen-recording permission ownership with the CI runner, not the
+// changing installed test bundle. The last frame is already presented; the
+// runner passively captures it while this fixture waits, before the next click.
+#[cfg(target_os = "macos")]
+pub(crate) fn runner_capture(window: &mut Window, path: &Path, require_foreground: bool) {
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let directory = directory().expect("active acceptance fixture");
+    assert_eq!(path.parent(), Some(directory.as_path()));
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let point = point(
+        window.viewport_size().width / 2.0,
+        window.viewport_size().height / 2.0,
+    );
+    let native = pointer::observe(window, point);
+    if require_foreground {
+        assert_eq!(native["ready"], true, "Capture window is covered: {native}");
+    }
+    let id = uuid::Uuid::new_v4();
+    let request = format!("capture-request-{id}.json");
+    let result = directory.join(format!("capture-result-{id}.json"));
+    let pid = std::process::id();
+    save(
+        &request,
+        json!({"pid":pid,"name":name,"native":native,"require_foreground":require_foreground}),
+    );
+    let started = Instant::now();
+    while !result.is_file() {
+        assert!(
+            started.elapsed() < Duration::from_secs(25),
+            "Runner capture missing: {name}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let result: Value = serde_json::from_slice(&std::fs::read(result).unwrap()).unwrap();
+    assert_eq!(result["pid"], pid);
+    assert_eq!(result["name"], name);
+    assert_eq!(result["window"], native["window"]);
+    assert_eq!(result["captured"], true);
+    assert!(std::fs::metadata(path).unwrap().len() > 1024);
+}
+
 fn capture(window: &mut Window, name: &str) {
     let path = directory().unwrap().join(name);
     #[cfg(any(windows, target_os = "macos"))]

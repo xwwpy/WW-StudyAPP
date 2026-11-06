@@ -100,6 +100,82 @@ class LaunchEvidence(unittest.TestCase):
                 native.observe_relaunch(fixture)
                 self.assertTrue((fixture / "relaunch-observed-123.json").exists())
 
+    def test_runner_capture_is_bound_to_visible_window_and_acknowledges_real_pixels(self):
+        native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
+        native = importlib.util.module_from_spec(native_spec)
+        native_spec.loader.exec_module(native)
+        root = Path(__file__).resolve().parents[1] / ".scratch/macos-capture-tests"
+        root.mkdir(parents=True, exist_ok=True)
+        def fixture():
+            directory = Path(tempfile.mkdtemp(dir=root, prefix="capture-"))
+            request = directory / "capture-request-00000000-0000-4000-8000-000000000001.json"
+            data = {"pid":123,"name":"recovery-notice.png","native":{"ready":True,"window":9},"require_foreground":True}
+            request.write_text(json.dumps(data), encoding="utf-8")
+            return directory, request, data
+        observation = {"pid":123,"frontmostPid":123,"windows":[{"kCGWindowNumber":9,
+            "kCGWindowIsOnscreen":True,"kCGWindowAlpha":1}]}
+        response = {"exit_code":0,"stdout":json.dumps(observation)}
+        def pixels(command, **kwargs):
+            self.assertEqual(command[:2], ["/usr/sbin/screencapture","-x"])
+            self.assertEqual(kwargs["timeout"], 10)
+            Path(command[-1]).write_bytes(bytes([137,80,78,71,13,10,26,10]) + b"fixture-pixels" * 100)
+        directory, request, data = fixture()
+        with patch.object(native.policy,"capture",return_value=response) as observe, patch.object(native.common,"run",side_effect=pixels) as capture:
+            native.capture_requests(directory)
+            result = request.with_name(request.name.replace("capture-request-","capture-result-"))
+            receipt = json.loads(result.read_text())
+            self.assertEqual((receipt["pid"],receipt["window"],receipt["name"]),(123,9,"recovery-notice.png"))
+            self.assertTrue(receipt["captured"] and receipt["runner_owned"])
+            self.assertEqual(observe.call_args.args[0][-2:],["observe-window","123"])
+            native.capture_requests(directory)
+            capture.assert_called_once()
+        for change, message in (({"frontmostPid":456},"foreground"), ({"windows":[]},"visible")):
+            directory, request, data = fixture()
+            failed = {**observation, **change}
+            with patch.object(native.policy,"capture",return_value={"exit_code":0,"stdout":json.dumps(failed)}), patch.object(native.common,"run") as capture:
+                with self.assertRaisesRegex(AssertionError,message):
+                    native.capture_requests(directory)
+                capture.assert_not_called()
+            self.assertFalse(list(directory.glob("capture-result-*.json")))
+        directory, request, data = fixture()
+        data["name"] = "../outside.png"
+        request.write_text(json.dumps(data), encoding="utf-8")
+        with patch.object(native.common,"run") as capture, self.assertRaises(ValueError):
+            native.capture_requests(directory)
+        capture.assert_not_called()
+        directory, request, data = fixture()
+        with patch.object(native.policy,"capture",return_value=response), patch.object(native.common,"run"):
+            with self.assertRaises(FileNotFoundError):
+                native.capture_requests(directory)
+        self.assertFalse(list(directory.glob("capture-result-*.json")))
+        directory, request, data = fixture()
+        (directory / data["name"]).write_bytes(b"existing-evidence")
+        with patch.object(native.policy,"capture",return_value=response), self.assertRaises(ValueError):
+            native.capture_requests(directory)
+        self.assertEqual((directory / data["name"]).read_bytes(),b"existing-evidence")
+
+    def test_capture_service_surfaces_thread_failures_and_app_never_launches_screencapture(self):
+        import threading
+        native_spec = importlib.util.spec_from_file_location("native_macos", Path(__file__).with_name("native-update-macos.py"))
+        native = importlib.util.module_from_spec(native_spec)
+        native_spec.loader.exec_module(native)
+        observed = threading.Event()
+        def fail(_):
+            observed.set()
+            raise ValueError("capture failure")
+        with patch.object(native,"capture_requests",side_effect=fail), self.assertRaisesRegex(ValueError,"capture failure"):
+            with native.capture_service(Path("unused")):
+                self.assertTrue(observed.wait(2))
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/update_acceptance_pointer.rs").read_text(encoding="utf-8")
+        self.assertNotIn("/usr/sbin/screencapture",source)
+        self.assertIn("runner_capture(window, path, require_foreground)",source)
+        driver = (root / "crates/studyapp-desktop/src/update_acceptance.rs").read_text(encoding="utf-8")
+        self.assertIn('pointer::observe(window, point)',driver)
+        self.assertIn('result["window"], native["window"]',driver)
+        self.assertIn('"Native control is covered: {state}"',driver)
+        self.assertIn('observed_without_activation',Path(__file__).with_name("native-update-macos.py").read_text(encoding="utf-8"))
+
     def test_darwin_quarantine_reader_preserves_bytes_and_distinguishes_errors(self):
         import ctypes
         def native(path, name, output, size, position, flags):

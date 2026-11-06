@@ -2,24 +2,19 @@
 use gpui_kit::{Pixels, Point, Window};
 use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
+#[cfg(any(windows, feature = "update-acceptance"))]
 pub fn capture(window: &mut Window, path: &std::path::Path) {
     capture_inner(window, path, true);
 }
+#[cfg(any(windows, feature = "update-acceptance"))]
 pub fn capture_diagnostic(window: &mut Window, path: &std::path::Path) {
     capture_inner(window, path, false);
 }
+#[cfg(any(windows, feature = "update-acceptance"))]
 fn capture_inner(window: &mut Window, path: &std::path::Path, require_foreground: bool) {
     #[cfg(target_os = "macos")]
     {
-        let _ = (window, require_foreground);
-        assert!(
-            std::process::Command::new("/usr/sbin/screencapture")
-                .arg("-x")
-                .arg(path)
-                .status()
-                .unwrap()
-                .success()
-        );
+        crate::update_acceptance::runner_capture(window, path, require_foreground);
     }
     #[cfg(windows)]
     {

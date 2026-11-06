@@ -1,15 +1,18 @@
 """Real installed DMG/card/system-approval/save/restart transition on macOS CI."""
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import platform
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
 import time
+import threading
 from macos_quarantine import read_quarantine as quarantine
 
 
@@ -73,6 +76,83 @@ def observe_relaunch(fixture):
             and window["kCGWindowBounds"]["Width"] > 100 and window["kCGWindowBounds"]["Height"] > 100
             for window in observed["windows"]), "No matching visible native application window"
         acknowledgement.write_text(json.dumps({"pid": pid, "observed_without_activation": True}))
+
+
+CAPTURE_NAMES = {"update-card.png", "settings-update-guard.png", "quarantine-refusal.png",
+                 "recovery-notice.png", "unhealthy-candidate.png", "restored.png", "wait-failure.png"}
+
+
+def capture_requests(fixture):
+    """Passive runner-owned evidence; never activate, hide, approve or click a window."""
+    requests = list(fixture.glob("capture-request-*.json"))
+    if len(requests) > 16:
+        raise ValueError("Too many acceptance capture requests")
+    for request in requests:
+        if not re.fullmatch(r"capture-request-[0-9a-f-]{36}\.json", request.name):
+            raise ValueError("Invalid capture request identity")
+        result = request.with_name(request.name.replace("capture-request-", "capture-result-", 1))
+        if result.exists():
+            continue
+        if request.is_symlink() or request.stat().st_size > 8192:
+            raise ValueError("Invalid capture request file")
+        try:
+            data = json.loads(request.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue  # The fixture publishes a small request in one write.
+        pid, name, native, foreground = data["pid"], data["name"], data["native"], data["require_foreground"]
+        if type(pid) is not int or pid <= 1 or name not in CAPTURE_NAMES or type(foreground) is not bool:
+            raise ValueError("Invalid capture request fields")
+        window = native["window"]
+        if type(window) is not int or window <= 0:
+            raise ValueError("Invalid capture window")
+        observed = policy.capture(["/usr/bin/osascript", "-l", "JavaScript",
+            str(Path(__file__).with_name("macos-approval-ui.js")), "observe-window", str(pid)], 10)
+        assert observed["exit_code"] == 0, "Cannot independently observe capture window"
+        state = json.loads(observed["stdout"])
+        assert state["pid"] == pid
+        assert any(w["kCGWindowNumber"] == window and w["kCGWindowIsOnscreen"]
+            and w["kCGWindowAlpha"] > 0 for w in state["windows"]), "Capture window is not visible"
+        if foreground:
+            assert native["ready"] is True and state["frontmostPid"] == pid, "Capture window is not foreground"
+        target = fixture / name
+        if target.exists() or target.is_symlink():
+            raise ValueError("Capture output already exists")
+        common.run(["/usr/sbin/screencapture", "-x", target], timeout=10)
+        with target.open("rb") as image:
+            signature = image.read(8)
+        assert target.stat().st_size > 1024 and signature == bytes([137,80,78,71,13,10,26,10]), "Missing native pixels"
+        receipt = {"pid":pid, "window":window, "name":name, "captured":True,
+                   "runner_owned":True, "observation":state}
+        temporary = result.with_suffix(".tmp")
+        temporary.write_text(json.dumps(receipt), encoding="utf-8")
+        temporary.replace(result)
+
+
+@contextlib.contextmanager
+def capture_service(fixture):
+    # Main orchestration can be waiting for a publication which follows a capture.
+    # A passive thread services only this private scenario's bounded mailbox.
+    stop = threading.Event()
+    errors = []
+    def work():
+        while not stop.is_set():
+            try:
+                capture_requests(fixture)
+            except Exception as error:
+                errors.append(error)
+                return
+            stop.wait(.1)
+    thread = threading.Thread(target=work, name="native-capture", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=25)
+        if sys.exc_info()[0] is None:
+            assert not thread.is_alive(), "Runner capture did not finish"
+            if errors:
+                raise errors[0]
 
 
 def collect_approval(root):
@@ -194,7 +274,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
     environment["STUDYAPP_UPDATE_ACCEPTANCE_DIR"] = str(fixture)
     actions = []
     try:
-        with (root / "application.log").open("w") as log:
+        with capture_service(fixture), (root / "application.log").open("w") as log:
             old = subprocess.Popen([installed / "Contents/MacOS/studyapp", "--data-dir", data], env=environment, stdout=log, stderr=log)
             before = common.wait_file(fixture / "old-observation.json", 120, old)
             if scenario == "quarantine-refusal":
