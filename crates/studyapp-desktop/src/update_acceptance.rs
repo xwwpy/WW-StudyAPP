@@ -236,6 +236,7 @@ async fn wait(
                     "notice":app.notice,"startupBusy":app.startup_busy,"draftLoading":app.draft_loading,
                     "windowActive":window.is_window_active(),
                     "foregroundNotices":app.notifications.read(cx).visible_count(),
+                    "visibleEvents":visible_notice_evidence(app.notifications.read(cx)),
                     "desktopNotices":app.notifications.read(cx).desktop_items().len(),
                     "desktopWindow":app.notification_window.is_some(),
                     "desktopFailed":app.notification_desktop_failed,
@@ -412,6 +413,26 @@ fn committed(app: &StudyApp) -> Value {
             .collect::<Vec<_>>()
     )
 }
+fn visible_notice_evidence(center: &crate::notifications::NotificationCenter) -> Value {
+    json!(center.test_visible_events().into_iter().map(|(queue_id, event)| {
+        json!({"queue_id":queue_id,"event_id":event.id.to_string(),"category":event.category,
+            "severity":event.severity,"summary":event.summary,"dedupe_key":event.dedupe_key})
+    }).collect::<Vec<_>>())
+}
+
+fn recovery_notice(
+    center: &crate::notifications::NotificationCenter,
+) -> Option<(u64, studyapp_core::NoticeEvent)> {
+    center
+        .test_visible_events()
+        .into_iter()
+        .find(|(id, event)| {
+            !center.test_is_closing(*id)
+                && event.category == studyapp_core::NoticeCategory::StartupRecovery
+                && event.dedupe_key.as_deref() == Some("startup-update-recovery")
+        })
+}
+
 fn restored_run(target: &str, current: &str, scenario: &str, observed: bool) -> bool {
     target == current || (matches!(scenario, "authorization-denied" | "health-failure") && observed)
 }
@@ -475,19 +496,38 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                     save("recovery-wait-start.json",json!({"pid":std::process::id(),
                         "windowActive":window.is_window_active(),"notice":app.notice,
                         "foregroundNotices":app.notifications.read(cx).visible_count(),
+                    "visibleEvents":visible_notice_evidence(app.notifications.read(cx)),
                         "desktopNotices":app.notifications.read(cx).desktop_items().len(),
                         "desktopWindow":app.notification_window.is_some(),
                         "desktopFailed":app.notification_desktop_failed}));
                 }).unwrap();
-                wait(window,&view,cx,"visible recovery notification",|a,cx|a.notifications.read(cx).visible_count()>0).await;
-                let notice=window.update(cx,|_,_,cx|view.read(cx).notice.clone()).unwrap();
-                assert!(matches!(notice, Some(Err(_))), "Recovery must show the installation failure");
-                let bounds=window.update(cx,|_,window,_|window.find("floating-notice").bounds()).unwrap();
+                wait(window,&view,cx,"visible recovery notification",|a,cx|recovery_notice(a.notifications.read(cx)).is_some()).await;
+                let (queue_id,event)=window.update(cx,|_,_,cx|recovery_notice(view.read(cx).notifications.read(cx)).unwrap()).unwrap();
+                assert_eq!(event.severity,studyapp_core::NoticeSeverity::Error,"Recovery must show the installation failure");
+                assert_eq!(event.action,Some(studyapp_core::NoticeAction::OpenUpdate));
+                let expected=if config["scenario"] == "authorization-denied" {
+                    "系统授权已取消或被拒绝，本次更新未安装。可在设置中重试更新。"
+                } else {
+                    "上次更新未完成，应用已重新打开。请在设置中重试更新。"
+                };
+                assert_eq!(event.summary,expected);
+                presented(window,cx).await;
+                let card_id=format!("notice-{queue_id}");
+                let bounds=window.update(cx,|_,window,_|{
+                    let container=window.find("floating-notice").bounds();
+                    assert!(container.size.width>px(0.)&&container.size.height>px(0.));
+                    let bounds=window.find(card_id.clone()).bounds();
+                    let viewport=window.viewport_size();
+                    assert!(bounds.left()>=px(0.)&&bounds.top()>=px(0.)&&bounds.right()<=viewport.width&&bounds.bottom()<=viewport.height);
+                    bounds
+                }).unwrap();
                 assert!(bounds.size.width>px(0.)&&bounds.size.height>px(0.));
                 #[cfg(target_os = "macos")]
                 observe_relaunch(window, "notification", cx).await;
                 presented(window,cx).await;
-                save("recovery-notice.json",json!({"notice":notice,"pid":std::process::id(),"visible_queue":true,
+                save("recovery-notice.json",json!({"notice":{"Err":event.summary},"pid":std::process::id(),"visible_queue":true,
+                    "queue_id":queue_id,"card_id":card_id,"event_id":event.id.to_string(),
+                    "category":event.category,"severity":event.severity,"action":"open_update","dedupe_key":event.dedupe_key,
                     "bounds":{"x":f64::from(bounds.origin.x),"y":f64::from(bounds.origin.y),"width":f64::from(bounds.size.width),"height":f64::from(bounds.size.height)}}));
                 window.update(cx,|_,window,_|capture(window,"recovery-notice.png")).unwrap();
             }
@@ -770,6 +810,97 @@ mod launch_context_tests {
         assert!(!super::restored_run("0.1.4", "0.1.3", "", true));
         assert!(super::restored_run("0.1.4", "0.1.4", "", true));
     }
+    #[gpui_kit::test]
+    fn recovery_observation_tracks_its_rendered_card_amid_unrelated_notices(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{px, size, test::TestWindowExt};
+        use studyapp_core::{
+            NoticeAction, NoticeCategory, NoticeEnvironment, NoticeEvent, NoticeSeverity,
+            NotificationAppearance, NotificationSettings,
+        };
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        let (center, visual) =
+            cx.add_window_view(|_, _| crate::notifications::NotificationCenter::new());
+        visual.simulate_resize(size(px(900.), px(900.)));
+        let mut recovery = NoticeEvent::new(
+            NoticeCategory::StartupRecovery,
+            NoticeSeverity::Error,
+            "更新未完成",
+        );
+        recovery.dedupe_key = Some("startup-update-recovery".into());
+        recovery.action = Some(NoticeAction::OpenUpdate);
+        let event_id = recovery.id;
+        center.update(visual, |center, cx| {
+            center.freeze_time();
+            center.configure(
+                &NotificationSettings::default(),
+                &NotificationAppearance {
+                    max_visible: 4,
+                    reduce_motion: true,
+                    ..Default::default()
+                },
+                NoticeEnvironment {
+                    foreground: true,
+                    desktop_available: false,
+                    anchor_available: false,
+                    minute: 720,
+                },
+                false,
+                cx,
+            );
+            center.enqueue(
+                NoticeEvent::new(
+                    NoticeCategory::ReviewDue,
+                    NoticeSeverity::Information,
+                    "复习已到期",
+                ),
+                cx,
+            );
+            assert!(super::recovery_notice(center).is_none());
+            let mut unrelated = recovery.clone();
+            unrelated.id = studyapp_core::NoticeEventId::new();
+            unrelated.dedupe_key = Some("other-recovery".into());
+            center.enqueue(unrelated, cx);
+            assert!(super::recovery_notice(center).is_none());
+            let mut wrong_category = recovery.clone();
+            wrong_category.id = studyapp_core::NoticeEventId::new();
+            wrong_category.category = NoticeCategory::SaveFailure;
+            center.enqueue(wrong_category, cx);
+            assert!(super::recovery_notice(center).is_none());
+            center.enqueue(recovery, cx);
+            let (id, event) = super::recovery_notice(center).unwrap();
+            assert_eq!(event.id, event_id);
+            assert_eq!(event.category, NoticeCategory::StartupRecovery);
+            assert_eq!(event.action, Some(NoticeAction::OpenUpdate));
+            assert_eq!(event.severity, NoticeSeverity::Error);
+            assert!(
+                center
+                    .test_visible_events()
+                    .iter()
+                    .any(|(candidate, e)| *candidate == id && e.id == event_id)
+            );
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let (id, event) = super::recovery_notice(center.read(cx)).unwrap();
+            assert_eq!(event.id, event_id);
+            let bounds = window.find(format!("notice-{id}")).bounds();
+            assert!(bounds.size.width > px(0.) && bounds.size.height > px(0.));
+        });
+        center.update(visual, |center, cx| {
+            center.advance_time(std::time::Duration::from_secs(3600), cx);
+            let (id, event) = super::recovery_notice(center).unwrap();
+            assert_eq!(event.id, event_id);
+            center.dismiss(id, cx);
+            assert!(super::recovery_notice(center).is_none());
+        });
+    }
+
     #[test]
     fn health_failure_injection_only_holds_the_requested_candidate() {
         assert!(super::withhold_candidate_health(

@@ -10,6 +10,59 @@ acceptance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(acceptance)
 
 class FixtureTests(unittest.TestCase):
+    @staticmethod
+    def recovery_receipt():
+        # Fabricated evidence belongs only to this verifier unit-test fixture.
+        return {"pid": 123, "visible_queue": True, "queue_id": 7, "card_id": "notice-7",
+                "event_id": "EV-00000000-0000-4000-8000-000000000001", "category": "startup_recovery",
+                "severity": "error", "action": "open_update", "dedupe_key": "startup-update-recovery",
+                "notice": {"Err": "系统授权已取消或被拒绝，本次更新未安装。可在设置中重试更新。"},
+                "bounds": {"x": 16, "y": 32, "width": 360, "height": 160}}
+
+    def test_recovery_receipt_is_bound_to_the_specific_failure_and_real_card_identity(self):
+        fixture = Path(tempfile.mkdtemp(prefix="recovery-verifier-unit-"))
+        receipt = fixture / "recovery-notice.json"
+        (fixture / "recovery-notice.png").write_bytes(bytes([137,80,78,71,13,10,26,10]) + b"unit-fixture" * 200)
+        value = self.recovery_receipt()
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        self.assertEqual(acceptance.verify_recovery_notice(fixture, 123, "authorization-denied"), value)
+        value["notice"] = {"Err": "上次更新未完成，应用已重新打开。请在设置中重试更新。"}
+        receipt.write_text(json.dumps(value), encoding="utf-8")
+        self.assertEqual(acceptance.verify_recovery_notice(fixture, 123, "health-failure"), value)
+        with self.assertRaises(ValueError):
+            acceptance.verify_recovery_notice(fixture, 123, "authorization-denied")
+        source = Path(acceptance.__file__).read_text(encoding="utf-8")
+        self.assertIn('verify_recovery_notice(fixture, after["pid"], "authorization-denied")', source)
+        macos = Path(acceptance.__file__).with_name("native-update-macos.py").read_text(encoding="utf-8")
+        self.assertIn('common.verify_recovery_notice(fixture, after["pid"], "health-failure")', macos)
+
+    def test_recovery_verifier_rejects_unrelated_messages_identity_bounds_and_missing_pixels(self):
+        fixture = Path(tempfile.mkdtemp(prefix="recovery-reject-unit-"))
+        receipt = fixture / "recovery-notice.json"
+        image = fixture / "recovery-notice.png"
+        image.write_bytes(bytes([137,80,78,71,13,10,26,10]) + b"unit-fixture" * 200)
+        mutations = [("pid", 124), ("visible_queue", False), ("queue_id", True), ("queue_id", 0),
+                     ("card_id", "floating-notice"), ("event_id", "EV-invalid"), ("category", "review_due"),
+                     ("severity", "warning"), ("action", "open_reviews"), ("dedupe_key", "reviews-due"),
+                     ("notice", {"Ok": "复习已到期"}), ("notice", {"Err": "unrelated error"}), ("bounds", None)]
+        for key, bad in mutations:
+            value = self.recovery_receipt()
+            value[key] = bad
+            receipt.write_text(json.dumps(value), encoding="utf-8")
+            with self.subTest(key=key, bad=bad), self.assertRaises(ValueError):
+                acceptance.verify_recovery_notice(fixture, 123, "authorization-denied")
+        for key, bad in (("x", -1), ("y", float("nan")), ("width", 0), ("height", float("inf"))):
+            value = self.recovery_receipt()
+            value["bounds"][key] = bad
+            receipt.write_text(json.dumps(value), encoding="utf-8")
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                acceptance.verify_recovery_notice(fixture, 123, "authorization-denied")
+        receipt.write_text(json.dumps(self.recovery_receipt()), encoding="utf-8")
+        for pixels in (b"short", b"not-a-png" * 200):
+            image.write_bytes(pixels)
+            with self.assertRaisesRegex(ValueError, "PNG evidence"):
+                acceptance.verify_recovery_notice(fixture, 123, "authorization-denied")
+
     def test_linux_transition_uses_the_existing_isolated_wm_and_cleans_up_on_failure(self):
         import contextlib
         from types import SimpleNamespace
@@ -60,7 +113,11 @@ class FixtureTests(unittest.TestCase):
         self.assertIn('"recovery-wait-start.json"', acceptance)
         self.assertIn('"windowActive":window.is_window_active()', acceptance)
         self.assertIn('"desktopNotices":app.notifications.read(cx).desktop_items().len()', acceptance)
-        self.assertIn('"visible recovery notification",|a,cx|a.notifications.read(cx).visible_count()>0', acceptance)
+        self.assertIn('"visible recovery notification",|a,cx|recovery_notice(a.notifications.read(cx)).is_some()', acceptance)
+        self.assertNotIn('let notice=window.update(cx,|_,_,cx|view.read(cx).notice.clone())', acceptance)
+        self.assertIn('assert_eq!(event.severity,studyapp_core::NoticeSeverity::Error', acceptance)
+        self.assertIn('assert_eq!(event.summary,expected)', acceptance)
+        self.assertIn('window.find(card_id.clone()).bounds()', acceptance)
         self.assertIn('assert!(bounds.size.width>px(0.)&&bounds.size.height>px(0.))', acceptance)
         self.assertIn('Duration::from_secs(60)', acceptance)
 

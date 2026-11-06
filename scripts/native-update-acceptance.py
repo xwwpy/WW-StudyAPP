@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -166,6 +167,40 @@ def editor_profile_paths(root):
     return profiles
 
 
+def verify_recovery_notice(fixture, pid, scenario):
+    """Require the exact rendered recovery event, never an unrelated latest message."""
+    expected = {
+        "authorization-denied": "系统授权已取消或被拒绝，本次更新未安装。可在设置中重试更新。",
+        "health-failure": "上次更新未完成，应用已重新打开。请在设置中重试更新。",
+    }[scenario]
+    value = wait_file(fixture / "recovery-notice.json", 5)
+    queue_id = value.get("queue_id")
+    event_id = value.get("event_id", "")
+    if (value.get("pid") != pid or value.get("visible_queue") is not True
+            or type(queue_id) is not int or queue_id <= 0
+            or value.get("card_id") != f"notice-{queue_id}"
+            or value.get("category") != "startup_recovery" or value.get("severity") != "error"
+            or value.get("action") != "open_update" or value.get("dedupe_key") != "startup-update-recovery"
+            or value.get("notice") != {"Err": expected}):
+        raise ValueError("Recovery receipt does not identify the expected rendered failure")
+    if not isinstance(event_id, str) or not event_id.startswith("EV-") or event_id != f"EV-{uuid.UUID(event_id[3:])}":
+        raise ValueError("Recovery receipt has no canonical correlation identity")
+    bounds = value.get("bounds", {})
+    if not isinstance(bounds, dict):
+        raise ValueError("Recovery card has invalid rendered bounds")
+    for key in ("x", "y", "width", "height"):
+        number = bounds.get(key)
+        if type(number) not in (int, float) or not math.isfinite(number) or number < 0 or (key in ("width", "height") and number == 0):
+            raise ValueError("Recovery card has invalid rendered bounds")
+    image = fixture / "recovery-notice.png"
+    if not 1024 < image.stat().st_size <= 16 * 1024 * 1024:
+        raise ValueError("Recovery card has no captured PNG evidence")
+    with image.open("rb") as pixels:
+        if pixels.read(8) != bytes([137, 80, 78, 71, 13, 10, 26, 10]):
+            raise ValueError("Recovery card has no captured PNG evidence")
+    return value
+
+
 def authorization_denied(root, packages, binaries, source_sha, old_version, candidate_version, user):
     """Exercise actual polkit denial and application-owned ordinary-user recovery."""
     root.mkdir()
@@ -187,6 +222,7 @@ def authorization_denied(root, packages, binaries, source_sha, old_version, cand
             before = wait_file(fixture / "old-observation.json", 120, old)
             assert old.wait(timeout=120) == 0
             after = wait_file(fixture / "new-observation.json", 120)
+            verify_recovery_notice(fixture, after["pid"], "authorization-denied")
             directory = Path(json.loads((fixture / "attempt.json").read_text())["directory"])
             assert list(directory.glob("status-cancelled-*.json"))
             assert list(directory.glob("status-failed-*.json"))

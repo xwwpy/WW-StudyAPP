@@ -399,6 +399,7 @@ def transition(root, packages, source_sha, old_version, target_version, producti
                         raise TimeoutError("Supervisor did not confirm installed app health")
                     time.sleep(.2)
             else:
+                common.verify_recovery_notice(fixture, after["pid"], "health-failure")
                 assert observed_unhealthy is not None
                 assert subprocess.run(["ps", "-p", str(observed_unhealthy["pid"])], capture_output=True).returncode == 1
                 assert list(transaction.glob("status-recovering-*.json")) and list(transaction.glob("status-recovered-*.json"))

@@ -185,6 +185,16 @@ impl NotificationCenter {
         self.queue.visible().count()
     }
 
+    /// Test observation only: bind an assertion to an event, not the latest
+    /// unrelated diagnostic message or an arbitrary visible notification.
+    #[cfg(feature = "ui-test")]
+    pub fn test_visible_events(&self) -> Vec<(u64, studyapp_core::NoticeEvent)> {
+        self.queue
+            .visible()
+            .filter_map(|entry| entry.event.clone().map(|event| (entry.id, event)))
+            .collect()
+    }
+
     #[cfg(feature = "ui-test")]
     pub fn test_state(&self) -> Vec<(u64, f32)> {
         self.queue
