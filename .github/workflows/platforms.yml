@@ -172,6 +172,8 @@ jobs:
             ${{ runner.temp }}/native-interactive/native-timer-pin*
             ${{ runner.temp }}/native-interactive/native-about.png
             ${{ runner.temp }}/native-interactive.stderr.log
+            ${{ runner.temp }}/native-interactive.sample.txt
+            ${{ runner.temp }}/native-interactive.sample.log
           if-no-files-found: warn
       - name: Build production executable
         run: cargo build --locked --release -p studyapp-desktop --bin studyapp

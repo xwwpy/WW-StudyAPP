@@ -207,6 +207,8 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         #[cfg(all(feature = "ui-test", not(test)))]
         Box::pin(crate::smoke_timer_pin::exercise(window, &view, &database, cx)).await;
         for (index, page) in [Page::Today, Page::Notes, Page::Reviews, Page::Stats, Page::Settings].into_iter().enumerate() {
+            #[cfg(feature = "ui-test")]
+            eprintln!("native page frame begin: {index}, {page:?}");
             let result = window.update(cx, |_, window, cx| {
                 view.update(cx, |app, cx| {
                     app.page = page;
@@ -219,6 +221,8 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 window.draw(cx).clear(cx);
             });
             if let Err(error) = result { eprintln!("smoke window failed: {error}"); std::process::exit(2); }
+            #[cfg(feature = "ui-test")]
+            eprintln!("native page frame complete: {index}, {page:?}");
             cx.background_executor().timer(Duration::from_millis(700)).await;
             #[cfg(feature = "ui-test")]
             {

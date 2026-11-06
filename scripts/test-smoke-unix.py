@@ -211,17 +211,73 @@ class SmokeTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1] / ".scratch/cross-platform-012"
         root.mkdir(parents=True, exist_ok=True)
         data = Path(tempfile.mkdtemp(dir=root, prefix="smoke-failure-")) / "native"
+        process = mock.MagicMock()
+        process.__enter__.return_value = process
+        process.wait.return_value = 101
         def fail(command, **kwargs):
-            kwargs["stderr"].write("panic: localstorage-wal vanished\n")
-            raise subprocess.CalledProcessError(101, command)
+            kwargs["stderr"].write("panic: localstorage-wal vanished" + chr(10))
+            return process
         captured = io.StringIO()
-        with mock.patch.object(smoke.subprocess, "run", side_effect=fail) as run:
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=fail) as start:
             with contextlib.redirect_stderr(captured):
                 with self.assertRaises(subprocess.CalledProcessError):
                     smoke.run_native(Path(__file__), data, True)
         self.assertIn("panic: localstorage-wal vanished", captured.getvalue())
-        self.assertIn("--smoke-app-dir", run.call_args.args[0])
+        self.assertIn("--smoke-app-dir", start.call_args.args[0])
+        process.wait.assert_called_once_with(timeout=480)
+        process.kill.assert_not_called()
         self.assertTrue(data.with_suffix(".stderr.log").is_file())
+
+    def test_timeout_samples_only_its_child_then_kills_it_and_still_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / "native"
+            process = mock.MagicMock(pid=1234)
+            process.__enter__.return_value = process
+            process.wait.side_effect = [subprocess.TimeoutExpired("fixture", 480), -9]
+            order = mock.Mock()
+            order.attach_mock(process.kill, "kill")
+            with (mock.patch.object(smoke.subprocess, "Popen", return_value=process),
+                  mock.patch.object(smoke, "sample_timed_out_child") as sample,
+                  contextlib.redirect_stderr(io.StringIO())):
+                order.attach_mock(sample, "sample")
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    smoke.run_native(Path(__file__), data, True)
+            self.assertEqual(order.mock_calls, [mock.call.sample(process, data), mock.call.kill()])
+            self.assertEqual(process.wait.call_args_list, [mock.call(timeout=480), mock.call(timeout=5)])
+
+    def test_sample_is_passive_bounded_and_restricted_to_live_macos_runner_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / "native"
+            process = mock.Mock(pid=1234)
+            process.poll.return_value = None
+            with (mock.patch.object(smoke.sys, "platform", "darwin"),
+                  mock.patch.dict(smoke.os.environ, {"GITHUB_ACTIONS": "true"}),
+                  mock.patch.object(smoke.subprocess, "run") as run):
+                smoke.sample_timed_out_child(process, data)
+                self.assertEqual(run.call_args.args[0],
+                                 ["/usr/bin/sample", "1234", "2", "-file", str(data.with_suffix(".sample.txt"))])
+                self.assertEqual(run.call_args.kwargs["timeout"], 10)
+                process.poll.return_value = 0
+                smoke.sample_timed_out_child(process, data)
+                process.poll.return_value = None
+                with mock.patch.dict(smoke.os.environ, {"GITHUB_ACTIONS": "false"}):
+                    smoke.sample_timed_out_child(process, data)
+                with mock.patch.object(smoke.sys, "platform", "linux"):
+                    smoke.sample_timed_out_child(process, data)
+                self.assertEqual(run.call_count, 1)
+            process.kill.assert_not_called()
+            process.terminate.assert_not_called()
+
+    def test_unavailable_sample_does_not_replace_the_original_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            process = mock.Mock(pid=1234)
+            process.poll.return_value = None
+            with (mock.patch.object(smoke.sys, "platform", "darwin"),
+                  mock.patch.dict(smoke.os.environ, {"GITHUB_ACTIONS": "true"}),
+                  mock.patch.object(smoke.subprocess, "run", side_effect=OSError("fixture")),
+                  contextlib.redirect_stderr(io.StringIO()) as captured):
+                smoke.sample_timed_out_child(process, Path(directory) / "native")
+            self.assertIn("sample unavailable: OSError", captured.getvalue())
 
 
 if __name__ == "__main__":

@@ -83,13 +83,41 @@ def window_manager(data, interactive):
             process.wait(timeout=5)
 
 
+def sample_timed_out_child(process, data):
+    # Only inspect the exact child launched below, on the isolated macOS runner.
+    # This is failure evidence, never a retry or an extension of the pass deadline.
+    if (sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true"
+            or process.poll() is not None):
+        return
+    try:
+        with data.with_suffix(".sample.log").open("w") as log:
+            subprocess.run(["/usr/bin/sample", str(process.pid), "2", "-file",
+                            str(data.with_suffix(".sample.txt"))],
+                           stdout=log, stderr=log, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(f"Native timeout sample unavailable: {type(error).__name__}", file=sys.stderr)
+
+
 def run_native(binary, data, interactive):
     stderr_path = data.with_suffix(".stderr.log")
+    command = [str(binary.resolve(strict=True)), "--smoke-test",
+               "--smoke-app-dir" if interactive else "--data-dir", str(data)]
     try:
         with data.with_suffix(".stdout.log").open("w") as stdout, stderr_path.open("w") as stderr:
-            subprocess.run([str(binary.resolve(strict=True)), "--smoke-test",
-                            "--smoke-app-dir" if interactive else "--data-dir", str(data)],
-                           stdout=stdout, stderr=stderr, timeout=480, check=True)
+            with subprocess.Popen(command, stdout=stdout, stderr=stderr) as process:
+                try:
+                    code = process.wait(timeout=480)
+                except subprocess.TimeoutExpired:
+                    try:
+                        sample_timed_out_child(process, data)
+                    finally:
+                        # This is our own isolated fixture child, not another app
+                        # or an instance discovered through a library lock.
+                        process.kill()
+                        process.wait(timeout=5)
+                    raise
+                if code:
+                    raise subprocess.CalledProcessError(code, command)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print(stderr_path.read_text(encoding="utf-8", errors="replace"), file=sys.stderr)
         raise
