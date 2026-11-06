@@ -575,6 +575,12 @@ pub async fn exercise(
     );
     main.update(cx, |_, window, _| window.activate_window())
         .unwrap();
+    until_native("main restored after minimization", cx, || unsafe {
+        !IsIconic(HWND(main_handle as *mut _)).as_bool()
+            && IsWindowVisible(HWND(main_handle as *mut _)).as_bool()
+            && GetForegroundWindow() == HWND(main_handle as *mut _)
+    })
+    .await;
     let state = app.read_with(cx, |app, _| app.widget_state.clone());
     let path = StudyApp::widget_state_path().unwrap();
     assert!(
@@ -612,11 +618,23 @@ pub async fn exercise(
         .unwrap();
     // End through the real explicit-exit path, not cx.quit: it must drain the
     // current native editor, then remove both windows and retain restore state.
+    main.update(cx, |_, window, _| pointer::prepare(window))
+        .unwrap();
+    until_native("main visible before exit draft", cx, || unsafe {
+        !IsIconic(HWND(main_handle as *mut _)).as_bool()
+            && IsWindowVisible(HWND(main_handle as *mut _)).as_bool()
+            && GetForegroundWindow() == HWND(main_handle as *mut _)
+    })
+    .await;
     main.update(cx, |_, window, cx| {
         app.update(cx, |app, cx| {
-            app.page = crate::app::Page::Notes;
+            app.navigate(crate::app::Page::Notes, window, cx);
+            assert_eq!(app.page, crate::app::Page::Notes);
             app.start_new_draft(None, window, cx);
-        })
+        });
+        // Mount the new native editor after the real restore/navigation. The
+        // existing five-second readiness and durable explicit-exit checks stay.
+        window.render_frame(cx);
     })
     .unwrap();
     until(
@@ -624,7 +642,14 @@ pub async fn exercise(
         app,
         "exit draft editor",
         |app, cx| {
-            app.note_editor.is_some() && !app.draft_loading && app.note_content.read(cx).ready()
+            let editor = app.note_content.read(cx);
+            std::fs::write(database.with_file_name("timer-widget-exit-editor.json"), serde_json::to_vec_pretty(&json!({
+                "ready":editor.ready(),"error":editor.error(),"native":editor.native_state().ok(),
+                "mainVisible":unsafe { IsWindowVisible(HWND(main_handle as *mut _)).as_bool() },
+                "mainMinimized":unsafe { IsIconic(HWND(main_handle as *mut _)).as_bool() },
+                "foreground":unsafe { GetForegroundWindow().0 as usize },"main":main_handle,
+            })).unwrap()).unwrap();
+            app.note_editor.is_some() && !app.draft_loading && editor.ready()
         },
         cx,
     )

@@ -251,17 +251,24 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("nativeMargins", capture_source)
         self.assertIn("window.on_next_frame(|_, _| {})", capture_source)
         self.assertNotIn("simulate_next_frame", capture_source)
+        self.assertIn("all_cards_opaque(ids, &opacities)", capture_source)
+        self.assertIn("opacityFrames", capture_source)
+        self.assertNotIn("advance_time", capture_source)
         self.assertIn("mismatches * 100 <= ink * 5", capture_source)
         self.assertIn("real_screen_comparison_rejects_blank_stale_missing_and_faded_cards", capture_source)
         for directory in ("SMOKE_DIR", "SETTINGS_DIR", "OPTIMIZED_SETTINGS_DIR"):
             self.assertIn("${{ env." + directory + " }}/native-*.json", workflow)
         self.assertIn('"platformBounds"', smoke_source)
         self.assertIn("desktop_cards_fit_natural_content_from_a_one_pixel_bootstrap", desktop)
+        self.assertIn("fitted_bootstrap_observes_the_real_zero_half_and_complete_animation", desktop)
         for check in ('native["nonClientRendering"], false', "WS_EX_NOACTIVATE", "relevant notification edit must rebuild visible controls only",
                       "fitting G must not activate it", "stacking G must not activate it", "shrinking G must not activate it"):
             self.assertIn(check, smoke_source)
         for directory in ("SMOKE_DIR", "SETTINGS_DIR", "OPTIMIZED_SETTINGS_DIR"):
             self.assertIn("${{ env." + directory + " }}/notification-*.png", workflow)
+        widget_source = (root / "crates/studyapp-desktop/src/smoke_timer_widget.rs").read_text(encoding="utf-8")
+        for check in ("main restored after minimization", "main visible before exit draft", "app.navigate(crate::app::Page::Notes", "timer-widget-exit-editor.json"):
+            self.assertIn(check, widget_source)
         self.assertIn("settings-notification-cache-timing.json", smoke_source)
         for check in ("notification benchmark did not mount", "notification_cache_matches(cx)",
                       "notification_appearance_cache_matches(cx)", "settings-notification-cache-edit.json",

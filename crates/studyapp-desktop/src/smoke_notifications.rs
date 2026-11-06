@@ -626,6 +626,7 @@ pub async fn exercise(
     assert_eq!(foreground(), before, "fitting G must not activate it");
     let compact_capture = capture::desktop(
         desktop,
+        view,
         &[numeric_id],
         database,
         "notification-desktop-G",
@@ -680,6 +681,7 @@ pub async fn exercise(
     assert_eq!(foreground(), before, "stacking G must not activate it");
     let stacked_capture = capture::desktop(
         desktop,
+        view,
         &[numeric_id, secondary_id],
         database,
         "notification-desktop-G-stacked",

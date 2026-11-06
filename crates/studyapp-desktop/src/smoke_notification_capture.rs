@@ -1,5 +1,6 @@
 //! Runner-only compositor evidence; layout/readback alone is not a presented frame.
-use gpui_kit::{AnyWindowHandle, AsyncApp, test::TestWindowExt};
+use crate::app::StudyApp;
+use gpui_kit::{AnyWindowHandle, AsyncApp, Entity, test::TestWindowExt};
 use image::RgbaImage;
 use std::{
     path::Path,
@@ -44,16 +45,72 @@ fn compare_cards(
     serde_json::json!({"matched":matched,"channelTolerance":CHANNEL_TOLERANCE,"maximumMismatchPercent":5,"cards":reports})
 }
 
+fn all_cards_opaque(ids: &[u64], entries: &[(u64, f32)]) -> bool {
+    !ids.is_empty()
+        && entries.len() == ids.len()
+        && ids.iter().all(|id| {
+            entries
+                .iter()
+                .any(|(entry, opacity)| entry == id && *opacity == 1.)
+        })
+}
+
 pub(super) async fn desktop(
     handle: AnyWindowHandle,
+    owner: &Entity<StudyApp>,
     ids: &[u64],
     database: &Path,
     name: &str,
     cx: &mut AsyncApp,
 ) -> serde_json::Value {
     assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let began = Instant::now();
+    let deadline = began + Duration::from_secs(5);
     let foreground = super::foreground();
+    // A fitted DOM rectangle can still be the zero-opacity opening frame.
+    // Observe the real queue's transition, not a guessed delay or a retry of
+    // failed pixel samples; only then prepare one final native presentation.
+    let mut opacity_frames = Vec::new();
+    let opacities = loop {
+        let opacities: Vec<_> = handle
+            .update(cx, |_, _, cx| {
+                owner
+                    .read(cx)
+                    .notifications
+                    .read(cx)
+                    .desktop_items()
+                    .into_iter()
+                    .map(|(notice, opacity)| (notice.id, opacity))
+                    .collect()
+            })
+            .unwrap();
+        assert_eq!(
+            super::foreground(),
+            foreground,
+            "waiting for G opacity must not activate it"
+        );
+        opacity_frames.push(
+            serde_json::json!({"elapsedMs":began.elapsed().as_millis(),"opacities":opacities}),
+        );
+        std::fs::write(
+            database.with_file_name(format!("native-{name}-presentation.json")),
+            serde_json::to_vec_pretty(
+                &serde_json::json!({"stage":"waitingForOpacity","frames":opacity_frames}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        if all_cards_opaque(ids, &opacities) {
+            break opacities;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "G did not finish its opening transition within 5 seconds: {opacities:?}"
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(25))
+            .await;
+    };
     handle
         .update(cx, |_, window, cx| {
             assert!(!window.is_window_active());
@@ -79,7 +136,7 @@ pub(super) async fn desktop(
         );
         std::fs::write(
             database.with_file_name(format!("native-{name}-presentation.json")),
-            serde_json::to_vec_pretty(&diagnostics).unwrap(),
+            serde_json::to_vec_pretty(&serde_json::json!({"stage":"waitingForPresentation","diagnostics":diagnostics,"opacities":opacities,"opacityFrames":opacity_frames})).unwrap(),
         )
         .unwrap();
         if diagnostics["presentations"].as_u64().unwrap_or(0) > 0 {
@@ -156,7 +213,7 @@ pub(super) async fn desktop(
             comparison
         })
         .unwrap();
-    let receipt = serde_json::json!({"diagnostics":diagnostics,"comparison":comparison,"capturedOnce":true,"foregroundUnchanged":super::foreground()==foreground});
+    let receipt = serde_json::json!({"diagnostics":diagnostics,"comparison":comparison,"opacities":opacities,"opacityFrames":opacity_frames,"capturedOnce":true,"foregroundUnchanged":super::foreground()==foreground});
     std::fs::write(
         database.with_file_name(format!("native-{name}-presentation.json")),
         serde_json::to_vec_pretty(&receipt).unwrap(),
@@ -174,6 +231,22 @@ pub(super) async fn desktop(
 mod tests {
     use super::*;
     use image::Rgba;
+
+    #[test]
+    fn opacity_gate_requires_every_expected_card_and_a_complete_transition() {
+        assert!(all_cards_opaque(&[1, 2], &[(1, 1.), (2, 1.)]));
+        for entries in [
+            vec![],
+            vec![(1, 1.)],
+            vec![(1, 1.), (2, 0.)],
+            vec![(1, 1.), (2, 0.999)],
+            vec![(1, 1.), (3, 1.)],
+            vec![(1, 1.), (2, f32::NAN)],
+        ] {
+            assert!(!all_cards_opaque(&[1, 2], &entries));
+        }
+        assert!(!all_cards_opaque(&[], &[]));
+    }
 
     #[test]
     fn real_screen_comparison_rejects_blank_stale_missing_and_faded_cards() {

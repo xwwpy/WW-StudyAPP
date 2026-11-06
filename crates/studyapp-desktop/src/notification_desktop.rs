@@ -417,4 +417,78 @@ mod tests {
         visual.update(|window, _| assert_eq!(window.viewport_size(), compact));
         assert!(owner.is_some());
     }
+
+    #[gpui_kit::test]
+    fn fitted_bootstrap_observes_the_real_zero_half_and_complete_animation(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        let data = tempfile::tempdir().unwrap().keep();
+        let worker = crate::worker::Worker::start(data.join("studyapp.sqlite3"), None);
+        let mut owner = None;
+        let mut desktop = None;
+        let handle = cx.open_window(size(px(376.), px(1.)), |window, cx| {
+            let app = cx.new(|cx| StudyApp::new(worker, window, cx));
+            let center = cx.new(|_| NotificationCenter::new());
+            center.update(cx, |center, cx| {
+                center.freeze_time();
+                center.configure(
+                    &NotificationSettings::default(),
+                    &NotificationAppearance::default(),
+                    NoticeEnvironment {
+                        foreground: false,
+                        desktop_available: true,
+                        anchor_available: false,
+                        minute: 0,
+                    },
+                    false,
+                    cx,
+                );
+                center
+                    .enqueue(
+                        NoticeEvent::new(
+                            NoticeCategory::SaveFailure,
+                            NoticeSeverity::Error,
+                            "动画仍未显示时，布局也可能已经完成。",
+                        ),
+                        cx,
+                    )
+                    .unwrap();
+            });
+            let presentation = DesktopPresentation::read(center.read(cx));
+            let view =
+                cx.new(|cx| DesktopNotifications::new(center, presentation, app.downgrade(), cx));
+            desktop = Some(view.clone());
+            owner = Some(app);
+            base::Root::new(view, window, cx)
+        });
+        let desktop = desktop.unwrap();
+        let visual = &mut VisualTestContext::from_window(handle.into(), cx);
+        for _ in 0..8 {
+            visual.update(|window, cx| window.render_frame(cx));
+        }
+        visual.update(|window, cx| {
+            let card = window.find("desktop-notice-1").bounds();
+            assert!(
+                (f32::from(window.viewport_size().height - card.size.height) - 16.).abs() <= 2.
+            );
+            assert_eq!(desktop.read(cx).presentation.entries[0].1, 0.);
+        });
+        let center = desktop.read_with(visual, |view, _| view.center.clone());
+        for expected in [0.5, 1.] {
+            center.update(visual, |center, cx| {
+                center.advance_time(std::time::Duration::from_millis(100), cx)
+            });
+            for _ in 0..8 {
+                visual.update(|window, cx| window.render_frame(cx));
+            }
+            desktop.read_with(visual, |view, _| {
+                assert_eq!(view.presentation.entries[0].1, expected)
+            });
+        }
+        assert!(owner.is_some());
+    }
 }
