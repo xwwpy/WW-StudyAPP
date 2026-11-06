@@ -239,8 +239,22 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("settings-notification-cache-warmup.json", smoke_source)
         self.assertIn("warmup_frames.len() >= 5 && quiet >= 3", smoke_source)
         self.assertIn("native-notification-fit-{phase}.json", smoke_source)
-        for capture in ("notification-desktop-G-native.png", "notification-desktop-G-stacked-native.png", "crate::native_test_pointer::capture_diagnostic"):
+        capture_source = (root / "crates/studyapp-desktop/src/smoke_notification_capture.rs").read_text(encoding="utf-8")
+        for capture in ("notification-desktop-G", "notification-desktop-G-stacked", "screen_captures"):
             self.assertIn(capture, smoke_source)
+        for check in ("window.reset_render_diagnostics()", "presentations", "DwmFlush().unwrap()", "crate::native_test_pointer::capture_diagnostic", "compare_cards(&expected, &actual", "Duration::from_secs(5)", "capturedOnce"):
+            self.assertIn(check, capture_source)
+        self.assertLess(capture_source.index("DwmFlush().unwrap()"), capture_source.index("crate::native_test_pointer::capture_diagnostic"))
+        self.assertEqual(capture_source.count("crate::native_test_pointer::capture_diagnostic"), 1)
+        self.assertIn(".bg(rgb(capture::WITNESS_BACKGROUND))", smoke_source)
+        self.assertIn("WindowBounds::Windowed(witness_bounds)", smoke_source)
+        self.assertIn("nativeMargins", capture_source)
+        self.assertIn("window.on_next_frame(|_, _| {})", capture_source)
+        self.assertNotIn("simulate_next_frame", capture_source)
+        self.assertIn("mismatches * 100 <= ink * 5", capture_source)
+        self.assertIn("real_screen_comparison_rejects_blank_stale_missing_and_faded_cards", capture_source)
+        for directory in ("SMOKE_DIR", "SETTINGS_DIR", "OPTIMIZED_SETTINGS_DIR"):
+            self.assertIn("${{ env." + directory + " }}/native-*.json", workflow)
         self.assertIn('"platformBounds"', smoke_source)
         self.assertIn("desktop_cards_fit_natural_content_from_a_one_pixel_bootstrap", desktop)
         for check in ('native["nonClientRendering"], false', "WS_EX_NOACTIVATE", "relevant notification edit must rebuild visible controls only",

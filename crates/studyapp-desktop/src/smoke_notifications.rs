@@ -1,4 +1,6 @@
 //! Native focus/visual acceptance. Invoked only by Windows runner smoke profiles.
+#[path = "smoke_notification_capture.rs"]
+mod capture;
 use crate::{
     app::{Page, StudyApp},
     settings_ui::SettingsSection,
@@ -42,7 +44,10 @@ fn foreground() -> isize {
 struct Witness;
 impl Render for Witness {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div().size_full().child("Notification focus witness")
+        div()
+            .size_full()
+            .bg(rgb(capture::WITNESS_BACKGROUND))
+            .child("Notification focus witness")
     }
 }
 fn configure(app: &mut StudyApp, style: NoticeStyle, cx: &mut Context<StudyApp>) {
@@ -503,12 +508,18 @@ pub async fn exercise(
     cx.background_executor()
         .timer(Duration::from_millis(50))
         .await;
+    let witness_bounds = window
+        .update(cx, |_, window, cx| {
+            window.display(cx).unwrap().visible_bounds()
+        })
+        .unwrap();
     let witness = cx
         .update(|cx| {
             cx.open_window(
                 WindowOptions {
                     focus: false,
                     show: true,
+                    window_bounds: Some(WindowBounds::Windowed(witness_bounds)),
                     ..Default::default()
                 },
                 |window, cx| {
@@ -523,6 +534,7 @@ pub async fn exercise(
     let witness: AnyWindowHandle = witness.into();
     witness
         .update(cx, |_, window, cx| {
+            window.reset_render_diagnostics();
             crate::native_test_pointer::prepare(window);
             window.render_frame(cx);
             window.activate_window();
@@ -537,6 +549,10 @@ pub async fn exercise(
             .update(cx, |_, window, cx| {
                 window.render_frame(cx);
                 window.is_window_active()
+                    && window.render_diagnostics()["presentations"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        > 0
             })
             .unwrap();
         let inactive = window
@@ -608,26 +624,14 @@ pub async fn exercise(
         .unwrap();
     let compact_geometry = fitted_desktop(desktop, &[numeric_id], database, "compact", cx).await;
     assert_eq!(foreground(), before, "fitting G must not activate it");
-    desktop
-        .update(cx, |_, window, cx| {
-            window.render_frame(cx);
-            assert!(!window.is_window_active());
-            assert!(
-                window
-                    .try_find(format!("desktop-notice-{numeric_id}"))
-                    .is_some()
-            );
-            crate::smoke::capture(
-                window,
-                database.with_file_name("notification-desktop-G.png"),
-            )
-            .unwrap();
-            crate::native_test_pointer::capture_diagnostic(
-                window,
-                &database.with_file_name("notification-desktop-G-native.png"),
-            );
-        })
-        .unwrap();
+    let compact_capture = capture::desktop(
+        desktop,
+        &[numeric_id],
+        database,
+        "notification-desktop-G",
+        cx,
+    )
+    .await;
     assert_eq!(foreground(), before, "painting G must not activate it");
     let secondary_id = window
         .update(cx, |_, window, cx| {
@@ -674,19 +678,14 @@ pub async fn exercise(
     )
     .await;
     assert_eq!(foreground(), before, "stacking G must not activate it");
-    desktop
-        .update(cx, |_, window, _| {
-            crate::smoke::capture(
-                window,
-                database.with_file_name("notification-desktop-G-stacked.png"),
-            )
-            .unwrap();
-            crate::native_test_pointer::capture_diagnostic(
-                window,
-                &database.with_file_name("notification-desktop-G-stacked-native.png"),
-            );
-        })
-        .unwrap();
+    let stacked_capture = capture::desktop(
+        desktop,
+        &[numeric_id, secondary_id],
+        database,
+        "notification-desktop-G-stacked",
+        cx,
+    )
+    .await;
     window
         .update(cx, |_, _, cx| {
             view.read(cx)
@@ -769,6 +768,7 @@ pub async fn exercise(
         "painted_without_activation":true,"closed_without_activation":true,"same_event_on_foreground_return":event_id.to_string(),
         "foreground_events":accepted,
         "content_fit":{"compact":compact_geometry,"stacked":stacked_geometry,"restored":restored_geometry},
+        "screen_captures":{"compact":compact_capture,"stacked":stacked_capture},
         "fit_without_activation":true,"stack_without_activation":true,"shrink_without_activation":true,
     })).unwrap()).unwrap();
 }
