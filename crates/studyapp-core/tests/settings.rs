@@ -167,6 +167,10 @@ fn workspace_layout_persists_without_changing_learning_or_path_settings() {
         navigation_visible: false,
         folders_visible: true,
         library_sort: studyapp_core::LibrarySort::Newest,
+        outline: Some(studyapp_core::OutlinePreference {
+            position: studyapp_core::OutlinePosition::Right,
+            shown: true,
+        }),
     };
     for layout_first in [false, true] {
         let mut engine = Engine::open(&database, 1000).unwrap();
@@ -225,6 +229,10 @@ fn invalid_workspace_widths_are_rejected_without_persisting_changes() {
             navigation_visible: false,
             folders_visible: true,
             library_sort: studyapp_core::LibrarySort::Newest,
+            outline: Some(studyapp_core::OutlinePreference {
+                position: studyapp_core::OutlinePosition::Right,
+                shown: true,
+            }),
         };
         assert!(
             engine
@@ -458,4 +466,31 @@ fn rgba_theme_and_markdown_round_trip_through_save_and_reopen() {
         serde_json::from_value::<Settings>(exported).unwrap(),
         settings
     );
+}
+
+#[test]
+fn outline_layout_is_optional_for_legacy_data_and_strict_when_present() {
+    let legacy: LayoutSettings = serde_json::from_value(json!({})).unwrap();
+    assert!(legacy.outline.is_none());
+    assert!(
+        serde_json::to_value(&legacy)
+            .unwrap()
+            .get("outline")
+            .is_none()
+    );
+    for position in ["auto", "left", "right", "top", "floating"] {
+        let layout: LayoutSettings =
+            serde_json::from_value(json!({"outline":{"position":position,"shown":true}})).unwrap();
+        assert_eq!(
+            serde_json::to_value(layout).unwrap()["outline"],
+            json!({"position":position,"shown":true})
+        );
+    }
+    for invalid in [
+        json!({"position":"unknown","shown":true}),
+        json!({"position":"right","shown":1}),
+        json!({"position":"right"}),
+    ] {
+        assert!(serde_json::from_value::<LayoutSettings>(json!({"outline":invalid})).is_err());
+    }
 }

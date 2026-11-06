@@ -414,8 +414,9 @@ pub(crate) fn scroll_settings(window: &mut Window, delta: f32, cx: &mut App) {
     window.render_frame(cx);
 }
 
-/// Exercise the same settings buttons and WebView persistence contract on all
-/// three native runners. Only the blocking OS directory chooser is substituted.
+/// Exercise the same settings buttons and native data preservation on all three
+/// runners, plus the platform browser-storage contract. Only the blocking OS
+/// directory chooser is substituted.
 pub(crate) async fn application_migration(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
@@ -431,17 +432,24 @@ pub(crate) async fn application_migration(
         .unwrap()
         .with_file_name(format!("studyapp-application-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&target).unwrap();
-    let select_reader = |window: &mut Window, cx: &mut App| {
-        view.update(cx, |app, cx| {
-            app.page = Page::Notes;
-            app.selected_note = app
+    let (note_id, editor) = window
+        .update(cx, |_, _, cx| {
+            let app = view.read(cx);
+            let note = app
                 .snapshot
                 .as_ref()
                 .unwrap()
                 .notes
                 .iter()
-                .find(|n| !n.detached)
-                .map(|n| n.id.clone());
+                .find(|note| !note.detached)
+                .expect("migration reader fixture");
+            (note.id.clone(), app.note_content.clone())
+        })
+        .unwrap();
+    let select_reader = |window: &mut Window, cx: &mut App| {
+        view.update(cx, |app, cx| {
+            app.page = Page::Notes;
+            app.selected_note = Some(note_id.clone());
             app.history = false;
             cx.notify();
         });
@@ -454,6 +462,45 @@ pub(crate) async fn application_migration(
         "editor before relocation",
         Duration::from_secs(30),
         |a, c| a.note_content.read(c).ready(),
+        cx,
+    )
+    .await;
+    let before_editor = bridge(window, &editor, json!({"type":"snapshot"}), cx).await;
+    let expected_text = window
+        .update(cx, |_, _, cx| editor.read(cx).value().to_owned())
+        .unwrap();
+    assert!(
+        !expected_text.is_empty(),
+        "migration reader fixture has content"
+    );
+    let expected_view_text = studyapp_desktop::editor_protocol::normalize(&expected_text);
+    assert_eq!(before_editor["text"], expected_view_text);
+    assert_eq!(before_editor["readonly"], true);
+    // Change actual viewer controls, then wait for the ordinary background
+    // preferences receipt. Browser localStorage is only a compatibility cache.
+    let outline = studyapp_core::OutlinePreference {
+        position: studyapp_core::OutlinePosition::Right,
+        shown: true,
+    };
+    let configured = bridge(
+        window,
+        &editor,
+        json!({"type":"outlinePreference", "name":"right", "shown":true}),
+        cx,
+    )
+    .await;
+    assert_eq!(configured["text"], expected_view_text);
+    assert_eq!(configured["revision"], before_editor["revision"]);
+    until(
+        window,
+        view,
+        "outline preference durably saved before relocation",
+        |a, _| {
+            !a.layout_dirty
+                && a.snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.settings.layout.outline == Some(outline))
+        },
         cx,
     )
     .await;
@@ -486,15 +533,13 @@ pub(crate) async fn application_migration(
     .await;
     let before = window
         .update(cx, |_, w, c| {
-            let before = view
-                .read(c)
-                .snapshot
-                .as_ref()
-                .unwrap()
-                .versions
-                .iter()
-                .map(|v| (v.note_id.clone(), v.hash.clone()))
-                .collect::<Vec<_>>();
+            let snapshot = view.read(c).snapshot.as_ref().unwrap();
+            let before = json!({
+                "versions": snapshot.versions,
+                "settings": snapshot.settings,
+                "tableViews": snapshot.table_views,
+                "folders": snapshot.folders,
+            });
             view.update(c, |app, c| {
                 app.page = Page::Settings;
                 app.begin_settings(w, c);
@@ -568,15 +613,16 @@ pub(crate) async fn application_migration(
     window
         .update(cx, |_, w, c| {
             let a = view.read(c);
+            let snapshot = a.snapshot.as_ref().unwrap();
             assert_eq!(
                 before,
-                a.snapshot
-                    .as_ref()
-                    .unwrap()
-                    .versions
-                    .iter()
-                    .map(|v| (v.note_id.clone(), v.hash.clone()))
-                    .collect::<Vec<_>>()
+                json!({
+                    "versions": snapshot.versions,
+                    "settings": snapshot.settings,
+                    "tableViews": snapshot.table_views,
+                    "folders": snapshot.folders,
+                }),
+                "native data changed during application relocation"
             );
             assert!(old.exists());
             select_reader(w, c);
@@ -595,17 +641,63 @@ pub(crate) async fn application_migration(
     until(
         window,
         view,
-        "new WebView reads prior persistent value",
+        "new WebView answers browser storage probe",
         |a, c| {
             a.note_content
                 .read(c)
                 .test_results
-                .get("migration-profile-marker")
-                == Some(&json!("persisted"))
+                .contains_key("migration-profile-marker")
         },
         cx,
     )
     .await;
+    let observed_marker = window
+        .update(cx, |_, _, cx| {
+            editor
+                .read(cx)
+                .test_results
+                .get("migration-profile-marker")
+                .unwrap()
+                .clone()
+        })
+        .unwrap();
+    // macOS deliberately uses a fresh nonpersistent WKWebsiteDataStore per
+    // host. Never enable disk-backed WebKit state just to preserve a test key.
+    // Other platforms retain their existing persistent profile-copy contract.
+    let expected_marker = if cfg!(target_os = "macos") {
+        Value::Null
+    } else {
+        json!("persisted")
+    };
+    std::fs::write(
+        database.with_file_name("native-app-migration-browser.json"),
+        serde_json::to_vec_pretty(&json!({"platform": std::env::consts::OS,
+            "expected": expected_marker, "observed": observed_marker}))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        observed_marker, expected_marker,
+        "relocated browser storage contract"
+    );
+    let after_editor = bridge(window, &editor, json!({"type":"snapshot"}), cx).await;
+    assert_eq!(
+        after_editor["text"], expected_view_text,
+        "relocated editor lost native document content"
+    );
+    let after_canonical = window
+        .update(cx, |_, _, cx| editor.read(cx).value().to_owned())
+        .unwrap();
+    assert_eq!(
+        after_canonical, expected_text,
+        "native canonical line endings changed during relocation"
+    );
+    assert_eq!(after_editor["readonly"], true);
+    assert_eq!(
+        after_editor["outline"],
+        json!(outline),
+        "native outline preference must survive a fresh WebView"
+    );
     window
         .update(cx, |_, _, c| {
             view.read(c)
@@ -624,7 +716,7 @@ pub(crate) async fn application_migration(
         cx,
     )
     .await;
-    std::fs::write(database.with_file_name("native-app-migration.txt"),"PASS: confirmed application migration, verified versions and WebView localStorage after relocation, returned to fixture library.").unwrap();
+    std::fs::write(database.with_file_name("native-app-migration.txt"),"PASS: confirmed application migration, verified native content, settings, table views, folders, full versions and platform browser storage after relocation, returned to fixture library.").unwrap();
 }
 #[cfg(windows)]
 pub async fn exercise(

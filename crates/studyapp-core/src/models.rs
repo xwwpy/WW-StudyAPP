@@ -11,6 +11,22 @@ pub enum LibrarySort {
     Newest,
     Oldest,
 }
+/// Remembered viewer layout; never part of Markdown text or undo history.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum OutlinePosition {
+    #[default]
+    Auto,
+    Left,
+    Right,
+    Top,
+    Floating,
+}
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutlinePreference {
+    pub position: OutlinePosition,
+    pub shown: bool,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct LayoutSettings {
@@ -20,6 +36,8 @@ pub struct LayoutSettings {
     pub navigation_visible: bool,
     pub folders_visible: bool,
     pub library_sort: LibrarySort,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outline: Option<OutlinePreference>,
 }
 
 impl Default for LayoutSettings {
@@ -31,6 +49,7 @@ impl Default for LayoutSettings {
             navigation_visible: true,
             folders_visible: true,
             library_sort: LibrarySort::default(),
+            outline: None,
         }
     }
 }

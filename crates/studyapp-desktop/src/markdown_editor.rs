@@ -15,6 +15,7 @@ use studyapp_desktop::editor_protocol::{EditPatch, EditorDocument};
 pub struct MarkdownChanged;
 #[derive(Clone)]
 pub enum MarkdownEvent {
+    OutlinePreference(studyapp_core::OutlinePreference),
     TableView {
         epoch: u64,
         library: String,
@@ -47,6 +48,10 @@ pub enum MarkdownEvent {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Message {
+    OutlinePreference {
+        generation: u64,
+        value: studyapp_core::OutlinePreference,
+    },
     TableView {
         generation: u64,
         table: String,
@@ -135,6 +140,7 @@ pub struct MarkdownEditor {
     resume_readonly: bool,
     can_request_edit: bool,
     outline_enabled: bool,
+    outline_preference: Option<studyapp_core::OutlinePreference>,
     theme: serde_json::Value,
     error: Option<String>,
     pending: Option<(u64, Instant)>,
@@ -147,6 +153,10 @@ pub struct MarkdownEditor {
     pub(crate) test_results: std::collections::HashMap<String, serde_json::Value>,
     _poll: Task<()>,
 }
+fn valid_outline_message(generation: u64, current: u64, interactive: bool) -> bool {
+    generation == current && interactive
+}
+
 impl EventEmitter<MarkdownChanged> for MarkdownEditor {}
 impl EventEmitter<MarkdownEvent> for MarkdownEditor {}
 
@@ -240,6 +250,7 @@ impl MarkdownEditor {
             resume_readonly: false,
             can_request_edit: false,
             outline_enabled: true,
+            outline_preference: None,
             theme: serde_json::Value::Null,
             error: None,
             pending: None,
@@ -267,6 +278,26 @@ impl MarkdownEditor {
 
     pub fn value(&self) -> &str {
         self.document.text()
+    }
+
+    pub(crate) fn set_outline_preference(
+        &mut self,
+        value: Option<studyapp_core::OutlinePreference>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.outline_preference == value {
+            return;
+        }
+        self.outline_preference = value;
+        if self.ready {
+            let value = value.unwrap_or_default();
+            if let Err(error) = self.evaluate(&format!(
+                "window.studyappEditor.setOutlinePreference({});",
+                serde_json::to_string(&value).unwrap()
+            )) {
+                self.fail(format!("无法恢复目录布局：{error:#}"), cx);
+            }
+        }
     }
 
     pub fn without_outline(mut self) -> Self {
@@ -473,7 +504,7 @@ impl MarkdownEditor {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled, "tableViews": self.tables.views, "tableConfigurable": self.tables.current.is_some()});
+        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled, "outlinePreference": self.outline_preference, "tableViews": self.tables.views, "tableConfigurable": self.tables.current.is_some()});
         let shortcuts = serde_json::to_string(&self.shortcuts).expect("string map serializes");
         let theme = &self.theme;
         if let Err(error) = self.evaluate(&format!("window.studyappEditor.setShortcuts({shortcuts}); window.studyappEditor.setTheme({theme}); window.studyappEditor.load({payload});")) {
@@ -768,6 +799,20 @@ impl MarkdownEditor {
                     // only the operating system drop callback supplies paths.
                     Message::ExternalDrag { phase, paths } => {
                         cx.emit(MarkdownEvent::ExternalDrag { phase, paths });
+                    }
+                    Message::OutlinePreference { generation, value } => {
+                        if valid_outline_message(
+                            generation,
+                            self.document.generation(),
+                            self.ready
+                                && self.outline_enabled
+                                && self.visible
+                                && self.pending.is_none(),
+                        ) && self.outline_preference != Some(value)
+                        {
+                            self.outline_preference = Some(value);
+                            cx.emit(MarkdownEvent::OutlinePreference(value));
+                        }
                     }
                     Message::TableView {
                         generation,
@@ -1182,6 +1227,33 @@ mod profile_tests {
         Arc,
         atomic::{AtomicBool, Ordering},
     };
+    #[test]
+    fn outline_protocol_is_typed_generation_bound_and_requires_an_interactive_editor() {
+        assert!(super::valid_outline_message(7, 7, true));
+        assert!(!super::valid_outline_message(6, 7, true));
+        assert!(!super::valid_outline_message(7, 7, false));
+        for position in ["auto", "left", "right", "top", "floating"] {
+            let message: super::Message = serde_json::from_value(serde_json::json!({
+                "type":"outlinePreference", "generation":7, "value":{"position":position,"shown":true}
+            })).unwrap();
+            assert!(matches!(
+                message,
+                super::Message::OutlinePreference { generation: 7, .. }
+            ));
+        }
+        for value in [
+            serde_json::json!({"position":"../foreign","shown":true}),
+            serde_json::json!({"position":"right","shown":"true"}),
+            serde_json::json!({"position":"right"}),
+        ] {
+            assert!(
+                serde_json::from_value::<super::Message>(serde_json::json!({
+                "type":"outlinePreference", "generation":7, "value":value}))
+                .is_err()
+            );
+        }
+    }
+
     #[test]
     fn table_identity_stays_old_until_the_document_generation_is_replaced() {
         let mut binding = super::TableBinding::default();

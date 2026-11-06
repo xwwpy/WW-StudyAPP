@@ -117,6 +117,17 @@ impl StudyApp {
         cx: &mut Context<Self>,
     ) {
         match event {
+            MarkdownEvent::OutlinePreference(value) => {
+                if self.page == Page::Notes
+                    && !self.storage_busy
+                    && !self.preferences_ui.busy
+                    && !self.preferences_ui.replacing
+                    && !self.has_modal(cx)
+                {
+                    self.layout.outline = Some(value);
+                    self.persist_layout(cx);
+                }
+            }
             MarkdownEvent::TableView {
                 epoch,
                 library,
@@ -662,6 +673,9 @@ impl StudyApp {
             });
             return;
         }
+        self.note_content.update(cx, |editor, cx| {
+            editor.set_outline_preference(self.layout.outline, cx)
+        });
         let mut show = !self.has_modal(cx) && self.draft_discard.is_none();
         show &= !self.external_drop.active();
         if self.note_editor.is_none() {

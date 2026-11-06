@@ -180,6 +180,24 @@ class SmokeTests(unittest.TestCase):
                          "editor_page_allowed(&url)", "ipc_allowed(&request.uri().to_string()"):
             self.assertIn(boundary, source)
 
+    def test_application_migration_preserves_native_data_and_platform_browser_contract(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/smoke_library.rs").read_text(encoding="utf-8")
+        body = source.split("pub(crate) async fn application_migration(", 1)[1].split("#[cfg(windows)]", 1)[0]
+        for check in ('"migrate-application"', '"confirm-application-migration"',
+                      'marker(true, window, view, cx)', 'marker(false, window, view, cx)',
+                      '== Some(&json!("persisted"))', 'let expected_marker = if cfg!(target_os = "macos")',
+                      'Value::Null', 'json!("persisted")', 'assert_eq!(observed_marker, expected_marker',
+                      '"native-app-migration-browser.json"', '"outline preference durably saved before relocation"',
+                      'after_editor["outline"], json!(outline)', 'before_editor["text"], expected_view_text',
+                      'after_editor["text"], expected_view_text', 'after_editor["readonly"], true', 'after_canonical, expected_text',
+                      '"versions": snapshot.versions', '"settings": snapshot.settings',
+                      '"tableViews": snapshot.table_views', '"folders": snapshot.folders',
+                      'assert!(old.exists())', 'Work::SwitchLibrary(old.parent().unwrap().into())'):
+            self.assertIn("".join(check.split()), "".join(body.split()))
+        self.assertIn('const TIMEOUT: Duration = Duration::from_secs(5)', source)
+        self.assertNotIn('with_incognito(false)', body)
+
     def test_mac_bundled_document_keeps_exact_request_origin_and_compositor_capture(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "crates/studyapp-desktop/src/web_editor_host_unix.rs").read_text(encoding="utf-8")

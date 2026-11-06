@@ -1,6 +1,9 @@
 import { parser } from "@lezer/markdown";
 import { EditorView } from "@codemirror/view";
 
+export interface OutlinePreference { position: "auto" | "left" | "right" | "top" | "floating"; shown: boolean; }
+let applyPreference: (value: unknown) => void = () => {};
+export function setOutlinePreference(value: unknown): void { applyPreference(value); }
 let applyEnabled: (enabled: boolean) => void = () => {};
 export function setOutlineEnabled(enabled: boolean): void { applyEnabled(enabled); }
 let scheduleRefresh: (reset?: boolean) => void = () => {};
@@ -21,7 +24,7 @@ interface Heading {
   group: HTMLElement;
 }
 
-export function installOutline(view: EditorView): void {
+export function installOutline(view: EditorView, onPreferenceChange: (value: OutlinePreference) => void): void {
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.id = "outline-toggle";
@@ -92,7 +95,7 @@ export function installOutline(view: EditorView): void {
   editor.before(workspace);
   workspace.append(panel, editor);
   const storageKey = "studyapp.outline.v1";
-  let preference = "auto";
+  let preference: OutlinePreference["position"] = "auto";
   let shown = false;
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
@@ -101,7 +104,8 @@ export function installOutline(view: EditorView): void {
   } catch { /* A blocked/empty profile still has a usable default layout. */ }
   position.value = preference;
   const persist = () => {
-    try { localStorage.setItem(storageKey, JSON.stringify({ position: preference, shown })); } catch { /* Optional viewer preference. */ }
+    try { localStorage.setItem(storageKey, JSON.stringify({ position: preference, shown })); } catch { /* Native preferences remain authoritative. */ }
+    onPreferenceChange({ position: preference, shown });
   };
   function layout(): void {
     const { width, height } = workspace.getBoundingClientRect();
@@ -117,7 +121,7 @@ export function installOutline(view: EditorView): void {
     toggle.title = panel.hidden ? "显示目录" : "隐藏目录";
   }
   new ResizeObserver(layout).observe(workspace);
-  position.onchange = () => { preference = position.value; persist(); layout(); };
+  position.onchange = () => { preference = position.value as OutlinePreference["position"]; persist(); layout(); };
 
   let timer: ReturnType<typeof setTimeout>;
   let frame = 0;
@@ -290,6 +294,20 @@ export function installOutline(view: EditorView): void {
       markCurrent(view.lineBlockAtHeight(height).from);
     });
   }, { passive: true });
+  // The host restores durable native state after a fresh/incognito WebView.
+  // Restoration is not a user edit: do not emit another save, touch the
+  // document/selection, steal focus or write the browser store.
+  applyPreference = value => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    const saved = value as Partial<OutlinePreference>;
+    if (!["auto", "left", "right", "top", "floating"].includes(saved.position ?? "") || typeof saved.shown !== "boolean") return;
+    preference = saved.position!;
+    shown = saved.shown;
+    position.value = preference;
+    panel.hidden = !enabled || !shown;
+    layout();
+    render();
+  };
   applyEnabled = value => {
     if (value === enabled) return;
     enabled = value;

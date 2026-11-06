@@ -4,7 +4,7 @@ import { sanitizeHtml, sanitizeStyle } from "./safe-html";
 import { htmlConfiguration, htmlRendering } from "./html-rendering";
 import { previewCaret, previewMouseSelection } from "./preview";
 import { renderedSelection, copyMenuUpdates, installCopyMenu } from "./selection";
-import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled } from "./outline";
+import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled, setOutlinePreference } from "./outline";
 import { applyEditorTheme } from "./theme";
 import { ChangeSet, Compartment, EditorSelection, EditorState, Extension, Text, Transaction } from "@codemirror/state";
 import { EditorView, keymap, placeholder, ViewUpdate } from "@codemirror/view";
@@ -24,13 +24,14 @@ import { incompleteScalars, scalarText, splitsScalar } from "./unicode";
 import { eventBinding, resolveBindings, typingKeymap } from "./shortcuts";
 import { scanDocumentStatistics } from "./statistics";
 
-interface Load { tableViews?:unknown; tableConfigurable?:boolean; outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
+interface Load { outlinePreference?:unknown; tableViews?:unknown; tableConfigurable?:boolean; outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
 interface Rebase extends Load { previousGeneration: number; previousRevision: number; changes: { from: number; to: number; insert: string }[]; }
-interface TestAction { type: string; request?: string | number; from?: number; to?: number; text?: string; anchor?: number; head?: number; name?: string; edits?: number; width?: number; height?: number; }
+interface TestAction { shown?:boolean; type: string; request?: string | number; from?: number; to?: number; text?: string; anchor?: number; head?: number; name?: string; edits?: number; width?: number; height?: number; }
 interface Bridge {
   load(value: Load): void;
   rebase(value: Rebase): void;
   setReadonly(value: boolean): void;
+  setOutlinePreference(value:unknown):void;
   setCanRequestEdit(value:boolean):void;
   restoreSelection(position: number): void;
   setImages(value: {generation:number;images:Record<string,unknown>}): void;
@@ -421,6 +422,7 @@ function load(value: Load): void {
   setTableDocument(value.tableViews, value.tableConfigurable === true);
   view.setState(EditorState.create({ doc: value.text.replace(/\r\n?/g, "\n"), extensions: extensions(Boolean(value.readonly), value.text) }));
   setOutlineEnabled(value.outlineEnabled !== false);
+  setOutlinePreference(value.outlinePreference);
   refreshOutline();
   view.scrollDOM.scrollTop = 0;
   loaded = true;
@@ -583,7 +585,7 @@ function setTheme(tokens: Record<string, unknown>): void {
 }
 applyEditorTheme({});
 
-const bridge: Bridge = { load, rebase, setReadonly, setCanRequestEdit: value => {canRequestEdit = value === true;}, restoreSelection, setTheme, setImages, insertText, setSource, setShortcuts, command, flush };
+const bridge: Bridge = { load, rebase, setReadonly, setOutlinePreference, setCanRequestEdit: value => {canRequestEdit = value === true;}, restoreSelection, setTheme, setImages, insertText, setSource, setShortcuts, command, flush };
 if (window.__STUDYAPP_EDITOR_TEST__ === true) {
   const observedKeys: Array<{key:string;code:string;binding:string|undefined;keyCode:number;prevented:boolean}> = [];
   // Metadata only: native smoke tests must never copy clipboard contents into
@@ -602,6 +604,8 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
     queueMicrotask(() => {observed.prevented = event.defaultPrevented;});
   }, true);
   const snapshot = () => ({
+    outline: { position: (document.querySelector("#outline-position") as HTMLSelectElement).value,
+      shown: !(document.querySelector("#note-outline") as HTMLElement).hidden },
     generation, revision, text: view.state.doc.toString(), normalizedText: view.state.doc.toString(),
     utf8Bytes: view.state.field(documentBudget).bytes, rawBytes: view.state.field(documentBudget).rawBytes,
     source, readonly: view.state.readOnly, composing: view.composing,
@@ -660,6 +664,16 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
           color: getComputedStyle(line).color, visibility: getComputedStyle(line).visibility } : null,
         renderedLines: view.contentDOM.querySelectorAll(".cm-line").length,
         mode: document.documentElement.dataset.theme };
+    }
+    else if (action.type === "outlinePreference") {
+      const panel = document.querySelector<HTMLElement>("#note-outline")!;
+      if (typeof action.shown === "boolean" && panel.hidden === action.shown) document.querySelector<HTMLButtonElement>("#outline-toggle")!.click();
+      if (action.name && ["auto", "left", "right", "top", "floating"].includes(action.name)) {
+        const position = document.querySelector<HTMLSelectElement>("#outline-position")!;
+        position.value = action.name;
+        position.dispatchEvent(new Event("change", {bubbles:true}));
+      }
+      result = snapshot();
     }
     else if (action.type === "snapshot") result = snapshot();
     else if (action.type === "layout") {
@@ -721,5 +735,5 @@ updateToolbar();
 post({ type: "ready" });
 
 installTableControls(view,(table,value)=>{ if(loaded) post({type:"tableView",generation,table,value}); });
-installOutline(view);
+installOutline(view, value => { if (loaded) post({type:"outlinePreference", generation, value}); });
 installCopyMenu(view, warning);

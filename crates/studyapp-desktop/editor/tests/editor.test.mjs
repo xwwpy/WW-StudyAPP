@@ -2686,3 +2686,51 @@ test("quoted loose lists and continuation paragraphs keep source markers and ali
   assert.equal((await state(page)).text,text);
   assert.deepEqual(errors,[]); await page.close();
 });
+
+
+test("native outline preferences survive a fresh browser context with storage blocked", async () => {
+  const {page, errors} = await setup(`# Native outline
+
+Body`);
+  await page.addInitScript(() => { Object.defineProperty(window, "localStorage", {get() {throw new DOMException("blocked", "SecurityError");}}); });
+  await page.reload();
+  await page.evaluate(() => window.studyappEditor.load({generation:42,text:`# Native outline
+
+Body`,readonly:true,
+    outlinePreference:{position:"right",shown:true}}));
+  assert.deepEqual((await state(page)).outline,{position:"right",shown:true});
+  assert.equal(await page.locator("#note-outline").isVisible(),true);
+  assert.equal((await state(page)).editorFocused,false);
+  assert.equal(await page.evaluate(() => window.messages.filter(m=>m.type==="outlinePreference").length),0);
+  const before=await state(page);
+  await page.locator("#outline-position").selectOption("top");
+  await page.getByRole("button",{name:"隐藏目录",exact:true}).last().click();
+  const saved=await page.evaluate(() => window.messages.filter(m=>m.type==="outlinePreference").at(-1));
+  assert.equal(saved.generation,42);
+  assert.deepEqual(saved.value,{position:"top",shown:false});
+  assert.equal((await state(page)).text,before.text);
+  assert.equal((await state(page)).revision,before.revision);
+  const context=await browser.newContext();
+  const fresh=await context.newPage();
+  await fresh.addInitScript(() => {
+    Object.defineProperty(window,"localStorage",{get(){throw new DOMException("blocked","SecurityError");}});
+    window.__STUDYAPP_EDITOR_TEST__=true;window.messages=[];
+    window.ipc={postMessage:message=>window.messages.push(JSON.parse(message))};
+  });
+  await fresh.goto(base);
+  await fresh.evaluate(preference=>window.studyappEditor.load({generation:43,text:`# Native outline
+
+Body`,readonly:true,outlinePreference:preference}),saved.value);
+  assert.deepEqual((await state(fresh)).outline,saved.value);
+  await fresh.evaluate(()=>window.studyappEditor.setOutlinePreference({position:"left",shown:true}));
+  assert.deepEqual((await state(fresh)).outline,{position:"left",shown:true});
+  assert.equal((await state(fresh)).revision,0);
+  assert.equal((await state(fresh)).editorFocused,false);
+  assert.equal(await fresh.evaluate(()=>window.messages.filter(m=>m.type==="outlinePreference").length),0);
+  for(const bad of [null,[],{position:"external",shown:true},{position:"right",shown:"true"}]) {
+    await fresh.evaluate(bad=>window.studyappEditor.setOutlinePreference(bad),bad);
+    assert.deepEqual((await state(fresh)).outline,{position:"left",shown:true});
+  }
+  assert.deepEqual(errors,[]);
+  await context.close();await page.close();
+});
