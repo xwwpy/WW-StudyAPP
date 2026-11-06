@@ -2734,3 +2734,24 @@ Body`,readonly:true,outlinePreference:preference}),saved.value);
   assert.deepEqual(errors,[]);
   await context.close();await page.close();
 });
+
+
+test("migration outline teardown leaves the narrow final-draft body click unobscured", async () => {
+  const {page,errors}=await setup("");
+  await page.setViewportSize({width:280,height:550});
+  const original=(await state(page)).outline;
+  await action(page,{type:"outlinePreference",name:"right",shown:true});
+  await page.waitForFunction(()=>document.querySelector("#editor-workspace").dataset.outlinePosition==="floating");
+  assert.equal(await page.evaluate(()=>!!document.elementFromPoint(75,105)?.closest(".cm-content")),false);
+  assert.equal((await state(page)).text,"");
+  const restored=await action(page,{type:"outlinePreference",name:original.position,shown:original.shown});
+  assert.deepEqual(restored.outline,original);
+  assert.equal(restored.revision,0);
+  assert.equal(await page.evaluate(()=>!!document.elementFromPoint(75,105)?.closest(".cm-content")),true);
+  await page.mouse.click(75,105);
+  assert.equal((await state(page)).editorFocused,true);
+  await page.keyboard.insertText("关闭窗口前的末次输入 🧠");
+  assert.equal((await state(page)).text,"关闭窗口前的末次输入 🧠");
+  assert.deepEqual(errors,[]);
+  await page.close();
+});

@@ -197,6 +197,14 @@ class SmokeTests(unittest.TestCase):
             self.assertIn("".join(check.split()), "".join(body.split()))
         self.assertIn('const TIMEOUT: Duration = Duration::from_secs(5)', source)
         self.assertNotIn('with_incognito(false)', body)
+        self.assertLess(body.index('"return to original library"'), body.index('"restore prior outline after migration fixture"'))
+        for check in ('"name":original_outline.position', '"shown":original_outline.shown',
+                      'restored["outline"], json!(original_outline)', 'Some(original_outline)'):
+            self.assertIn("".join(check.split()), "".join(body.split()))
+        dispatch = (root / "crates/studyapp-desktop/src/smoke_editor.rs").read_text(encoding="utf-8")
+        close = dispatch.split("pub async fn close_with_draft(", 1)[1]
+        self.assertIn('crate::smoke_visibility::type_into(window, &editor, "关闭窗口前的末次输入', close)
+        self.assertNotIn('"type":"outlinePreference"', close)
 
     def test_mac_bundled_document_keeps_exact_request_origin_and_compositor_capture(self):
         root = Path(__file__).resolve().parents[1]

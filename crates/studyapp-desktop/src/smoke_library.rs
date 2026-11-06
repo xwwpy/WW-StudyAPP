@@ -476,6 +476,8 @@ pub(crate) async fn application_migration(
     let expected_view_text = studyapp_desktop::editor_protocol::normalize(&expected_text);
     assert_eq!(before_editor["text"], expected_view_text);
     assert_eq!(before_editor["readonly"], true);
+    let original_outline: studyapp_core::OutlinePreference =
+        serde_json::from_value(before_editor["outline"].clone()).unwrap();
     // Change actual viewer controls, then wait for the ordinary background
     // preferences receipt. Browser localStorage is only a compatibility cache.
     let outline = studyapp_core::OutlinePreference {
@@ -713,6 +715,43 @@ pub(crate) async fn application_migration(
         "return to original library",
         Duration::from_secs(30),
         |a, _| Path::new(&a.last_library) == old && !a.draft_loading,
+        cx,
+    )
+    .await;
+    // The migration scenario deliberately changed remembered viewer state.
+    // Restore its original effective preference through the same real controls
+    // in the returned library. Otherwise a floating outline in the narrow
+    // workspace fixture intercepts the later close-with-draft body click.
+    window.update(cx, |_, w, c| select_reader(w, c)).unwrap();
+    until_for(
+        window,
+        view,
+        "reader ready for migration fixture teardown",
+        Duration::from_secs(30),
+        |a, c| a.note_content.read(c).ready(),
+        cx,
+    )
+    .await;
+    let restored = bridge(
+        window,
+        &editor,
+        json!({"type":"outlinePreference",
+        "name":original_outline.position, "shown":original_outline.shown}),
+        cx,
+    )
+    .await;
+    assert_eq!(restored["outline"], json!(original_outline));
+    assert_eq!(restored["text"], expected_view_text);
+    until(
+        window,
+        view,
+        "restore prior outline after migration fixture",
+        |a, _| {
+            !a.layout_dirty
+                && a.snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.settings.layout.outline == Some(original_outline))
+        },
         cx,
     )
     .await;
