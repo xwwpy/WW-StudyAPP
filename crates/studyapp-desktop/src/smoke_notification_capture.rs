@@ -148,7 +148,13 @@ pub(super) async fn desktop(
         );
     };
     let comparison = handle
-        .update(cx, |_, window, _| {
+        .update(cx, |_, window, cx| {
+            let scene = crate::notification_desktop::test_paint_observation(window, cx);
+            std::fs::write(
+                database.with_file_name(format!("native-{name}-scene.json")),
+                serde_json::to_vec_pretty(&scene).unwrap(),
+            )
+            .unwrap();
             use windows::Win32::{
                 Foundation::{HWND, POINT, RECT},
                 Graphics::{Dwm::DwmFlush, Gdi::ClientToScreen},

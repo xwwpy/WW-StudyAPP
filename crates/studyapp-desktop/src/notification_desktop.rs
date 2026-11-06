@@ -188,6 +188,39 @@ impl Render for DesktopNotifications {
     }
 }
 
+/// Read the actual mounted view and painted primitives, never reconstruct a scene.
+#[cfg(all(windows, feature = "ui-test"))]
+pub(crate) fn test_paint_observation(window: &Window, cx: &App) -> serde_json::Value {
+    let view = gpui_kit::base::Root::read(window, cx)
+        .view()
+        .clone()
+        .downcast::<DesktopNotifications>()
+        .expect("the owned notification window must contain DesktopNotifications");
+    let desktop = view.read(cx);
+    let quads = window.painted_quads();
+    let rectangle = |bounds: Bounds<ScaledPixels>| {
+        [
+            bounds.left().as_f32(),
+            bounds.top().as_f32(),
+            bounds.size.width.as_f32(),
+            bounds.size.height.as_f32(),
+        ]
+    };
+    serde_json::json!({
+        "snapshotOpacities": desktop.presentation.entries.iter().map(|(notice, opacity)| (notice.id, opacity)).collect::<Vec<_>>(),
+        "viewport": [f32::from(window.viewport_size().width), f32::from(window.viewport_size().height)],
+        "scale": window.scale_factor(),
+        "surface": studyapp_ui::theme::palette().surface,
+        "quadCount": quads.len(),
+        "quads": quads.iter().take(128).map(|quad| serde_json::json!({
+            "bounds": rectangle(quad.bounds),
+            "contentMask": rectangle(quad.content_mask.bounds),
+            "background": format!("{:?}", quad.background),
+            "backgroundAlpha": quad.background.as_solid().map(|color| color.a),
+        })).collect::<Vec<_>>(),
+    })
+}
+
 /// Only this newly-created window receives the nonactivation policy.
 fn passive_window(window: &mut Window) -> anyhow::Result<()> {
     crate::card_window::disable_native_frame(window)?;
@@ -335,7 +368,7 @@ impl StudyApp {
 mod tests {
     use super::{DesktopNotifications, DesktopPresentation, NotificationCenter, StudyApp};
     use gpui_kit::{
-        AppContext, TestAppContext, VisualTestContext, base, px, size, test::TestWindowExt,
+        AppContext, Styled, TestAppContext, VisualTestContext, base, px, size, test::TestWindowExt,
     };
     use studyapp_core::{
         NoticeCategory, NoticeEnvironment, NoticeEvent, NoticeSeverity, NotificationAppearance,
@@ -365,7 +398,7 @@ mod tests {
             let view = cx.new(|cx| DesktopNotifications::new(center, presentation, app.downgrade(), cx));
             owner = Some(app);
             desktop = Some(view.clone());
-            base::Root::new(view, window, cx)
+            base::Root::new(view, window, cx).bg(gpui_kit::rgba(0))
         });
         let desktop = desktop.unwrap();
         let visual = &mut VisualTestContext::from_window(handle.into(), cx);
@@ -380,6 +413,16 @@ mod tests {
             assert!(
                 (f32::from(viewport.height - card.size.height) - 16.).abs() <= 2.,
                 "viewport={viewport:?}, card={card:?}, requested={fit:?}"
+            );
+            let quads = window.painted_quads();
+            assert!(
+                quads.iter().any(|quad| {
+                    !quad.background.is_transparent()
+                        && quad.bounds.size.height > px(32.).scale(window.scale_factor())
+                        && quad.content_mask.bounds.size.height
+                            > px(32.).scale(window.scale_factor())
+                }),
+                "fitted cards must paint visible surfaces, not only layout rectangles: {quads:?}"
             );
         });
         let compact = visual.update(|window, _| window.viewport_size());
@@ -463,7 +506,7 @@ mod tests {
                 cx.new(|cx| DesktopNotifications::new(center, presentation, app.downgrade(), cx));
             desktop = Some(view.clone());
             owner = Some(app);
-            base::Root::new(view, window, cx)
+            base::Root::new(view, window, cx).bg(gpui_kit::rgba(0))
         });
         let desktop = desktop.unwrap();
         let visual = &mut VisualTestContext::from_window(handle.into(), cx);
