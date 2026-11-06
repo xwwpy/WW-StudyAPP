@@ -110,6 +110,13 @@ impl StudyApp {
             }))
     }
     #[cfg(feature = "ui-test")]
+    pub fn notification_cache_matches(&self, cx: &App) -> bool {
+        self.preferences_ui
+            .notification_view
+            .as_ref()
+            .is_some_and(|view| view.read(cx).key.as_ref() == Some(&self.notification_view_key()))
+    }
+    #[cfg(feature = "ui-test")]
     pub fn notification_render_work(&self) -> u64 {
         self.preferences_ui.notification_row_builds.get()
     }

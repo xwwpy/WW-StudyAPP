@@ -2325,6 +2325,14 @@ impl StudyApp {
         )
     }
 
+    #[cfg(feature = "ui-test")]
+    pub fn notification_appearance_cache_matches(&self, cx: &App) -> bool {
+        self.preferences_ui
+            .appearance_view
+            .as_ref()
+            .is_some_and(|view| view.read(cx).key.as_ref() == Some(&self.appearance_view_key(cx)))
+    }
+
     /// A definite-size view boundary lets GPUI reuse unchanged appearance
     /// layout/paint when only the parent shell (timer, notices) is notified.
     pub fn appearance_surface(&self, cx: &mut Context<Self>) -> Div {
@@ -4356,11 +4364,17 @@ mod scoped_tests {
                 cx.notify();
             });
             surface.update(visual, |_, cx| cx.notify());
+            let mut edit_frames = Vec::new();
             for _ in 0..3 {
                 visual.update(|window, cx| window.draw(cx).clear(cx));
+                edit_frames
+                    .push(app.read_with(visual, |app, _| app.notification_render_work()) - start);
             }
             let changed = app.read_with(visual, |app, _| app.notification_render_work()) - start;
-            assert!(changed > 0, "relevant notification edit was cached away");
+            assert!(
+                changed > 0,
+                "relevant notification edit was cached away: {edit_frames:?}"
+            );
             if !appearance {
                 assert!(
                     changed < 20,
@@ -4402,6 +4416,140 @@ mod scoped_tests {
                         .background
                 }));
             }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn notification_cache_edit_flows_through_the_actual_app_root_without_native_editors(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        let root = tempfile::tempdir().unwrap().keep();
+        let worker = crate::worker::Worker::start(root.join("studyapp.sqlite3"), None);
+        let mut app = None;
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let owner = cx.new(|cx| StudyApp::new(worker, window, cx));
+            owner.update(cx, |app, cx| {
+                let settings = studyapp_core::Settings::default();
+                app.snapshot = Some(
+                    studyapp_core::Snapshot {
+                        settings,
+                        table_views: Default::default(),
+                        notes: Vec::new(),
+                        folders: Vec::new(),
+                        versions: Default::default(),
+                        sessions: Vec::new(),
+                        reviews: Vec::new(),
+                        review_events: Vec::new(),
+                        timer: studyapp_core::TimerState {
+                            kind: Default::default(),
+                            label: String::new(),
+                            finished_at: None,
+                            paused: true,
+                            active_seconds: 0,
+                            target_seconds: 1500,
+                            started_at: 0,
+                            spans: Vec::new(),
+                        },
+                        data_path: String::new(),
+                    }
+                    .into(),
+                );
+                app.page = Page::Settings;
+                app.preferences_ui.saved = Some(PreferenceSnapshot::defaults());
+                app.begin_settings(window, cx);
+                app.select_settings_section(SettingsSection::Notifications, cx);
+                app.preferences_ui.section_changed_at = None;
+            });
+            app = Some(owner.clone());
+            gpui_kit::base::Root::new(owner, window, cx)
+        });
+        let app = app.unwrap();
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(750.)));
+        for appearance in [false, true] {
+            app.update(visual, |app, cx| {
+                app.select_settings_section(
+                    if appearance {
+                        SettingsSection::Appearance
+                    } else {
+                        SettingsSection::Notifications
+                    },
+                    cx,
+                );
+                if appearance {
+                    app.select_appearance_page(AppearancePage::Notifications, cx);
+                }
+                app.preferences_ui.section_changed_at = None;
+            });
+            for _ in 0..4 {
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            visual.update(|window, cx| {
+                assert!(
+                    window
+                        .try_find(if appearance {
+                            "notification-width-more"
+                        } else {
+                            "notification-update-badge"
+                        })
+                        .is_some()
+                );
+                assert!(if appearance {
+                    app.read(cx).notification_appearance_cache_matches(cx)
+                } else {
+                    app.read(cx).notification_cache_matches(cx)
+                });
+            });
+            let before = app.read_with(visual, |app, _| app.notification_render_work());
+            assert!(before > 0);
+            for _ in 0..20 {
+                app.update(visual, |_, cx| cx.notify());
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            assert_eq!(
+                app.read_with(visual, |app, _| app.notification_render_work()),
+                before
+            );
+            app.update(visual, |app, cx| {
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                if appearance {
+                    draft.appearance.notifications.width = 420;
+                } else {
+                    draft.notifications.do_not_disturb = true;
+                }
+                cx.notify();
+            });
+            let mut frames = Vec::new();
+            for _ in 0..3 {
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+                frames
+                    .push(app.read_with(visual, |app, _| app.notification_render_work()) - before);
+            }
+            assert!(
+                frames[2] > 0 && frames[2] < 22,
+                "actual root appearance={appearance}: {frames:?}"
+            );
+            visual.update(|_, cx| {
+                assert!(if appearance {
+                    app.read(cx).notification_appearance_cache_matches(cx)
+                } else {
+                    app.read(cx).notification_cache_matches(cx)
+                });
+                assert!(!app.read(cx).note_content.read(cx).ready());
+                assert!(
+                    app.read(cx)
+                        .preferences_ui
+                        .appearance_preview
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .editor()
+                        .is_none()
+                );
+            });
         }
     }
 

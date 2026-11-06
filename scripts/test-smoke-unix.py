@@ -239,6 +239,14 @@ class SmokeTests(unittest.TestCase):
         for directory in ("SMOKE_DIR", "SETTINGS_DIR", "OPTIMIZED_SETTINGS_DIR"):
             self.assertIn("${{ env." + directory + " }}/notification-*.png", workflow)
         self.assertIn("settings-notification-cache-timing.json", smoke_source)
+        for check in ("notification benchmark did not mount", "notification_cache_matches(cx)",
+                      "notification_appearance_cache_matches(cx)", "settings-notification-cache-edit.json",
+                      "notification edit did not render within 5 seconds", "app.navigate(Page::Settings, window, cx)"):
+            self.assertIn(check, smoke_source)
+        edit = smoke_source.split("let changed = loop {", 1)[1].split("pub async fn exercise", 1)[0]
+        self.assertIn("window.draw(cx).clear(cx)", edit)
+        self.assertNotIn("window.render_frame(cx)", edit)
+        self.assertNotIn("window.refresh", edit)
 
     def test_mac_editor_has_no_persistent_browser_state_and_keeps_origin_checks(self):
         root = Path(__file__).resolve().parents[1]

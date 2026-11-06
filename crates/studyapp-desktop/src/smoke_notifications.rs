@@ -165,6 +165,31 @@ async fn measure_notification_cache(
                 .timer(Duration::from_millis(30))
                 .await;
         }
+        window
+            .update(cx, |_, window, cx| {
+                let app = view.read(cx);
+                assert_eq!(app.page, Page::Settings);
+                assert!(!app.settings_search_active(cx));
+                assert!(
+                    app.notification_render_work() > 0,
+                    "notification page never built controls; appearance={appearance}"
+                );
+                let control = if appearance {
+                    "notification-width-more"
+                } else {
+                    "notification-update-badge"
+                };
+                assert!(
+                    window.try_find(control).is_some(),
+                    "notification benchmark did not mount {control}"
+                );
+                assert!(if appearance {
+                    app.notification_appearance_cache_matches(cx)
+                } else {
+                    app.notification_cache_matches(cx)
+                });
+            })
+            .unwrap();
         let mut calls = Vec::new();
         let mut timings = Vec::new();
         for _ in 0..20 {
@@ -212,17 +237,59 @@ async fn measure_notification_cache(
                 before
             })
             .unwrap();
-        let changed = window
-            .update(cx, |_, window, cx| {
-                window.draw(cx).clear(cx);
-                view.read(cx).notification_render_work() - before
-            })
+        let began = Instant::now();
+        let mut edit_frames = Vec::new();
+        let changed = loop {
+            let (changed, key_matches, mounted) = window
+                .update(cx, |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    let app = view.read(cx);
+                    (
+                        app.notification_render_work() - before,
+                        if appearance {
+                            app.notification_appearance_cache_matches(cx)
+                        } else {
+                            app.notification_cache_matches(cx)
+                        },
+                        window
+                            .try_find(if appearance {
+                                "notification-width-more"
+                            } else {
+                                "notification-dnd"
+                            })
+                            .is_some(),
+                    )
+                })
+                .unwrap();
+            edit_frames.push(
+                serde_json::json!({"builders":changed,"keyMatches":key_matches,"mounted":mounted}),
+            );
+            std::fs::write(
+                database.with_file_name("settings-notification-cache-edit.json"),
+                serde_json::to_vec_pretty(
+                    &serde_json::json!({"appearance":appearance,"frames":edit_frames}),
+                )
+                .unwrap(),
+            )
             .unwrap();
+            if changed > 0 && key_matches && mounted {
+                break changed;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(5),
+                "notification edit did not render within 5 seconds: appearance={appearance}, frames={edit_frames:?}"
+            );
+            // The parent sets the child cache key during draw; cx.notify for
+            // that leaf is flushed after this update, not inside its prepaint.
+            cx.background_executor()
+                .timer(Duration::from_millis(30))
+                .await;
+        };
         assert!(
-            changed > 0 && changed < 22,
+            changed < 22,
             "relevant notification edit must rebuild visible controls only: {changed}"
         );
-        results.push(serde_json::json!({"appearance":appearance,"parent_notify_builder_calls":calls,"parent_notify_draw_microseconds":timings,"relevant_edit_builder_calls":changed}));
+        results.push(serde_json::json!({"appearance":appearance,"parent_notify_builder_calls":calls,"parent_notify_draw_microseconds":timings,"relevant_edit_builder_calls":changed,"edit_frames":edit_frames}));
     }
     std::fs::write(
         database.with_file_name("settings-notification-cache-timing.json"),
@@ -252,16 +319,36 @@ pub async fn exercise(
                     app.page,
                     app.preferences_ui.section,
                     app.preferences_ui.appearance_page,
+                    app.preferences_ui
+                        .search
+                        .as_ref()
+                        .map(|input| input.read(cx).value()),
                 );
-                app.page = Page::Settings;
-                app.preferences_ui.section = SettingsSection::Notifications;
+                app.navigate(Page::Settings, window, cx);
                 window.activate_window();
                 cx.notify();
                 original
             })
         })
         .unwrap();
-    settle(window, view, cx, |_, window, _| window.is_window_active()).await;
+    settle(window, view, cx, |app, window, _| {
+        window.is_window_active() && app.page == Page::Settings
+    })
+    .await;
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                if let Some(search) = app.preferences_ui.search.clone() {
+                    search.update(cx, |input, cx| input.set_value("", window, cx));
+                }
+                app.select_settings_section(SettingsSection::Notifications, cx);
+            })
+        })
+        .unwrap();
+    settle(window, view, cx, |_, window, _| {
+        window.try_find("notification-update-badge").is_some()
+    })
+    .await;
     measure_notification_cache(window, view, database, cx).await;
     let mut accepted = Vec::new();
     for style in NoticeStyle::ALL {
@@ -586,6 +673,11 @@ pub async fn exercise(
                 app.page = original.2;
                 app.preferences_ui.section = original.3;
                 app.preferences_ui.appearance_page = original.4;
+                if let Some(value) = original.5
+                    && let Some(search) = app.preferences_ui.search.clone()
+                {
+                    search.update(cx, |input, cx| input.set_value(value, window, cx));
+                }
                 app.clear_notices(cx);
                 app.sync_notification_preferences(window, cx);
                 window.activate_window();
