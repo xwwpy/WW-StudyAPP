@@ -18,6 +18,8 @@ def verify(data, interactive):
         if not (data / report).read_text(encoding="utf-8").startswith("PASS:"):
             raise ValueError(f"Native smoke did not pass: {report}")
     if interactive:
+        if sys.platform.startswith("linux"):
+            verify_profile_contexts(data)
         verify_pin(data)
         captures = [f"page-{index}.png" for index in range(5)]
         captures.extend(["native-timer-pin-true.png", "native-timer-pin-false.png"])
@@ -36,6 +38,20 @@ def verify(data, interactive):
         if (draft["schema"] != 2 or draft["id"] != draft_id or draft["status"]["kind"] != "active"
                 or draft["revision"] < 1 or draft["draft"]["content"] != "关闭窗口前的末次输入 🧠"):
             raise ValueError("Native close did not persist the final editor input")
+
+
+def verify_profile_contexts(data):
+    evidence = json.loads((data / "native-app-migration-contexts.json").read_text(encoding="utf-8"))
+    reader, preview = evidence["reader"], evidence["preview"]
+    context = reader.get("profileContext")
+    if (not isinstance(context, str) or not context.startswith("0x")
+            or len(context) > 34 or not context[2:] or any(c not in "0123456789abcdef" for c in context[2:])
+            or int(context, 16) == 0 or preview.get("profileContext") != context):
+        raise ValueError("Live Linux editor views do not share one persistent profile context")
+    for view in (reader, preview):
+        count = view.get("profileOwners")
+        if type(count) is not int or count < 2:
+            raise ValueError("Missing concurrent Linux profile owners")
 
 
 def verify_pin(data):

@@ -571,6 +571,40 @@ pub(crate) async fn application_migration(
                 })
                 .unwrap();
         };
+    #[cfg(target_os = "linux")]
+    {
+        // Observe the real concurrent hosts without waiting for a disk flush or
+        // changing their close order. The original marker assertion below is
+        // still the persistence proof after the single ordinary migration.
+        let contexts = window
+            .update(cx, |_, _, cx| {
+                let app = view.read(cx);
+                let preview = app
+                    .preferences_ui
+                    .appearance_preview
+                    .as_ref()
+                    .expect("migration sample preview")
+                    .read(cx)
+                    .editor()
+                    .expect("sample WebView created by the appearance regression");
+                let reader_state = app.note_content.read(cx).native_state().unwrap();
+                let preview_state = preview.read(cx).native_state().unwrap();
+                json!({"reader":reader_state, "preview":preview_state})
+            })
+            .unwrap();
+        std::fs::write(
+            database.with_file_name("native-app-migration-contexts.json"),
+            serde_json::to_vec_pretty(&contexts).unwrap(),
+        )
+        .unwrap();
+        assert!(contexts["reader"]["profileContext"].is_string());
+        assert_eq!(
+            contexts["reader"]["profileContext"], contexts["preview"]["profileContext"],
+            "live editor views must share the persistent profile owner"
+        );
+        assert!(contexts["reader"]["profileOwners"].as_u64().unwrap() >= 2);
+        assert!(contexts["preview"]["profileOwners"].as_u64().unwrap() >= 2);
+    }
     marker(true, window, view, cx);
     until(
         window,

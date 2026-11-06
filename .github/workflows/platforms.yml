@@ -16,7 +16,7 @@ on:
         description: Independent Linux native regressions for profile timing diagnostics
         type: choice
         options: ['1', '2', '3', '4', '5']
-        default: '1'
+        default: '3'
   push:
     branches: [main, 'codex/**']
 
@@ -124,7 +124,7 @@ jobs:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           GDK_BACKEND: x11
           GPUI_BACKEND: x11
-          PROFILE_REPETITIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.profile_repetitions || '1' }}
+          PROFILE_REPETITIONS: ${{ github.event_name == 'workflow_dispatch' && inputs.profile_repetitions || '3' }}
         run: |
           case "$PROFILE_REPETITIONS" in
             1|2|3|4|5) ;;

@@ -3,6 +3,10 @@
 #[path = "native_editor_drag.rs"]
 mod native_drag;
 
+#[cfg(any(target_os = "linux", test))]
+#[path = "editor_profile_context.rs"]
+mod profile_context;
+
 #[cfg(windows)]
 #[path = "native_surface_geometry.rs"]
 mod surface_geometry;

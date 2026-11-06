@@ -45,6 +45,10 @@ class SmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             smoke.verify(data, interactive=True)
         (data / "native-app-migration.txt").write_text("PASS: profile relocation")
+        (data / "native-app-migration-contexts.json").write_text(json.dumps({
+            "reader": {"profileContext": "0x1234", "profileOwners": 2},
+            "preview": {"profileContext": "0x1234", "profileOwners": 2},
+        }), encoding="utf-8")
         with self.assertRaises(FileNotFoundError):
             smoke.verify(data, interactive=True)
         (data / "native-timer-pin.json").write_text(json.dumps(self.pin_fixture()), encoding="utf-8")
@@ -79,6 +83,52 @@ class SmokeTests(unittest.TestCase):
             (data / "native-timer-pin.json").write_text(json.dumps(bad), encoding="utf-8")
             with self.assertRaises(ValueError):
                 smoke.verify_pin(data)
+
+    def test_profile_context_verifier_requires_actual_shared_concurrent_owners(self):
+        root = Path(__file__).resolve().parents[1] / ".scratch/cross-platform-012"
+        root.mkdir(parents=True, exist_ok=True)
+        data = Path(tempfile.mkdtemp(dir=root, prefix="context-proof-"))
+        # Fabricated evidence belongs only to this verifier unit-test fixture.
+        good = {"reader": {"profileContext": "0x1234", "profileOwners": 2},
+                "preview": {"profileContext": "0x1234", "profileOwners": 2}}
+        path = data / "native-app-migration-contexts.json"
+        path.write_text(json.dumps(good), encoding="utf-8")
+        smoke.verify_profile_contexts(data)
+        for side, key, value in (("preview", "profileContext", "0x5678"),
+                                 ("reader", "profileContext", None),
+                                 ("reader", "profileContext", "0x0"),
+                                 ("reader", "profileContext", "0x!"),
+                                 ("reader", "profileContext", "0x"),
+                                 ("reader", "profileContext", "0x" + "1" * 40),
+                                 ("reader", "profileContext", "1234"),
+                                 ("reader", "profileOwners", 1),
+                                 ("preview", "profileOwners", True),
+                                 ("preview", "profileOwners", 2.0)):
+            bad = json.loads(json.dumps(good))
+            bad[side][key] = value
+            path.write_text(json.dumps(bad), encoding="utf-8")
+            with self.subTest(side=side, key=key, value=value), self.assertRaises(ValueError):
+                smoke.verify_profile_contexts(data)
+
+    def test_linux_profile_contexts_are_shared_only_while_hosts_own_them(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/web_editor_host_unix.rs").read_text(encoding="utf-8")
+        for check in ("std::fs::canonicalize(profile)", "PROFILE_CONTEXTS.with(",
+                      "contexts.borrow_mut().acquire(", "is_custom_protocol_registered(\"studyapp\")",
+                      "if register_protocol", "drop(context_borrow)", "Rc::strong_count(&self._context)",
+                      "LOAD_TRACES.with(|traces| traces.borrow().get(_id).cloned())"):
+            self.assertIn("".join(check.split()), "".join(source.split()))
+        pool = (root / "crates/studyapp-desktop/src/editor_profile_context.rs").read_text(encoding="utf-8")
+        for check in ("Weak<RefCell<T>>", "Weak::upgrade", "Rc::downgrade(&owner)",
+                      "owner.strong_count() != 0"):
+            self.assertIn(check, pool)
+        smoke_source = (root / "crates/studyapp-desktop/src/smoke_library.rs").read_text(encoding="utf-8")
+        self.assertIn('"native-app-migration-contexts.json"', smoke_source)
+        self.assertIn('"live editor views must share the persistent profile owner"', smoke_source)
+        workflow = (root / ".github/workflows/platforms.yml").read_text(encoding="utf-8")
+        self.assertIn("inputs.profile_repetitions || '3'", workflow)
+        self.assertIn('exit "$result"', workflow)
+        self.assertIn('result=1', workflow)
 
     def test_isolated_wm_waits_for_ewmh_and_stops_its_own_child_on_failure(self):
         root = Path(__file__).resolve().parents[1] / ".scratch/cross-platform-012"

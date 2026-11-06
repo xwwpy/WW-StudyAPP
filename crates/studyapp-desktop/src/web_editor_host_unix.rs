@@ -110,11 +110,48 @@ impl LoadTrace {
     }
 }
 
+// Independent WebKit data managers must not concurrently own the same disk
+// profile. In particular, a preview must not clean up another context's storage.
+// Weak registration releases the context when the last editor host closes.
+#[cfg(target_os = "linux")]
+thread_local! {
+    static PROFILE_CONTEXTS: RefCell<super::profile_context::ProfileContexts<WebContext>> =
+        RefCell::new(super::profile_context::ProfileContexts::default());
+}
+
+// A shared protocol handler attributes diagnostic requests to the requesting
+// view, not to whichever editor registered the scheme first.
+#[cfg(all(target_os = "linux", feature = "ui-test"))]
+thread_local! {
+    static LOAD_TRACES: RefCell<std::collections::BTreeMap<String, LoadTrace>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+#[cfg(all(target_os = "linux", feature = "ui-test"))]
+struct LoadTraceBinding(String);
+#[cfg(all(target_os = "linux", feature = "ui-test"))]
+impl LoadTraceBinding {
+    fn new(trace: LoadTrace) -> Self {
+        let id = uuid::Uuid::new_v4().to_string();
+        LOAD_TRACES.with(|traces| traces.borrow_mut().insert(id.clone(), trace));
+        Self(id)
+    }
+}
+#[cfg(all(target_os = "linux", feature = "ui-test"))]
+impl Drop for LoadTraceBinding {
+    fn drop(&mut self) {
+        LOAD_TRACES.with(|traces| traces.borrow_mut().remove(&self.0));
+    }
+}
+
 pub struct HostedEditor {
     webview: WebView,
     // Fields drop in declaration order: destroy WebKit before its GTK host.
     #[cfg(target_os = "linux")]
     gtk_host: LinuxHost,
+    #[cfg(target_os = "linux")]
+    _context: Rc<RefCell<WebContext>>,
+    #[cfg(target_os = "macos")]
     _context: WebContext,
     _parent: ParentWindow,
     bounds: Cell<Option<Bounds<Pixels>>>,
@@ -123,6 +160,8 @@ pub struct HostedEditor {
     occlusions: RefCell<Vec<OverlayShape>>,
     #[cfg(feature = "ui-test")]
     load_trace: LoadTrace,
+    #[cfg(all(target_os = "linux", feature = "ui-test"))]
+    _trace_binding: LoadTraceBinding,
 }
 
 /// GTK owns this native window and its frame clock. Only the GPUI parent is
@@ -314,28 +353,60 @@ impl HostedEditor {
             gtk::init().context("无法初始化 GTK，请在 X11/XWayland 桌面会话运行")?;
         }
         std::fs::create_dir_all(&profile)?;
+        #[cfg(target_os = "linux")]
+        let context = {
+            let profile = std::fs::canonicalize(profile).context("无法确认编辑器缓存目录")?;
+            PROFILE_CONTEXTS.with(|contexts| {
+                contexts
+                    .borrow_mut()
+                    .acquire(profile.clone(), || WebContext::new(Some(profile)))
+            })
+        };
+        #[cfg(target_os = "linux")]
+        let mut context_borrow = context.borrow_mut();
+        #[cfg(target_os = "linux")]
+        let builder_context = &mut *context_borrow;
+        #[cfg(target_os = "macos")]
         let mut context = WebContext::new(Some(profile));
+        #[cfg(target_os = "macos")]
+        let builder_context = &mut context;
         #[cfg(target_os = "linux")]
         let gtk_host = LinuxHost::new(&parent)?;
         #[cfg(feature = "ui-test")]
         let load_trace = LoadTrace::new();
         #[cfg(feature = "ui-test")]
         let ipc_trace = load_trace.clone();
-        let builder = WebViewBuilder::new_with_web_context(&mut context)
-            .with_custom_protocol("studyapp".into(), {
-                #[cfg(feature = "ui-test")]
+        #[cfg(all(target_os = "linux", feature = "ui-test"))]
+        let trace_binding = LoadTraceBinding::new(load_trace.clone());
+        let register_protocol = !builder_context.is_custom_protocol_registered("studyapp");
+        let builder = WebViewBuilder::new_with_web_context(builder_context);
+        let builder = if register_protocol {
+            builder.with_custom_protocol("studyapp".into(), {
+                #[cfg(all(target_os = "macos", feature = "ui-test"))]
                 let trace = load_trace.clone();
-                move |_, request| {
+                move |_id, request| {
+                    #[cfg(all(target_os = "linux", feature = "ui-test"))]
+                    let trace = LOAD_TRACES.with(|traces| traces.borrow().get(_id).cloned());
+                    #[cfg(all(target_os = "macos", feature = "ui-test"))]
+                    let trace = Some(trace.clone());
                     #[cfg(feature = "ui-test")]
-                    trace.record(match super::editor_asset(&request.uri().to_string()) {
-                        Some(super::EditorAsset::Html) => "asset-html",
-                        Some(super::EditorAsset::Script) => "asset-script",
-                        Some(super::EditorAsset::Stylesheet) => "asset-stylesheet",
-                        None => "asset-rejected",
-                    });
+                    if let Some(trace) = trace {
+                        trace.record(match super::editor_asset(&request.uri().to_string()) {
+                            Some(super::EditorAsset::Html) => "asset-html",
+                            Some(super::EditorAsset::Script) => "asset-script",
+                            Some(super::EditorAsset::Stylesheet) => "asset-stylesheet",
+                            None => "asset-rejected",
+                        });
+                    }
                     embedded_response(request)
                 }
             })
+        } else {
+            builder
+        };
+        #[cfg(all(target_os = "linux", feature = "ui-test"))]
+        let builder = builder.with_id(&trace_binding.0);
+        let builder = builder
             .with_visible(false)
             .with_focused(false)
             .with_bounds(wry::Rect {
@@ -470,6 +541,8 @@ impl HostedEditor {
             });
             Self::diagnostic_windows("constructed");
         }
+        #[cfg(target_os = "linux")]
+        drop(context_borrow);
         Ok(Self {
             webview,
             #[cfg(target_os = "linux")]
@@ -482,6 +555,8 @@ impl HostedEditor {
             occlusions: RefCell::new(Vec::new()),
             #[cfg(feature = "ui-test")]
             load_trace,
+            #[cfg(all(target_os = "linux", feature = "ui-test"))]
+            _trace_binding: trace_binding,
         })
     }
 
@@ -632,6 +707,8 @@ impl HostedEditor {
         use gtk::prelude::*;
         Ok(serde_json::json!({
             "parentXid": self.gtk_host.parent_id,
+            "profileContext": format!("{:p}", Rc::as_ptr(&self._context)),
+            "profileOwners": Rc::strong_count(&self._context),
             "requestedVisible": self.requested_visible.get(),
             "appliedVisible": self.applied_visible.get(),
             "bounds": self.bounds.get().map(|bounds| serde_json::json!({
