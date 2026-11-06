@@ -449,10 +449,8 @@ fn run_style(font: &RunFont, window: &Window) -> TextStyle {
     if let Some(family) = &font.family {
         style.font_family = match family.as_str() {
             "sans-serif" => ".SystemUIFont",
-            "serif" if cfg!(target_os = "linux") => "serif",
+            "serif" if cfg!(target_os = "linux") => "DejaVu Serif",
             "serif" => "Times New Roman",
-            "monospace" if cfg!(target_os = "macos") => "Menlo",
-            "monospace" if cfg!(target_os = "linux") => "monospace",
             _ => crate::design::MONO_FONT,
         }
         .into();

@@ -2,6 +2,7 @@
 //! Child element trees are laid out only during prepaint, using measured positions.
 use super::{Node, Run, SharedFrame, node, run_style};
 use gpui_kit::*;
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 pub(super) fn render(
     indices: Vec<usize>,
@@ -19,6 +20,7 @@ pub(super) fn render(
         fill_width,
         frame: frame.clone(),
         fonts: Vec::new(),
+        measurements: Rc::default(),
     }
     .into_any_element()
 }
@@ -28,6 +30,7 @@ struct InlineFlow {
     fill_width: bool,
     frame: SharedFrame,
     fonts: Vec<TextStyle>,
+    measurements: Rc<RefCell<MeasurementCache>>,
 }
 #[derive(Clone, Copy)]
 struct Metrics {
@@ -36,9 +39,29 @@ struct Metrics {
     space: bool,
     ideographic: bool,
 }
+#[derive(Clone)]
 struct Placement {
     bounds: Vec<Bounds<Pixels>>,
     size: Size<Pixels>,
+}
+// Layout may ask the same inline paragraph for min/max and several flex
+// widths repeatedly. Cache only this element's current layout snapshot, never
+// documents, windows, or text styles from a different frame.
+#[derive(Default)]
+struct MeasurementCache(VecDeque<(Option<Pixels>, Placement)>);
+impl MeasurementCache {
+    const LIMIT: usize = 8;
+    fn measure(&mut self, width: Option<Pixels>, compute: impl FnOnce() -> Placement) -> Placement {
+        if let Some((_, placement)) = self.0.iter().find(|(key, _)| *key == width) {
+            return placement.clone();
+        }
+        let placement = compute();
+        if self.0.len() == Self::LIMIT {
+            self.0.pop_front();
+        }
+        self.0.push_back((width, placement.clone()));
+        placement
+    }
 }
 fn measure(
     runs: &[(usize, Run)],
@@ -188,6 +211,8 @@ impl Element for InlineFlow {
             .iter()
             .map(|(_, run)| run_style(&run.font, window))
             .collect();
+        self.measurements.borrow_mut().0.clear();
+        let measurements = self.measurements.clone();
         let fonts = self.fonts.clone();
         let runs = self.runs.clone();
         let align = self.align.clone();
@@ -202,7 +227,12 @@ impl Element for InlineFlow {
                 AvailableSpace::Definite(w) => Some(w),
                 _ => None,
             });
-            measure(&runs, &fonts, fill_width, width, &align, window).size
+            measurements
+                .borrow_mut()
+                .measure(width, || {
+                    measure(&runs, &fonts, fill_width, width, &align, window)
+                })
+                .size
         });
         (layout, ())
     }
@@ -215,14 +245,17 @@ impl Element for InlineFlow {
         window: &mut Window,
         cx: &mut App,
     ) -> Vec<AnyElement> {
-        let placement = measure(
-            &self.runs,
-            &self.fonts,
-            self.fill_width,
-            Some(bounds.size.width),
-            &self.align,
-            window,
-        );
+        let width = Some(bounds.size.width);
+        let placement = self.measurements.borrow_mut().measure(width, || {
+            measure(
+                &self.runs,
+                &self.fonts,
+                self.fill_width,
+                width,
+                &self.align,
+                window,
+            )
+        });
         self.runs
             .iter()
             .zip(placement.bounds)
@@ -252,7 +285,57 @@ impl Element for InlineFlow {
 
 #[cfg(test)]
 mod tests {
-    use super::{Metrics, place};
+    use super::{MeasurementCache, Metrics, Placement, place};
+    #[test]
+    fn repeated_layout_widths_reuse_measurement_without_aliasing_placements() {
+        let mut cache = MeasurementCache::default();
+        let width = Some(gpui_kit::px(300.));
+        let mut first = cache.measure(width, || Placement {
+            bounds: vec![gpui_kit::Bounds::default()],
+            size: size(px(300.), px(40.)),
+        });
+        first.bounds.clear();
+        let cached = cache.measure(width, || panic!("same layout snapshot must not reshape"));
+        assert_eq!(cached.size, size(px(300.), px(40.)));
+        assert_eq!(cached.bounds.len(), 1);
+        let fresh = cache.measure(Some(px(200.)), || Placement {
+            bounds: vec![],
+            size: size(px(200.), px(60.)),
+        });
+        assert_eq!(fresh.size.height, px(60.));
+    }
+    #[test]
+    fn measurement_cache_is_bounded_and_remeasures_evicted_widths() {
+        let mut cache = MeasurementCache::default();
+        for i in 0..=MeasurementCache::LIMIT {
+            cache.measure(Some(px(i as f32)), || Placement {
+                bounds: vec![],
+                size: size(px(i as f32), px(1.)),
+            });
+        }
+        assert_eq!(cache.0.len(), MeasurementCache::LIMIT);
+        let mut measured = false;
+        cache.measure(Some(px(0.)), || {
+            measured = true;
+            Placement {
+                bounds: vec![],
+                size: size(px(0.), px(1.)),
+            }
+        });
+        assert!(measured);
+        cache.0.clear();
+        cache.measure(None, || Placement {
+            bounds: vec![],
+            size: size(px(10.), px(20.)),
+        });
+        assert_eq!(
+            cache
+                .measure(None, || panic!("intrinsic measurement is cached"))
+                .size
+                .height,
+            px(20.)
+        );
+    }
     use gpui_kit::{px, size};
     fn word(w: f32, h: f32, baseline: f32, space: bool) -> Metrics {
         Metrics {

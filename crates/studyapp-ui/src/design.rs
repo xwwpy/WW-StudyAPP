@@ -56,8 +56,18 @@ pub enum Elevation {
     ShadowMd,
 }
 
-pub const UI_FONT: &str = "Segoe UI Variable Text";
-pub const MONO_FONT: &str = "Cascadia Mono";
+const fn platform_fonts(windows: bool, macos: bool) -> (&'static str, &'static str) {
+    if windows {
+        ("Segoe UI Variable Text", "Cascadia Mono")
+    } else if macos {
+        (".SystemUIFont", "Menlo")
+    } else {
+        (".SystemUIFont", "DejaVu Sans Mono")
+    }
+}
+const PLATFORM_FONTS: (&str, &str) = platform_fonts(cfg!(windows), cfg!(target_os = "macos"));
+pub const UI_FONT: &str = PLATFORM_FONTS.0;
+pub const MONO_FONT: &str = PLATFORM_FONTS.1;
 
 pub const CARD_RADIUS: f32 = 12.;
 pub const CONTROL_RADIUS: f32 = 8.;
@@ -70,6 +80,22 @@ pub const TITLE_BAR_HEIGHT: f32 = 44.;
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn platform_fonts_do_not_probe_windows_only_families_on_unix() {
+        assert_eq!(
+            platform_fonts(true, false),
+            ("Segoe UI Variable Text", "Cascadia Mono")
+        );
+        assert_eq!(platform_fonts(false, true), (".SystemUIFont", "Menlo"));
+        assert_eq!(
+            platform_fonts(false, false),
+            (".SystemUIFont", "DejaVu Sans Mono")
+        );
+        assert_eq!(
+            (UI_FONT, MONO_FONT),
+            platform_fonts(cfg!(windows), cfg!(target_os = "macos"))
+        );
+    }
     #[test]
     fn type_hierarchy_is_readable_at_every_supported_scale() {
         for base in [12, 14, 18, 22] {

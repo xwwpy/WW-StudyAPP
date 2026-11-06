@@ -135,7 +135,14 @@ impl TimerWidget {
         // Native acknowledgement must run even when the compositor does not
         // request frames (covered windows, inactive windows, or cached views).
         // Rendering only displays the last acknowledged state.
+        #[cfg(feature = "ui-test")]
+        eprintln!(
+            "native pin poll scheduled: target={}, retry={}",
+            self.presentation.settings.pinned, self.presentation.pin_retry
+        );
         self.pin_poll = Some(cx.spawn(async move |this, cx| {
+            #[cfg(feature = "ui-test")]
+            eprintln!("native pin poll task started");
             loop {
                 // A nested native event may temporarily hold the App lease.
                 // Keep this task and its pending marker alive for that tick;
@@ -144,16 +151,30 @@ impl TimerWidget {
                 let alive =
                     crate::owned_poll::update_in_app(&this, handle, cx, |this, window, cx| {
                         let settings = &this.presentation.settings;
+                        #[cfg(feature = "ui-test")]
+                        eprintln!(
+                            "native pin poll tick: target={}, pending={}",
+                            settings.pinned,
+                            this.pin.pending()
+                        );
                         let update = this.pin.step(
                             settings.pinned,
                             this.presentation.pin_retry,
                             std::time::Instant::now(),
                             |request| {
-                                crate::timer_widget_window::decorate(
+                                #[cfg(feature = "ui-test")]
+                                eprintln!(
+                                    "native pin platform begin: target={}, request={request}",
+                                    settings.pinned
+                                );
+                                let result = crate::timer_widget_window::decorate(
                                     window,
                                     settings.pinned,
                                     request,
-                                )
+                                );
+                                #[cfg(feature = "ui-test")]
+                                eprintln!("native pin platform complete: {result:?}");
+                                result
                             },
                         );
                         #[cfg(feature = "ui-test")]
@@ -178,12 +199,18 @@ impl TimerWidget {
                             this.pin_poll = None;
                         }
                     });
+                #[cfg(feature = "ui-test")]
+                eprintln!("native pin poll tick complete: alive={alive}, pending={pending}");
                 if !alive || !pending {
                     break;
                 }
+                #[cfg(feature = "ui-test")]
+                eprintln!("native pin poll timer begin");
                 cx.background_executor()
                     .timer(crate::timer_widget_pin::POLL_INTERVAL)
                     .await;
+                #[cfg(feature = "ui-test")]
+                eprintln!("native pin poll timer complete");
             }
         }));
     }
