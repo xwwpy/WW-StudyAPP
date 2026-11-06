@@ -10,6 +10,60 @@ acceptance = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(acceptance)
 
 class FixtureTests(unittest.TestCase):
+    def test_linux_transition_uses_the_existing_isolated_wm_and_cleans_up_on_failure(self):
+        import contextlib
+        from types import SimpleNamespace
+        from unittest import mock
+        root = Path(tempfile.mkdtemp(prefix="native-update-desktop-test-"))
+        events = []
+        @contextlib.contextmanager
+        def window_manager(path, interactive):
+            self.assertEqual(path, root / "session")
+            self.assertTrue(interactive)
+            events.append("managed")
+            try:
+                yield
+            finally:
+                events.append("closed")
+        desktop = SimpleNamespace(window_manager=window_manager)
+        spec = mock.Mock()
+        def transition(path, binary):
+            self.assertEqual(events[-1], "managed")
+            self.assertEqual(path, root)
+            self.assertEqual(binary, Path("production-studyapp"))
+            raise RuntimeError("fixture failure")
+        with (mock.patch.object(acceptance.importlib.util, "spec_from_file_location", return_value=spec) as load,
+              mock.patch.object(acceptance.importlib.util, "module_from_spec", return_value=desktop),
+              mock.patch.object(acceptance, "transition", side_effect=transition)):
+            with self.assertRaisesRegex(RuntimeError, "fixture failure"):
+                acceptance.managed_transition(root, Path("production-studyapp"))
+        self.assertEqual(load.call_args.args[1], acceptance.ROOT / "scripts/smoke-unix.py")
+        spec.loader.exec_module.assert_called_once_with(desktop)
+        self.assertEqual(events, ["managed", "closed"])
+        source = Path(acceptance.__file__).read_text(encoding="utf-8")
+        main = source.split("def main():", 1)[1].split("def managed_transition", 1)[0]
+        self.assertLess(main.index('os.environ.get("GITHUB_ACTIONS")'), main.index("managed_transition(root"))
+        self.assertIn("os.getuid() == 0", main)
+        body = source.split("def managed_transition", 1)[1].split("def transition", 1)[0]
+        self.assertNotIn("windowactivate", body)
+        self.assertNotIn("activate_window", body)
+
+    def test_recovery_failure_is_persistent_without_bypassing_user_policy_or_visibility(self):
+        root = Path(__file__).resolve().parents[1]
+        feedback = (root / "crates/studyapp-desktop/src/feedback.rs").read_text(encoding="utf-8")
+        body = feedback.split("pub(crate) fn deliver_update_notice", 1)[1].split("fn push_context_notice", 1)[0]
+        self.assertIn("NoticeSeverity::Error", body)
+        self.assertNotIn("NoticeSeverity::Warning", body)
+        self.assertIn("self.emit_notification(event, cx)", body)
+        self.assertNotIn("activate_window", body)
+        acceptance = (root / "crates/studyapp-desktop/src/update_acceptance.rs").read_text(encoding="utf-8")
+        self.assertIn('"recovery-wait-start.json"', acceptance)
+        self.assertIn('"windowActive":window.is_window_active()', acceptance)
+        self.assertIn('"desktopNotices":app.notifications.read(cx).desktop_items().len()', acceptance)
+        self.assertIn('"visible recovery notification",|a,cx|a.notifications.read(cx).visible_count()>0', acceptance)
+        self.assertIn('assert!(bounds.size.width>px(0.)&&bounds.size.height>px(0.))', acceptance)
+        self.assertIn('Duration::from_secs(60)', acceptance)
+
     def test_editor_diagnostics_only_inspect_profiles_inside_fixture_temp(self):
         root = Path(tempfile.mkdtemp(prefix="native-update-profile-test-"))
         fixture = root / "fixture"

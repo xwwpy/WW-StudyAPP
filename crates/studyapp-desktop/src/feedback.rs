@@ -18,7 +18,8 @@ impl StudyApp {
         {
             let mut event = studyapp_core::NoticeEvent::new(
                 studyapp_core::NoticeCategory::StartupRecovery,
-                studyapp_core::NoticeSeverity::Warning,
+                // Installation failures remain until explicitly acknowledged.
+                studyapp_core::NoticeSeverity::Error,
                 update_recovery_message(&message),
             );
             event.action = Some(studyapp_core::NoticeAction::OpenUpdate);
@@ -123,6 +124,8 @@ mod tests {
         let app = app.unwrap();
         visual.update(|_, cx| {
             app.update(cx, |app, cx| {
+                app.notifications
+                    .update(cx, |center, _| center.freeze_time());
                 app.pending_update_notice = Some("System authorization denied".into());
                 app.startup_busy = true;
                 app.draft_loading = true;
@@ -135,6 +138,49 @@ mod tests {
                 assert!(app.pending_update_notice.is_none());
                 app.deliver_update_notice(cx);
                 assert_eq!(app.notifications.read(cx).visible_count(), 1);
+                app.notifications.update(cx, |center, cx| {
+                    use std::time::Duration;
+                    use studyapp_core::{
+                        NoticeCategory, NoticeEnvironment, NoticeSeverity, NotificationAppearance,
+                        NotificationSettings,
+                    };
+                    let policy = NotificationSettings::default();
+                    let appearance = NotificationAppearance::default();
+                    let mut environment = NoticeEnvironment {
+                        foreground: false,
+                        desktop_available: true,
+                        anchor_available: false,
+                        minute: 720,
+                    };
+                    center.configure(&policy, &appearance, environment, false, cx);
+                    assert_eq!(center.visible_count(), 0);
+                    let items = center.desktop_items();
+                    assert_eq!(items.len(), 1);
+                    let event = items[0].0.event.as_ref().unwrap();
+                    assert_eq!(event.category, NoticeCategory::StartupRecovery);
+                    assert_eq!(event.severity, NoticeSeverity::Error);
+                    assert_eq!(event.action, Some(studyapp_core::NoticeAction::OpenUpdate));
+                    let id = items[0].0.id;
+                    // Passive delivery or a delayed initial frame cannot expire
+                    // an installation failure before the user acknowledges it.
+                    center.advance_time(Duration::from_secs(3600), cx);
+                    assert_eq!(center.desktop_items().len(), 1);
+                    environment.desktop_available = false;
+                    center.configure(&policy, &appearance, environment, false, cx);
+                    center.advance_time(Duration::from_secs(3600), cx);
+                    assert!(!center.desktop_visible());
+                    assert_eq!(center.visible_count(), 0);
+                    environment.foreground = true;
+                    center.configure(&policy, &appearance, environment, false, cx);
+                    assert_eq!(center.test_state()[0].0, id);
+                    center.advance_time(Duration::from_secs(3600), cx);
+                    assert_eq!(center.visible_count(), 1);
+                    center.dismiss(id, cx);
+                    center.advance_time(Duration::from_secs(1), cx);
+                    assert_eq!(center.visible_count(), 0);
+                });
+                app.deliver_update_notice(cx);
+                assert_eq!(app.notifications.read(cx).visible_count(), 0);
             });
         });
     }

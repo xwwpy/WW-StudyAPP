@@ -234,6 +234,12 @@ async fn wait(
                 save("wait-failure.json",json!({"description":description,"pid":std::process::id(),
                     "editorPresent":app.note_editor.is_some(),"editorReady":editor.ready(),"editorError":editor.error(),
                     "notice":app.notice,"startupBusy":app.startup_busy,"draftLoading":app.draft_loading,
+                    "windowActive":window.is_window_active(),
+                    "foregroundNotices":app.notifications.read(cx).visible_count(),
+                    "desktopNotices":app.notifications.read(cx).desktop_items().len(),
+                    "desktopWindow":app.notification_window.is_some(),
+                    "desktopFailed":app.notification_desktop_failed,
+                    "recoveryRule":app.preferences_ui.saved.as_ref().map(|saved|saved.settings.notifications.rule(studyapp_core::NoticeCategory::StartupRecovery)),
                     "temp":std::env::temp_dir(),
                     "native":editor.native_state().map_err(|e|e.to_string())}));
                 #[cfg(any(windows,target_os="macos"))]
@@ -464,6 +470,15 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             let previous:Value=serde_json::from_slice(&std::fs::read(directory().unwrap().join("old-observation.json")).unwrap()).unwrap();
             let id=previous["draft_id"].as_str().unwrap();
             if config["scenario"] == "authorization-denied" || (config["scenario"] == "health-failure" && config["target_version"] != env!("CARGO_PKG_VERSION")) {
+                window.update(cx,|_,window,cx|{
+                    let app=view.read(cx);
+                    save("recovery-wait-start.json",json!({"pid":std::process::id(),
+                        "windowActive":window.is_window_active(),"notice":app.notice,
+                        "foregroundNotices":app.notifications.read(cx).visible_count(),
+                        "desktopNotices":app.notifications.read(cx).desktop_items().len(),
+                        "desktopWindow":app.notification_window.is_some(),
+                        "desktopFailed":app.notification_desktop_failed}));
+                }).unwrap();
                 wait(window,&view,cx,"visible recovery notification",|a,cx|a.notifications.read(cx).visible_count()>0).await;
                 let notice=window.update(cx,|_,_,cx|view.read(cx).notice.clone()).unwrap();
                 assert!(matches!(notice, Some(Err(_))), "Recovery must show the installation failure");

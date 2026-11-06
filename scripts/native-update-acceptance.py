@@ -226,6 +226,22 @@ def main():
         raise RuntimeError("Native transition runs only as an ordinary GitHub Linux runner user")
     root = args.work_dir.resolve()
     root.mkdir()
+    managed_transition(root, args.production_binary)
+
+
+def managed_transition(root, production_binary):
+    # The workflow supplies a fresh isolated Xvfb display. A bare X server
+    # cannot exercise normal application activation or passive desktop cards.
+    # Reuse the same bounded EWMH session as the native editor regression;
+    # never activate a recovered application or dismiss an obstruction here.
+    spec = importlib.util.spec_from_file_location("linux_acceptance_desktop", ROOT / "scripts/smoke-unix.py")
+    desktop = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(desktop)
+    with desktop.window_manager(root / "session", True):
+        transition(root, production_binary)
+
+
+def transition(root, production_binary):
     source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     archive = subprocess.check_output(["git", "archive", "--format=tar", "HEAD"], cwd=ROOT)
     packages = {}
@@ -251,7 +267,7 @@ def main():
     verify.mkdir()
     shutil.copy2(fixture / "latest.json", verify / "manifest.json")
     shutil.copy2(packages["candidate"], verify / "package")
-    rejected = subprocess.run([str(args.production_binary.resolve()), "--update-verify-package", str(verify)], env=dict(os.environ, STUDYAPP_UPDATE_ACCEPTANCE_DIR=str(fixture)), timeout=20)
+    rejected = subprocess.run([str(production_binary.resolve()), "--update-verify-package", str(verify)], env=dict(os.environ, STUDYAPP_UPDATE_ACCEPTANCE_DIR=str(fixture)), timeout=20)
     if rejected.returncode != 1:
         raise RuntimeError("Production binary did not reject the fixture signing key")
     run(["sudo", "apt-get", "install", "--reinstall", "-y", str(packages["old"])])
