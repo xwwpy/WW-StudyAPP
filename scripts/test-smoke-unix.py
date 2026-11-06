@@ -206,6 +206,17 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('crate::smoke_visibility::type_into(window, &editor, "关闭窗口前的末次输入', close)
         self.assertNotIn('"type":"outlinePreference"', close)
 
+    def test_migration_runner_keeps_bounded_original_error_without_changing_the_result(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/worker.rs").read_text(encoding="utf-8")
+        body = source.split("Ok(Work::MigrateApplication(directory)) =>", 1)[1].split("Ok(Work::MigrateLibrary(directory)) =>", 1)[0]
+        self.assertIn('let diagnostic = format!("{error:#}")', body)
+        self.assertRegex(body, r'#\[cfg\(feature = "ui-test"\)\]\s*eprintln!')
+        self.assertIn('diagnostic.chars().take(4096).collect::<String>()', body)
+        self.assertIn('Err(diagnostic)', body)
+        self.assertIn('storage_event = Some(StorageEvent::Finished(result))', body)
+        self.assertNotIn('retry', body.lower())
+
     def test_mac_bundled_document_keeps_exact_request_origin_and_compositor_capture(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "crates/studyapp-desktop/src/web_editor_host_unix.rs").read_text(encoding="utf-8")

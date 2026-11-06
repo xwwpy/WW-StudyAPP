@@ -1217,7 +1217,18 @@ impl Worker {
                         let result = match result {
                             Ok(Some(report)) => Ok(report),
                             Ok(None) => return,
-                            Err(e) => Err(format!("{e:#}")),
+                            Err(error) => {
+                                let diagnostic = format!("{error:#}");
+                                // Runner fixtures need the original failure before notification
+                                // routing replaces it with a safe user-facing summary. Never
+                                // emit raw paths/errors in ordinary production diagnostics.
+                                #[cfg(feature = "ui-test")]
+                                eprintln!(
+                                    "application migration failed: {}",
+                                    diagnostic.chars().take(4096).collect::<String>()
+                                );
+                                Err(diagnostic)
+                            }
                         };
                         storage_event = Some(StorageEvent::Finished(result));
                         changed = true;
