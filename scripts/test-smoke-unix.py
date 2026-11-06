@@ -234,7 +234,13 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("window.defer(cx", desktop)
         self.assertIn("bounds.size.height", desktop)
         self.assertIn("window.bounds_changed(cx)", native)
+        for check in ("outer_bounds_for_client", "GetClientRect(hwnd", "ClientToScreen(hwnd", "bounds.to_device_pixels(window.scale_factor())"):
+            self.assertIn(check, native)
+        self.assertIn("settings-notification-cache-warmup.json", smoke_source)
+        self.assertIn("warmup_frames.len() >= 5 && quiet >= 3", smoke_source)
         self.assertIn("native-notification-fit-{phase}.json", smoke_source)
+        for capture in ("notification-desktop-G-native.png", "notification-desktop-G-stacked-native.png", "crate::native_test_pointer::capture_diagnostic"):
+            self.assertIn(capture, smoke_source)
         self.assertIn('"platformBounds"', smoke_source)
         self.assertIn("desktop_cards_fit_natural_content_from_a_one_pixel_bootstrap", desktop)
         for check in ('native["nonClientRendering"], false', "WS_EX_NOACTIVATE", "relevant notification edit must rebuild visible controls only",

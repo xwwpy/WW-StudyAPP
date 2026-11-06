@@ -165,10 +165,63 @@ async fn measure_notification_cache(
                 })
             })
             .unwrap();
-        for _ in 0..5 {
-            window
-                .update(cx, |_, window, cx| window.draw(cx).clear(cx))
+        // Warm the same parent-notify path before measuring steady-state work.
+        // Keep these draws separate and visible in the receipt; the following
+        // twenty measured parent notifications must still all build zero rows.
+        let warmup_started = Instant::now();
+        let mut warmup_frames = Vec::new();
+        let mut quiet = 0;
+        loop {
+            let (before, viewport) = window
+                .update(cx, |_, window, cx| {
+                    let before = view.read(cx).notification_render_work();
+                    view.update(cx, |_, cx| cx.notify());
+                    (before, window.viewport_size())
+                })
                 .unwrap();
+            let (builders, key_matches, mounted, stable_viewport) = window
+                .update(cx, |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    let app = view.read(cx);
+                    (
+                        app.notification_render_work() - before,
+                        if appearance {
+                            app.notification_appearance_cache_matches(cx)
+                        } else {
+                            app.notification_cache_matches(cx)
+                        },
+                        window
+                            .try_find(if appearance {
+                                "notification-width-more"
+                            } else {
+                                "notification-update-badge"
+                            })
+                            .is_some(),
+                        window.viewport_size() == viewport,
+                    )
+                })
+                .unwrap();
+            warmup_frames.push(serde_json::json!({"builders":builders,"keyMatches":key_matches,"mounted":mounted,"stableViewport":stable_viewport}));
+            quiet = if builders == 0 && key_matches && mounted && stable_viewport {
+                quiet + 1
+            } else {
+                0
+            };
+            std::fs::write(
+                database.with_file_name("settings-notification-cache-warmup.json"),
+                serde_json::to_vec_pretty(
+                    &serde_json::json!({"appearance":appearance,"frames":warmup_frames}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            if warmup_frames.len() >= 5 && quiet >= 3 {
+                break;
+            }
+            assert!(
+                warmup_started.elapsed() < Duration::from_secs(5),
+                "notification cache did not reach a mounted stable baseline within 5 seconds: {warmup_frames:?}"
+            );
             cx.background_executor()
                 .timer(Duration::from_millis(30))
                 .await;
@@ -297,7 +350,7 @@ async fn measure_notification_cache(
             changed < 22,
             "relevant notification edit must rebuild visible controls only: {changed}"
         );
-        results.push(serde_json::json!({"appearance":appearance,"parent_notify_builder_calls":calls,"parent_notify_draw_microseconds":timings,"relevant_edit_builder_calls":changed,"edit_frames":edit_frames}));
+        results.push(serde_json::json!({"appearance":appearance,"parent_notify_builder_calls":calls,"parent_notify_draw_microseconds":timings,"relevant_edit_builder_calls":changed,"edit_frames":edit_frames,"warmup_frames":warmup_frames}));
     }
     std::fs::write(
         database.with_file_name("settings-notification-cache-timing.json"),
@@ -569,6 +622,10 @@ pub async fn exercise(
                 database.with_file_name("notification-desktop-G.png"),
             )
             .unwrap();
+            crate::native_test_pointer::capture_diagnostic(
+                window,
+                &database.with_file_name("notification-desktop-G-native.png"),
+            );
         })
         .unwrap();
     assert_eq!(foreground(), before, "painting G must not activate it");
@@ -623,7 +680,11 @@ pub async fn exercise(
                 window,
                 database.with_file_name("notification-desktop-G-stacked.png"),
             )
-            .unwrap()
+            .unwrap();
+            crate::native_test_pointer::capture_diagnostic(
+                window,
+                &database.with_file_name("notification-desktop-G-stacked-native.png"),
+            );
         })
         .unwrap();
     window

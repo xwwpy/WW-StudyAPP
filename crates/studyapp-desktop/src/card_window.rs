@@ -66,26 +66,76 @@ pub fn disable_native_frame(window: &Window) -> Result<()> {
     Ok(())
 }
 
+/// Convert a desired client rectangle using this window's measured native frame.
+/// All three rectangles are in physical screen pixels; caption insets need not
+/// be symmetric and cannot be inferred from the disabled DWM painting policy.
+#[cfg(any(windows, test))]
+fn outer_bounds_for_client(
+    desired: Bounds<gpui_kit::DevicePixels>,
+    outer: Bounds<gpui_kit::DevicePixels>,
+    client: Bounds<gpui_kit::DevicePixels>,
+) -> Bounds<gpui_kit::DevicePixels> {
+    Bounds::new(
+        desired.origin + outer.origin - client.origin,
+        size(
+            desired.size.width + outer.size.width - client.size.width,
+            desired.size.height + outer.size.height - client.size.height,
+        ),
+    )
+}
+
 /// Fit and anchor without activation. GPUI's Windows resize currently omits
 /// SWP_NOACTIVATE, so a passive popup cannot use that generic resize path.
 pub fn fit_passive(window: &mut Window, bounds: Bounds<Pixels>, cx: &mut App) -> Result<()> {
     #[cfg(all(windows, not(test)))]
     {
-        use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::*};
+        use gpui_kit::DevicePixels;
+        use windows::Win32::{
+            Foundation::{HWND, POINT, RECT},
+            Graphics::Gdi::ClientToScreen,
+            UI::WindowsAndMessaging::*,
+        };
         use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let RawWindowHandle::Win32(raw) = HasWindowHandle::window_handle(window)?.as_raw() else {
             anyhow::bail!("通知窗口句柄无效")
         };
-        let scale = window.scale_factor();
-        // SAFETY: only the borrowed, application-owned popup is positioned.
+        let hwnd = HWND(raw.hwnd.get() as *mut _);
+        // SAFETY: all measurements and positioning use this Window's borrowed
+        // HWND. Disabling frame painting does not remove its client-area insets.
         unsafe {
+            let mut outer = RECT::default();
+            let mut client = RECT::default();
+            GetWindowRect(hwnd, &mut outer)?;
+            GetClientRect(hwnd, &mut client)?;
+            let mut origin = POINT {
+                x: client.left,
+                y: client.top,
+            };
+            ClientToScreen(hwnd, &mut origin).ok()?;
+            let bounds = outer_bounds_for_client(
+                bounds.to_device_pixels(window.scale_factor()),
+                Bounds::new(
+                    point(DevicePixels(outer.left), DevicePixels(outer.top)),
+                    size(
+                        DevicePixels(outer.right - outer.left),
+                        DevicePixels(outer.bottom - outer.top),
+                    ),
+                ),
+                Bounds::new(
+                    point(DevicePixels(origin.x), DevicePixels(origin.y)),
+                    size(
+                        DevicePixels(client.right - client.left),
+                        DevicePixels(client.bottom - client.top),
+                    ),
+                ),
+            );
             SetWindowPos(
-                HWND(raw.hwnd.get() as *mut _),
+                hwnd,
                 None,
-                (f32::from(bounds.origin.x) * scale).round() as i32,
-                (f32::from(bounds.origin.y) * scale).round() as i32,
-                (f32::from(bounds.size.width) * scale).round() as i32,
-                (f32::from(bounds.size.height) * scale).round() as i32,
+                bounds.origin.x.0,
+                bounds.origin.y.0,
+                bounds.size.width.0.max(1),
+                bounds.size.height.0.max(1),
                 SWP_NOACTIVATE | SWP_NOZORDER,
             )?;
         }
@@ -164,6 +214,39 @@ pub fn fit_passive(window: &mut Window, bounds: Bounds<Pixels>, cx: &mut App) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_client_fit_preserves_asymmetric_caption_insets_and_scaled_anchors() {
+        use gpui_kit::DevicePixels;
+        let rect = |x, y, width, height| {
+            Bounds::new(
+                point(DevicePixels(x), DevicePixels(y)),
+                size(DevicePixels(width), DevicePixels(height)),
+            )
+        };
+        // Exact native observation: a 376x104 outer rectangle only provided
+        // 360x65 client pixels (8 left, 31 top, 8 right and 8 bottom).
+        for (outer, client) in [
+            (rect(632, 600, 376, 104), rect(640, 631, 360, 65)),
+            (rect(-1600, -200, 376, 104), rect(-1592, -169, 360, 65)),
+            (rect(0, 0, 376, 104), rect(0, 0, 376, 104)),
+        ] {
+            for scale in [1., 1.25, 2.] {
+                let target = Bounds::new(point(px(-632.), px(600.)), size(px(376.), px(104.)))
+                    .to_device_pixels(scale);
+                let fitted = outer_bounds_for_client(target, outer, client);
+                let observed = Bounds::new(
+                    fitted.origin + client.origin - outer.origin,
+                    size(
+                        fitted.size.width - outer.size.width + client.size.width,
+                        fitted.size.height - outer.size.height + client.size.height,
+                    ),
+                );
+                assert_eq!(observed, target);
+                assert_eq!(outer_bounds_for_client(target, fitted, observed), fitted);
+            }
+        }
+    }
+
     #[test]
     fn notifications_fit_real_content_and_remain_anchored_on_small_negative_origin_displays() {
         for screen in [
