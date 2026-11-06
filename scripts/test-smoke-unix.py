@@ -233,6 +233,10 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("SWP_NOACTIVATE | SWP_NOZORDER", native)
         self.assertIn("window.defer(cx", desktop)
         self.assertIn("bounds.size.height", desktop)
+        self.assertIn("window.bounds_changed(cx)", native)
+        self.assertIn("native-notification-fit-{phase}.json", smoke_source)
+        self.assertIn('"platformBounds"', smoke_source)
+        self.assertIn("desktop_cards_fit_natural_content_from_a_one_pixel_bootstrap", desktop)
         for check in ('native["nonClientRendering"], false', "WS_EX_NOACTIVATE", "relevant notification edit must rebuild visible controls only",
                       "fitting G must not activate it", "stacking G must not activate it", "shrinking G must not activate it"):
             self.assertIn(check, smoke_source)

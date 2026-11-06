@@ -1,6 +1,6 @@
 //! Native policy for this application's own transparent floating cards.
 use anyhow::Result;
-use gpui_kit::{Bounds, Pixels, Window, point, px, size};
+use gpui_kit::{App, Bounds, Pixels, Window, point, px, size};
 use studyapp_core::NoticePosition;
 
 pub fn notification_bounds(
@@ -68,7 +68,7 @@ pub fn disable_native_frame(window: &Window) -> Result<()> {
 
 /// Fit and anchor without activation. GPUI's Windows resize currently omits
 /// SWP_NOACTIVATE, so a passive popup cannot use that generic resize path.
-pub fn fit_passive(window: &mut Window, bounds: Bounds<Pixels>) -> Result<()> {
+pub fn fit_passive(window: &mut Window, bounds: Bounds<Pixels>, cx: &mut App) -> Result<()> {
     #[cfg(all(windows, not(test)))]
     {
         use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::*};
@@ -154,6 +154,10 @@ pub fn fit_passive(window: &mut Window, bounds: Bounds<Pixels>) -> Result<()> {
     }
     #[cfg(test)]
     window.resize(bounds.size);
+    // Native resize callbacks may run synchronously while this Window is leased.
+    // Reconcile the viewport from the platform after the native call returns;
+    // otherwise the measured fit can succeed while layout still uses the old size.
+    window.bounds_changed(cx);
     Ok(())
 }
 

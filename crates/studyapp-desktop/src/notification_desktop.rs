@@ -162,7 +162,7 @@ impl Render for DesktopNotifications {
                         // Layout only measures. Native geometry changes run after the
                         // draw and retain the same passive window and event identity.
                         window.defer(cx, move |window, cx| {
-                            if crate::card_window::fit_passive(window, desired).is_err() {
+                            if crate::card_window::fit_passive(window, desired, cx).is_err() {
                                 fail_desktop(owner, cx);
                             }
                         });
@@ -328,5 +328,93 @@ impl StudyApp {
                 self.sync_notification_preferences(window, cx);
             }
         }
+    }
+}
+
+#[cfg(all(test, feature = "ui-test"))]
+mod tests {
+    use super::{DesktopNotifications, DesktopPresentation, NotificationCenter, StudyApp};
+    use gpui_kit::{
+        AppContext, TestAppContext, VisualTestContext, base, px, size, test::TestWindowExt,
+    };
+    use studyapp_core::{
+        NoticeCategory, NoticeEnvironment, NoticeEvent, NoticeSeverity, NotificationAppearance,
+        NotificationSettings,
+    };
+
+    #[gpui_kit::test]
+    fn desktop_cards_fit_natural_content_from_a_one_pixel_bootstrap(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        let data = tempfile::tempdir().unwrap().keep();
+        let worker = crate::worker::Worker::start(data.join("studyapp.sqlite3"), None);
+        let mut owner = None;
+        let mut desktop = None;
+        let handle = cx.open_window(size(px(376.), px(1.)), |window, cx| {
+            let app = cx.new(|cx| StudyApp::new(worker, window, cx));
+            let center = cx.new(|_| NotificationCenter::new());
+            center.update(cx, |center, cx| {
+                center.freeze_time();
+                center.configure(&NotificationSettings::default(), &NotificationAppearance { reduce_motion: true, max_visible: 2, ..Default::default() }, NoticeEnvironment { foreground: false, desktop_available: true, anchor_available: false, minute: 0 }, false, cx);
+                center.enqueue(NoticeEvent::new(NoticeCategory::SaveFailure, NoticeSeverity::Error, "这是通知显示回归样例。关闭提示不会丢弃尚未保存的内容。长消息仍在卡片内部滚动。"), cx).unwrap();
+            });
+            let presentation = DesktopPresentation::read(center.read(cx));
+            assert_eq!(presentation.entries.len(), 1);
+            let view = cx.new(|cx| DesktopNotifications::new(center, presentation, app.downgrade(), cx));
+            owner = Some(app);
+            desktop = Some(view.clone());
+            base::Root::new(view, window, cx)
+        });
+        let desktop = desktop.unwrap();
+        let visual = &mut VisualTestContext::from_window(handle.into(), cx);
+        for _ in 0..8 {
+            visual.update(|window, cx| window.render_frame(cx));
+        }
+        visual.update(|window, cx| {
+            let card = window.find("desktop-notice-1").bounds();
+            let viewport = window.viewport_size();
+            let fit = desktop.read(cx).fit.get();
+            assert!(card.size.height > px(32.));
+            assert!(
+                (f32::from(viewport.height - card.size.height) - 16.).abs() <= 2.,
+                "viewport={viewport:?}, card={card:?}, requested={fit:?}"
+            );
+        });
+        let compact = visual.update(|window, _| window.viewport_size());
+        let center = desktop.read_with(visual, |desktop, _| desktop.center.clone());
+        center.update(visual, |center, cx| {
+            center
+                .enqueue(
+                    NoticeEvent::new(
+                        NoticeCategory::OperationResult,
+                        NoticeSeverity::Success,
+                        "桌面小组件已显示。",
+                    ),
+                    cx,
+                )
+                .unwrap();
+        });
+        for _ in 0..8 {
+            visual.update(|window, cx| window.render_frame(cx));
+        }
+        visual.update(|window, _| {
+            let first = window.find("desktop-notice-1").bounds();
+            let second = window.find("desktop-notice-2").bounds();
+            let viewport = window.viewport_size();
+            assert!(viewport.height > compact.height);
+            assert!(
+                (f32::from(viewport.height - first.size.height - second.size.height) - 24.).abs()
+                    <= 2.
+            );
+            assert!(first.top() >= px(7.) && second.bottom() <= viewport.height - px(7.));
+        });
+        center.update(visual, |center, cx| center.dismiss(2, cx));
+        for _ in 0..8 {
+            visual.update(|window, cx| window.render_frame(cx));
+        }
+        visual.update(|window, _| assert_eq!(window.viewport_size(), compact));
+        assert!(owner.is_some());
     }
 }

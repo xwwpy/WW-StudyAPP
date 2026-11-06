@@ -85,6 +85,8 @@ fn event() -> NoticeEvent {
 async fn fitted_desktop(
     handle: AnyWindowHandle,
     ids: &[u64],
+    database: &Path,
+    phase: &str,
     cx: &mut AsyncApp,
 ) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -96,13 +98,12 @@ async fn fitted_desktop(
             let height = cards.iter().map(|card| f32::from(card.size.height)).sum::<f32>() + 16. + ids.len().saturating_sub(1) as f32 * 8.;
             let fitted = cards.len() == ids.len() && (f32::from(viewport.height) - height).abs() <= 2.
                 && cards.iter().all(|card| card.left() >= px(7.) && card.top() >= px(7.) && card.right() <= viewport.width - px(7.) && card.bottom() <= viewport.height - px(7.));
-            if !fitted { return None; }
             #[cfg(not(test))]
             let native = crate::timer_widget_window::pin_observation(window).unwrap();
             #[cfg(test)]
             let native = serde_json::Value::Null;
             #[cfg(not(test))]
-            {
+            if fitted {
                 assert_eq!(native["nonClientRendering"], false, "DWM must not draw a notification shell");
                 assert_eq!(native["pinned"], true);
                 assert_eq!(native["managed"], true);
@@ -112,15 +113,22 @@ async fn fitted_desktop(
                 let style = unsafe { GetWindowLongPtrW(HWND(raw.hwnd.get() as *mut _), GWL_EXSTYLE) };
                 assert_ne!(style & WS_EX_NOACTIVATE.0 as isize, 0);
             }
-            Some(serde_json::json!({"viewport":[f32::from(viewport.width),f32::from(viewport.height)],
-                "cards":cards.iter().map(|card| [f32::from(card.left()),f32::from(card.top()),f32::from(card.size.width),f32::from(card.size.height)]).collect::<Vec<_>>(),"native":native}))
+            let platform = window.bounds();
+            serde_json::json!({"fitted":fitted,"viewport":[f32::from(viewport.width),f32::from(viewport.height)],
+                "platformBounds":[f32::from(platform.left()),f32::from(platform.top()),f32::from(platform.size.width),f32::from(platform.size.height)],
+                "cards":cards.iter().map(|card| [f32::from(card.left()),f32::from(card.top()),f32::from(card.size.width),f32::from(card.size.height)]).collect::<Vec<_>>(),"native":native})
         }).unwrap();
-        if let Some(observation) = observation {
+        std::fs::write(
+            database.with_file_name(format!("native-notification-fit-{phase}.json")),
+            serde_json::to_vec_pretty(&observation).unwrap(),
+        )
+        .unwrap();
+        if observation["fitted"] == true {
             return observation;
         }
         assert!(
             Instant::now() < deadline,
-            "desktop card did not fit real content within 5 seconds"
+            "desktop card did not fit real content within 5 seconds: {phase}, {observation}"
         );
         cx.background_executor()
             .timer(Duration::from_millis(30))
@@ -545,7 +553,7 @@ pub async fn exercise(
             (app.notification_window.unwrap(), entries[0].0.id)
         })
         .unwrap();
-    let compact_geometry = fitted_desktop(desktop, &[numeric_id], cx).await;
+    let compact_geometry = fitted_desktop(desktop, &[numeric_id], database, "compact", cx).await;
     assert_eq!(foreground(), before, "fitting G must not activate it");
     desktop
         .update(cx, |_, window, cx| {
@@ -600,7 +608,14 @@ pub async fn exercise(
             })
         })
         .unwrap();
-    let stacked_geometry = fitted_desktop(desktop, &[numeric_id, secondary_id], cx).await;
+    let stacked_geometry = fitted_desktop(
+        desktop,
+        &[numeric_id, secondary_id],
+        database,
+        "stacked",
+        cx,
+    )
+    .await;
     assert_eq!(foreground(), before, "stacking G must not activate it");
     desktop
         .update(cx, |_, window, _| {
@@ -619,7 +634,7 @@ pub async fn exercise(
                 .update(cx, |center, cx| center.dismiss(secondary_id, cx))
         })
         .unwrap();
-    let restored_geometry = fitted_desktop(desktop, &[numeric_id], cx).await;
+    let restored_geometry = fitted_desktop(desktop, &[numeric_id], database, "restored", cx).await;
     assert_eq!(foreground(), before, "shrinking G must not activate it");
     assert_eq!(compact_geometry["viewport"], restored_geometry["viewport"]);
     window
