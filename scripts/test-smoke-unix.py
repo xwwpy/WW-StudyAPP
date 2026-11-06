@@ -217,6 +217,23 @@ class SmokeTests(unittest.TestCase):
         self.assertIn('storage_event = Some(StorageEvent::Finished(result))', body)
         self.assertNotIn('retry', body.lower())
 
+    def test_closed_profile_recovery_is_production_bounded_and_not_a_smoke_retry(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/app_migration.rs").read_text(encoding="utf-8")
+        body = source.split("pub fn prepare_relocating_profile(",1)[1].split("fn prepare_checked(",1)[0]
+        self.assertLess(body.index("let mut settling = 80"), body.index("loop {"))
+        for check in ("settling -= 1", "Duration::from_millis(125)", "pass < 4", "settling > 0", "cause.is::<TransientProfile>()"):
+            self.assertIn(check, body)
+        self.assertIn("prepare_with_profile_wait(",body)
+        self.assertNotIn("publish(",body)
+        worker = (root / "crates/studyapp-desktop/src/worker.rs").read_text(encoding="utf-8")
+        self.assertIn("crate::app_migration::prepare_relocating_profile(engine, paths, target, now",worker)
+        smoke = (root / "crates/studyapp-desktop/src/smoke_library.rs").read_text(encoding="utf-8")
+        scenario = smoke.split("pub(crate) async fn application_migration(",1)[1]
+        self.assertEqual(scenario.count('"confirm-application-migration"'),1)
+        self.assertNotIn("prepare_relocating_profile",scenario)
+        self.assertIn("Duration::from_secs(90)",scenario)
+
     def test_mac_bundled_document_keeps_exact_request_origin_and_compositor_capture(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "crates/studyapp-desktop/src/web_editor_host_unix.rs").read_text(encoding="utf-8")

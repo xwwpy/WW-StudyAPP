@@ -426,11 +426,23 @@ fn held(error: &anyhow::Error) -> bool {
 // A destroyed WebView can checkpoint SQLite from its remaining WebKit process.
 // Wait before publishing any copy; compare bytes as well as the complete file set.
 // Only the closed editor profile may treat a disappearing file as transient.
+#[derive(Debug)]
+struct TransientProfile(std::io::Error);
+impl std::fmt::Display for TransientProfile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+impl std::error::Error for TransientProfile {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
 fn profile_busy() -> anyhow::Error {
-    std::io::Error::new(
+    TransientProfile(std::io::Error::new(
         std::io::ErrorKind::WouldBlock,
         "编辑器缓存仍在变化，请退出并重新打开应用以继续迁移",
-    )
+    ))
     .into()
 }
 fn profile_transient(error: anyhow::Error) -> anyhow::Error {
@@ -439,10 +451,10 @@ fn profile_transient(error: anyhow::Error) -> anyhow::Error {
         .filter_map(|e| e.downcast_ref::<std::io::Error>())
         .any(|e| e.kind() == std::io::ErrorKind::NotFound)
     {
-        std::io::Error::new(
+        TransientProfile(std::io::Error::new(
             std::io::ErrorKind::WouldBlock,
             format!("编辑器缓存正在关闭：{error:#}"),
-        )
+        ))
         .into()
     } else {
         error
@@ -509,11 +521,7 @@ fn wait_profile_stable(profile: &Path, attempts: usize, mut settle: impl FnMut()
             Err(error) => return Err(error),
         }
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::WouldBlock,
-        "编辑器缓存仍在变化，请退出并重新打开应用以继续迁移",
-    )
-    .into())
+    Err(profile_busy())
 }
 // Receipts are individually bounded and durable before create-only publication.
 // The fixed journal remains small even for profiles with many thousands of files.
@@ -869,7 +877,8 @@ impl Prepared {
         Ok(())
     }
 }
-pub fn prepare(
+#[cfg(test)]
+fn prepare(
     engine: &mut Engine,
     paths: AppPaths,
     target: &Path,
@@ -885,13 +894,86 @@ pub fn prepare(
         studyapp_core::verify_backup_file,
     )
 }
+/// A closed WebKit process can checkpoint after an apparently stable sample.
+/// Re-enter the same protected transaction only for typed profile changes. Each
+/// pass first recovers positively identified private copies, then rechecks all
+/// source/target identities, bytes and file sets. The shared settling budget is
+/// still 80 * 125 ms, with at most four full passes; neither a foreign file nor
+/// a busy target database is eligible for this automatic recovery.
+pub fn prepare_relocating_profile(
+    engine: &mut Engine,
+    paths: AppPaths,
+    target: &Path,
+    now: i64,
+    mut progress: impl FnMut(TransferProgress),
+) -> Result<Prepared> {
+    let mut settling = 80;
+    let mut pass = 0;
+    loop {
+        check_cancel()?;
+        let result = prepare_with_profile_wait(
+            engine,
+            paths.clone(),
+            target,
+            now,
+            &mut progress,
+            studyapp_core::verify_backup_file,
+            &mut |profile| {
+                wait_profile_stable(profile, settling, || {
+                    settling -= 1;
+                    std::thread::sleep(std::time::Duration::from_millis(125));
+                })
+            },
+        );
+        pass += 1;
+        match result {
+            Err(error)
+                if pass < 4
+                    && settling > 0
+                    && error.chain().any(|cause| cause.is::<TransientProfile>()) =>
+            {
+                #[cfg(feature = "ui-test")]
+                eprintln!(
+                    "migration closed-profile recovery pass={pass} remaining={settling}: {error:#}"
+                );
+                progress("正在重新校验已关闭的编辑器缓存…".into());
+            }
+            result => return result,
+        }
+    }
+}
+
+#[cfg(test)]
 fn prepare_checked(
+    engine: &mut Engine,
+    paths: AppPaths,
+    target: &Path,
+    now: i64,
+    progress: impl FnMut(TransferProgress),
+    probe: impl FnOnce(&Path) -> Result<()>,
+) -> Result<Prepared> {
+    prepare_with_profile_wait(
+        engine,
+        paths,
+        target,
+        now,
+        progress,
+        probe,
+        &mut |profile| {
+            wait_profile_stable(profile, 80, || {
+                std::thread::sleep(std::time::Duration::from_millis(125));
+            })
+        },
+    )
+}
+fn prepare_with_profile_wait(
     engine: &mut Engine,
     paths: AppPaths,
     target: &Path,
     now: i64,
     mut progress: impl FnMut(TransferProgress),
     probe: impl FnOnce(&Path) -> Result<()>,
+    profile_wait: &mut impl FnMut(&Path) -> Result<()>,
 ) -> Result<Prepared> {
     let source = canon(
         Path::new(&engine.snapshot().data_path)
@@ -989,9 +1071,7 @@ fn prepare_checked(
         // after the closed WebView is dropped, especially on a busy runner.
         // Keep the bounded wait and full content/identity checks; never copy a
         // profile that is still changing when the ten-second budget expires.
-        wait_profile_stable(&paths.editor_profile(), 80, || {
-            std::thread::sleep(std::time::Duration::from_millis(125));
-        })?;
+        profile_wait(&paths.editor_profile())?;
         progress("正在统计可迁移文件…".into());
         let snapshot = engine.snapshot();
         let mut external: std::collections::BTreeSet<_> = snapshot
@@ -1194,7 +1274,7 @@ fn prepare_checked(
                 check_cancel()
             })?;
             if expected != actual && nested(&entry.source, &profile) {
-                return Err(profile_busy());
+                return Err(profile_busy().context("复制后的编辑器摘要不一致"));
             }
             ensure!(expected == actual, "文件校验失败：{}", dst.display());
             records.push(CopyRecord {
@@ -1255,7 +1335,7 @@ fn prepare_checked(
                 outside_profile(&after) == outside_profile(&files),
                 "迁移期间源文件发生变化，原位置仍有效"
             );
-            return Err(profile_busy());
+            return Err(profile_busy().context("复制后的编辑器文件集合或身份变化"));
         }
         for record in &records {
             let copy = plain_handle(&record.target, false, true)?;
@@ -1275,7 +1355,7 @@ fn prepare_checked(
             })?;
             let current = hash_stream(&mut file, |_| check_cancel())?;
             if current != record.digest && nested(&record.source, &profile) {
-                return Err(profile_busy());
+                return Err(profile_busy().context("复制后的编辑器源文件摘要变化"));
             }
             ensure!(
                 current == record.digest,
@@ -1750,6 +1830,172 @@ mod tests {
             canon(&profile).unwrap()
         );
     }
+    #[test]
+    fn closed_profile_recovery_revalidates_late_checkpoint_without_switching_early() {
+        let (base, paths, mut engine) = fixture();
+        let profile = paths.editor_profile();
+        fs::create_dir_all(&profile).unwrap();
+        let database = profile.join("localstorage.db");
+        let wal = profile.join("localstorage.db-wal");
+        fs::write(&database, b"old bytes").unwrap();
+        fs::write(&wal, b"pending").unwrap();
+        let target = base.join("dest");
+        let before = serde_json::to_value(engine.snapshot()).unwrap();
+        let mut passes = 0;
+        let prepared = prepare_relocating_profile(&mut engine, paths.clone(), &target, 1001, |p| {
+            if p.label.starts_with("已校验，正在备份资料库") {
+                passes += 1;
+                assert!(!paths.locator.exists());
+                if passes == 1 {
+                    fs::write(&database, b"end bytes").unwrap();
+                    fs::remove_file(&wal).unwrap();
+                }
+            }
+        })
+        .unwrap();
+        assert_eq!(passes, 2);
+        assert!(!paths.locator.exists());
+        assert_eq!(serde_json::to_value(engine.snapshot()).unwrap(), before);
+        assert_eq!(
+            fs::read(target.join("cache/editor/localstorage.db")).unwrap(),
+            b"end bytes"
+        );
+        assert!(!target.join("cache/editor/localstorage.db-wal").exists());
+        assert_eq!(fs::read(&database).unwrap(), b"end bytes");
+        let (moved, _lock, _) = prepared.publish().unwrap();
+        let reopened = Engine::open(&moved, 1002).unwrap();
+        assert_eq!(
+            serde_json::to_value(reopened.snapshot().versions).unwrap(),
+            serde_json::to_value(engine.snapshot().versions).unwrap()
+        );
+        assert!(Path::new(&engine.snapshot().data_path).exists());
+    }
+
+    #[test]
+    fn closed_profile_recovery_remains_bounded_for_changes_after_every_copy() {
+        let (base, paths, mut engine) = fixture();
+        let profile = paths.editor_profile();
+        fs::create_dir_all(&profile).unwrap();
+        let database = profile.join("localstorage.db");
+        fs::write(&database, b"round-0").unwrap();
+        let target = base.join("dest");
+        let mut passes = 0;
+        let error = prepare_relocating_profile(&mut engine, paths.clone(), &target, 1001, |p| {
+            if p.label.starts_with("已校验，正在备份资料库") {
+                passes += 1;
+                fs::write(&database, format!("round-{passes}")).unwrap();
+            }
+        })
+        .err()
+        .unwrap();
+        assert!(held(&error), "{error:#}");
+        assert_eq!(passes, 4);
+        assert!(!paths.locator.exists());
+        assert_eq!(pending(&paths).unwrap(), Some(canon(&target).unwrap()));
+        assert_eq!(fs::read(database).unwrap(), b"round-4");
+        assert!(Path::new(&engine.snapshot().data_path).exists());
+    }
+
+    #[test]
+    fn closed_profile_recovery_refuses_same_byte_foreign_replacement() {
+        let (base, paths, mut engine) = fixture();
+        let profile = paths.editor_profile();
+        fs::create_dir_all(&profile).unwrap();
+        let database = profile.join("localstorage.db");
+        fs::write(&database, b"old bytes").unwrap();
+        let target = base.join("dest");
+        let copy = target.join("cache/editor/localstorage.db");
+        let foreign = base.join("foreign");
+        fs::write(&foreign, b"old bytes").unwrap();
+        let foreign_id = crate::app_usage::identity(&File::open(&foreign).unwrap()).unwrap();
+        let mut passes = 0;
+        let mut recoveries = 0;
+        let error = prepare_relocating_profile(&mut engine, paths.clone(), &target, 1001, |p| {
+            if p.label.starts_with("已校验，正在备份资料库") {
+                passes += 1;
+                fs::write(&database, b"end bytes").unwrap();
+            } else if p.label == "正在重新校验已关闭的编辑器缓存…" {
+                recoveries += 1;
+                // Race after the typed transient failure, before automatic
+                // re-entry recovers its individually owned profile copies.
+                fs::remove_file(&copy).unwrap();
+                fs::rename(&foreign, &copy).unwrap();
+            }
+        })
+        .err()
+        .unwrap();
+        assert!(
+            !error.chain().any(|cause| cause.is::<TransientProfile>()),
+            "{error:#}"
+        );
+        assert_eq!(passes, 1);
+        assert_eq!(recoveries, 1);
+        assert!(!paths.locator.exists());
+        assert_eq!(fs::read(&copy).unwrap(), b"old bytes");
+        assert_eq!(
+            crate::app_usage::identity(&File::open(copy).unwrap()).unwrap(),
+            foreign_id
+        );
+        assert_eq!(fs::read(database).unwrap(), b"end bytes");
+    }
+
+    #[test]
+    fn closed_profile_recovery_does_not_retry_an_unrelated_target_lock() {
+        let (base, paths, mut engine) = fixture();
+        let target = base.join("dest");
+        let mut blocker = None;
+        let mut passes = 0;
+        let error = prepare_relocating_profile(&mut engine, paths.clone(), &target, 1001, |p| {
+            if p.label == "正在统计可迁移文件…" {
+                passes += 1;
+                let parent = target.join("library");
+                fs::create_dir_all(&parent).unwrap();
+                let file = OpenOptions::new()
+                    .create_new(true)
+                    .read(true)
+                    .write(true)
+                    .open(parent.join("studyapp.lock"))
+                    .unwrap();
+                file.try_lock().unwrap();
+                blocker = Some(file);
+            }
+        })
+        .err()
+        .unwrap();
+        assert!(format!("{error:#}").contains("目标资料库正在使用"));
+        assert!(!error.chain().any(|cause| cause.is::<TransientProfile>()));
+        assert_eq!(passes, 1);
+        assert!(blocker.is_some());
+        assert!(!paths.locator.exists());
+        assert!(Path::new(&engine.snapshot().data_path).exists());
+    }
+
+    #[test]
+    fn closed_profile_recovery_never_retries_changed_nonprofile_payloads() {
+        let (base, paths, mut engine) = fixture();
+        let payload = paths.effective.config.join("foreign.conf");
+        fs::create_dir_all(payload.parent().unwrap()).unwrap();
+        fs::write(&payload, b"before").unwrap();
+        let mut passes = 0;
+        let error =
+            prepare_relocating_profile(&mut engine, paths.clone(), &base.join("dest"), 1001, |p| {
+                if p.label.starts_with("已校验，正在备份资料库") {
+                    passes += 1;
+                    fs::write(&payload, b"after!").unwrap();
+                }
+            })
+            .err()
+            .unwrap();
+        assert!(
+            !error.chain().any(|cause| cause.is::<TransientProfile>()),
+            "{error:#}"
+        );
+        assert_eq!(passes, 1);
+        assert!(!paths.locator.exists());
+        assert_eq!(fs::read(payload).unwrap(), b"after!");
+        assert!(Path::new(&engine.snapshot().data_path).exists());
+    }
+
     #[test]
     fn checkpoint_after_copy_is_restartable_and_refreshes_only_owned_copies() {
         let (base, paths, mut engine) = fixture();

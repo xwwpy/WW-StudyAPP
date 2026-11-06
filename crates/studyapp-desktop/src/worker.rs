@@ -368,12 +368,13 @@ fn relocate(
     let _logging_pause = audit_log::pause_for_migration()?;
     let paths = crate::app_usage::runtime_paths()?;
     let now = chrono::Utc::now().timestamp();
-    let migration = crate::app_migration::prepare(engine, paths, target, now, |message| {
-        let _ = updates.send(Update {
-            storage_event: Some(StorageEvent::Progress(message)),
-            ..Default::default()
-        });
-    })?;
+    let migration =
+        crate::app_migration::prepare_relocating_profile(engine, paths, target, now, |message| {
+            let _ = updates.send(Update {
+                storage_event: Some(StorageEvent::Progress(message)),
+                ..Default::default()
+            });
+        })?;
     let expected = crate::app_usage::identity(&crate::storage_backend::plain_handle(
         &migration.database,
         false,
