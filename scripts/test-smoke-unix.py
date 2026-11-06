@@ -195,6 +195,19 @@ class SmokeTests(unittest.TestCase):
         self.assertIn("windowNumber()", captures)
         self.assertIn("Native macOS captures are restricted to GitHub runners", captures)
 
+    def test_first_readonly_baseline_closes_real_startup_notices_without_forcing_the_host(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "crates/studyapp-desktop/src/smoke_editor.rs").read_text(encoding="utf-8")
+        setup = source.split("pub async fn default_preview(", 1)[1].split("async fn first_readonly_ready(", 1)[0]
+        self.assertLess(setup.index("dismiss_notice_before_editor(window, view, cx).await"),
+                        setup.index("app.page = Page::Notes"))
+        close = source.split("async fn dismiss_notice_before_editor(", 1)[1].split("/// First readonly paint", 1)[0]
+        for check in ('format!("dismiss-notice-{id}")', "window.click(keyed, cx)",
+                      "test_is_closing(id)", "occlusions().is_empty()", "Duration::from_secs(5)"):
+            self.assertIn(check, close)
+        for bypass in ("clear_notices", ".clear(", ".set_visible(", ".set_theme(", ".evaluate(", ".focus("):
+            self.assertNotIn(bypass, close)
+
     def test_first_readiness_deadline_captures_evidence_without_silently_repairing(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "crates/studyapp-desktop/src/smoke_editor.rs").read_text(encoding="utf-8")

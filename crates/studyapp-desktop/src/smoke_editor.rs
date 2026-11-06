@@ -91,27 +91,48 @@ async fn settled(window: AnyWindowHandle, view: &Entity<StudyApp>, cx: &mut Asyn
     panic!("native note operation timed out");
 }
 
-async fn dismiss_error_notice(window: AnyWindowHandle, view: &Entity<StudyApp>, cx: &mut AsyncApp) {
-    let dismissed = window
-        .update(cx, |_, window, cx| {
-            window.render_frame(cx);
-            if window.try_find("dismiss-notice").is_some() {
-                window.click("dismiss-notice", cx);
-                true
-            } else {
+async fn dismiss_notice_before_editor(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    cx: &mut AsyncApp,
+) {
+    let started = std::time::Instant::now();
+    loop {
+        let clear = window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                let center = view.read(cx).notifications.clone();
+                let states = center.read(cx).test_state();
+                if states.is_empty() {
+                    return center.read(cx).occlusions().is_empty();
+                }
+                for (id, _) in states {
+                    if center.read(cx).test_is_closing(id) {
+                        continue;
+                    }
+                    let keyed: SharedString = format!("dismiss-notice-{id}").into();
+                    if window.try_find(keyed.clone()).is_some() {
+                        eprintln!("native editor setup dismisses notification: {id}");
+                        window.click(keyed, cx);
+                    } else if window.try_find("dismiss-notice").is_some() {
+                        window.click("dismiss-notice", cx);
+                    } else {
+                        panic!("visible notification has no real close control: {id}");
+                    }
+                }
                 false
-            }
-        })
-        .unwrap();
-    if dismissed {
-        crate::smoke_library::until(
-            window,
-            view,
-            "error notification finished dismissal before recovery",
-            |app, cx| app.notifications.read(cx).visible_count() == 0,
-            cx,
-        )
-        .await;
+            })
+            .unwrap();
+        if clear {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "notification did not finish its ordinary dismissal before editor baseline"
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(40))
+            .await;
     }
 }
 
@@ -132,6 +153,11 @@ pub async fn default_preview(
         cx,
     )
     .await;
+    // The seeded due review legitimately opens a startup notification. Unix
+    // native children are hidden under overlapping app overlays; close that
+    // real reminder before starting the unobscured first-readonly baseline.
+    // Never force host visibility or alter its readiness/geometry checks.
+    dismiss_notice_before_editor(window, view, cx).await;
     window
         .update(cx, |_, _, cx| {
             view.update(cx, |app, cx| {
@@ -800,7 +826,7 @@ pub async fn exercise(
     for _ in 0..5 {
         pause(cx).await;
     }
-    dismiss_error_notice(window, view, cx).await;
+    dismiss_notice_before_editor(window, view, cx).await;
     window
         .update(cx, |_, window, cx| {
             assert!(editor.read(cx).error().is_some());
@@ -883,7 +909,7 @@ pub async fn exercise(
     for _ in 0..5 {
         pause(cx).await;
     }
-    dismiss_error_notice(window, view, cx).await;
+    dismiss_notice_before_editor(window, view, cx).await;
     window
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
