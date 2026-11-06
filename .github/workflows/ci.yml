@@ -215,7 +215,9 @@ jobs:
             ${{ env.SMOKE_DIR }}/workspace-saved-layout.json
             ${{ env.SMOKE_DIR }}/settings-*.png
             ${{ env.SMOKE_DIR }}/settings-render-timing.json
+            ${{ env.SMOKE_DIR }}/settings-notification-cache-timing.json
             ${{ env.SMOKE_DIR }}/notification-native-result.json
+            ${{ env.SMOKE_DIR }}/notification-*.png
             ${{ env.SMOKE_DIR }}/logging-native-result.json
             ${{ env.SMOKE_DIR }}/*.log
             ${{ env.SETTINGS_DIR }}/settings-*
@@ -223,6 +225,7 @@ jobs:
             ${{ env.SETTINGS_DIR }}/native-*.bmp
             ${{ env.SETTINGS_DIR }}/storage-render-timing.json
             ${{ env.SETTINGS_DIR }}/notification-native-result.json
+            ${{ env.SETTINGS_DIR }}/notification-*.png
             ${{ env.SETTINGS_DIR }}/logging-native-result.json
             ${{ env.SETTINGS_DIR }}/*.log
             ${{ env.SETTINGS_DIR }}/smoke-input-mode.txt
@@ -296,6 +299,7 @@ jobs:
             ${{ env.OPTIMIZED_SETTINGS_DIR }}/native-*.bmp
             ${{ env.OPTIMIZED_SETTINGS_DIR }}/storage-render-timing.json
             ${{ env.OPTIMIZED_SETTINGS_DIR }}/notification-native-result.json
+            ${{ env.OPTIMIZED_SETTINGS_DIR }}/notification-*.png
             ${{ env.OPTIMIZED_SETTINGS_DIR }}/logging-native-result.json
             ${{ env.OPTIMIZED_SETTINGS_DIR }}/*.log
             ${{ env.OPTIMIZED_SETTINGS_DIR }}/smoke-input-mode.txt

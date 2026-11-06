@@ -56,14 +56,14 @@ impl NotificationCenter {
         modal_blocked: bool,
         cx: &mut Context<Self>,
     ) {
-        if policy.validate().is_err() || appearance.validate().is_err() {
-            return;
-        }
         if self.policy == *policy
             && self.appearance == *appearance
             && self.environment == environment
             && self.modal_blocked == modal_blocked
         {
+            return;
+        }
+        if policy.validate().is_err() || appearance.validate().is_err() {
             return;
         }
         self.policy = policy.clone();

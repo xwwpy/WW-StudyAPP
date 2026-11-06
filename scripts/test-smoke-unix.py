@@ -220,6 +220,26 @@ class SmokeTests(unittest.TestCase):
             for receipt in ("notification-native-result.json", "logging-native-result.json"):
                 self.assertIn("${{ env." + directory + " }}/" + receipt, workflow)
 
+    def test_notification_cards_share_frame_policy_and_preserve_fit_focus_and_cache_evidence(self):
+        root = Path(__file__).resolve().parents[1]
+        desktop = (root / "crates/studyapp-desktop/src/notification_desktop.rs").read_text(encoding="utf-8")
+        native = (root / "crates/studyapp-desktop/src/card_window.rs").read_text(encoding="utf-8")
+        timer = (root / "crates/studyapp-desktop/src/timer_widget_window.rs").read_text(encoding="utf-8")
+        smoke_source = (root / "crates/studyapp-desktop/src/smoke_notifications.rs").read_text(encoding="utf-8")
+        workflow = (root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        for source in (desktop, timer):
+            self.assertIn("crate::card_window::disable_native_frame(window)?", source)
+        self.assertIn("DWMNCRP_DISABLED", native)
+        self.assertIn("SWP_NOACTIVATE | SWP_NOZORDER", native)
+        self.assertIn("window.defer(cx", desktop)
+        self.assertIn("bounds.size.height", desktop)
+        for check in ('native["nonClientRendering"], false', "WS_EX_NOACTIVATE", "relevant notification edit must rebuild visible controls only",
+                      "fitting G must not activate it", "stacking G must not activate it", "shrinking G must not activate it"):
+            self.assertIn(check, smoke_source)
+        for directory in ("SMOKE_DIR", "SETTINGS_DIR", "OPTIMIZED_SETTINGS_DIR"):
+            self.assertIn("${{ env." + directory + " }}/notification-*.png", workflow)
+        self.assertIn("settings-notification-cache-timing.json", smoke_source)
+
     def test_mac_editor_has_no_persistent_browser_state_and_keeps_origin_checks(self):
         root = Path(__file__).resolve().parents[1]
         source = (root / "crates/studyapp-desktop/src/web_editor_host_unix.rs").read_text(encoding="utf-8")

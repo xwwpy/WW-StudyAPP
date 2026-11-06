@@ -5,7 +5,7 @@ use gpui_kit::{
     *,
 };
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
-use studyapp_core::{NoticePosition, NoticeStyle, NotificationAppearance};
+use studyapp_core::{NoticeStyle, NotificationAppearance};
 use studyapp_ui::{
     notice_queue::Notice,
     notification_card::{NotificationCardModel, notification_card},
@@ -30,11 +30,14 @@ struct DesktopNotifications {
     center: Entity<NotificationCenter>,
     presentation: DesktopPresentation,
     scrolls: BTreeMap<u64, ScrollHandle>,
+    fit: Rc<Cell<Option<Bounds<Pixels>>>>,
+    owner: WeakEntity<StudyApp>,
 }
 impl DesktopNotifications {
     fn new(
         center: Entity<NotificationCenter>,
         initial: DesktopPresentation,
+        owner: WeakEntity<StudyApp>,
         cx: &mut Context<Self>,
     ) -> Self {
         cx.observe(&center, |this, center, cx| {
@@ -46,6 +49,8 @@ impl DesktopNotifications {
             center,
             presentation: initial,
             scrolls: BTreeMap::new(),
+            fit: Rc::default(),
+            owner,
         }
     }
 }
@@ -58,7 +63,13 @@ impl Render for DesktopNotifications {
                 .iter()
                 .any(|(entry, _)| entry.id == *id)
         });
-        let mut content = column().min_w_0().gap_2().p_2();
+        let mut content = column()
+            .relative()
+            .w_full()
+            .min_w_0()
+            .flex_shrink_0()
+            .gap(px(8.))
+            .p(px(8.));
         for (entry, opacity) in &self.presentation.entries {
             let Some(event) = &entry.event else {
                 continue;
@@ -129,6 +140,39 @@ impl Render for DesktopNotifications {
                     ),
             );
         }
+        let fit = self.fit.clone();
+        let owner = self.owner.clone();
+        let width = px(f32::from(self.presentation.appearance.width) + 16.);
+        let position = self.presentation.appearance.position;
+        content = content.child(
+            canvas(
+                move |bounds, window, cx| {
+                    let Some(display) = window.display(cx).or_else(|| cx.primary_display()) else {
+                        return;
+                    };
+                    let desired = crate::card_window::notification_bounds(
+                        display.visible_bounds(),
+                        width,
+                        bounds.size.height,
+                        position,
+                    );
+                    if fit.get() != Some(desired) {
+                        fit.set(Some(desired));
+                        let owner = owner.clone();
+                        // Layout only measures. Native geometry changes run after the
+                        // draw and retain the same passive window and event identity.
+                        window.defer(cx, move |window, cx| {
+                            if crate::card_window::fit_passive(window, desired).is_err() {
+                                fail_desktop(owner, cx);
+                            }
+                        });
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        );
         div()
             .id("desktop-notifications")
             .test_support()
@@ -146,6 +190,7 @@ impl Render for DesktopNotifications {
 
 /// Only this newly-created window receives the nonactivation policy.
 fn passive_window(window: &mut Window) -> anyhow::Result<()> {
+    crate::card_window::disable_native_frame(window)?;
     #[cfg(all(windows, not(test)))]
     {
         use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::*};
@@ -182,6 +227,23 @@ fn passive_window(window: &mut Window) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn fail_desktop(owner: WeakEntity<StudyApp>, cx: &mut App) {
+    cx.defer(move |cx| {
+        let _ = owner.update(cx, |app, cx| {
+            app.close_notification_desktop(cx);
+            app.notification_desktop_failed = true;
+            let main = app.main_window;
+            let owner = owner.clone();
+            cx.defer(move |cx| {
+                let _ = main.update(cx, |_, window, cx| {
+                    let _ =
+                        owner.update(cx, |app, cx| app.sync_notification_preferences(window, cx));
+                });
+            });
+        });
+    });
+}
+
 impl StudyApp {
     pub fn close_notification_desktop(&mut self, cx: &mut Context<Self>) {
         if let Some(handle) = self.notification_window.take() {
@@ -206,29 +268,11 @@ impl StudyApp {
         };
         let presentation = DesktopPresentation::read(self.notifications.read(cx));
         let screen = display.visible_bounds();
-        let width = px(f32::from(presentation.appearance.width) + 16.).min(screen.size.width);
-        let height = px((presentation.entries.len().max(1)
-            * if presentation.private { 150 } else { 270 }) as f32
-            + 16.)
-        .min(screen.size.height * 0.75);
-        let margin = px(16.);
-        let position = presentation.appearance.position;
-        let x = if matches!(
-            position,
-            NoticePosition::TopLeft | NoticePosition::BottomLeft
-        ) {
-            screen.left() + margin
-        } else {
-            screen.right() - width - margin
-        };
-        let y = if matches!(position, NoticePosition::TopLeft | NoticePosition::TopRight) {
-            screen.top() + margin
-        } else {
-            screen.bottom() - height - margin
-        };
-        let bounds = Bounds::new(
-            point(x.max(screen.left()), y.max(screen.top())),
-            size(width, height),
+        let bounds = crate::card_window::notification_bounds(
+            screen,
+            px(f32::from(presentation.appearance.width) + 16.),
+            px(1.),
+            presentation.appearance.position,
         );
         let options = WindowOptions {
             kind: WindowKind::PopUp,
@@ -248,7 +292,9 @@ impl StudyApp {
         let result = cx.open_window(options, move |window, cx| {
             // A failure closes the passive window and reroutes the same events below.
             ready.set(passive_window(window).is_ok());
+            let close_owner = owner.clone();
             window.on_window_should_close(cx, move |_, cx| {
+                let owner = close_owner.clone();
                 let _ = owner.update(cx, |this, cx| {
                     this.notification_window = None;
                     this.notification_desktop_failed = true;
@@ -264,7 +310,7 @@ impl StudyApp {
                 });
                 true
             });
-            let view = cx.new(|cx| DesktopNotifications::new(center, presentation, cx));
+            let view = cx.new(|cx| DesktopNotifications::new(center, presentation, owner, cx));
             cx.new(|cx| gpui_kit::base::Root::new(view, window, cx).bg(rgba(0)))
         });
         match result {

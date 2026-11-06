@@ -121,11 +121,7 @@ mod macos_pin;
 pub fn decorate(window: &mut gpui_kit::Window, pinned: bool, request: bool) -> Result<bool> {
     #[cfg(all(windows, not(test)))]
     {
-        use windows::Win32::{
-            Foundation::HWND,
-            Graphics::Dwm::{DWMNCRP_DISABLED, DWMWA_NCRENDERING_POLICY, DwmSetWindowAttribute},
-            UI::WindowsAndMessaging::*,
-        };
+        use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::*};
         use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let RawWindowHandle::Win32(raw) = HasWindowHandle::window_handle(window)?.as_raw() else {
             anyhow::bail!("计时窗口句柄无效")
@@ -135,17 +131,7 @@ pub fn decorate(window: &mut gpui_kit::Window, pinned: bool, request: bool) -> R
         unsafe {
             let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
             if request {
-                // The card paints its own rounded surface. WS_THICKFRAME must
-                // remain for native edge resizing, but DWM's opaque non-client
-                // border would otherwise cover its transparent top corner.
-                // This changes neither client hit testing nor the resize style.
-                let policy = DWMNCRP_DISABLED;
-                DwmSetWindowAttribute(
-                    hwnd,
-                    DWMWA_NCRENDERING_POLICY,
-                    std::ptr::from_ref(&policy).cast(),
-                    std::mem::size_of_val(&policy) as u32,
-                )?;
+                crate::card_window::disable_native_frame(window)?;
                 SetWindowLongPtrW(
                     hwnd,
                     GWL_EXSTYLE,

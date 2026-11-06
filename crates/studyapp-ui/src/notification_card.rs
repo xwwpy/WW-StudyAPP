@@ -3,7 +3,11 @@ use crate::{
     components::{column, row, scroll_body},
     controls::Button,
 };
-use gpui_kit::{prelude::FluentBuilder, *};
+use gpui_kit::{
+    component::{Icon, IconName, Sizable},
+    prelude::FluentBuilder,
+    *,
+};
 use studyapp_core::{
     NoticeDensity, NoticeEvent, NoticeSeverity, NoticeStyle, NotificationAppearance,
 };
@@ -60,10 +64,14 @@ pub fn notification_card(
     let foreground = studyapp_core::readable_theme_color(palette.text, &[background]);
     let secondary = studyapp_core::readable_theme_color(palette.muted, &[background]);
     let symbol = match model.severity {
-        NoticeSeverity::Information => "i",
-        NoticeSeverity::Success => "✓",
-        _ => "!",
+        NoticeSeverity::Information => IconName::Info,
+        NoticeSeverity::Success => IconName::CircleCheck,
+        NoticeSeverity::Warning => IconName::TriangleAlert,
+        NoticeSeverity::Error | NoticeSeverity::Critical => IconName::CircleX,
     };
+    let glyph = px((palette.font_size as f32 + 2.).clamp(16., 22.));
+    let badge = glyph + px(12.);
+    let tint = studyapp_core::RgbaColor::new(accent, 22).over(background);
     let compact = model.style == NoticeStyle::Bubble;
     let header = row()
         .min_w_0()
@@ -72,12 +80,17 @@ pub fn notification_card(
         .child(
             div()
                 .flex_shrink_0()
-                .font_weight(FontWeight::BOLD)
-                .text_color(rgb(studyapp_core::readable_theme_color(
-                    accent,
-                    &[background],
-                )))
-                .child(symbol),
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(badge)
+                .rounded(px(crate::design::CONTROL_RADIUS))
+                .bg(rgb(tint))
+                .child(
+                    Icon::new(symbol)
+                        .with_size(glyph)
+                        .text_color(rgb(studyapp_core::readable_theme_color(accent, &[tint]))),
+                ),
         )
         .child(
             div()
@@ -89,6 +102,8 @@ pub fn notification_card(
         .when(model.repetitions > 1, |row| {
             row.child(
                 div()
+                    .flex_shrink_0()
+                    .text_sm()
                     .text_color(rgb(secondary))
                     .child(format!("×{}", model.repetitions)),
             )
@@ -98,10 +113,17 @@ pub fn notification_card(
         SharedString::from(format!("notification-body-{}", model.key)),
         scroll,
     )
+    .test_support()
     .min_w_0()
     .max_h(px(164.))
     .text_color(rgb(foreground))
-    .line_height(px(22.))
+    .text_size(crate::design::type_size(
+        palette.font_size,
+        crate::design::TypeRole::Body,
+    ))
+    .line_height(px(
+        palette.font_size as f32 * crate::design::line_height(crate::design::TypeRole::Body)
+    ))
     .child(model.summary)
     .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
     let mut card = column()
@@ -117,8 +139,6 @@ pub fn notification_card(
         .rounded(px(f32::from(appearance.radius)))
         .border_1()
         .border_color(rgb(palette.border))
-        .border_l(px(3.))
-        .border_color(rgb(accent))
         .bg(rgb(background))
         .text_color(rgb(foreground))
         .when(appearance.shadow, |card| card.shadow_sm())
@@ -129,7 +149,16 @@ pub fn notification_card(
             .event_id
             .filter(|_| model.severity >= NoticeSeverity::Error)
     {
-        card = card.child(div().text_xs().text_color(rgb(secondary)).child(id));
+        card = card.child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .font_family(crate::design::MONO_FONT)
+                .text_xs()
+                .text_color(rgb(secondary))
+                .child(id),
+        );
     }
     if let Some(action) = action {
         card = card.child(row().justify_end().child(action));
@@ -138,4 +167,101 @@ pub fn notification_card(
         card = card.w_full();
     }
     card
+}
+
+#[cfg(all(test, feature = "ui-test"))]
+mod tests {
+    use super::{NotificationCardModel, notification_card};
+    use crate::controls::Button;
+    use gpui_kit::{
+        Context, InteractiveElement, IntoElement, Render, ScrollHandle, TestAppContext,
+        TestSupportExt, Window,
+        component::{Sizable, button::ButtonVariants},
+        px, rgb,
+        test::TestWindowExt,
+    };
+    use studyapp_core::{NoticeSeverity, NoticeStyle, NotificationAppearance};
+    struct CardFixture {
+        scroll: ScrollHandle,
+    }
+    impl Render for CardFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let appearance = NotificationAppearance {
+                width: 240,
+                ..Default::default()
+            };
+            let model = NotificationCardModel {
+                key: "geometry".into(),
+                title: "小组件提示".into(),
+                summary: "桌面小组件已显示。长消息在卡片内滚动，关闭提示不会改变计时。\n"
+                    .repeat(20)
+                    .into(),
+                severity: NoticeSeverity::Error,
+                event_id: Some("EV-12345678-1234-1234-1234-123456789012".into()),
+                repetitions: 2,
+                style: NoticeStyle::CornerCard,
+            };
+            notification_card(
+                model,
+                &appearance,
+                &self.scroll,
+                Button::new("card-close").small().ghost().action("关闭通知"),
+                Some(Button::new("card-action").small().label("查看详情")),
+            )
+            .id("card-fixture")
+            .test_support()
+        }
+    }
+    #[gpui_kit::test]
+    fn narrow_cards_keep_neutral_borders_scroll_and_actions_at_large_type(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, visual) = cx.add_window_view(|_, _| CardFixture {
+            scroll: ScrollHandle::new(),
+        });
+        for dark in [false, true] {
+            for font_size in [12, 14, 22] {
+                visual.update(|window, cx| {
+                    crate::theme::apply(
+                        &studyapp_core::AppearanceSettings {
+                            mode: if dark {
+                                studyapp_core::ThemeMode::Dark
+                            } else {
+                                studyapp_core::ThemeMode::Light
+                            },
+                            font_size,
+                            ..Default::default()
+                        },
+                        dark,
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    let card = window.find("card-fixture").bounds();
+                    assert_eq!(card.size.width, px(240.));
+                    let body = window.find("notification-body-geometry").bounds();
+                    assert!(body.size.height <= px(164.) && body.size.height > px(0.));
+                    for id in ["card-close", "card-action"] {
+                        let control = window.find(id).bounds();
+                        assert!(control.left() >= card.left() && control.right() <= card.right());
+                        assert!(control.top() >= card.top() && control.bottom() <= card.bottom());
+                    }
+                    let border = window
+                        .painted_quads()
+                        .into_iter()
+                        .find(|quad| {
+                            (quad.bounds.size.width.0
+                                - f32::from(card.size.width) * window.scale_factor())
+                            .abs()
+                                < 0.1
+                                && quad.border_widths.top > gpui_kit::ScaledPixels(0.)
+                        })
+                        .expect("card border was not painted");
+                    assert_eq!(
+                        border.border_color,
+                        rgb(crate::theme::palette().border).into()
+                    );
+                    assert_eq!(border.border_widths.left, border.border_widths.right);
+                });
+            }
+        }
+    }
 }

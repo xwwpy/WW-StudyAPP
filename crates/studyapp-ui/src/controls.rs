@@ -18,6 +18,9 @@ pub struct AppButton {
     disabled: bool,
     loading: bool,
     size: Size,
+    has_icon: bool,
+    has_label: bool,
+    has_children: bool,
 }
 
 pub use AppButton as Button;
@@ -31,10 +34,14 @@ impl AppButton {
             disabled: false,
             loading: false,
             size: Size::Medium,
+            has_icon: false,
+            has_label: false,
+            has_children: false,
         }
     }
 
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.has_label = true;
         self.inner = self.inner.label(label);
         self
     }
@@ -70,6 +77,7 @@ impl AppButton {
 
     pub fn icon(mut self, icon: impl Into<Icon>) -> Self {
         let icon: Icon = icon.into();
+        self.has_icon = true;
         self.inner = self.inner.icon(icon);
         self
     }
@@ -122,6 +130,12 @@ impl AppButton {
         };
         let minimum = nominal.max(crate::theme::palette().font_size as f32 * 1.25 + 8.);
         self.inner = self.inner.min_h(gpui_kit::px(minimum));
+        // The component's small icon default is 24px wide. Raising only its
+        // height produces off-center rectangular targets throughout toolbars.
+        // Keep explicit caller dimensions and text/navigation buttons intact.
+        if self.has_icon && !self.has_label && !self.has_children {
+            self.inner = self.inner.min_w(gpui_kit::px(minimum));
+        }
         if self.disabled || self.loading {
             self.inner.cursor_default()
         } else {
@@ -203,6 +217,8 @@ impl InteractiveElement for AppButton {
 
 impl ParentElement for AppButton {
     fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        let mut elements = elements.into_iter().peekable();
+        self.has_children |= elements.peek().is_some();
         self.inner.extend(elements);
     }
 }
@@ -361,6 +377,78 @@ mod tests {
                 assert!(button.size.height >= px(32.));
                 assert!(button.size.height >= px(size as f32 * 1.25 + 8.));
                 assert!(button.bottom() <= card.bottom());
+            });
+        }
+    }
+
+    #[cfg(feature = "ui-test")]
+    #[gpui_kit::test]
+    fn icon_targets_are_square_without_widening_navigation_or_losing_explicit_titlebar_size(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::{component::IconName, px, test::TestWindowExt};
+        struct Fixture;
+        impl Render for Fixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                crate::components::column()
+                    .w(px(500.))
+                    .child(
+                        crate::components::row()
+                            .child(Button::new("xs-square").xsmall().action("设置"))
+                            .child(Button::new("small-square").small().action("暂停"))
+                            .child(Button::new("medium-square").action("保存"))
+                            .child(
+                                Button::new("titlebar-icon")
+                                    .icon_action(IconName::Close, "关闭")
+                                    .w(px(44.))
+                                    .h(px(44.)),
+                            ),
+                    )
+                    .child(
+                        Button::new("navigation-text-icon")
+                            .icon(IconName::Settings)
+                            .label("通知设置")
+                            .w_full(),
+                    )
+            }
+        }
+        cx.update(gpui_kit::init);
+        let (_, visual) = cx.add_window_view(|_, _| Fixture);
+        for font_size in [12, 14, 18, 22] {
+            visual.update(|window, cx| {
+                crate::theme::apply(
+                    &studyapp_core::AppearanceSettings {
+                        font_size,
+                        ..Default::default()
+                    },
+                    false,
+                    cx,
+                );
+                window.render_frame(cx);
+                for (id, nominal) in [
+                    ("xs-square", 28_f32),
+                    ("small-square", 32.),
+                    ("medium-square", 36.),
+                ] {
+                    let bounds = window.find(id).bounds();
+                    assert!(
+                        (bounds.size.width - bounds.size.height).abs() < px(0.1),
+                        "{id}: {bounds:?}"
+                    );
+                    assert!(bounds.size.width >= px(nominal.max(font_size as f32 * 1.25 + 8.)));
+                }
+                assert_eq!(
+                    window.find("titlebar-icon").bounds().size,
+                    gpui_kit::size(px(44.), px(44.))
+                );
+                assert_eq!(
+                    window.find("navigation-text-icon").label(),
+                    Some("通知设置")
+                );
+                assert_eq!(
+                    window.find("navigation-text-icon").bounds().size.width,
+                    px(500.)
+                );
             });
         }
     }

@@ -14,9 +14,11 @@ impl StudyApp {
             .as_ref()
             .map(|s| &s.settings)
             .or_else(|| self.snapshot.as_ref().map(|s| &s.settings));
-        let defaults = studyapp_core::Settings::default();
-        let current = current.unwrap_or(&defaults);
-        self.configure_notification_settings(current, window, cx);
+        if let Some(current) = current {
+            self.configure_notification_settings(current, window, cx);
+        } else {
+            self.configure_notification_settings(&studyapp_core::Settings::default(), window, cx);
+        }
     }
     pub fn configure_notification_settings(
         &self,

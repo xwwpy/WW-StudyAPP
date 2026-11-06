@@ -1237,6 +1237,8 @@ impl StudyApp {
                                 self.shortcut_controls(cx).into_any_element()
                             } else if section == SettingsSection::Appearance {
                                 self.appearance_surface(cx).into_any_element()
+                            } else if section == SettingsSection::Notifications {
+                                self.notification_surface(cx).into_any_element()
                             } else {
                                 scroll_body("settings-section-scroll", &self.settings_scroll)
                                     .test_support()

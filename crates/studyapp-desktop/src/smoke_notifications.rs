@@ -82,6 +82,155 @@ fn event() -> NoticeEvent {
     event
 }
 
+async fn fitted_desktop(
+    handle: AnyWindowHandle,
+    ids: &[u64],
+    cx: &mut AsyncApp,
+) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let observation = handle.update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            let cards: Vec<_> = ids.iter().filter_map(|id| window.try_find(format!("desktop-notice-{id}")).map(|item| item.bounds())).collect();
+            let viewport = window.viewport_size();
+            let height = cards.iter().map(|card| f32::from(card.size.height)).sum::<f32>() + 16. + ids.len().saturating_sub(1) as f32 * 8.;
+            let fitted = cards.len() == ids.len() && (f32::from(viewport.height) - height).abs() <= 2.
+                && cards.iter().all(|card| card.left() >= px(7.) && card.top() >= px(7.) && card.right() <= viewport.width - px(7.) && card.bottom() <= viewport.height - px(7.));
+            if !fitted { return None; }
+            #[cfg(not(test))]
+            let native = crate::timer_widget_window::pin_observation(window).unwrap();
+            #[cfg(test)]
+            let native = serde_json::Value::Null;
+            #[cfg(not(test))]
+            {
+                assert_eq!(native["nonClientRendering"], false, "DWM must not draw a notification shell");
+                assert_eq!(native["pinned"], true);
+                assert_eq!(native["managed"], true);
+                use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::*};
+                use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                let RawWindowHandle::Win32(raw) = HasWindowHandle::window_handle(window).unwrap().as_raw() else { panic!("Win32 notification required") };
+                let style = unsafe { GetWindowLongPtrW(HWND(raw.hwnd.get() as *mut _), GWL_EXSTYLE) };
+                assert_ne!(style & WS_EX_NOACTIVATE.0 as isize, 0);
+            }
+            Some(serde_json::json!({"viewport":[f32::from(viewport.width),f32::from(viewport.height)],
+                "cards":cards.iter().map(|card| [f32::from(card.left()),f32::from(card.top()),f32::from(card.size.width),f32::from(card.size.height)]).collect::<Vec<_>>(),"native":native}))
+        }).unwrap();
+        if let Some(observation) = observation {
+            return observation;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "desktop card did not fit real content within 5 seconds"
+        );
+        cx.background_executor()
+            .timer(Duration::from_millis(30))
+            .await;
+    }
+}
+
+async fn measure_notification_cache(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    let mut results = Vec::new();
+    for appearance in [false, true] {
+        window
+            .update(cx, |_, _, cx| {
+                view.update(cx, |app, cx| {
+                    app.select_settings_section(
+                        if appearance {
+                            SettingsSection::Appearance
+                        } else {
+                            SettingsSection::Notifications
+                        },
+                        cx,
+                    );
+                    if appearance {
+                        app.select_appearance_page(
+                            crate::settings_ui::AppearancePage::Notifications,
+                            cx,
+                        );
+                    }
+                    app.preferences_ui.section_changed_at = None;
+                })
+            })
+            .unwrap();
+        for _ in 0..5 {
+            window
+                .update(cx, |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+            cx.background_executor()
+                .timer(Duration::from_millis(30))
+                .await;
+        }
+        let mut calls = Vec::new();
+        let mut timings = Vec::new();
+        for _ in 0..20 {
+            let before = window
+                .update(cx, |_, _, cx| {
+                    let before = view.read(cx).notification_render_work();
+                    view.update(cx, |_, cx| cx.notify());
+                    before
+                })
+                .unwrap();
+            let (elapsed, count) = window
+                .update(cx, |_, window, cx| {
+                    let start = Instant::now();
+                    window.draw(cx).clear(cx);
+                    (
+                        start.elapsed().as_micros() as u64,
+                        view.read(cx).notification_render_work() - before,
+                    )
+                })
+                .unwrap();
+            calls.push(count);
+            timings.push(elapsed);
+        }
+        assert!(
+            calls.iter().all(|count| *count == 0),
+            "notification cached surface rebuilt on parent-only frames: {calls:?}"
+        );
+        let before = window
+            .update(cx, |_, _, cx| {
+                let before = view.read(cx).notification_render_work();
+                view.update(cx, |app, cx| {
+                    let draft = app.preferences_ui.draft.as_mut().unwrap();
+                    if appearance {
+                        draft.appearance.notifications.width =
+                            if draft.appearance.notifications.width == 420 {
+                                400
+                            } else {
+                                420
+                            };
+                    } else {
+                        draft.notifications.do_not_disturb = !draft.notifications.do_not_disturb;
+                    }
+                    cx.notify();
+                });
+                before
+            })
+            .unwrap();
+        let changed = window
+            .update(cx, |_, window, cx| {
+                window.draw(cx).clear(cx);
+                view.read(cx).notification_render_work() - before
+            })
+            .unwrap();
+        assert!(
+            changed > 0 && changed < 22,
+            "relevant notification edit must rebuild visible controls only: {changed}"
+        );
+        results.push(serde_json::json!({"appearance":appearance,"parent_notify_builder_calls":calls,"parent_notify_draw_microseconds":timings,"relevant_edit_builder_calls":changed}));
+    }
+    std::fs::write(
+        database.with_file_name("settings-notification-cache-timing.json"),
+        serde_json::to_vec_pretty(&results).unwrap(),
+    )
+    .unwrap();
+}
+
 pub async fn exercise(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
@@ -102,6 +251,7 @@ pub async fn exercise(
                     app.preferences_ui.draft.clone(),
                     app.page,
                     app.preferences_ui.section,
+                    app.preferences_ui.appearance_page,
                 );
                 app.page = Page::Settings;
                 app.preferences_ui.section = SettingsSection::Notifications;
@@ -112,6 +262,7 @@ pub async fn exercise(
         })
         .unwrap();
     settle(window, view, cx, |_, window, _| window.is_window_active()).await;
+    measure_notification_cache(window, view, database, cx).await;
     let mut accepted = Vec::new();
     for style in NoticeStyle::ALL {
         window
@@ -307,6 +458,8 @@ pub async fn exercise(
             (app.notification_window.unwrap(), entries[0].0.id)
         })
         .unwrap();
+    let compact_geometry = fitted_desktop(desktop, &[numeric_id], cx).await;
+    assert_eq!(foreground(), before, "fitting G must not activate it");
     desktop
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
@@ -324,6 +477,64 @@ pub async fn exercise(
         })
         .unwrap();
     assert_eq!(foreground(), before, "painting G must not activate it");
+    let secondary_id = window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                app.preferences_ui
+                    .saved
+                    .as_mut()
+                    .unwrap()
+                    .settings
+                    .appearance
+                    .notifications
+                    .max_visible = 2;
+                app.preferences_ui
+                    .draft
+                    .as_mut()
+                    .unwrap()
+                    .appearance
+                    .notifications
+                    .max_visible = 2;
+                app.sync_notification_preferences(window, cx);
+                let event = NoticeEvent::new(
+                    NoticeCategory::OperationResult,
+                    NoticeSeverity::Success,
+                    "桌面小组件已显示。可拖动卡片，或在设置中调整外观。",
+                );
+                let event_id = app.emit_notification(event, cx).unwrap();
+                app.notifications
+                    .read(cx)
+                    .desktop_items()
+                    .iter()
+                    .find(|(notice, _)| notice.event.as_ref().unwrap().id == event_id)
+                    .unwrap()
+                    .0
+                    .id
+            })
+        })
+        .unwrap();
+    let stacked_geometry = fitted_desktop(desktop, &[numeric_id, secondary_id], cx).await;
+    assert_eq!(foreground(), before, "stacking G must not activate it");
+    desktop
+        .update(cx, |_, window, _| {
+            crate::smoke::capture(
+                window,
+                database.with_file_name("notification-desktop-G-stacked.png"),
+            )
+            .unwrap()
+        })
+        .unwrap();
+    window
+        .update(cx, |_, _, cx| {
+            view.read(cx)
+                .notifications
+                .clone()
+                .update(cx, |center, cx| center.dismiss(secondary_id, cx))
+        })
+        .unwrap();
+    let restored_geometry = fitted_desktop(desktop, &[numeric_id], cx).await;
+    assert_eq!(foreground(), before, "shrinking G must not activate it");
+    assert_eq!(compact_geometry["viewport"], restored_geometry["viewport"]);
     window
         .update(cx, |_, window, _| window.activate_window())
         .unwrap();
@@ -374,6 +585,7 @@ pub async fn exercise(
                 app.preferences_ui.draft = original.1;
                 app.page = original.2;
                 app.preferences_ui.section = original.3;
+                app.preferences_ui.appearance_page = original.4;
                 app.clear_notices(cx);
                 app.sync_notification_preferences(window, cx);
                 window.activate_window();
@@ -388,5 +600,7 @@ pub async fn exercise(
         "foreground_styles":["A","B","C","D","E"],"desktop_style":"G","created_without_activation":true,
         "painted_without_activation":true,"closed_without_activation":true,"same_event_on_foreground_return":event_id.to_string(),
         "foreground_events":accepted,
+        "content_fit":{"compact":compact_geometry,"stacked":stacked_geometry,"restored":restored_geometry},
+        "fit_without_activation":true,"stack_without_activation":true,"shrink_without_activation":true,
     })).unwrap()).unwrap();
 }

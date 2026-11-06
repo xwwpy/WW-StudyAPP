@@ -8,6 +8,7 @@ mod appearance_preview;
 mod appearance_ui;
 mod assets;
 mod audit_log;
+mod card_window;
 mod components;
 mod controls;
 mod credentials;

@@ -254,6 +254,12 @@ pub struct PreferencesUi {
     pub logging_directory: Option<Entity<InputState>>,
     pub logging_picker: crate::folder_picker::FolderPicker,
     pub logging_directory_expanded: bool,
+    pub(crate) notification_view:
+        Option<Entity<crate::notification_settings::NotificationSettingsView>>,
+    pub(crate) notification_rows:
+        form::VirtualRows<crate::notification_settings::NotificationViewKey>,
+    #[cfg(feature = "ui-test")]
+    pub(crate) notification_row_builds: std::cell::Cell<u64>,
     pub notification_category: Option<studyapp_core::NoticeCategory>,
     pub notification_fields: BTreeMap<&'static str, Entity<InputState>>,
     pub notification_preview_scroll: ScrollHandle,
@@ -562,6 +568,7 @@ impl StudyApp {
                 self.preferences_ui.section_revision.wrapping_add(1);
             self.preferences_ui.section_changed_at = Some(Instant::now());
             self.settings_scroll.set_offset(point(px(0.), px(0.)));
+            self.preferences_ui.notification_rows.scroll_to_top();
             self.preferences_ui.shortcut_rows.scroll_to_top();
             self.preferences_ui.appearance_rows.scroll_to_top();
         }
@@ -1862,7 +1869,7 @@ impl StudyApp {
                     "保存后生效；询问间隔从下一时间段生效，复习间隔只影响新建计划。",
                 )),
             SettingsSection::Appearance => column(),
-            SettingsSection::Notifications => self.notification_controls(cx),
+            SettingsSection::Notifications => column(),
             SettingsSection::Logging => self.logging_controls(cx),
             // The shortcut list owns the bounded viewport, outside this
             // auto-height form used by the other categories.
@@ -2350,20 +2357,35 @@ impl StudyApp {
         cx: &mut Context<Self>,
     ) -> Div {
         if self.preferences_ui.appearance_page == AppearancePage::Notifications {
+            self.preferences_ui.appearance_rows.sync_with_height(
+                &[0, 1, 2],
+                self.appearance_view_key(cx),
+                px(320.),
+            );
+            self.preferences_ui.appearance_rows.track_focuses(
+                (0..3)
+                    .map(|row| (row, self.preferences_ui.appearance_focus[row].clone()))
+                    .collect(),
+            );
+            let owner = cx.entity();
             return column()
                 .w(available.width)
                 .h(available.height)
                 .min_h_0()
                 .min_w_0()
-                .overflow_hidden()
-                .child(
-                    scroll_body("notification-appearance-scroll", &self.settings_scroll)
-                        .flex_1()
-                        .min_h_0()
-                        .pr_4()
-                        .pb_4()
-                        .child(self.notification_appearance_controls(cx)),
-                );
+                .child(form::virtual_rows(
+                    &self.preferences_ui.appearance_rows.scroll,
+                    move |row, _, cx| {
+                        owner
+                            .update(cx, |app, cx| {
+                                div()
+                                    .py_2()
+                                    .track_focus(&app.preferences_ui.appearance_focus[row])
+                                    .child(app.notification_appearance_part(row, cx))
+                            })
+                            .into_any_element()
+                    },
+                ));
         }
         if self.preferences_ui.appearance_page == AppearancePage::Widget {
             return column()
@@ -4286,12 +4308,100 @@ mod scoped_tests {
                         app.preferences_ui.appearance_colors["notification-background"].clone(),
                     )
                 } else if self.appearance {
-                    app.notification_appearance_controls(cx)
+                    app.preferences_ui.appearance_page = AppearancePage::Notifications;
+                    app.appearance_surface(cx)
                 } else {
-                    app.notification_controls(cx)
+                    app.notification_surface(cx)
                 };
-                div().size_full().child(content)
+                div().flex().flex_col().size_full().child(content)
             })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn notification_surfaces_reuse_unchanged_frames_and_rebuild_only_visible_rows(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(650.)));
+        for appearance in [false, true] {
+            let surface = visual.replace_root_view(|_, _| NotificationFixture {
+                app: app.clone(),
+                appearance,
+                color_only: false,
+            });
+            for _ in 0..4 {
+                visual.run_until_parked();
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            let start = app.read_with(visual, |app, _| app.notification_render_work());
+            for _ in 0..20 {
+                surface.update(visual, |_, cx| cx.notify());
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            assert_eq!(
+                app.read_with(visual, |app, _| app.notification_render_work()),
+                start,
+                "parent-only frames rebuilt notification form; appearance={appearance}"
+            );
+            // A relevant edit must invalidate the cached leaf, while policy
+            // edits must not instantiate all twenty category rows.
+            app.update(visual, |app, cx| {
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                if appearance {
+                    draft.appearance.notifications.width = 420;
+                } else {
+                    draft.notifications.do_not_disturb = true;
+                }
+                cx.notify();
+            });
+            surface.update(visual, |_, cx| cx.notify());
+            for _ in 0..3 {
+                visual.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            let changed = app.read_with(visual, |app, _| app.notification_render_work()) - start;
+            assert!(changed > 0, "relevant notification edit was cached away");
+            if !appearance {
+                assert!(
+                    changed < 20,
+                    "all category controls were rebuilt: {changed}"
+                );
+            }
+            if !appearance {
+                app.update(visual, |app, cx| {
+                    app.preferences_ui
+                        .notification_rows
+                        .scroll
+                        .scroll_to(gpui_kit::ListOffset {
+                            item_ix: 21,
+                            offset_in_item: gpui_kit::px(0.),
+                        });
+                    app.preferences_ui
+                        .notification_view
+                        .as_ref()
+                        .unwrap()
+                        .update(cx, |_, cx| cx.notify());
+                });
+                visual.update(|window, cx| {
+                    window.render_frame(cx);
+                    window.click("notification-rule-StartupRecovery-options", cx);
+                });
+                visual.run_until_parked();
+                surface.update(visual, |_, cx| cx.notify());
+                visual.update(|window, cx| {
+                    window.render_frame(cx);
+                    window.click("notification-rule-StartupRecovery-background", cx);
+                });
+                assert!(!app.read_with(visual, |app, _| {
+                    app.preferences_ui
+                        .draft
+                        .as_ref()
+                        .unwrap()
+                        .notifications
+                        .rule(studyapp_core::NoticeCategory::StartupRecovery)
+                        .background
+                }));
+            }
         }
     }
 
