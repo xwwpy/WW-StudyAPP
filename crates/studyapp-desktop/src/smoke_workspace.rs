@@ -471,7 +471,27 @@ async fn resize_pane(
                 (f32::from(after) - rendered).abs() < 2.,
                 "{pane} rendered {after:?}, expected {rendered} from saved width {preferred_width}"
             );
-            assert!(window.find("document-pane").bounds().size.width >= px(279.));
+            let document = window.find("document-pane").bounds();
+            assert!(document.size.width >= px(279.));
+            let viewport = window.find("markdown-native-viewport").bounds();
+            assert!(viewport.left() >= document.left() && viewport.right() <= document.right());
+            assert!(viewport.top() >= document.top() && viewport.bottom() <= document.bottom());
+            let native = editor.read(cx).native_state().unwrap();
+            let logical = native["logicalBounds"].as_array().unwrap();
+            for (index, expected) in [
+                viewport.left(),
+                viewport.top(),
+                viewport.size.width,
+                viewport.size.height,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                assert!(
+                    (logical[index].as_f64().unwrap() - f64::from(f32::from(expected))).abs() < 2.,
+                    "native Markdown viewport did not follow the committed pane: {native} vs {viewport:?}"
+                );
+            }
             view.read(cx).layout.clone()
         })
         .unwrap();

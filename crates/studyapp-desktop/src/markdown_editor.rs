@@ -1179,45 +1179,53 @@ impl Render for MarkdownEditor {
                 c.child(muted("正在准备连续编辑器…"))
             })
             .child(
-                canvas(
-                    move |bounds, window, cx| {
-                        let bounds = bounds.intersect(&window.content_mask().bounds);
-                        let _ = weak.update(cx, |this, cx| {
-                            if let Some(host) = &this.host {
-                                let result = host.set_bounds(bounds).and_then(|()| {
-                                    host.set_visible(
-                                        this.visible
-                                            && this.ready
-                                            && bounds.size.width > px(0.)
-                                            && bounds.size.height > px(0.),
-                                    )
-                                });
-                                if let Err(error) = result {
-                                    this.fail(format!("编辑器布局失败：{error:#}"), cx);
-                                }
-                            }
-                        });
-                    },
-                    move |_, _, _window, _| {
-                        #[cfg(target_os = "linux")]
-                        {
-                            let weak = focus_weak.clone();
-                            // Mouse listeners belong to the paint phase. Return
-                            // X11 focus before GPUI handles its own input fields.
-                            _window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {
-                                if phase.capture() {
-                                    let _ = weak.update(cx, |editor, _| {
-                                        if let Some(host) = &editor.host {
-                                            host.restore_focus_for_parent_click(event.position);
+                document_viewport()
+                    .id("markdown-native-viewport")
+                    .test_support()
+                    .child(
+                        canvas(
+                            move |bounds, window, cx| {
+                                let bounds = bounds.intersect(&window.content_mask().bounds);
+                                let _ = weak.update(cx, |this, cx| {
+                                    if let Some(host) = &this.host {
+                                        let result = host.set_bounds(bounds).and_then(|()| {
+                                            host.set_visible(
+                                                this.visible
+                                                    && this.ready
+                                                    && bounds.size.width > px(0.)
+                                                    && bounds.size.height > px(0.),
+                                            )
+                                        });
+                                        if let Err(error) = result {
+                                            this.fail(format!("编辑器布局失败：{error:#}"), cx);
                                         }
-                                    });
+                                    }
+                                });
+                            },
+                            move |_, _, _window, _| {
+                                #[cfg(target_os = "linux")]
+                                {
+                                    let weak = focus_weak.clone();
+                                    // Mouse listeners belong to the paint phase. Return
+                                    // X11 focus before GPUI handles its own input fields.
+                                    _window.on_mouse_event(
+                                        move |event: &MouseDownEvent, phase, _, cx| {
+                                            if phase.capture() {
+                                                let _ = weak.update(cx, |editor, _| {
+                                                    if let Some(host) = &editor.host {
+                                                        host.restore_focus_for_parent_click(
+                                                            event.position,
+                                                        );
+                                                    }
+                                                });
+                                            }
+                                        },
+                                    );
                                 }
-                            });
-                        }
-                    },
-                )
-                .size_full()
-                .min_h(px(180.)),
+                            },
+                        )
+                        .size_full(),
+                    ),
             )
     }
 }

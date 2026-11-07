@@ -22,6 +22,7 @@ main { display: flex; flex-direction: column; }
 #editor-workspace { position:relative; display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
 #editor { flex:1; min-width:0; min-height:0; width:100%; container-type:inline-size; }
 #editor-workspace[data-outline-position="top"] { flex-direction:column; }
+#editor-workspace[data-outline-position="top"] #note-outline { max-height:min(34vh,280px,50%); }
 #editor-workspace[data-outline-position="right"] { flex-direction:row-reverse; }
 #editor-workspace:is([data-outline-position="left"],[data-outline-position="right"]) #note-outline { flex:0 0 clamp(200px,24%,280px); max-width:38%; height:100%; max-height:none; border-bottom:0; }
 #editor-workspace[data-outline-position="left"] #note-outline { border-right:1px solid var(--editor-border); }

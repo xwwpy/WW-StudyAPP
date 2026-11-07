@@ -2216,6 +2216,57 @@ test("Markdown content stays within the remaining pane with wide tables and a si
   await page.close();
 });
 
+test("Markdown editor follows remaining width and height without reloading the document", async () => {
+  const text = `# Responsive document
+
+A paragraph that survives changes to the surrounding workspace.
+
+`.repeat(30);
+  const { page, errors, externalRequests } = await setup(text);
+  await select(page, 25, 42);
+  const before = await state(page);
+  // Resize only the host surface: sidebar/header changes do not necessarily
+  // resize the browser window or issue a corrective bridge layout command.
+  for (const readonly of [false, true]) {
+    await page.evaluate(readonly => window.studyappEditor.setReadonly(readonly), readonly);
+    for (const position of ["auto", "left", "right", "top", "floating"]) {
+      await page.evaluate(position => window.studyappEditor.setOutlinePreference({ position, shown: true }), position);
+      for (const [width, height] of [[1100, 760], [680, 500], [420, 300], [280, 150], [1000, 700]]) {
+        await page.evaluate(({ width, height }) => {
+          const host = document.querySelector("main");
+          host.style.width = `${width}px`;
+          host.style.height = `${height}px`;
+        }, { width, height });
+        await page.waitForTimeout(50);
+        const geometry = await page.evaluate(() => {
+          const rect = selector => {
+            const r = document.querySelector(selector).getBoundingClientRect();
+            return { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom };
+          };
+          return { host: rect("main"), pane: rect("#editor"), editor: rect(".cm-editor"), footer: rect("#editor-footer") };
+        });
+        const context = JSON.stringify({ readonly, position, width, height, geometry });
+        assert.ok(Math.abs(geometry.host.width - width) <= 1, context);
+        assert.ok(Math.abs(geometry.host.height - height) <= 1, context);
+        for (const field of ["x", "y", "width", "height"]) {
+          assert.ok(Math.abs(geometry.editor[field] - geometry.pane[field]) <= 1, context);
+        }
+        assert.ok(geometry.pane.x >= geometry.host.x && geometry.pane.right <= geometry.host.right + 1, context);
+        assert.ok(geometry.pane.height > 0, context);
+        assert.ok(Math.abs(geometry.pane.bottom - geometry.footer.y) <= 1, context);
+        assert.ok(Math.abs(geometry.footer.bottom - geometry.host.bottom) <= 1, context);
+      }
+    }
+  }
+  const after = await state(page);
+  for (const field of ["generation", "revision", "text", "selection"]) {
+    assert.deepEqual(after[field], before[field], `geometry changed document ${field}`);
+  }
+  assert.deepEqual(errors, []);
+  assert.deepEqual(externalRequests, []);
+  await page.close();
+});
+
 test("preview caret activation survives rendered widgets, wrapping and host mode changes", async () => {
   const text = '# 标题 😀\n\n**粗体** *斜体* ~~删除~~ `inline code`\n\n- 项目 **加粗**\n- [ ] 任务\n\n> 引用\n\n---\n\n![图片](missing.png)\n\n| 表头一 | 表头二 |\n| --- | --- |\n| 数据😀 | 内容 |\n\n```js\nconst x = null;\n```\n\n末尾段落';
   const {page,errors}=await setup(text);

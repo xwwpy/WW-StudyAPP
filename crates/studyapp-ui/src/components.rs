@@ -220,6 +220,16 @@ pub fn document_surface() -> Div {
         .bg(crate::theme::color(0xFFFFFF))
 }
 
+/// Allocation surface for a native document view embedded below its header.
+pub fn document_viewport() -> Div {
+    div()
+        .flex_1()
+        .w_full()
+        .min_w_0()
+        .min_h_0()
+        .overflow_hidden()
+}
+
 pub fn document_toolbar() -> Div {
     row()
         .flex_shrink_0()
@@ -456,6 +466,80 @@ mod tests {
                     .child(div().w(px(80.)).h(px(self.content)).flex_shrink_0())
             };
             div().w(px(500.)).h(px(300.)).p(px(32.)).child(viewport)
+        }
+    }
+
+    #[gpui_kit::test]
+    fn document_viewport_tracks_remaining_width_and_height(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        struct DocumentLayout {
+            sidebar: f32,
+            header: f32,
+        }
+        impl Render for DocumentLayout {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                super::row()
+                    .size_full()
+                    .gap_0()
+                    .items_stretch()
+                    .child(div().w(px(self.sidebar)).h_full().flex_shrink_0())
+                    .child(
+                        super::document_surface()
+                            .child(div().h(px(self.header)).flex_shrink_0())
+                            .child(
+                                column().flex_1().min_h_0().min_w_0().child(
+                                    super::document_viewport()
+                                        .id("document-viewport-under-test")
+                                        .test_support(),
+                                ),
+                            ),
+                    )
+            }
+        }
+        let (layout, visual) = cx.add_window_view(|_, _| DocumentLayout {
+            sidebar: 280.,
+            header: 48.,
+        });
+        for (width, height, sidebar, header) in [
+            (1200., 840., 280., 48.),
+            (1200., 840., 0., 48.),
+            (1200., 840., 320., 96.),
+            (1000., 700., 320., 600.),
+            (1000., 700., 320., 700.),
+            (1000., 700., 280., 48.),
+            (780., 540., 280., 96.),
+            (420., 300., 160., 96.),
+            (600., 210., 160., 96.),
+            (1440., 1000., 0., 48.),
+        ] {
+            layout.update(visual, |layout, cx| {
+                layout.sidebar = sidebar;
+                layout.header = header;
+                cx.notify();
+            });
+            visual.simulate_resize(gpui_kit::size(px(width), px(height)));
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find("document-viewport-under-test").bounds();
+                assert!(
+                    (f32::from(bounds.left()) - sidebar).abs() < 1.,
+                    "{bounds:?}"
+                );
+                assert!((f32::from(bounds.top()) - header).abs() < 1., "{bounds:?}");
+                assert!(
+                    (f32::from(bounds.size.width) - (width - sidebar)).abs() < 1.,
+                    "{bounds:?}"
+                );
+                assert!(
+                    (f32::from(bounds.size.height) - (height - header)).abs() < 1.,
+                    "viewport did not follow remaining space: {bounds:?}; available={}",
+                    height - header
+                );
+                assert!(
+                    bounds.bottom() <= px(height),
+                    "viewport escaped its pane: {bounds:?}"
+                );
+            });
         }
     }
 
