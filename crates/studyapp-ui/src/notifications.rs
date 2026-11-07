@@ -117,6 +117,13 @@ impl NotificationCenter {
         cx.notify();
     }
 
+    /// Advance the shared clock without creating a model-change notification.
+    /// A frame-driven surface must still sample time rather than reuse old alpha.
+    #[cfg(feature = "ui-test")]
+    pub fn advance_time_without_notification(&mut self, delta: Duration) {
+        self.advance_clock(delta);
+    }
+
     #[cfg(feature = "ui-test")]
     pub fn resume_time(&mut self) {
         let now = self

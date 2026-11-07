@@ -25,6 +25,9 @@ impl DesktopPresentation {
             private: center.private_desktop(),
         }
     }
+    fn animating(&self) -> bool {
+        self.entries.iter().any(|(_, opacity)| *opacity < 1.)
+    }
 }
 struct DesktopNotifications {
     center: Entity<NotificationCenter>,
@@ -40,11 +43,7 @@ impl DesktopNotifications {
         owner: WeakEntity<StudyApp>,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.observe(&center, |this, center, cx| {
-            this.presentation = DesktopPresentation::read(center.read(cx));
-            cx.notify();
-        })
-        .detach();
+        cx.observe(&center, |_, _, cx| cx.notify()).detach();
         Self {
             center,
             presentation: initial,
@@ -55,7 +54,13 @@ impl DesktopNotifications {
     }
 }
 impl Render for DesktopNotifications {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Opacity is derived from the center's shared clock, not immutable event
+        // data. A model-change snapshot can retain the first nearly-clear frame.
+        self.presentation = DesktopPresentation::read(self.center.read(cx));
+        if self.presentation.animating() {
+            window.request_animation_frame();
+        }
         let center = self.center.downgrade();
         self.scrolls.retain(|id, _| {
             self.presentation
@@ -522,14 +527,28 @@ mod tests {
         });
         let center = desktop.read_with(visual, |view, _| view.center.clone());
         for expected in [0.5, 1.] {
-            center.update(visual, |center, cx| {
-                center.advance_time(std::time::Duration::from_millis(100), cx)
+            center.update(visual, |center, _| {
+                center.advance_time_without_notification(std::time::Duration::from_millis(100))
             });
             for _ in 0..8 {
                 visual.update(|window, cx| window.render_frame(cx));
             }
             desktop.read_with(visual, |view, _| {
-                assert_eq!(view.presentation.entries[0].1, expected)
+                assert_eq!(view.presentation.entries[0].1, expected);
+                assert_eq!(view.presentation.animating(), expected < 1.);
+            });
+            visual.update(|window, _| {
+                assert!(
+                    window.painted_quads().iter().any(|quad| {
+                        quad.bounds.size.width == px(360.).scale(window.scale_factor())
+                            && quad.bounds.size.height > px(32.).scale(window.scale_factor())
+                            && quad
+                                .background
+                                .as_solid()
+                                .is_some_and(|color| color.a == expected)
+                    }),
+                    "the card surface must paint the current shared-clock opacity"
+                );
             });
         }
         assert!(owner.is_some());
