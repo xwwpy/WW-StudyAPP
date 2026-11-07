@@ -84,7 +84,7 @@ jobs:
       - name: Preserve compiled Pinyin validation binary
         if: steps.binary.outputs.needs_build == 'true'
         id: compiled-binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: ime-validation-binary-${{ github.run_attempt }}
           path: target/debug/studyapp.exe
@@ -105,7 +105,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/ime-ci.py record --directory "$env:IME_ROOT/proof" --data "$env:IME_ROOT/library" --binary-metadata "$env:IME_ROOT/binary/binary-metadata.json"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: ime-proof-${{ github.run_attempt }}
           path: ${{ env.IME_ROOT }}/proof/*
@@ -113,7 +113,7 @@ jobs:
           retention-days: 90
       - name: Preserve capability and native failure diagnostics
         if: always() && env.IME_ROOT != ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: ime-diagnostics-${{ github.run_attempt }}
           path: |
