@@ -30,8 +30,8 @@ Windows 10/11 x64 提供安装版与便携版，均使用当前用户权限。Ma
 支持 Ubuntu 24.04 及兼容系统的 x86_64 桌面，需要 X11 或 XWayland，以及可用的 Vulkan 驱动。下载 `.deb` 和同名 `.sha256` 文件，在下载目录运行：
 
 ```bash
-sha256sum --check WW-StudyApp-0.3.0-linux-x86_64.deb.sha256
-sudo apt install ./WW-StudyApp-0.3.0-linux-x86_64.deb
+sha256sum --check WW-StudyApp-0.3.1-linux-x86_64.deb.sha256
+sudo apt install ./WW-StudyApp-0.3.1-linux-x86_64.deb
 studyapp
 ```
 
@@ -44,8 +44,8 @@ studyapp
 也可在下载目录使用命令安装（以下为 Apple 芯片版本）：
 
 ```bash
-shasum -a 256 --check WW-StudyApp-0.3.0-macos-arm64.dmg.sha256
-hdiutil attach WW-StudyApp-0.3.0-macos-arm64.dmg
+shasum -a 256 --check WW-StudyApp-0.3.1-macos-arm64.dmg.sha256
+hdiutil attach WW-StudyApp-0.3.1-macos-arm64.dmg
 sudo ditto /Volumes/WW-StudyApp/WW-StudyApp.app /Applications/WW-StudyApp.app
 hdiutil detach /Volumes/WW-StudyApp
 open /Applications/WW-StudyApp.app

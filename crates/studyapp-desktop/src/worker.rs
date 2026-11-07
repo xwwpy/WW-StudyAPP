@@ -2451,6 +2451,65 @@ mod tests {
     }
 
     #[test]
+    fn switching_to_legacy_widget_defaults_preserves_existing_library_contents() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let legacy_directory = root.join("legacy");
+        let database = legacy_directory.join("studyapp.sqlite3");
+        {
+            let legacy = Worker::start(database.clone(), None);
+            assert!(initial_update(&legacy).snapshot.is_some());
+            let saved = apply(
+                &legacy,
+                Command::Manual {
+                    version_ids: None,
+                    started_at: chrono::Utc::now().timestamp() - 120,
+                    minutes: 1,
+                    summary: "retained legacy study session".into(),
+                    note_ids: vec![],
+                },
+            );
+            assert!(saved.notice.unwrap().is_ok());
+        }
+        let category = legacy_directory.join("settings/defaults/timer-widget.json");
+        // This is a generated temporary fixture, never a user library.
+        std::fs::remove_file(&category).unwrap();
+        let manifest = legacy_directory.join("settings/manifest.json");
+        let manifest_before = std::fs::read(&manifest).unwrap();
+        let worker = Worker::start(root.join("current/studyapp.sqlite3"), None);
+        assert!(initial_update(&worker).snapshot.is_some());
+        worker
+            .sender
+            .send(Work::SwitchLibrary(legacy_directory.clone()))
+            .unwrap();
+        let switched = receive_notice(&worker);
+        assert!(
+            switched.notice.as_ref().unwrap().is_ok(),
+            "{:?}",
+            switched.notice
+        );
+        assert_eq!(switched.library_result, Some(Ok(())));
+        assert!(switched.library_replaced);
+        let snapshot = switched.snapshot.unwrap();
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(
+            snapshot.sessions[0].summary,
+            "retained legacy study session"
+        );
+        assert_eq!(std::fs::read(&manifest).unwrap(), manifest_before);
+        assert!(!category.exists());
+        drop(worker);
+
+        let restarted = Worker::start(database, None);
+        let snapshot = initial_update(&restarted).snapshot.unwrap();
+        assert_eq!(snapshot.sessions.len(), 1);
+        assert_eq!(
+            snapshot.sessions[0].summary,
+            "retained legacy study session"
+        );
+        assert!(!category.exists());
+    }
+
+    #[test]
     fn library_switch_marks_only_successful_replacements() {
         let directory = tempfile::tempdir().unwrap().keep();
         let worker = Worker::start(directory.join("original.sqlite3"), None);

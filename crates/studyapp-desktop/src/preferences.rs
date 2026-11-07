@@ -499,7 +499,18 @@ impl PreferencesStore {
                 {
                     continue;
                 }
-                read_category::<serde_json::Value>(&root.join("defaults").join(name))?;
+                let path = root.join("defaults").join(name);
+                // Pre-widget defaults have no introduction marker and must stay immutable.
+                // Accept only a genuinely absent legacy file; links and I/O errors still fail.
+                if name == "timer-widget.json"
+                    && matches!(
+                        std::fs::symlink_metadata(&path),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                    )
+                {
+                    continue;
+                }
+                read_category::<serde_json::Value>(&path)?;
             }
         }
         Ok((
@@ -1347,6 +1358,62 @@ mod tests {
                 .join("timer-widget.json")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn missing_legacy_widget_default_does_not_block_open_or_rewrite_settings() {
+        let (root, mut engine, mut runtime, store) = library();
+        let defaults = root.join("settings/defaults");
+        let category = defaults.join("timer-widget.json");
+        // Remove only this explicitly named file from the generated test fixture.
+        std::fs::remove_file(&category).unwrap();
+        let before = disk_files(&root.join("settings"));
+        let original_defaults = disk_files(&defaults);
+        let expected = store.snapshot();
+        let (mut reopened, _) =
+            PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+        assert_eq!(reopened.snapshot().settings, expected.settings);
+        assert_eq!(reopened.snapshot().revision, expected.revision);
+        assert_eq!(disk_files(&root.join("settings")), before);
+        assert!(!category.exists());
+
+        let mut proposal = request(&reopened);
+        proposal.settings.timer_widget.opacity = 65;
+        reopened.save(proposal, &mut engine, &mut runtime).unwrap();
+        let (saved, _) =
+            PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+        assert_eq!(saved.snapshot().settings.timer_widget.opacity, 65);
+        assert_eq!(disk_files(&defaults), original_defaults);
+        assert!(!category.exists());
+    }
+
+    #[test]
+    fn malformed_widget_default_remains_an_error_and_preserves_all_settings() {
+        let (root, mut engine, _, _) = library();
+        let category = root.join("settings/defaults/timer-widget.json");
+        std::fs::write(&category, "{ damaged widget default").unwrap();
+        let before = disk_files(&root.join("settings"));
+        assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
+        assert_eq!(disk_files(&root.join("settings")), before);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_widget_default_is_not_treated_as_missing_legacy_configuration() {
+        let (root, mut engine, _, _) = library();
+        let category = root.join("settings/defaults/timer-widget.json");
+        std::fs::remove_file(&category).unwrap();
+        std::os::unix::fs::symlink(root.join("missing-widget-default"), &category).unwrap();
+        let manifest = root.join("settings/manifest.json");
+        let before = std::fs::read(&manifest).unwrap();
+        assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
+        assert!(
+            std::fs::symlink_metadata(&category)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(manifest).unwrap(), before);
     }
 
     #[test]
