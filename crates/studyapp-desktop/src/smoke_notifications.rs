@@ -799,6 +799,11 @@ pub(crate) async fn exercise_markdown_background(
         let before =
             crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
         let native = crate::smoke_visibility::visible(window, editor, cx).await;
+        if before["readonly"] == false {
+            crate::smoke_visibility::focus_body(window, editor, cx).await;
+        }
+        let before =
+            crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
         window
             .update(cx, |_, window, cx| {
                 view.update(cx, |app, cx| {
@@ -894,6 +899,12 @@ pub(crate) async fn exercise_markdown_background(
         let after =
             crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
         assert_eq!(after["modalBlocked"], false);
+        if before["editorFocused"] == true {
+            assert_eq!(
+                after["editorFocused"], true,
+                "native modal must restore the editor caret"
+            );
+        }
         for key in ["text", "generation", "revision", "selection", "scrollTop"] {
             assert_eq!(before[key], after[key], "dismiss changed {key}");
         }

@@ -78,5 +78,5 @@ objc2 = "=0.6.5"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSURLRequest"] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSView", "NSWindow", "NSApplication", "NSResponder"] }
 
-objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-graphics"] }
+objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["std", "CALayer", "CAShapeLayer", "CATransaction", "objc2-core-graphics", "objc2-core-foundation"] }
 objc2-core-graphics = { version = "=0.3.2", default-features = false, features = ["std", "CGPath"] }

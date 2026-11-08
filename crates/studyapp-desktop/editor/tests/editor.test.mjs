@@ -2880,3 +2880,27 @@ test("modal notifications retain rendered prose and block background input witho
     await page.close();
   }
 });
+
+
+test("modal restores the focused editor even if the native parent already took focus", async () => {
+  const {page, errors} = await setup("A focused draft keeps its caret");
+  await select(page, 4, 11);
+  await page.locator(".cm-content").focus();
+  const before = await state(page);
+  assert.equal(before.editorFocused, true);
+  await page.evaluate(() => {
+    // The native host has returned keyboard ownership to its parent HWND,
+    // while WebKit/Chromium still retains the previously active DOM element.
+    Object.defineProperty(document, "hasFocus", {configurable:true, value:() => false});
+    try { window.studyappEditor.setModalOverlay(true, 0.48); }
+    finally { delete document.hasFocus; }
+  });
+  assert.equal((await state(page)).modalBlocked, true);
+  await page.evaluate(() => window.studyappEditor.setModalOverlay(false, 0));
+  const after = await state(page);
+  assert.equal(after.editorFocused, true);
+  for (const key of ["text","generation","revision","selection","selections","scrollTop"])
+    assert.deepEqual(after[key], before[key], key);
+  assert.deepEqual(errors, []);
+  await page.close();
+});

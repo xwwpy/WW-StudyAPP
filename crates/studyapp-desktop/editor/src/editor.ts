@@ -595,13 +595,15 @@ modalShade.hidden = true;
 modalShade.setAttribute("aria-hidden", "true");
 document.body.append(modalShade);
 for (const type of ["pointerdown","pointerup","click","dblclick","wheel","keydown","keyup","beforeinput","paste","cut","drop","contextmenu"]) {
-  document.addEventListener(type, event => {
+  window.addEventListener(type, event => {
     if (modalBlocked) { event.preventDefault(); event.stopImmediatePropagation(); }
   }, {capture:true, passive:false});
 }
 function setModalOverlay(blocked: boolean, opacity: number): void {
   const main = document.querySelector<HTMLElement>("main")!;
-  if (blocked && !modalBlocked) resumeModalFocus = view.hasFocus;
+  // A native modal can move OS focus before this script runs. The active DOM
+  // element still identifies the caret owner, unlike document.hasFocus().
+  if (blocked && !modalBlocked) resumeModalFocus = view.root.activeElement === view.contentDOM;
   const restore = !blocked && modalBlocked && resumeModalFocus;
   modalBlocked = blocked === true;
   modalShade.hidden = !modalBlocked;

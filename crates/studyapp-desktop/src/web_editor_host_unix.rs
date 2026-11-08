@@ -3,7 +3,9 @@ use super::{EDITOR_PAGE, editor_page_allowed, embedded_response, ipc_allowed};
 #[cfg(target_os = "macos")]
 use anyhow::ensure;
 use anyhow::{Context as _, Result};
-use gpui_kit::{Bounds, Pixels, Window, px};
+#[cfg(target_os = "linux")]
+use gpui_kit::px;
+use gpui_kit::{Bounds, Pixels, Window};
 use std::{
     cell::{Cell, RefCell},
     marker::PhantomData,
@@ -707,7 +709,7 @@ impl HostedEditor {
             return Ok(());
         }
         #[cfg(target_os = "macos")]
-        self.mac_surface.set_blocked(blocked);
+        self.mac_surface.set_blocked(blocked)?;
         #[cfg(target_os = "linux")]
         if blocked {
             self.gtk_host.restore_parent_focus();
@@ -756,7 +758,7 @@ impl HostedEditor {
         let input = if blocked { Region::create() } else { region };
         self.gtk_host
             .native
-            .input_shape_combine_region(Some(&input), 0, 0);
+            .input_shape_combine_region(&input, 0, 0);
         *self.applied_regions.borrow_mut() = Some((local, blocked));
         Ok(())
     }
@@ -773,6 +775,7 @@ impl HostedEditor {
             "parentXid": self.gtk_host.parent_id,
             "profileContext": format!("{:p}", Rc::as_ptr(&self._context)),
             "profileOwners": Rc::strong_count(&self._context),
+            "inputBlocked": self.input_blocked.get(),
             "requestedVisible": self.requested_visible.get(),
             "appliedVisible": self.applied_visible.get(),
             "bounds": self.bounds.get().map(|bounds| serde_json::json!({
@@ -791,6 +794,7 @@ impl HostedEditor {
     pub fn native_state(&self) -> Result<serde_json::Value> {
         use wry::WebViewExtMacOS;
         Ok(serde_json::json!({
+            "inputBlocked": self.input_blocked.get(),
             "requestedVisible": self.requested_visible.get(),
             "appliedVisible": self.applied_visible.get(),
             "bounds": self.bounds.get().map(|bounds| serde_json::json!({

@@ -153,9 +153,9 @@ pub async fn default_preview(
         cx,
     )
     .await;
-    // The seeded due review legitimately opens a startup notification. Unix
-    // native children are hidden under overlapping app overlays; close that
-    // real reminder before starting the unobscured first-readonly baseline.
+    // The seeded due review legitimately opens a startup notification;
+    // close that real reminder before the unobscured first-readonly baseline.
+    // Modal continuity is exercised separately after ordinary readiness.
     // Never force host visibility or alter its readiness/geometry checks.
     dismiss_notice_before_editor(window, view, cx).await;
     window
@@ -207,7 +207,157 @@ pub async fn default_preview(
                 .unwrap();
         }
     }
+    modal_preview_continuity(window, view, &editor, database, "reader", cx).await;
     default_appearance_sample(window, view, database, cx).await;
+}
+
+#[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
+async fn modal_preview_continuity(
+    window: AnyWindowHandle,
+    app: &Entity<StudyApp>,
+    editor: &Entity<MarkdownEditor>,
+    database: &Path,
+    phase: &str,
+    cx: &mut AsyncApp,
+) {
+    use studyapp_core::{NoticeCategory, NoticeEvent, NoticeRule, NoticeSeverity, NoticeStyle};
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let original = app.read_with(cx, |app, _| {
+        (
+            app.preferences_ui.saved.clone(),
+            app.preferences_ui.draft.clone(),
+        )
+    });
+    for round in 0..3 {
+        let before = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        let native = editor.read_with(cx, |editor, _| editor.native_state().unwrap());
+        window
+            .update(cx, |_, window, cx| {
+                app.update(cx, |app, cx| {
+                    for settings in app
+                        .preferences_ui
+                        .saved
+                        .as_mut()
+                        .map(|s| &mut s.settings)
+                        .into_iter()
+                        .chain(app.preferences_ui.draft.as_mut())
+                    {
+                        settings.notifications.rules.insert(
+                            NoticeCategory::SaveFailure,
+                            NoticeRule {
+                                style: Some(NoticeStyle::ModalCard),
+                                ..Default::default()
+                            },
+                        );
+                        settings.appearance.notifications.reduce_motion = true;
+                    }
+                    app.clear_notices(cx);
+                    app.sync_notification_preferences(window, cx);
+                    app.emit_notification(
+                        NoticeEvent::new(
+                            NoticeCategory::SaveFailure,
+                            NoticeSeverity::Error,
+                            "预览保持与通知输入隔离",
+                        ),
+                        cx,
+                    );
+                    cx.notify();
+                })
+            })
+            .unwrap();
+        crate::smoke_library::until(
+            window,
+            app,
+            "modal above native Unix preview",
+            |app, cx| app.notifications.read(cx).modal_visible(),
+            cx,
+        )
+        .await;
+        let blocked = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        assert_eq!(blocked["modalBlocked"], true);
+        for key in [
+            "text",
+            "generation",
+            "revision",
+            "selection",
+            "selections",
+            "scrollTop",
+            "scrollLeft",
+        ] {
+            assert_eq!(before[key], blocked[key], "Unix modal changed {key}");
+        }
+        let covered = editor.read_with(cx, |editor, _| editor.native_state().unwrap());
+        for key in [
+            "requestedVisible",
+            "appliedVisible",
+            "visible",
+            "inputBlocked",
+        ] {
+            assert_eq!(covered[key], true, "{covered}");
+        }
+        assert_eq!(covered["bounds"], native["bounds"]);
+        assert!(
+            covered["occlusionCount"].as_u64().unwrap() > 0,
+            "real modal must clip only its rectangle: {covered}"
+        );
+        let image = database.with_file_name(format!("native-markdown-modal-{phase}-{round}.png"));
+        #[cfg(target_os = "macos")]
+        assert!(
+            std::process::Command::new("/usr/sbin/screencapture")
+                .args(["-x", "-m"])
+                .arg(&image)
+                .status()
+                .unwrap()
+                .success()
+        );
+        #[cfg(target_os = "linux")]
+        window
+            .update(cx, |_, window, _| {
+                crate::smoke::capture(window, image).unwrap()
+            })
+            .unwrap();
+        window
+            .update(cx, |_, window, cx| {
+                let id = app.read(cx).notifications.read(cx).test_state()[0].0;
+                window.click(format!("dismiss-notice-{id}"), cx);
+            })
+            .unwrap();
+        crate::smoke_library::until(
+            window,
+            app,
+            "native Unix preview restored",
+            |app, cx| !app.notifications.read(cx).modal_visible(),
+            cx,
+        )
+        .await;
+        let after = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        assert_eq!(after["modalBlocked"], false);
+        for key in ["text", "generation", "revision", "selection", "scrollTop"] {
+            assert_eq!(before[key], after[key], "Unix dismiss changed {key}");
+        }
+        assert_eq!(
+            editor.read_with(cx, |editor, _| editor.native_state().unwrap())["inputBlocked"],
+            false
+        );
+        std::fs::write(
+            database.with_file_name(format!("native-markdown-modal-{phase}-{round}.json")),
+            serde_json::to_vec_pretty(
+                &json!({"before":before,"blocked":blocked,"after":after,"native":covered}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    window
+        .update(cx, |_, _, cx| {
+            app.update(cx, |app, cx| {
+                app.clear_notices(cx);
+                app.preferences_ui.saved = original.0;
+                app.preferences_ui.draft = original.1;
+                cx.notify();
+            })
+        })
+        .unwrap();
 }
 
 #[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
@@ -414,6 +564,7 @@ async fn default_appearance_sample(
         cx,
     )
     .await;
+    modal_preview_continuity(window, view, &editor, database, "appearance", cx).await;
     window
         .update(cx, |_, _, cx| {
             view.update(cx, |app, cx| {
