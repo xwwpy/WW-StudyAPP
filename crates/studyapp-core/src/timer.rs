@@ -71,12 +71,9 @@ impl Default for TimerWidgetSettings {
 }
 impl TimerWidgetSettings {
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            (30..=100).contains(&self.opacity),
-            "小组件背景不透明度应为 30–100%"
-        );
+        ensure!(self.opacity <= 100, "小组件背景不透明度应为 0–100%");
         ensure!(self.corner_radius <= 28, "小组件圆角应为 0–28");
-        ensure!((80..=140).contains(&self.scale), "小组件缩放应为 80–140%");
+        ensure!((50..=200).contains(&self.scale), "小组件缩放应为 50–200%");
         if let Some(color) = &self.accent {
             ensure!(
                 crate::parse_rgba_color(color).is_some(),

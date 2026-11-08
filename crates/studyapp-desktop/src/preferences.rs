@@ -16,7 +16,15 @@ use studyapp_core::{Engine, LayoutSettings, PreparedSettings, Settings};
 const MAX_JSON: u64 = 1024 * 1024;
 const SCHEMA: u32 = 1;
 // Interface marker distinguishes a genuine old generation from a missing new category.
-const CATEGORIES_VERSION: u32 = 2;
+const CATEGORIES_VERSION: u32 = 3;
+
+fn migrate_legacy_reading_width(appearance: &mut studyapp_core::AppearanceSettings) {
+    for preset in &mut appearance.custom_presets {
+        if preset.markdown.layout.reading_width == 720 {
+            preset.markdown.layout.reading_width = 0;
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct PreferenceSnapshot {
@@ -371,9 +379,11 @@ impl PreferencesStore {
             (store, runtime, prepared)
         } else {
             let (sync, credentials) = SyncRuntime::legacy_configuration(database)?;
+            let mut settings = engine.snapshot().settings;
+            migrate_legacy_reading_width(&mut settings.appearance);
             let current = PreferenceSnapshot {
                 revision: unique_revision(),
-                settings: engine.snapshot().settings,
+                settings,
                 shortcuts: crate::shortcuts::default_bindings(),
                 sync,
                 image_secret_saved: !credentials.image.protected_secret.is_empty(),
@@ -569,11 +579,16 @@ impl PreferencesStore {
             studyapp_core::LoggingSettings::default()
         };
         // A missing category is a pre-theme generation. Never write during load.
-        let appearance = if !legacy || directory.join("appearance.json").try_exists()? {
+        let mut appearance = if !legacy || directory.join("appearance.json").try_exists()? {
             read_category::<AppearanceFile>(&directory.join("appearance.json"))?.appearance
         } else {
             studyapp_core::AppearanceSettings::default()
         };
+        // Migrate the former default once per generation, without writing on load.
+        // A v3 save preserves subsequently chosen explicit 720px columns.
+        if interface.interface.categories_version < 3 {
+            migrate_legacy_reading_width(&mut appearance);
+        }
         let images = if !legacy || directory.join("images.json").try_exists()? {
             read_category::<ImagesFile>(&directory.join("images.json"))?.images
         } else {
@@ -1333,7 +1348,8 @@ mod tests {
         let (root, mut engine, mut runtime, mut store) = library();
         let baseline = store.snapshot();
         let mut proposal = request(&store);
-        proposal.settings.timer_widget.opacity = 65;
+        proposal.settings.timer_widget.opacity = 0;
+        proposal.settings.timer_widget.scale = 173;
         proposal.settings.timer_widget.layout = studyapp_core::WidgetLayout::Expanded;
         proposal.settings.timer_widget.accent = Some("#227799".into());
         let prepared = store.prepare(proposal, &engine, &runtime).unwrap();
@@ -1347,7 +1363,8 @@ mod tests {
         runtime.install_configuration(synchronization);
         let (reopened, _) =
             PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
-        assert_eq!(reopened.snapshot().settings.timer_widget.opacity, 65);
+        assert_eq!(reopened.snapshot().settings.timer_widget.opacity, 0);
+        assert_eq!(reopened.snapshot().settings.timer_widget.scale, 173);
         assert_eq!(
             reopened.snapshot().settings.interval_minutes,
             baseline.settings.interval_minutes
@@ -1437,7 +1454,7 @@ mod tests {
     fn malformed_or_invalid_widget_category_is_preserved_and_rejected() {
         let (root, mut engine, _, store) = library();
         let category = store.current_directory().join("timer-widget.json");
-        for contents in ["{ damaged widget", r#"{"timer_widget":{"opacity":0}}"#] {
+        for contents in ["{ damaged widget", r#"{"timer_widget":{"opacity":101}}"#] {
             std::fs::write(&category, contents).unwrap();
             assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
             assert_eq!(std::fs::read_to_string(&category).unwrap(), contents);
@@ -1613,11 +1630,74 @@ mod tests {
         let (root, mut engine, _, store) = library();
         let interface = store.current_directory().join("interface.json");
         let mut value: serde_json::Value = read_json(&interface).unwrap();
-        value["interface"]["categories_version"] = 3.into();
+        value["interface"]["categories_version"] = (CATEGORIES_VERSION + 1).into();
         std::fs::write(interface, serde_json::to_vec(&value).unwrap()).unwrap();
         let before = disk_files(&root.join("settings"));
         assert!(PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).is_err());
         assert_eq!(disk_files(&root.join("settings")), before);
+    }
+
+    #[test]
+    fn legacy_default_reading_width_migrates_without_writes_and_explicit_width_round_trips() {
+        for version in [0, 1, 2] {
+            let (root, mut engine, mut runtime, store) = library();
+            let directory = store.current_directory();
+            let interface = directory.join("interface.json");
+            let mut value: serde_json::Value = read_json(&interface).unwrap();
+            value["interface"]["categories_version"] = version.into();
+            std::fs::write(interface, serde_json::to_vec(&value).unwrap()).unwrap();
+            let appearance = directory.join("appearance.json");
+            let mut value: AppearanceFile = read_json(&appearance).unwrap();
+            for width in [720, 920] {
+                value
+                    .appearance
+                    .custom_presets
+                    .push(studyapp_core::ThemePreset {
+                        id: format!("reading-{width}"),
+                        name: format!("阅读 {width}"),
+                        palette: Default::default(),
+                        markdown: studyapp_core::MarkdownStyle {
+                            layout: studyapp_core::MarkdownLayout {
+                                reading_width: width,
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                    });
+            }
+            std::fs::write(appearance, serde_json::to_vec(&value).unwrap()).unwrap();
+            let before = disk_files(&root.join("settings"));
+            let defaults = disk_files(&root.join("settings/defaults"));
+            let (mut reopened, _) =
+                PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+            let presets = reopened.snapshot().settings.appearance.custom_presets;
+            assert_eq!(presets[0].markdown.layout.reading_width, 0);
+            assert_eq!(presets[1].markdown.layout.reading_width, 920);
+            assert_eq!(disk_files(&root.join("settings")), before);
+            let mut proposal = request(&reopened);
+            proposal.settings.appearance.custom_presets[0]
+                .markdown
+                .layout
+                .reading_width = 720;
+            reopened.save(proposal, &mut engine, &mut runtime).unwrap();
+            let (saved, _) =
+                PreferencesStore::open(&root.join("studyapp.sqlite3"), &mut engine).unwrap();
+            assert_eq!(
+                saved.snapshot().settings.appearance.custom_presets[0]
+                    .markdown
+                    .layout
+                    .reading_width,
+                720
+            );
+            assert_eq!(
+                saved.snapshot().settings.appearance.custom_presets[1]
+                    .markdown
+                    .layout
+                    .reading_width,
+                920
+            );
+            assert_eq!(disk_files(&root.join("settings/defaults")), defaults);
+        }
     }
 
     #[test]

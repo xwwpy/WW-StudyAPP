@@ -124,10 +124,14 @@ pub fn modal_shell(
         )
 }
 
+pub fn modal_backdrop_opacity(dark: bool) -> f32 {
+    if dark { 0.64 } else { 0.48 }
+}
+
 fn modal_backdrop() -> Rgba {
     let palette = crate::theme::palette();
     // Neutral dimming keeps the hue of the user's chosen surfaces intact.
-    rgb(0).opacity(if palette.dark { 0.64 } else { 0.48 })
+    rgb(0).opacity(modal_backdrop_opacity(palette.dark))
 }
 
 // Framed content paints its own outline and rounded surface. A second opaque
@@ -146,6 +150,17 @@ pub fn modal_frame_shell(
     window: &Window,
     cx: &mut App,
 ) -> Dialog {
+    modal_frame_shell_observed(content, focus, window, cx, |_, _, _| {})
+}
+
+/// Native backgrounds stay visible, leaving the real popup rectangle clear.
+pub fn modal_frame_shell_observed(
+    content: impl IntoElement,
+    focus: &ModalFocus,
+    window: &Window,
+    cx: &mut App,
+    observe: impl Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static,
+) -> Dialog {
     Dialog::new(cx)
         .focus_handle(focus.handle().clone())
         .close_on_backdrop_press(false)
@@ -159,7 +174,18 @@ pub fn modal_frame_shell(
         .popup(
             framed_popup(window.viewport_size().width * 0.9).child(
                 div()
+                    .id("modal-native-occlusion")
+                    .test_support()
+                    .relative()
                     .child(content)
+                    .child(
+                        canvas(
+                            move |bounds, window, cx| observe(bounds, window, cx),
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
                     .text_selection_scope(TextSelectionScopeId::default()),
             ),
         )

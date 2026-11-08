@@ -20,7 +20,7 @@ fn markdown_styles_load_legacy_presets_and_validate_actual_surfaces() {
     assert!(settings.validate().is_ok());
     assert_eq!(
         serde_json::to_value(&settings).unwrap()["custom_presets"][0]["markdown"]["reading_width"],
-        720
+        0
     );
     for markdown in [
         json!({"colors":{"unknown":"#202020"}}),

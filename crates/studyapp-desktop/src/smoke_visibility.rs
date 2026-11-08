@@ -462,7 +462,7 @@ fn capture_screen(state: &Value, path: &Path) -> usize {
         .count()
 }
 
-async fn capture_visible(state: &Value, path: &Path, cx: &AsyncApp) {
+pub(crate) async fn capture_visible(state: &Value, path: &Path, cx: &AsyncApp) {
     // Readiness only acknowledges JavaScript. Give desktop presentation its own
     // bounded condition wait; no arbitrary sleep can turn blank pixels green.
     for attempt in 0..60 {

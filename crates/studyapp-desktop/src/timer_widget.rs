@@ -81,6 +81,28 @@ impl TimerWidget {
         let handle = window.window_handle();
         cx.observe(&app, move |this, app, cx| {
             this.presentation = WidgetPresentation::from_app(app.read(cx), cx);
+            if this.state.rescale(this.presentation.settings.scale) {
+                let desired = this.state.bounds().size;
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        let current = window.window_bounds().get_bounds();
+                        let available = window
+                            .display(cx)
+                            .map(|display| {
+                                let area = display.visible_bounds();
+                                size(
+                                    (area.right() - current.left()).max(px(140.)),
+                                    (area.bottom() - current.top()).max(px(100.)),
+                                )
+                            })
+                            .unwrap_or(desired);
+                        window.resize(size(
+                            desired.width.min(available.width),
+                            desired.height.min(available.height),
+                        ));
+                    });
+                });
+            }
             this.poll_pin(handle, cx);
             cx.notify();
         })
@@ -282,7 +304,7 @@ impl Render for TimerWidget {
                         .map(|display| {
                             let area = display.visible_bounds();
                             (area.bottom() - window.window_bounds().get_bounds().top())
-                                .max(px(200.))
+                                .max(px(100.))
                                 .min(area.size.height)
                         })
                         .unwrap_or(px(1000.));
@@ -351,6 +373,7 @@ impl StudyApp {
         };
         let mut state = self.widget_state.clone();
         state.open = true;
+        state.rescale(self.preview_widget_settings(cx).scale);
         state.clamp(
             &cx.displays()
                 .iter()
@@ -363,7 +386,7 @@ impl StudyApp {
             app_owns_titlebar_drag: true,
             window_background: WindowBackgroundAppearance::Transparent,
             window_bounds: Some(WindowBounds::Windowed(state.bounds())),
-            window_min_size: Some(size(px(280.), px(200.))),
+            window_min_size: Some(size(px(140.), px(100.))),
             window_decorations: Some(WindowDecorations::Client),
             is_resizable: true,
             is_minimizable: false,

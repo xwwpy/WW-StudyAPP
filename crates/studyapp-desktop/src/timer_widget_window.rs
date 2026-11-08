@@ -13,6 +13,7 @@ pub struct WidgetWindowState {
     pub y: i32,
     pub width: u32,
     pub height: u32,
+    pub scale: u8,
 }
 impl Default for WidgetWindowState {
     fn default() -> Self {
@@ -23,6 +24,7 @@ impl Default for WidgetWindowState {
             y: 80,
             width: 380,
             height: 390,
+            scale: 100,
         }
     }
 }
@@ -62,8 +64,8 @@ impl WidgetWindowState {
         };
         let width = (f32::from(display.size.width).max(1.)) as u32;
         let height = (f32::from(display.size.height).max(1.)) as u32;
-        self.width = self.width.clamp(280, 900).min(width);
-        self.height = self.height.clamp(200, 1000).min(height);
+        self.width = self.width.clamp(140, 1800).min(width);
+        self.height = self.height.clamp(100, 2000).min(height);
         let x = f32::from(display.origin.x).round() as i32;
         let y = f32::from(display.origin.y).round() as i32;
         self.x = self
@@ -73,6 +75,25 @@ impl WidgetWindowState {
             .y
             .clamp(y, y.saturating_add((height - self.height) as i32));
     }
+    /// Apply a new preference relative to the last saved zoom, not timer ticks.
+    pub fn rescale(&mut self, scale: u8) -> bool {
+        let old = if (50..=200).contains(&self.scale) {
+            self.scale
+        } else {
+            100
+        };
+        let scale = scale.clamp(50, 200);
+        if scale == old {
+            self.scale = scale;
+            return false;
+        }
+        let factor = f32::from(scale) / f32::from(old);
+        self.width = (self.width as f32 * factor).round().clamp(140., 1800.) as u32;
+        self.height = (self.height as f32 * factor).round().clamp(100., 2000.) as u32;
+        self.scale = scale;
+        true
+    }
+
     pub fn bounds(&self) -> Bounds<Pixels> {
         Bounds::new(
             point(px(self.x as f32), px(self.y as f32)),
@@ -101,7 +122,7 @@ impl WidgetContentFit {
             return None;
         }
         let maximum = available.floor().clamp(1., 1000.) as u32;
-        let desired = (natural.ceil().min(1000.) as u32).clamp(200.min(maximum), maximum);
+        let desired = (natural.ceil().min(1000.) as u32).clamp(100.min(maximum), maximum);
         let key = (width.round() as u32, desired);
         if self.last == Some(key) {
             return None;
@@ -290,6 +311,31 @@ mod tests {
     }
 
     #[test]
+    fn legacy_window_state_and_zoom_roundtrip_preserve_manual_size_between_ticks() {
+        let mut state: WidgetWindowState =
+            serde_json::from_str(r#"{"version":1,"width":400,"height":300,"x":85,"y":90}"#)
+                .unwrap();
+        assert_eq!(state.scale, 100);
+        for scale in [50, 73, 175, 200, 100] {
+            assert!(state.rescale(scale));
+            assert!((state.width as f32 - 400. * f32::from(scale) / 100.).abs() <= 2.);
+            assert!((state.height as f32 - 300. * f32::from(scale) / 100.).abs() <= 2.);
+            assert_eq!((state.x, state.y), (85, 90));
+            assert!(!state.rescale(scale));
+            state = serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+            assert!(!state.rescale(scale));
+        }
+        state.capture(Bounds::new(
+            point(px(85.), px(90.)),
+            size(px(460.), px(370.)),
+        ));
+        assert!(!state.rescale(100));
+        assert_eq!((state.width, state.height), (460, 370));
+        assert!(state.rescale(200));
+        assert_eq!((state.width, state.height), (920, 740));
+    }
+
+    #[test]
     fn content_fit_compacts_old_height_without_fighting_manual_vertical_resize() {
         let mut fit = WidgetContentFit::default();
         assert_eq!(fit.height(px(380.), px(283.25), px(900.)), Some(px(284.)));
@@ -299,7 +345,7 @@ mod tests {
         // Moving the window must not undo a manual height when content fits.
         assert_eq!(fit.height(px(380.), px(283.25), px(800.)), None);
         assert_eq!(fit.height(px(420.), px(283.25), px(900.)), Some(px(284.)));
-        assert_eq!(fit.height(px(420.), px(190.), px(900.)), Some(px(200.)));
+        assert_eq!(fit.height(px(420.), px(190.), px(900.)), Some(px(190.)));
         assert_eq!(fit.height(px(420.), px(1200.), px(430.)), Some(px(430.)));
         assert_eq!(fit.height(px(420.), px(190.), px(150.)), Some(px(150.)));
         assert_eq!(fit.height(px(420.), px(f32::NAN), px(900.)), None);

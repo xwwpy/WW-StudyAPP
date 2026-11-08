@@ -31,6 +31,7 @@ interface Bridge {
   load(value: Load): void;
   rebase(value: Rebase): void;
   setReadonly(value: boolean): void;
+  setModalOverlay(blocked: boolean, opacity: number): void;
   setOutlinePreference(value:unknown):void;
   setCanRequestEdit(value:boolean):void;
   restoreSelection(position: number): void;
@@ -64,6 +65,8 @@ let loaded = false;
 let canRequestEdit = false;
 let loadEpoch = 0;
 let pendingFlush = false;
+let modalBlocked = false;
+let resumeModalFocus = false;
 let unpublished: { base: EditorState; changes: ChangeSet } | undefined;
 const status = document.querySelector<HTMLElement>("#editor-status")!;
 const toolbar = document.querySelector<HTMLElement>("#toolbar")!;
@@ -247,7 +250,7 @@ const editorCommands: Readonly<Record<string, (view: EditorView) => boolean>> = 
   "delete-group-forward": deleteGroupForward
 });
 function command(name: string): boolean {
-  if (typeof name !== "string" || !loaded || view.composing || pendingFlush) return false;
+  if (modalBlocked || typeof name !== "string" || !loaded || view.composing || pendingFlush) return false;
   name = name.startsWith("editor.") ? name.slice(7) : name;
   if (name === "source") { setSource(!source); return true; }
   if (name === "save" && !view.state.readOnly) { post({ type: "save", generation, revision }); return true; }
@@ -562,7 +565,7 @@ function setImages(value: {generation:number;images:Record<string,unknown>}): vo
   view.dispatch({effects:imageMapChanged.of()});
 }
 function insertText(text:string): boolean {
-  if (typeof text !== "string" || !loaded || view.state.readOnly || pendingFlush || view.composing) return false;
+  if (modalBlocked || typeof text !== "string" || !loaded || view.state.readOnly || pendingFlush || view.composing) return false;
   view.dispatch({...view.state.replaceSelection(text.replace(/\r\n?/g,"\n")),annotations:Transaction.userEvent.of("input.paste")});
   view.focus(); return true;
 }
@@ -585,7 +588,30 @@ function setTheme(tokens: Record<string, unknown>): void {
 }
 applyEditorTheme({});
 
-const bridge: Bridge = { load, rebase, setReadonly, setOutlinePreference, setCanRequestEdit: value => {canRequestEdit = value === true;}, restoreSelection, setTheme, setImages, insertText, setSource, setShortcuts, command, flush };
+// No document, history or scroll replacement on modal transitions.
+const modalShade = document.createElement("div");
+modalShade.id = "native-modal-shade";
+modalShade.hidden = true;
+modalShade.setAttribute("aria-hidden", "true");
+document.body.append(modalShade);
+for (const type of ["pointerdown","pointerup","click","dblclick","wheel","keydown","keyup","beforeinput","paste","cut","drop","contextmenu"]) {
+  document.addEventListener(type, event => {
+    if (modalBlocked) { event.preventDefault(); event.stopImmediatePropagation(); }
+  }, {capture:true, passive:false});
+}
+function setModalOverlay(blocked: boolean, opacity: number): void {
+  const main = document.querySelector<HTMLElement>("main")!;
+  if (blocked && !modalBlocked) resumeModalFocus = view.hasFocus;
+  const restore = !blocked && modalBlocked && resumeModalFocus;
+  modalBlocked = blocked === true;
+  modalShade.hidden = !modalBlocked;
+  modalShade.style.backgroundColor = `rgba(0,0,0,${Number.isFinite(opacity) ? Math.max(0,Math.min(1,opacity)) : 0.48})`;
+  main.inert = modalBlocked;
+  if (restore && document.hasFocus()) view.focus();
+  if (!modalBlocked) resumeModalFocus = false;
+}
+
+const bridge: Bridge = { load, rebase, setReadonly, setModalOverlay, setOutlinePreference, setCanRequestEdit: value => {canRequestEdit = value === true;}, restoreSelection, setTheme, setImages, insertText, setSource, setShortcuts, command, flush };
 if (window.__STUDYAPP_EDITOR_TEST__ === true) {
   const observedKeys: Array<{key:string;code:string;binding:string|undefined;keyCode:number;prevented:boolean}> = [];
   // Metadata only: native smoke tests must never copy clipboard contents into
@@ -610,7 +636,7 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
     utf8Bytes: view.state.field(documentBudget).bytes, rawBytes: view.state.field(documentBudget).rawBytes,
     source, readonly: view.state.readOnly, composing: view.composing,
     scrollTop: view.scrollDOM.scrollTop, scrollLeft: view.scrollDOM.scrollLeft,
-    canRequestEdit,
+    canRequestEdit, modalBlocked,
     bindings, editorFocused:view.hasFocus,
     activeElement:document.activeElement?.tagName+"."+document.activeElement?.className,
     observedKeys, observedPastes, pendingFlush,

@@ -173,6 +173,11 @@ pub fn library_drag_card(
         .child(div().flex_1().min_w_0().truncate().child(title))
 }
 
+/// Page content fills its available pane; callers choose scrolling and height.
+pub fn page_content() -> Div {
+    column().w_full().min_w_0()
+}
+
 pub fn column() -> Div {
     div()
         .flex()

@@ -119,7 +119,7 @@ fn timer_and_appearance_inputs_are_validated_without_mutating_progress() {
             .unwrap();
     assert_eq!(*legacy.timer_widget, TimerWidgetSettings::default());
     let mut settings = Settings::default();
-    settings.timer_widget.opacity = 29;
+    settings.timer_widget.opacity = 101;
     assert!(settings.validate().is_err());
     settings.timer_widget.opacity = 30;
     settings.timer_widget.accent = Some("red;url(x)".into());
@@ -398,4 +398,39 @@ fn oversized_answer_deadline_fails_without_advancing_timer_or_creating_a_session
         engine.snapshot().sessions[0].deadline,
         1060 + i64::from(u32::MAX) * 60
     );
+}
+
+#[test]
+fn widget_accepts_fully_transparent_background_and_custom_whole_card_zoom() {
+    for opacity in [0, 1, 29, 30, 100] {
+        for scale in [50, 73, 100, 140, 175, 200] {
+            let settings = TimerWidgetSettings {
+                opacity,
+                scale,
+                ..Default::default()
+            };
+            assert!(
+                settings.validate().is_ok(),
+                "opacity={opacity}, scale={scale}"
+            );
+            assert_eq!(
+                serde_json::from_value::<TimerWidgetSettings>(
+                    serde_json::to_value(&settings).unwrap()
+                )
+                .unwrap(),
+                settings
+            );
+        }
+    }
+    for (opacity, scale) in [(101, 100), (100, 49), (100, 201)] {
+        assert!(
+            TimerWidgetSettings {
+                opacity,
+                scale,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+    }
 }

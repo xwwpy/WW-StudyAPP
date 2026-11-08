@@ -774,3 +774,141 @@ pub async fn exercise(
         "fit_without_activation":true,"stack_without_activation":true,"shrink_without_activation":true,
     })).unwrap()).unwrap();
 }
+
+/// Real HWND visibility, clipped paint, disabled input, native dismiss and state retention.
+pub(crate) async fn exercise_markdown_background(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    editor: &Entity<crate::markdown_editor::MarkdownEditor>,
+    database: &Path,
+    phase: &str,
+    cx: &mut AsyncApp,
+) {
+    use serde_json::json;
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let original = window
+        .update(cx, |_, _, cx| {
+            let app = view.read(cx);
+            (
+                app.preferences_ui.saved.clone(),
+                app.preferences_ui.draft.clone(),
+            )
+        })
+        .unwrap();
+    for round in 0..3 {
+        let before =
+            crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        let native = crate::smoke_visibility::visible(window, editor, cx).await;
+        window
+            .update(cx, |_, window, cx| {
+                view.update(cx, |app, cx| {
+                    for settings in app
+                        .preferences_ui
+                        .saved
+                        .as_mut()
+                        .map(|s| &mut s.settings)
+                        .into_iter()
+                        .chain(app.preferences_ui.draft.as_mut())
+                    {
+                        settings.notifications.rules.insert(
+                            NoticeCategory::SaveFailure,
+                            NoticeRule {
+                                style: Some(NoticeStyle::ModalCard),
+                                ..Default::default()
+                            },
+                        );
+                        settings.appearance.notifications.reduce_motion = true;
+                    }
+                    app.clear_notices(cx);
+                    app.sync_notification_preferences(window, cx);
+                    app.emit_notification(event(), cx);
+                    cx.notify();
+                });
+            })
+            .unwrap();
+        settle(window, view, cx, |app, window, cx| {
+            app.notifications.read(cx).modal_visible()
+                && window.try_find("modal-native-occlusion").is_some()
+        })
+        .await;
+        let blocked =
+            crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        assert_eq!(blocked["modalBlocked"], true);
+        for key in [
+            "text",
+            "generation",
+            "revision",
+            "selection",
+            "selections",
+            "scrollTop",
+            "scrollLeft",
+        ] {
+            assert_eq!(before[key], blocked[key], "modal changed {key}");
+        }
+        let (mut capture, dismiss, background) = window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                let state = editor.read(cx).native_state().unwrap();
+                assert_eq!(state["visible"], true);
+                assert_eq!(state["controllerVisible"], true);
+                assert_eq!(state["inputBlocked"], true);
+                assert_eq!(state["bounds"], native["bounds"]);
+                assert_eq!(state["visibilityUpdates"], native["visibilityUpdates"]);
+                let child = windows::Win32::Foundation::HWND(state["hwnd"].as_u64().unwrap()
+                    as usize
+                    as *mut _);
+                assert!(!unsafe {
+                    windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(child).as_bool()
+                });
+                let id = view.read(cx).notifications.read(cx).test_state()[0].0;
+                let dismiss = window
+                    .find(format!("dismiss-notice-{id}"))
+                    .bounds()
+                    .center();
+                let background = window.find("markdown-native-viewport").bounds().origin
+                    + point(px(24.), px(80.));
+                (state, dismiss, background)
+            })
+            .unwrap();
+        crate::smoke_workspace::native_pointer(&native, background, Some(true));
+        crate::smoke_workspace::native_pointer(&native, background, Some(false));
+        let clicked =
+            crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        for key in ["text", "generation", "revision", "selection", "scrollTop"] {
+            assert_eq!(before[key], clicked[key], "background click changed {key}");
+        }
+        capture["bounds"] = capture["parentBounds"].clone();
+        capture["hwnd"] = capture["parentHwnd"].clone();
+        crate::smoke_visibility::capture_visible(
+            &capture,
+            &database.with_file_name(format!("markdown-modal-{phase}-{round}.bmp")),
+            cx,
+        )
+        .await;
+        crate::smoke_workspace::native_pointer(&native, dismiss, Some(true));
+        crate::smoke_workspace::native_pointer(&native, dismiss, Some(false));
+        settle(window, view, cx, |app, _, cx| {
+            !app.notifications.read(cx).modal_visible()
+        })
+        .await;
+        let after =
+            crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        assert_eq!(after["modalBlocked"], false);
+        for key in ["text", "generation", "revision", "selection", "scrollTop"] {
+            assert_eq!(before[key], after[key], "dismiss changed {key}");
+        }
+        let restored = crate::smoke_visibility::visible(window, editor, cx).await;
+        assert_eq!(restored["inputBlocked"], false);
+        assert_eq!(restored["visibilityUpdates"], native["visibilityUpdates"]);
+    }
+    window
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, cx| {
+                app.clear_notices(cx);
+                app.preferences_ui.saved = original.0;
+                app.preferences_ui.draft = original.1;
+                cx.notify();
+            })
+        })
+        .unwrap();
+}

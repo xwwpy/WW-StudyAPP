@@ -136,6 +136,7 @@ pub struct MarkdownEditor {
     host_epoch: u64,
     ready: bool,
     visible: bool,
+    modal_overlay: Option<f32>,
     readonly: bool,
     resume_readonly: bool,
     can_request_edit: bool,
@@ -246,6 +247,7 @@ impl MarkdownEditor {
             host_epoch: 0,
             ready: false,
             visible: false,
+            modal_overlay: None,
             readonly: false,
             resume_readonly: false,
             can_request_edit: false,
@@ -316,7 +318,11 @@ impl MarkdownEditor {
         self.document.revision()
     }
     pub fn editable(&self) -> bool {
-        self.ready() && !self.readonly && self.pending.is_none() && !self.recovering
+        self.ready()
+            && !self.readonly
+            && self.modal_overlay.is_none()
+            && self.pending.is_none()
+            && !self.recovering
     }
 
     /// Image data comes only from the bounded native image resolver.
@@ -507,7 +513,7 @@ impl MarkdownEditor {
         let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled, "outlinePreference": self.outline_preference, "tableViews": self.tables.views, "tableConfigurable": self.tables.current.is_some()});
         let shortcuts = serde_json::to_string(&self.shortcuts).expect("string map serializes");
         let theme = &self.theme;
-        if let Err(error) = self.evaluate(&format!("window.studyappEditor.setShortcuts({shortcuts}); window.studyappEditor.setTheme({theme}); window.studyappEditor.load({payload});")) {
+        if let Err(error) = self.evaluate(&format!("window.studyappEditor.setShortcuts({shortcuts}); window.studyappEditor.setTheme({theme}); window.studyappEditor.load({payload}); {}", self.modal_overlay_script())) {
             self.fail(format!("无法载入编辑器：{error:#}"), cx);
         }
         if self.error.is_none() {
@@ -527,6 +533,35 @@ impl MarkdownEditor {
         {
             self.fail(format!("无法更新编辑器外观：{error:#}"), cx);
         }
+    }
+
+    pub fn set_modal_overlay(&mut self, opacity: Option<f32>, cx: &mut Context<Self>) {
+        if self.modal_overlay == opacity {
+            return;
+        }
+        self.modal_overlay = opacity;
+        if opacity.is_none() {
+            self.set_overlay_shapes("blocking-modal", vec![], cx);
+        }
+        if let Some(host) = &self.host
+            && let Err(error) = host.set_input_blocked(opacity.is_some())
+        {
+            self.fail(format!("无法更新编辑器输入状态：{error:#}"), cx);
+        }
+        if self.ready
+            && self.error.is_none()
+            && let Err(error) = self.evaluate(&self.modal_overlay_script())
+        {
+            self.fail(format!("无法更新编辑器遮罩：{error:#}"), cx);
+        }
+    }
+
+    fn modal_overlay_script(&self) -> String {
+        format!(
+            "window.studyappEditor.setModalOverlay({}, {});",
+            self.modal_overlay.is_some(),
+            self.modal_overlay.unwrap_or(0.)
+        )
     }
 
     pub fn set_can_request_edit(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -606,6 +641,11 @@ impl MarkdownEditor {
             self.fail(format!("无法显示编辑区：{error:#}"), cx);
         }
         cx.notify();
+    }
+
+    #[cfg(all(test, feature = "ui-test"))]
+    pub(crate) fn modal_blocked_for_test(&self) -> bool {
+        self.modal_overlay.is_some()
     }
 
     #[cfg(all(test, feature = "ui-test"))]
@@ -1035,6 +1075,9 @@ impl MarkdownEditor {
                 }
                 match result {
                     Ok(host) => {
+                        if let Err(error) = host.set_input_blocked(this.modal_overlay.is_some()) {
+                            this.fail(format!("无法更新编辑器输入状态：{error:#}"), cx);
+                        }
                         if let Err(error) = host.set_occlusions(this.occlusions.all()) {
                             this.fail(format!("无法更新窗口遮挡区域：{error:#}"), cx);
                         }

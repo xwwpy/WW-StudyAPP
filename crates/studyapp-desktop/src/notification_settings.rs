@@ -84,8 +84,14 @@ impl StudyApp {
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .max_w(px(960.))
-            .child(view.clone().cached(StyleRefinement::default().size_full()))
+            .w_full()
+            .child(
+                div()
+                    .id("settings-notifications-surface")
+                    .test_support()
+                    .size_full()
+                    .child(view.clone().cached(StyleRefinement::default().size_full())),
+            )
     }
     fn notification_workspace(&self, available: Size<Pixels>, cx: &mut Context<Self>) -> Div {
         let rows: Vec<_> = (0..NoticeCategory::ALL.len() + 2).collect();

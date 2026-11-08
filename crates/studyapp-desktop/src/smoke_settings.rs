@@ -1422,6 +1422,15 @@ async fn exercise_markdown_preview(
                 .unwrap()
         })
         .unwrap();
+    crate::smoke_notifications::exercise_markdown_background(
+        window,
+        view,
+        &preview,
+        database,
+        "appearance",
+        cx,
+    )
+    .await;
     let before =
         crate::smoke_editor::bridge(window, &preview, serde_json::json!({"type":"snapshot"}), cx)
             .await;

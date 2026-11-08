@@ -1636,10 +1636,12 @@ impl Render for StudyApp {
         self.sync_notification_preferences(window, cx);
         self.external_drop.set_blocked(self.external_drop_block(cx));
         let modal_open = self.has_modal(cx);
+        let modal_opacity = modal_open
+            .then(|| studyapp_ui::feedback::modal_backdrop_opacity(crate::theme::palette().dark));
+        self.prepare_document_view(window, cx);
         let initial_focus = self.folders.read(cx).modal_initial_focus(cx);
         self.modal_focus
             .sync_with_initial(modal_open, initial_focus, window, cx);
-        self.prepare_document_view(window, cx);
         if let Some(preview) = self.preferences_ui.appearance_preview.clone() {
             let occlusions = self.notifications.read(cx).occlusions().to_vec();
             let popup = self.appearance_color_popup_shapes(cx);
@@ -1649,12 +1651,14 @@ impl Render for StudyApp {
                 preview.set_overlay_shapes("appearance-color-picker", popup, cx);
                 preview.set_overlay_shapes("pointer-tooltip", bubbles, cx);
             });
-            let visible = self.appearance_preview_visible(window, cx)
-                && !modal_open
-                && !self.external_drop.active();
+            let visible =
+                self.appearance_preview_visible(window, cx) && !self.external_drop.active();
             if visible {
                 let theme = self.appearance_preview_theme(cx);
-                preview.update(cx, |preview, cx| preview.configure(theme, true, window, cx));
+                preview.update(cx, |preview, cx| {
+                    preview.configure(theme, true, window, cx);
+                    preview.set_modal_overlay(modal_opacity, cx);
+                });
             } else {
                 preview.update(cx, |preview, cx| preview.hide(cx));
             }
@@ -1725,15 +1729,40 @@ impl Render for StudyApp {
         let modal = modal_content.map(|content| {
             let cancel_owner = cx.weak_entity();
             let accept_owner = cx.weak_entity();
-            crate::feedback::modal_frame_shell(content, &self.modal_focus, window, cx)
-                .on_cancel(move |_, _, cx| {
-                    let _ = cancel_owner.update(cx, |this, cx| this.cancel_modal(cx));
-                    true
-                })
-                .on_ok(move |_, window, cx| {
-                    let _ = accept_owner.update(cx, |this, cx| this.accept_modal(window, cx));
-                    true
-                })
+            let editor = self.note_content.downgrade();
+            let preview = self
+                .preferences_ui
+                .appearance_preview
+                .as_ref()
+                .map(Entity::downgrade);
+            studyapp_ui::feedback::modal_frame_shell_observed(
+                content,
+                &self.modal_focus,
+                window,
+                cx,
+                move |bounds, _, cx| {
+                    let bounds = Bounds::new(
+                        bounds.origin - point(px(12.), px(12.)),
+                        bounds.size + size(px(24.), px(24.)),
+                    );
+                    let _ = editor.update(cx, |editor, cx| {
+                        editor.set_overlay_regions("blocking-modal", vec![bounds], cx)
+                    });
+                    if let Some(preview) = &preview {
+                        let _ = preview.update(cx, |preview, cx| {
+                            preview.set_overlay_regions("blocking-modal", vec![bounds], cx)
+                        });
+                    }
+                },
+            )
+            .on_cancel(move |_, _, cx| {
+                let _ = cancel_owner.update(cx, |this, cx| this.cancel_modal(cx));
+                true
+            })
+            .on_ok(move |_, window, cx| {
+                let _ = accept_owner.update(cx, |this, cx| this.accept_modal(window, cx));
+                true
+            })
         });
         let mut leading = vec![self.navigation_toggle(cx).rounded_full().into_any_element()];
         if self.page == Page::Notes && !self.layout.folders_visible {
@@ -1911,9 +1940,10 @@ impl Render for StudyApp {
                                         view.items_center()
                                     })
                                     .child(if !continuous && self.page != Page::Settings {
-                                        column()
-                                            .w_full()
-                                            .max_w(px(1120.))
+                                        page_content()
+                                            .id("page-content")
+                                            .test_support()
+                                            .flex_shrink_0()
                                             .child(body)
                                             .into_any_element()
                                     } else {

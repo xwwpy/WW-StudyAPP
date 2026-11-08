@@ -1,6 +1,6 @@
 use crate::app::StudyApp;
 use gpui_kit::*;
-pub use studyapp_ui::feedback::{ModalFocus, modal_frame_shell};
+pub use studyapp_ui::feedback::ModalFocus;
 
 fn update_recovery_message(reason: &str) -> &'static str {
     if reason.contains("System authorization cancelled or denied") {

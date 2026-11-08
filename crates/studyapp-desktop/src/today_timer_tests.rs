@@ -450,3 +450,101 @@ fn worker_receipt_wakes_the_main_view_without_advancing_its_poll_timer(cx: &mut 
         "receipt delivery, not the periodic timer, must update both accepted views"
     );
 }
+
+#[gpui_kit::test]
+fn wide_dashboard_uses_all_remaining_width_with_navigation_open_or_closed(cx: &mut TestAppContext) {
+    let (app, visual) = fixture(cx);
+    for width in [1000., 1600., 2400., 1280.] {
+        for navigation in [true, false] {
+            app.update(visual, |app, cx| {
+                app.layout.navigation_visible = navigation;
+                cx.notify();
+            });
+            visual.simulate_resize(size(px(width), px(900.)));
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let fixed = window.find("today-timer-fixed").bounds();
+                let timer = window.find("today-timer").bounds();
+                let header = window.find("today-header").bounds();
+                let expected = fixed.size.width - px(64.);
+                assert!((timer.size.width - expected).abs() < px(1.), "timer is capped instead of filling {width}px with navigation={navigation}: {timer:?} within {fixed:?}");
+                assert!((header.size.width - expected).abs() < px(1.), "dashboard is capped: {header:?} within {fixed:?}");
+            });
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn ordinary_pages_share_a_full_width_scrollable_content_surface(cx: &mut TestAppContext) {
+    let (app, visual) = fixture(cx);
+    for page in [Page::Today, Page::Reviews, Page::Stats] {
+        for width in [1000., 1600., 2400.] {
+            for navigation in [true, false] {
+                app.update(visual, |app, cx| {
+                    app.page = page;
+                    app.layout.navigation_visible = navigation;
+                    cx.notify();
+                });
+                visual.simulate_resize(size(px(width), px(900.)));
+                visual.update(|window, cx| {
+                    window.render_frame(cx);
+                    let viewport = window.find("page-scroll").bounds();
+                    let content = window.find("page-content").bounds();
+                    assert!(
+                        (content.size.width - viewport.size.width + px(64.)).abs() < px(1.),
+                        "{page:?} capped at {width}: {content:?} within {viewport:?}"
+                    );
+                    assert!(content.size.height > px(0.));
+                });
+            }
+        }
+    }
+}
+
+#[gpui_kit::test]
+fn settings_sections_use_the_full_remaining_pane_including_cached_surfaces(
+    cx: &mut TestAppContext,
+) {
+    use crate::settings_ui::{AppearancePage, SettingsSection};
+    let (app, visual) = fixture(cx);
+    visual.update(|window, cx| app.update(cx, |app, cx| app.navigate(Page::Settings, window, cx)));
+    for width in [1000., 1600., 2400.] {
+        for navigation in [true, false] {
+            visual.simulate_resize(size(px(width), px(1000.)));
+            for (section, id, gutter) in [
+                (SettingsSection::Learning, "settings-page-content", 16.),
+                (
+                    SettingsSection::Notifications,
+                    "settings-notifications-surface",
+                    0.,
+                ),
+                (
+                    SettingsSection::Appearance,
+                    "settings-appearance-surface",
+                    0.,
+                ),
+                (SettingsSection::Shortcuts, "settings-shortcuts-surface", 0.),
+            ] {
+                app.update(visual, |app, cx| {
+                    app.layout.navigation_visible = navigation;
+                    app.select_settings_section(section, cx);
+                    if section == SettingsSection::Appearance {
+                        app.select_appearance_page(AppearancePage::Overview, cx);
+                    }
+                    app.preferences_ui.section_changed_at = None;
+                    cx.notify();
+                });
+                visual.update(|window, cx| {
+                    window.render_frame(cx);
+                    let pane = window.find("settings-section-pane").bounds();
+                    let body = window.find(id).bounds();
+                    assert!(
+                        (body.size.width - pane.size.width + px(gutter)).abs() < px(1.),
+                        "{id} capped at {width}, navigation={navigation}: {body:?} in {pane:?}"
+                    );
+                    assert!(body.size.height > px(0.));
+                });
+            }
+        }
+    }
+}

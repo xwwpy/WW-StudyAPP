@@ -1,4 +1,4 @@
-:root { --editor-background:#ffffff; --editor-surface:#f7f8fa; --editor-text:#263344; --editor-muted:#758395; --editor-border:#e0e6eb; --editor-accent:#177f80; --editor-selection:#a3c9ee; --editor-selection-text:#263344; --editor-code-background:#f1f4f7; --editor-font-size:15px; --editor-line-height:1.75; --editor-reading-width:720px; --editor-toolbar-height:44px; --editor-control-size:28px; --editor-control-radius:8px; --editor-code-padding:16px; --editor-h1-size:1.85em; --editor-h2-size:1.5em; --editor-h3-size:1.25em; --editor-body-font:"Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif; --editor-mono-font:"Cascadia Mono", Consolas, monospace; color-scheme: light; font-family: var(--editor-body-font); color: var(--editor-ui-text,var(--editor-text)); background: var(--editor-surface); }
+:root { --editor-background:#ffffff; --editor-surface:#f7f8fa; --editor-text:#263344; --editor-muted:#758395; --editor-border:#e0e6eb; --editor-accent:#177f80; --editor-selection:#a3c9ee; --editor-selection-text:#263344; --editor-code-background:#f1f4f7; --editor-font-size:15px; --editor-line-height:1.75; --editor-reading-width:100%; --editor-toolbar-height:44px; --editor-control-size:28px; --editor-control-radius:8px; --editor-code-padding:16px; --editor-h1-size:1.85em; --editor-h2-size:1.5em; --editor-h3-size:1.25em; --editor-body-font:"Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif; --editor-mono-font:"Cascadia Mono", Consolas, monospace; color-scheme: light; font-family: var(--editor-body-font); color: var(--editor-ui-text,var(--editor-text)); background: var(--editor-surface); }
 * { box-sizing: border-box; }
 html, body, main { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 main { display: flex; flex-direction: column; }
@@ -34,7 +34,7 @@ main { display: flex; flex-direction: column; }
 #editor .cm-editor { width:100%; min-width:0; height: 100%; font-size: var(--editor-font-size); }
 #editor .cm-editor.cm-focused { outline: none; }
 #editor .cm-scroller { overflow:auto; font-family:var(--editor-body-font); line-height:var(--editor-line-height); background:var(--editor-surface); color:var(--editor-text); scrollbar-width:thin; scrollbar-color:var(--editor-border) transparent; }
-#editor .cm-content { width:100%; min-width:0; padding:32px max(26px,calc((100% - var(--editor-reading-width,720px))/2)) 160px; caret-color:var(--editor-accent); }
+#editor .cm-content { width:100%; min-width:0; padding:32px max(26px,calc((100% - var(--editor-reading-width,100%))/2)) 160px; caret-color:var(--editor-accent); }
 #editor .cm-line { padding: 0 2px; }
 #editor .md-raw-url { word-break:break-all; overflow-wrap:anywhere; }
 #editor .cm-selectionBackground { background: var(--editor-selection); }
@@ -117,7 +117,7 @@ main { display: flex; flex-direction: column; }
 #editor .md-table-header { background:var(--editor-table-header-background,var(--editor-surface)); color:var(--editor-table-header); border-top:var(--editor-grid-width) solid var(--editor-grid); }
 .md-table-cell { display:inline-block; flex-shrink:0; min-width:0; min-height:1.85em; padding:6px 10px; border-right:var(--editor-grid-width) solid var(--editor-grid); overflow-wrap:anywhere; white-space:pre-wrap; }
 #editor .md-table-separator { height:0; min-height:0; line-height:0; padding:0; }
-@container(max-width:600px) { #editor .cm-content { padding-left:18px; padding-right:18px; } }
+@container(max-width:600px) { #editor .cm-content { padding-left:max(18px,calc((100% - var(--editor-reading-width,100%))/2)); padding-right:max(18px,calc((100% - var(--editor-reading-width,100%))/2)); } }
 :root[data-source="true"] .tok-keyword { color:var(--editor-source-syntax-keyword); }
 :root[data-source="true"] .tok-string { color:var(--editor-source-syntax-string); }
 :root[data-source="true"] .tok-number { color:var(--editor-source-syntax-number); }
@@ -187,3 +187,6 @@ main { display: flex; flex-direction: column; }
 .md-table-resize { position:fixed; width:10px; padding:0; border:0; border-radius:0; cursor:col-resize; background:transparent; touch-action:none; pointer-events:auto; }
 .md-table-resize:hover,.md-table-resize:focus-visible { background:var(--editor-selection); }
 #editor .md-table-cell { box-sizing:border-box; }
+
+#native-modal-shade { position:fixed; inset:0; z-index:2147483647; pointer-events:auto; }
+#native-modal-shade[hidden] { display:none; }

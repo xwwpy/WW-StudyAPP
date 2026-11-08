@@ -664,6 +664,11 @@ impl StudyApp {
     /// Load a read-only document into the same persistent browser surface.
     /// Reading and writing therefore share highlighting and viewport limits.
     pub fn prepare_document_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let modal_open = self.has_modal(cx);
+        let opacity = modal_open
+            .then(|| studyapp_ui::feedback::modal_backdrop_opacity(crate::theme::palette().dark));
+        self.note_content
+            .update(cx, |editor, cx| editor.set_modal_overlay(opacity, cx));
         // Other pages only need to hide the persistent native editor. Do not
         // search note history or prepare a diff on their input/scroll frames.
         if self.page != Page::Notes {
@@ -676,7 +681,7 @@ impl StudyApp {
         self.note_content.update(cx, |editor, cx| {
             editor.set_outline_preference(self.layout.outline, cx)
         });
-        let mut show = !self.has_modal(cx) && self.draft_discard.is_none();
+        let mut show = self.draft_discard.is_none();
         show &= !self.external_drop.active();
         if self.note_editor.is_none() {
             let version = self.selected_note.as_ref().and_then(|note_id| {
@@ -718,6 +723,7 @@ impl StudyApp {
             }
         }
         let can_edit = show
+            && !modal_open
             && self.note_editor.is_none()
             && !self.history
             && self.selected_version.is_none()

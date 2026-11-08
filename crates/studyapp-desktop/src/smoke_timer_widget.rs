@@ -142,6 +142,144 @@ async fn until_native(label: &str, cx: &AsyncApp, ready: impl Fn() -> bool) {
     }
 }
 
+// Runs only inside the isolated GitHub desktop session, never on a user's desktop.
+async fn exercise_zoom_and_zero_background(
+    main: AnyWindowHandle,
+    widget: AnyWindowHandle,
+    app: &Entity<StudyApp>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    main.update(cx, |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.navigate(crate::app::Page::Settings, window, cx);
+            app.select_settings_section(crate::settings_ui::SettingsSection::Appearance, cx);
+            app.select_appearance_page(crate::settings_ui::AppearancePage::Widget, cx);
+            let settings = &mut app.preferences_ui.draft.as_mut().unwrap().timer_widget;
+            settings.opacity = 0;
+            settings.layout = studyapp_core::WidgetLayout::Expanded;
+            settings.background = studyapp_core::WidgetBackground::Follow;
+            cx.notify();
+        })
+    })
+    .unwrap();
+    let native = widget.update(cx, |_, window, _| raw(window)).unwrap();
+    // Leave room for the 200% window without relying on the preceding drag.
+    unsafe {
+        SetWindowPos(
+            HWND(native as *mut _),
+            None,
+            30,
+            30,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .unwrap();
+    }
+    settle(cx).await;
+    let mut baseline: Option<[f32; 4]> = None;
+    let mut observations = Vec::new();
+    for scale in [100u8, 50, 73, 173, 200, 100] {
+        main.update(cx, |_, window, cx| {
+            let input = app.read(cx).preferences_ui.widget_fields["widget-scale"].clone();
+            input.update(cx, |input, cx| {
+                input.set_value(scale.to_string(), window, cx);
+                cx.emit(gpui_kit::component::input::InputEvent::Change);
+            });
+        })
+        .unwrap();
+        settle(cx).await;
+        assert_eq!(
+            app.read_with(cx, |app, cx| app.preview_widget_settings(cx).scale),
+            scale
+        );
+        widget
+            .update(cx, |_, window, _| window.activate_window())
+            .unwrap();
+        until_native("zoom widget foreground", cx, || unsafe {
+            GetForegroundWindow() == HWND(native as *mut _)
+        })
+        .await;
+        let metrics = widget
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                [
+                    "widget-timer-value",
+                    "widget-tools",
+                    "widget-pin",
+                    "timer-kind-Study",
+                ]
+                .map(|id| f32::from(window.find(id).bounds().size.height))
+            })
+            .unwrap();
+        if let Some(base) = baseline {
+            for (actual, expected) in metrics.into_iter().zip(base) {
+                assert!(
+                    (actual - expected * f32::from(scale) / 100.).abs() < 2.,
+                    "native scale={scale}, actual={actual}, baseline={expected}"
+                );
+            }
+        } else {
+            baseline = Some(metrics);
+        }
+        widget
+            .update(cx, |_, window, _| {
+                pointer::capture(
+                    window,
+                    &database.with_file_name(format!("timer-widget-zoom-{scale}.bmp")),
+                );
+            })
+            .unwrap();
+        observations.push(json!({"scale":scale,"heights":metrics,"bounds":[rect(native).right-rect(native).left,rect(native).bottom-rect(native).top]}));
+    }
+    let points = widget
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            ["widget-timer-value", "timer-kind-CountUp"].map(|id| {
+                let bounds = window.find(id).bounds();
+                let mut point = POINT {
+                    x: ((f32::from(bounds.right()) - 3.) * window.scale_factor()).round() as i32,
+                    y: (f32::from(bounds.center().y) * window.scale_factor()).round() as i32,
+                };
+                assert!(unsafe { ClientToScreen(HWND(native as *mut _), &mut point) }.as_bool());
+                point
+            })
+        })
+        .unwrap();
+    unsafe {
+        let _ = ShowWindow(HWND(native as *mut _), SW_HIDE);
+    }
+    settle(cx).await;
+    let behind = points.map(pixel);
+    unsafe {
+        let _ = ShowWindow(HWND(native as *mut _), SW_SHOWNOACTIVATE);
+    }
+    settle(cx).await;
+    let through = points.map(pixel);
+    assert_eq!(
+        behind, through,
+        "zero opacity must expose desktop under digits and selected mode padding"
+    );
+    std::fs::write(database.with_file_name("timer-widget-zoom.json"), serde_json::to_vec_pretty(&json!({"observations":observations,"zeroBackground":{"behind":behind,"through":through}})).unwrap()).unwrap();
+    main.update(cx, |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.discard_settings(window, cx);
+            app.navigate(crate::app::Page::Today, window, cx);
+        })
+    })
+    .unwrap();
+    settle(cx).await;
+    widget
+        .update(cx, |_, window, _| window.activate_window())
+        .unwrap();
+    until_native("widget restored after zoom", cx, || unsafe {
+        GetForegroundWindow() == HWND(native as *mut _)
+    })
+    .await;
+}
+
 pub async fn exercise(
     main: AnyWindowHandle,
     app: &Entity<StudyApp>,
@@ -509,6 +647,7 @@ pub async fn exercise(
         through, behind,
         "the rounded card corner must expose the underlying desktop"
     );
+    exercise_zoom_and_zero_background(main, widget, app, database, cx).await;
     widget
         .update(cx, |_, window, _| {
             let center = window.find("widget-pause").bounds().center();

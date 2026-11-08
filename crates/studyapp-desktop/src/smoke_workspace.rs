@@ -39,7 +39,7 @@ fn parent_hwnd(native: &Value) -> HWND {
 
 /// Only target the foreground isolated smoke HWND. Divider capture and guide
 /// presentation must be exercised through Win32, not fabricated GPUI capture.
-fn native_pointer(native: &Value, position: Point<Pixels>, button: Option<bool>) {
+pub(crate) fn native_pointer(native: &Value, position: Point<Pixels>, button: Option<bool>) {
     let parent = parent_hwnd(native);
     let scale = native["logicalBounds"][4].as_f64().unwrap() / 96.;
     let x = native["parentBounds"]["x"].as_i64().unwrap() as i32
@@ -229,11 +229,11 @@ fn release(window: &mut Window, position: Point<Pixels>, cx: &mut App) {
     window.render_frame(cx);
 }
 
-fn hidden(editor: &Entity<MarkdownEditor>, cx: &App) {
+fn modal_background_visible(editor: &Entity<MarkdownEditor>, cx: &App) {
     assert_eq!(
         editor.read(cx).native_state().unwrap()["controllerVisible"],
-        false,
-        "blocking workspace interaction must hide the native child"
+        true,
+        "modal backgrounds must retain their native preview"
     );
 }
 
@@ -1447,6 +1447,27 @@ pub async fn exercise(
         })
         .unwrap();
     exercise_notifications(window, view, &editor, database, cx).await;
+    for readonly in [true, false] {
+        window
+            .update(cx, |_, _, cx| {
+                editor.update(cx, |editor, cx| editor.set_readonly(readonly, cx))
+            })
+            .unwrap();
+        crate::smoke_notifications::exercise_markdown_background(
+            window,
+            view,
+            &editor,
+            database,
+            if readonly { "reader" } else { "editor" },
+            cx,
+        )
+        .await;
+    }
+    window
+        .update(cx, |_, _, cx| {
+            editor.update(cx, |editor, cx| editor.set_readonly(true, cx))
+        })
+        .unwrap();
     measure_drag_frames(window, view, &editor, database, cx).await;
     let baseline = browser(
         window,
@@ -1633,7 +1654,11 @@ pub async fn exercise(
             window.render_frame(cx);
             assert!(view.read(cx).folders.read(cx).modal_open());
             assert!(window.try_find("modal-content-scroll").is_some());
-            hidden(&editor, cx);
+            modal_background_visible(&editor, cx);
+            assert_eq!(
+                editor.read(cx).native_state().unwrap()["inputBlocked"],
+                true
+            );
             window
                 .render_to_image()
                 .unwrap()

@@ -12,6 +12,10 @@ use std::{
     sync::mpsc::Sender,
 };
 use studyapp_ui::bubble::OverlayShape;
+#[cfg(target_os = "macos")]
+#[path = "native_editor_surface_macos.rs"]
+mod mac_surface;
+
 use wry::{
     NewWindowResponse, PermissionResponse, WebContext, WebView, WebViewBuilder,
     dpi::{LogicalPosition, LogicalSize},
@@ -146,6 +150,8 @@ impl Drop for LoadTraceBinding {
 
 pub struct HostedEditor {
     webview: WebView,
+    #[cfg(target_os = "macos")]
+    mac_surface: mac_surface::MacSurface,
     // Fields drop in declaration order: destroy WebKit before its GTK host.
     #[cfg(target_os = "linux")]
     gtk_host: LinuxHost,
@@ -156,6 +162,9 @@ pub struct HostedEditor {
     _parent: ParentWindow,
     bounds: Cell<Option<Bounds<Pixels>>>,
     requested_visible: Cell<bool>,
+    input_blocked: Cell<bool>,
+    #[cfg(target_os = "linux")]
+    applied_regions: RefCell<Option<(Vec<Bounds<Pixels>>, bool)>>,
     applied_visible: Cell<bool>,
     occlusions: RefCell<Vec<OverlayShape>>,
     #[cfg(feature = "ui-test")]
@@ -543,14 +552,21 @@ impl HostedEditor {
         }
         #[cfg(target_os = "linux")]
         drop(context_borrow);
+        #[cfg(target_os = "macos")]
+        let mac_surface = mac_surface::MacSurface::new(&webview)?;
         Ok(Self {
             webview,
+            #[cfg(target_os = "macos")]
+            mac_surface,
             #[cfg(target_os = "linux")]
             gtk_host,
             _context: context,
             _parent: parent,
             bounds: Cell::new(None),
             requested_visible: Cell::new(false),
+            input_blocked: Cell::new(false),
+            #[cfg(target_os = "linux")]
+            applied_regions: RefCell::new(None),
             applied_visible: Cell::new(false),
             occlusions: RefCell::new(Vec::new()),
             #[cfg(feature = "ui-test")]
@@ -674,19 +690,8 @@ impl HostedEditor {
         if self.bounds.get() != Some(bounds) {
             #[cfg(target_os = "linux")]
             self.gtk_host.set_bounds(bounds);
-            #[cfg(not(target_os = "linux"))]
-            self.webview.set_bounds(wry::Rect {
-                position: LogicalPosition::new(
-                    f64::from(bounds.origin.x),
-                    f64::from(bounds.origin.y),
-                )
-                .into(),
-                size: LogicalSize::new(
-                    f64::from(bounds.size.width.max(px(1.))),
-                    f64::from(bounds.size.height.max(px(1.))),
-                )
-                .into(),
-            })?;
+            #[cfg(target_os = "macos")]
+            self.mac_surface.set_bounds(bounds, &self.webview)?;
             self.bounds.set(Some(bounds));
         }
         self.update_visibility()
@@ -695,6 +700,65 @@ impl HostedEditor {
     pub fn set_occlusions(&self, shapes: Vec<OverlayShape>) -> Result<()> {
         *self.occlusions.borrow_mut() = shapes;
         self.update_visibility()
+    }
+
+    pub fn set_input_blocked(&self, blocked: bool) -> Result<()> {
+        if self.input_blocked.replace(blocked) == blocked {
+            return Ok(());
+        }
+        #[cfg(target_os = "macos")]
+        self.mac_surface.set_blocked(blocked);
+        #[cfg(target_os = "linux")]
+        if blocked {
+            self.gtk_host.restore_parent_focus();
+        }
+        self.update_visibility()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_linux_regions(
+        &self,
+        bounds: Bounds<Pixels>,
+        regions: Vec<Bounds<Pixels>>,
+    ) -> Result<()> {
+        use gtk::{
+            cairo::{RectangleInt, Region},
+            prelude::*,
+        };
+        let local: Vec<_> = regions
+            .into_iter()
+            .map(|rect| Bounds::new(rect.origin - bounds.origin, rect.size))
+            .collect();
+        let blocked = self.input_blocked.get();
+        if self.applied_regions.borrow().as_ref() == Some(&(local.clone(), blocked)) {
+            return Ok(());
+        }
+        let ratio =
+            self.gtk_host.gpui_scale / f64::from(self.gtk_host.window.scale_factor().max(1));
+        let region = Region::create();
+        for rect in &local {
+            let left = (f64::from(rect.left()) * ratio).ceil() as i32;
+            let top = (f64::from(rect.top()) * ratio).ceil() as i32;
+            let right = (f64::from(rect.right()) * ratio).floor() as i32;
+            let bottom = (f64::from(rect.bottom()) * ratio).floor() as i32;
+            if right > left && bottom > top {
+                region.union_rectangle(&RectangleInt::new(
+                    left,
+                    top,
+                    right - left,
+                    bottom - top,
+                ))?;
+            }
+        }
+        self.gtk_host
+            .native
+            .shape_combine_region(Some(&region), 0, 0);
+        let input = if blocked { Region::create() } else { region };
+        self.gtk_host
+            .native
+            .input_shape_combine_region(Some(&input), 0, 0);
+        *self.applied_regions.borrow_mut() = Some((local, blocked));
+        Ok(())
     }
 
     pub fn set_visible(&self, visible: bool) -> Result<()> {
@@ -793,29 +857,7 @@ impl HostedEditor {
     }
 
     fn update_visibility(&self) -> Result<()> {
-        // Native child views paint above GPUI. Hide only while an overlapping
-        // floating surface is present; the document/selection stays mounted.
-        let covered = self.bounds.get().is_some_and(|editor| {
-            self.occlusions.borrow().iter().any(|shape| {
-                let bounds = match shape {
-                    OverlayShape::RoundedRect { bounds, .. } => *bounds,
-                    OverlayShape::Triangle(points) => {
-                        let min = gpui_kit::point(
-                            points.iter().map(|p| p.x).min().unwrap(),
-                            points.iter().map(|p| p.y).min().unwrap(),
-                        );
-                        let max = gpui_kit::point(
-                            points.iter().map(|p| p.x).max().unwrap(),
-                            points.iter().map(|p| p.y).max().unwrap(),
-                        );
-                        Bounds::from_corners(min, max)
-                    }
-                };
-                let intersection = editor.intersect(&bounds);
-                intersection.size.width > px(0.) && intersection.size.height > px(0.)
-            })
-        });
-        let visible = self.requested_visible.get() && !covered;
+        let visible = self.requested_visible.get();
         if self.applied_visible.get() != visible {
             #[cfg(target_os = "linux")]
             {
@@ -830,12 +872,22 @@ impl HostedEditor {
                     self.gtk_host.window.hide();
                 }
             }
+            #[cfg(target_os = "macos")]
+            self.mac_surface.set_visible(visible);
             self.webview.set_visible(visible)?;
             self.applied_visible.set(visible);
         }
         #[cfg(target_os = "linux")]
         if visible {
             self.allocate_linux_content()?;
+        }
+        if let Some(bounds) = self.bounds.get() {
+            let regions =
+                super::overlay_geometry::visible_rectangles(bounds, &self.occlusions.borrow());
+            #[cfg(target_os = "macos")]
+            self.mac_surface.set_visible_regions(bounds, regions)?;
+            #[cfg(target_os = "linux")]
+            self.apply_linux_regions(bounds, regions)?;
         }
         Ok(())
     }

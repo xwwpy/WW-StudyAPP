@@ -97,7 +97,7 @@ impl StudyApp {
             .items_center()
             .px_8()
             .pt_4()
-            .child(column().w_full().max_w(px(1120.)).child(timer))
+            .child(page_content().child(timer))
             .into_any_element()
     }
 
@@ -1153,7 +1153,7 @@ impl StudyApp {
                 );
         }
         let section = self.preferences_ui.section;
-        let content = column().min_w_0().w_full().max_w(px(960.)).flex_shrink_0().gap_3().child(self.preference_controls(cx))
+        let content = page_content().id("settings-page-content").test_support().flex_shrink_0().gap_3().child(self.preference_controls(cx))
             .children((section == SettingsSection::Storage && self.preferences_ui.storage_page == StoragePage::Library).then(|| self.library_storage_controls(&snapshot.data_path, cx)))
             .children((section == SettingsSection::Storage && matches!(self.preferences_ui.storage_page, StoragePage::Overview | StoragePage::Copies)).then(|| self.storage_view(cx)))
             .children((section == SettingsSection::Sync).then(|| self.sync_panel.clone()))
@@ -1228,6 +1228,8 @@ impl StudyApp {
                     )
                     .child(
                         column()
+                            .id("settings-section-pane")
+                            .test_support()
                             .flex_1()
                             .min_h_0()
                             .min_w_0()

@@ -90,6 +90,7 @@ pub struct MarkdownLayout {
     pub code_size: u16,
     /// Percentage; zero inherits the application spacing preference.
     pub line_height: u16,
+    /// Zero fills the remaining pane; otherwise an optional pixel width.
     pub reading_width: u16,
     pub table_grid: bool,
     pub table_stripes: bool,
@@ -105,7 +106,7 @@ impl Default for MarkdownLayout {
             body_size: 0,
             code_size: 0,
             line_height: 0,
-            reading_width: 720,
+            reading_width: 0,
             table_grid: true,
             table_stripes: true,
             code_border: true,
@@ -337,8 +338,8 @@ impl MarkdownStyle {
             "行高须为 130–240%，0 表示继承"
         );
         ensure!(
-            (480..=1600).contains(&layout.reading_width),
-            "阅读宽度须为 480–1600 像素"
+            layout.reading_width == 0 || (480..=1600).contains(&layout.reading_width),
+            "阅读宽度须为 480–1600 像素，0 表示自适应剩余空间"
         );
         ensure!(layout.code_radius <= 24, "代码圆角须为 0–24 像素");
         for (key, value) in &self.colors {

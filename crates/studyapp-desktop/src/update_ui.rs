@@ -1477,7 +1477,7 @@ mod modal_visibility_tests {
     use gpui_kit::{AppContext, Context, IntoElement, Render, TestAppContext, Window, div};
     use studyapp_desktop::update_policy::CheckOrigin;
     #[gpui_kit::test]
-    fn update_modal_hides_and_restores_persistent_editor(cx: &mut TestAppContext) {
+    fn update_modal_preserves_preview_and_blocks_background_editor(cx: &mut TestAppContext) {
         struct Blank;
         impl Render for Blank {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -1536,13 +1536,18 @@ mod modal_visibility_tests {
                 assert!(app.has_modal(cx));
                 app.prepare_document_view(window, cx);
                 assert!(
-                    !app.note_content.read(cx).requested_visible_for_test(),
-                    "native surface must not cover update card"
+                    app.note_content.read(cx).requested_visible_for_test(),
+                    "modal must not blank the native background"
+                );
+                assert!(
+                    app.note_content.read(cx).modal_blocked_for_test(),
+                    "native background must not accept modal input"
                 );
                 app.update_panel
                     .update(cx, |panel, cx| panel.dismiss_dialog(cx));
                 app.prepare_document_view(window, cx);
                 assert!(app.note_content.read(cx).requested_visible_for_test());
+                assert!(!app.note_content.read(cx).modal_blocked_for_test());
             })
         });
     }

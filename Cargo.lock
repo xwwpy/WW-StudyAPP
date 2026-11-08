@@ -7844,7 +7844,7 @@ dependencies = [
 
 [[package]]
 name = "studyapp-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7861,7 +7861,7 @@ dependencies = [
 
 [[package]]
 name = "studyapp-desktop"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -7880,7 +7880,9 @@ dependencies = [
  "libc",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-quartz-core 0.3.2",
  "percent-encoding",
  "pulldown-cmark",
  "reqwest",
@@ -7908,7 +7910,7 @@ dependencies = [
 
 [[package]]
 name = "studyapp-sync"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "chrono",
  "hmac",
@@ -7925,7 +7927,7 @@ dependencies = [
 
 [[package]]
 name = "studyapp-ui"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "gpui-kit",
  "pulldown-cmark",

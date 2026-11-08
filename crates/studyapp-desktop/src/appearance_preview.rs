@@ -126,6 +126,15 @@ impl AppearancePreview {
         }
     }
 
+    pub fn set_modal_overlay(&mut self, opacity: Option<f32>, cx: &mut Context<Self>) {
+        if opacity.is_none() {
+            self.set_overlay_shapes("blocking-modal", vec![], cx);
+        }
+        if let Some(editor) = &self.editor {
+            editor.update(cx, |editor, cx| editor.set_modal_overlay(opacity, cx));
+        }
+    }
+
     pub fn hide(&mut self, cx: &mut Context<Self>) {
         if self.visible {
             self.visible = false;

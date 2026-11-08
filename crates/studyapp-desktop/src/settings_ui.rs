@@ -9,7 +9,6 @@ use crate::{
     settings_components as form,
     worker::Work,
 };
-use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     component::{
         Disableable, Sizable,
@@ -2105,7 +2104,9 @@ impl StudyApp {
             }
             if let Some(input) = self.preferences_ui.appearance_fields.get(key) {
                 let number = input.read(cx).value().trim().parse::<u16>().ok();
-                let valid = number.is_some_and(|n| (min..=max).contains(&n) || (inherit && n == 0));
+                let valid = number.is_some_and(|n| {
+                    (min..=max).contains(&n) || ((inherit || key == "md-reading-width") && n == 0)
+                });
                 panel = panel.child(
                     row()
                         .child(div().w(px(100.)).text_sm().child(label))
@@ -2114,7 +2115,9 @@ impl StudyApp {
                 panel = panel.child(
                     muted(format!(
                         "{min}–{max}{}",
-                        if inherit {
+                        if key == "md-reading-width" {
+                            "；0 表示自适应剩余空间"
+                        } else if inherit {
                             "；0 表示继承界面设置"
                         } else {
                             ""
@@ -2351,11 +2354,14 @@ impl StudyApp {
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .when(
-                self.preferences_ui.appearance_page != AppearancePage::ThemeEditor,
-                |surface| surface.max_w(px(960.)),
+            .w_full()
+            .child(
+                div()
+                    .id("settings-appearance-surface")
+                    .test_support()
+                    .size_full()
+                    .child(view.clone().cached(StyleRefinement::default().size_full())),
             )
-            .child(view.clone().cached(StyleRefinement::default().size_full()))
     }
 
     fn appearance_workspace(
@@ -3231,10 +3237,18 @@ impl StudyApp {
         #[cfg(feature = "ui-test")]
         self.preferences_ui.shortcut_frame_rows.set(0);
         let workspace = column()
+            .relative()
+            .child(
+                div()
+                    .id("settings-shortcuts-surface")
+                    .test_support()
+                    .absolute()
+                    .size_full(),
+            )
             .flex_1()
             .min_h_0()
             .min_w_0()
-            .max_w(px(960.))
+            .w_full()
             .gap_3()
             .child(header);
         if rows.is_empty() {
@@ -5135,6 +5149,63 @@ mod scoped_tests {
                         .editor()
                         .is_none()
                 );
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn widget_custom_zoom_input_previews_rejects_invalid_values_and_discards(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        for scale in [50, 73, 173, 200, 100] {
+            visual.update(|window, cx| {
+                let input = app.read(cx).preferences_ui.widget_fields["widget-scale"].clone();
+                input.update(cx, |input, cx| {
+                    input.set_value(scale.to_string(), window, cx);
+                    cx.emit(gpui_kit::component::input::InputEvent::Change);
+                });
+            });
+            visual.run_until_parked();
+            app.read_with(visual, |app, cx| {
+                assert_eq!(app.preview_widget_settings(cx).scale, scale);
+                assert_eq!(
+                    app.widget_settings_value(app.effective_widget_settings(), cx)
+                        .unwrap()
+                        .scale,
+                    scale
+                );
+            });
+        }
+        for text in ["49", "201", "73.5", "", "abc"] {
+            visual.update(|window, cx| {
+                let input = app.read(cx).preferences_ui.widget_fields["widget-scale"].clone();
+                input.update(cx, |input, cx| {
+                    input.set_value(text, window, cx);
+                    cx.emit(gpui_kit::component::input::InputEvent::Change);
+                });
+            });
+            visual.run_until_parked();
+            app.read_with(visual, |app, cx| {
+                assert_eq!(app.preview_widget_settings(cx).scale, 100);
+                assert!(
+                    app.widget_settings_value(app.effective_widget_settings(), cx)
+                        .is_err()
+                );
+                assert!(app.settings_dirty(cx));
+            });
+        }
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.discard_settings(window, cx);
+                assert_eq!(
+                    app.preferences_ui.widget_fields["widget-scale"]
+                        .read(cx)
+                        .value(),
+                    "100"
+                );
+                assert_eq!(app.effective_widget_settings().scale, 100);
+                assert!(!app.settings_dirty(cx));
             })
         });
     }

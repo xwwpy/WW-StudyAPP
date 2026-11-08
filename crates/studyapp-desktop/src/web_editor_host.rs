@@ -3,6 +3,10 @@
 #[path = "native_editor_drag.rs"]
 mod native_drag;
 
+#[cfg(any(not(windows), test))]
+#[path = "native_overlay_geometry.rs"]
+mod overlay_geometry;
+
 #[cfg(any(target_os = "linux", test))]
 #[path = "editor_profile_context.rs"]
 mod profile_context;
@@ -127,6 +131,8 @@ mod windows_host {
         _parent: ParentWindow,
         bounds: Cell<Option<EditorGeometry>>,
         visible: Cell<bool>,
+        input_blocked: Cell<bool>,
+        resume_focus: Cell<Option<windows::Win32::Foundation::HWND>>,
         occlusions: RefCell<Vec<OverlayShape>>,
         applied_occlusions: RefCell<Vec<PhysicalRect>>,
         applied_shapes: RefCell<Vec<PhysicalShape>>,
@@ -200,6 +206,8 @@ mod windows_host {
                 _parent: parent,
                 bounds: Cell::new(None),
                 visible: Cell::new(false),
+                input_blocked: Cell::new(false),
+                resume_focus: Cell::new(None),
                 occlusions: RefCell::new(Vec::new()),
                 applied_occlusions: RefCell::new(Vec::new()),
                 applied_shapes: RefCell::new(Vec::new()),
@@ -354,6 +362,47 @@ mod windows_host {
             Ok(())
         }
 
+        pub fn set_input_blocked(&self, blocked: bool) -> Result<()> {
+            use windows::Win32::{
+                Foundation::HWND,
+                UI::{
+                    Input::KeyboardAndMouse::{EnableWindow, GetFocus, IsWindowEnabled, SetFocus},
+                    WindowsAndMessaging::{
+                        GA_ROOT, GetAncestor, GetForegroundWindow, IsChild, IsWindow,
+                    },
+                },
+            };
+            if self.input_blocked.replace(blocked) == blocked {
+                return Ok(());
+            }
+            let child = self.webview.hwnd();
+            let parent = HWND(self._parent.raw.hwnd.get() as *mut _);
+            // Same UI thread; disabling only our child cannot disable the modal.
+            unsafe {
+                if blocked {
+                    let focus = GetFocus();
+                    if focus == child || IsChild(child, focus).as_bool() {
+                        self.resume_focus.set(Some(focus));
+                        let _ = SetFocus(Some(parent));
+                    }
+                }
+                let _ = EnableWindow(child, !blocked);
+                ensure!(
+                    IsWindowEnabled(child).as_bool() != blocked,
+                    "无法更新原生编辑器输入状态"
+                );
+                if !blocked
+                    && let Some(focus) = self.resume_focus.take()
+                    && GetForegroundWindow() == GetAncestor(parent, GA_ROOT)
+                    && GetFocus() == parent
+                    && IsWindow(Some(focus)).as_bool()
+                {
+                    let _ = SetFocus(Some(focus));
+                }
+            }
+            Ok(())
+        }
+
         pub fn set_visible(&self, visible: bool) -> Result<()> {
             if self.visible.get() == visible {
                 return Ok(());
@@ -446,6 +495,7 @@ mod windows_host {
                 && rect.bottom <= origin.y + parent_rect.bottom;
             Ok(serde_json::json!({
                 "hwnd": child.0 as usize,
+                "inputBlocked": self.input_blocked.get(),
                 "parentHwnd": parent.0 as usize,
                 "visible": visible,
                 "ownVisible": own_visible,

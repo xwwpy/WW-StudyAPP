@@ -93,7 +93,8 @@ export function applyEditorTheme(tokens:Record<string,unknown>):boolean {
   set("font_size",`${bodySize}px`);
   set("code_size",`${bounded(markdown.code_size,12,26,Math.max(12,bodySize-1))}px`);
   set("line_height",String(bounded(markdown.line_height,130,240,bounded(tokens.spacing,1.3,2.4,1.75)*100)/100));
-  set("reading_width",`${bounded(markdown.reading_width,480,1600,720)}px`);
+  const readingWidth=bounded(markdown.reading_width,480,1600,0);
+  set("reading_width",readingWidth ? `${readingWidth}px` : "100%");
   set("code_radius",`${bounded(markdown.code_radius,0,24,8)}px`);
   set("grid_width",markdown.table_grid===false?"0px":"1px");
   set("code_border_width",markdown.code_border===false?"0px":"1px");

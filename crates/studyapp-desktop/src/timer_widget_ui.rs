@@ -151,6 +151,7 @@ impl StudyApp {
         cx: &mut Context<Self>,
     ) {
         for (key, placeholder, text) in [
+            ("widget-scale", "50–200", value.scale.to_string()),
             (
                 "widget-accent",
                 "留空跟随主题；或 #RRGGBB / #RRGGBBAA",
@@ -176,6 +177,10 @@ impl StudyApp {
                             if key == "widget-accent" {
                                 draft.timer_widget.accent =
                                     (!text.trim().is_empty()).then(|| text.trim().to_owned());
+                            } else if key == "widget-scale" {
+                                if let Ok(scale) = parse_scale(&text) {
+                                    draft.timer_widget.scale = scale;
+                                }
                             } else if let Ok(presets) = parse_presets(&text) {
                                 draft.timer_widget.countdown_presets = presets;
                             }
@@ -232,6 +237,9 @@ impl StudyApp {
         if let Some(input) = self.preferences_ui.widget_fields.get("widget-presets") {
             value.countdown_presets = parse_presets(&input.read(cx).value())?;
         }
+        if let Some(input) = self.preferences_ui.widget_fields.get("widget-scale") {
+            value.scale = parse_scale(&input.read(cx).value())?;
+        }
         value.validate()?;
         Ok(value)
     }
@@ -250,40 +258,103 @@ impl StudyApp {
     ) -> Div {
         let (min, max, step) = bounds;
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
-        form::settings_row(
-            label.to_owned(),
-            row()
-                .gap_1()
-                .child(
-                    Button::new(SharedString::from(format!("{key}-less")))
-                        .small()
-                        .icon_action(gpui_kit::assets::IconName::Minus, format!("减少{label}"))
-                        .disabled(busy || value <= min)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(draft) = &mut this.preferences_ui.draft {
-                                *field(&mut draft.timer_widget) = (i16::from(value) - step)
-                                    .clamp(i16::from(min), i16::from(max))
-                                    as u8;
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(div().min_w(px(48.)).text_center().child(value.to_string()))
-                .child(
-                    Button::new(SharedString::from(format!("{key}-more")))
-                        .small()
-                        .icon_action(gpui_kit::assets::IconName::Plus, format!("增加{label}"))
-                        .disabled(busy || value >= max)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(draft) = &mut this.preferences_ui.draft {
-                                *field(&mut draft.timer_widget) = (i16::from(value) + step)
-                                    .clamp(i16::from(min), i16::from(max))
-                                    as u8;
-                            }
-                            cx.notify();
-                        })),
-                ),
-        )
+        let custom_scale = key == "widget-scale";
+        let entry = if custom_scale {
+            self.preferences_ui
+                .widget_fields
+                .get("widget-scale")
+                .map(|input| {
+                    div()
+                        .w(px(76.))
+                        .child(form::input(input, busy))
+                        .into_any_element()
+                })
+        } else {
+            None
+        }
+        .unwrap_or_else(|| {
+            div()
+                .min_w(px(48.))
+                .text_center()
+                .child(value.to_string())
+                .into_any_element()
+        });
+        let mut controls = row()
+            .gap_1()
+            .child(
+                Button::new(SharedString::from(format!("{key}-less")))
+                    .small()
+                    .icon_action(gpui_kit::assets::IconName::Minus, format!("减少{label}"))
+                    .disabled(busy || value <= min)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let next =
+                            (i16::from(value) - step).clamp(i16::from(min), i16::from(max)) as u8;
+                        if let Some(draft) = &mut this.preferences_ui.draft {
+                            *field(&mut draft.timer_widget) = next;
+                        }
+                        if custom_scale
+                            && let Some(input) = this
+                                .preferences_ui
+                                .widget_fields
+                                .get("widget-scale")
+                                .cloned()
+                        {
+                            input.update(cx, |input, cx| {
+                                input.set_value(next.to_string(), window, cx)
+                            });
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(entry)
+            .child(
+                Button::new(SharedString::from(format!("{key}-more")))
+                    .small()
+                    .icon_action(gpui_kit::assets::IconName::Plus, format!("增加{label}"))
+                    .disabled(busy || value >= max)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        let next =
+                            (i16::from(value) + step).clamp(i16::from(min), i16::from(max)) as u8;
+                        if let Some(draft) = &mut this.preferences_ui.draft {
+                            *field(&mut draft.timer_widget) = next;
+                        }
+                        if custom_scale
+                            && let Some(input) = this
+                                .preferences_ui
+                                .widget_fields
+                                .get("widget-scale")
+                                .cloned()
+                        {
+                            input.update(cx, |input, cx| {
+                                input.set_value(next.to_string(), window, cx)
+                            });
+                        }
+                        cx.notify();
+                    })),
+            );
+        if custom_scale {
+            controls = controls.child(
+                Button::new("widget-scale-reset")
+                    .small()
+                    .label("100%")
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(draft) = &mut this.preferences_ui.draft {
+                            draft.timer_widget.scale = 100;
+                        }
+                        if let Some(input) = this
+                            .preferences_ui
+                            .widget_fields
+                            .get("widget-scale")
+                            .cloned()
+                        {
+                            input.update(cx, |input, cx| input.set_value("100", window, cx));
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        form::settings_row(label.to_owned(), controls)
     }
     pub fn widget_settings_controls(&self, cx: &mut Context<Self>) -> Div {
         let settings = self.preview_widget_settings(cx);
@@ -390,7 +461,7 @@ impl StudyApp {
                 "widget-opacity",
                 "背景不透明度（%）",
                 settings.opacity,
-                (30, 100, 5),
+                (0, 100, 5),
                 |s| &mut s.opacity,
                 cx,
             ));
@@ -417,7 +488,7 @@ impl StudyApp {
             .child(form::section("尺寸与背景").id("widget-settings-size").test_support()
                 .child(form::field("背景", backgrounds))
                 .child(self.widget_number("widget-radius", "圆角", settings.corner_radius, (0,28,2), |s| &mut s.corner_radius, cx))
-                .child(self.widget_number("widget-scale", "数字缩放（%）", settings.scale, (80,140,5), |s| &mut s.scale, cx)))
+                .child(self.widget_number("widget-scale", "整体缩放（50–200%）", settings.scale, (50,200,5), |s| &mut s.scale, cx)))
             .child(colors)
             .child(presets)
             .child(form::section("窗口行为").id("widget-settings-behavior").test_support()
@@ -427,10 +498,22 @@ impl StudyApp {
                     .on_click(cx.listener(|this, _, window, cx| this.timer_action(TimerCardAction::ShowOnDesktop, window, cx)))))
             .child(form::section("实时预览").id("widget-settings-preview").test_support()
                 .child(div().max_w(px(480.)).child(timer_card(TimerCardModel::from_timer(&timer,1), TimerCardStyle::from_widget_settings(&settings, crate::theme::palette()), TimerCardVariant::Preview, |_,_,_|{}))))
-            .child(muted("小组件开启时，关闭主窗口只会最小化；需要真正退出，请使用卡片内的退出图标。背景透明度不会降低文字或按钮的不透明度。")
+            .child(muted("小组件开启时，关闭主窗口只会最小化；需要真正退出，请使用卡片内的退出图标。背景不透明度可调至 0，数字和选中按钮不再带额外实色底；文字、图标与进度保持清晰。整体缩放支持直接输入百分比；不透明背景模式固定使用实色。")
                 .id("widget-settings-end").test_support().flex_shrink_0())
     }
 }
+fn parse_scale(text: &str) -> anyhow::Result<u8> {
+    let scale = text
+        .trim()
+        .parse::<u8>()
+        .map_err(|_| anyhow::anyhow!("小组件缩放须为 50–200 的整数百分比"))?;
+    anyhow::ensure!(
+        (50..=200).contains(&scale),
+        "小组件缩放须为 50–200 的整数百分比"
+    );
+    Ok(scale)
+}
+
 fn parse_presets(text: &str) -> anyhow::Result<Vec<u64>> {
     let values = text
         .replace('，', ",")
@@ -448,7 +531,17 @@ fn parse_presets(text: &str) -> anyhow::Result<Vec<u64>> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_presets;
+    use super::{parse_presets, parse_scale};
+    #[test]
+    fn custom_scale_accepts_integer_percentages_without_clamping_invalid_input() {
+        for scale in [50, 73, 100, 140, 175, 200] {
+            assert_eq!(parse_scale(&format!(" {scale} ")).unwrap(), scale);
+        }
+        for text in ["", "0", "49", "201", "256", "-1", "73.5", "100%", "abc"] {
+            assert!(parse_scale(text).is_err(), "{text}");
+        }
+    }
+
     #[test]
     fn presets_allow_long_durations_but_never_wrap_or_truncate() {
         assert_eq!(

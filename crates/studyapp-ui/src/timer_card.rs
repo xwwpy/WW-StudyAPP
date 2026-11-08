@@ -148,6 +148,30 @@ pub fn timer_widget_card(
 
 type HeightListener = Rc<dyn Fn(Pixels, &mut Window, &mut App)>;
 
+fn widget_control(
+    id: &str,
+    label: &str,
+    icon: Option<gpui_kit::assets::IconName>,
+    zoom: f32,
+) -> Button {
+    let mut button = Button::new(SharedString::from(id.to_owned()))
+        .small()
+        .ghost()
+        .target_scale(zoom)
+        .rounded(px(6. * zoom))
+        .h(px(32. * zoom))
+        .min_w(px(32. * zoom))
+        .px(px(if icon.is_some() { 0. } else { 8. * zoom }))
+        .accessibility_label(label.to_owned())
+        .tooltip(label.to_owned());
+    button = if let Some(icon) = icon {
+        button.child(Icon::new(icon).with_size(px(14. * zoom)))
+    } else {
+        button.child(div().text_size(px(14. * zoom)).child(label.to_owned()))
+    };
+    button
+}
+
 fn render_card(
     model: TimerCardModel,
     style: TimerCardStyle,
@@ -164,6 +188,16 @@ fn render_card(
     let dashboard = matches!(variant, TimerCardVariant::Dashboard { .. });
     let preview = variant == TimerCardVariant::Preview;
     let s = &style.settings;
+    let zoom = if widget {
+        f32::from(s.scale) / 100.
+    } else {
+        1.
+    };
+    let alpha = if widget && s.background != WidgetBackground::Solid {
+        f32::from(s.opacity) / 100.
+    } else {
+        1.
+    };
     let compact = widget && s.layout == WidgetLayout::Compact;
     let palette = style.palette;
     let status = if model.finished {
@@ -178,12 +212,29 @@ fn render_card(
     } else {
         style.accent
     };
+    let button_style = |button: Button| {
+        button.when(widget, |button| {
+            button
+                .bg(rgba(0))
+                .border_color(rgba(0))
+                .transparent_surface(
+                    rgb(palette.text).into(),
+                    accent.opacity(accent.a * alpha * 0.12),
+                    accent.opacity(accent.a * alpha * 0.2),
+                )
+        })
+    };
     let button = |id: &str, label: &str, value: TimerCardAction| {
         let action = action.clone();
-        Button::new(SharedString::from(id.to_owned()))
-            .small()
-            .ghost()
-            .action(label.to_owned())
+        let base = if widget {
+            widget_control(id, label, crate::action_icons::action_icon(label), zoom)
+        } else {
+            Button::new(SharedString::from(id.to_owned()))
+                .small()
+                .ghost()
+                .action(label.to_owned())
+        };
+        button_style(base)
             .disabled(preview)
             .on_click(move |_, window, cx| action(value, window, cx))
     };
@@ -210,6 +261,7 @@ fn render_card(
             ))
             .test_support()
             .font_family(MONO_FONT)
+            .line_height(relative(1.2))
             .text_size(px((if compact || dashboard { 32. } else { 42. })
                 * if widget {
                     f32::from(s.scale) / 100.
@@ -218,22 +270,21 @@ fn render_card(
                 }))
             .font_features(FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)])))
             .text_color(rgb(palette.text))
-            .when(widget && s.opacity < 80, |c| {
-                c.bg(rgb(style.surface)).rounded_md().px_2()
-            })
             .child(clock(value, !widget || s.show_seconds))
     };
-    let mut header = row().flex_wrap().gap_2().child(
+    let mut header = row().flex_wrap().gap(px(8. * zoom)).child(
         column()
             .flex_1()
             .min_w_0()
-            .gap_1()
+            .gap(px(4. * zoom))
             .child(
                 heading(if model.label.is_empty() {
                     model.kind.label().to_owned()
                 } else {
                     model.label.clone()
                 })
+                .text_size(crate::design::type_size(palette.font_size, TypeRole::Section) * zoom)
+                .line_height(relative(crate::design::line_height(TypeRole::Section)))
                 .truncate(),
             )
             .child(
@@ -247,9 +298,13 @@ fn render_card(
                     .test_support()
                     .tooltip(move |window, cx| Tooltip::new(status).build(window, cx))
                     .text_color(rgb(palette.muted))
+                    .line_height(relative(crate::design::line_height(TypeRole::Caption)))
+                    .text_size(
+                        crate::design::type_size(palette.font_size, TypeRole::Caption) * zoom,
+                    )
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap(px(4. * zoom))
                     .when(dashboard, |view| {
                         view.child(muted(format!("{} · {status}", model.kind.label())))
                     })
@@ -261,7 +316,7 @@ fn render_card(
                         } else {
                             gpui_kit::assets::IconName::Play
                         })
-                        .small(),
+                        .with_size(px(14. * zoom)),
                     ),
             ),
     );
@@ -294,13 +349,7 @@ fn render_card(
     } else {
         "today-timer-progress"
     };
-    // Translucency applies only to the surface, never to text or controls.
-    // An opaque number backing remains readable over an unknown desktop.
-    let alpha = if widget && s.background != WidgetBackground::Solid {
-        f32::from(s.opacity) / 100.
-    } else {
-        1.
-    };
+    // Surface alpha never fades text, icons or progress indicators.
     let measured = natural_height.clone();
     let mut surface = card()
         .on_children_prepainted(move |children, window, cx| {
@@ -321,15 +370,15 @@ fn render_card(
         .w_full()
         .min_w_0()
         .rounded(px(if widget {
-            f32::from(s.corner_radius)
+            f32::from(s.corner_radius) * zoom
         } else {
             crate::design::CARD_RADIUS
         }))
         .bg(Hsla::from(rgb(style.surface)).opacity(alpha))
-        .border_color(rgb(palette.border))
+        .border_color(rgb(palette.border).opacity(alpha))
         .text_color(rgb(palette.text))
-        .p(px(if compact { 12. } else { 16. }))
-        .gap_2()
+        .p(px((if compact { 12. } else { 16. }) * zoom))
+        .gap(px(8. * zoom))
         .overflow_hidden()
         .when(variant == TimerCardVariant::Widget, |card| card.h_full());
 
@@ -346,10 +395,10 @@ fn render_card(
             .items_center()
             .flex_1()
             .min_w_0()
-            .h(px(32.))
+            .h(px(32. * zoom))
             .aria_label("拖动小组件")
             .tooltip(|window, cx| Tooltip::new("拖动小组件").build(window, cx))
-            .child(Icon::new(IconName::GripVertical).small());
+            .child(Icon::new(IconName::GripVertical).with_size(px(14. * zoom)));
         if !preview {
             drag = drag
                 .cursor_move()
@@ -379,38 +428,37 @@ fn render_card(
         };
         let pin_action = action.clone();
         let retry_pin = style.pin_failed;
-        let pin = Button::new("widget-pin")
-            .small()
-            .ghost()
-            .icon_action(
-                if applied {
-                    IconName::PinOff
+        let pin = button_style(widget_control(
+            "widget-pin",
+            pin_label,
+            Some(if applied {
+                IconName::PinOff
+            } else {
+                IconName::Pin
+            }),
+            zoom,
+        ))
+        .selected(applied)
+        .toggled(applied)
+        .loading(style.pin_pending)
+        .disabled(preview || style.pin_pending || !PIN_SUPPORTED)
+        .on_click(move |_, window, cx| {
+            pin_action(
+                if retry_pin {
+                    TimerCardAction::RetryPinned
                 } else {
-                    IconName::Pin
+                    TimerCardAction::TogglePinned
                 },
-                pin_label,
+                window,
+                cx,
             )
-            .selected(applied)
-            .toggled(applied)
-            .loading(style.pin_pending)
-            .disabled(preview || style.pin_pending || !PIN_SUPPORTED)
-            .on_click(move |_, window, cx| {
-                pin_action(
-                    if retry_pin {
-                        TimerCardAction::RetryPinned
-                    } else {
-                        TimerCardAction::TogglePinned
-                    },
-                    window,
-                    cx,
-                )
-            });
+        });
         surface = surface.child(
             row()
                 .id("widget-tools")
                 .test_support()
                 .flex_shrink_0()
-                .gap_1()
+                .gap(px(4. * zoom))
                 .child(drag)
                 .child(pin)
                 .child(button(
@@ -437,7 +485,7 @@ fn render_card(
         .w_full()
         .min_w_0()
         .flex_shrink_0()
-        .gap_2()
+        .gap(px(8. * zoom))
         .child(header)
         .when(!dashboard, |card| card.child(digits()))
         .when(!compact && (!widget || s.show_segment), |c| {
@@ -464,7 +512,9 @@ fn render_card(
                 })
                 .id("timer-details")
                 .test_support()
-                .text_color(rgb(palette.muted)),
+                .text_color(rgb(palette.muted))
+                .text_size(crate::design::type_size(palette.font_size, TypeRole::Caption) * zoom)
+                .line_height(relative(crate::design::line_height(TypeRole::Caption))),
             )
         });
     if model.kind != TimerKind::CountUp && (!widget || s.show_progress) {
@@ -473,7 +523,7 @@ fn render_card(
                 .id(progress_id)
                 .test_support()
                 .w_full()
-                .h(px(6.))
+                .h(px(6. * zoom))
                 .rounded_full()
                 .bg(accent.opacity(accent.a * 0.16))
                 .child(
@@ -486,7 +536,7 @@ fn render_card(
         );
     }
     if !widget || s.show_controls {
-        let mut actions = row().flex_wrap().gap_1().child(button(
+        let mut actions = row().flex_wrap().gap(px(4. * zoom)).child(button(
             if widget { "widget-pause" } else { "pause" },
             if model.finished {
                 "重新开始"
@@ -524,7 +574,7 @@ fn render_card(
         card = card.child(actions);
     }
     if !dashboard && (!widget || s.layout == WidgetLayout::Expanded) {
-        let mut kinds = row().flex_wrap().gap_1();
+        let mut kinds = row().flex_wrap().gap(px(4. * zoom));
         for kind in [TimerKind::Study, TimerKind::CountUp, TimerKind::CountDown] {
             kinds = kinds.child(
                 button(
@@ -532,12 +582,15 @@ fn render_card(
                     kind.label(),
                     TimerCardAction::ChooseKind(kind),
                 )
-                .selected(model.kind == kind),
+                .selected(model.kind == kind)
+                .when(widget && model.kind == kind, |button| {
+                    button.text_color(accent).toggled(true)
+                }),
             );
         }
         card = card.child(kinds);
         if model.kind == TimerKind::CountDown {
-            let mut presets = row().flex_wrap().gap_1();
+            let mut presets = row().flex_wrap().gap(px(4. * zoom));
             for &minutes in &s.countdown_presets {
                 presets = presets.child(button(
                     &format!("timer-preset-{minutes}"),
@@ -549,10 +602,14 @@ fn render_card(
         }
     }
     if !compact && !dashboard && model.kind == TimerKind::Study {
-        card = card.child(muted(format!(
-            "本段 {} 分钟 · 到时将邀请你确认收获",
-            model.target / 60
-        )));
+        card = card.child(
+            muted(format!(
+                "本段 {} 分钟 · 到时将邀请你确认收获",
+                model.target / 60
+            ))
+            .text_size(crate::design::type_size(palette.font_size, TypeRole::Caption) * zoom)
+            .line_height(relative(crate::design::line_height(TypeRole::Caption))),
+        );
     }
     if variant == TimerCardVariant::Widget {
         surface
@@ -891,5 +948,113 @@ mod widget_geometry_tests {
                 &expected.into_iter().collect::<Vec<_>>()
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "ui-test"))]
+mod transparent_widget_tests {
+    use super::{TimerCardModel, TimerCardStyle, TimerCardVariant, timer_card};
+    use gpui_kit::{
+        Context, IntoElement, Render, TestAppContext, Window, px, size, test::TestWindowExt,
+    };
+    use studyapp_core::{TimerKind, TimerState, TimerWidgetSettings, WidgetLayout};
+    struct Transparent;
+    impl Render for Transparent {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            timer_card(
+                TimerCardModel::from_timer(
+                    &TimerState {
+                        kind: TimerKind::CountUp,
+                        ..Default::default()
+                    },
+                    1,
+                ),
+                TimerCardStyle::from_widget_settings(
+                    &TimerWidgetSettings {
+                        opacity: 0,
+                        layout: WidgetLayout::Expanded,
+                        ..Default::default()
+                    },
+                    crate::theme::palette(),
+                ),
+                TimerCardVariant::Widget,
+                |_, _, _| {},
+            )
+        }
+    }
+    struct ZoomFixture(u8);
+    impl Render for ZoomFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            timer_card(
+                TimerCardModel::from_timer(&TimerState::default(), 1),
+                TimerCardStyle::from_widget_settings(
+                    &TimerWidgetSettings {
+                        scale: self.0,
+                        layout: WidgetLayout::Expanded,
+                        ..Default::default()
+                    },
+                    crate::theme::palette(),
+                ),
+                TimerCardVariant::Widget,
+                |_, _, _| {},
+            )
+        }
+    }
+    #[gpui_kit::test]
+    fn custom_zoom_scales_digits_tool_targets_and_spacing_together(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (view, visual) = cx.add_window_view(|_, _| ZoomFixture(100));
+        let mut baseline = None;
+        for scale in [100, 50, 73, 140, 175, 200, 100] {
+            let zoom = f32::from(scale) / 100.;
+            view.update(visual, |view, cx| {
+                view.0 = scale;
+                cx.notify();
+            });
+            visual.simulate_resize(size(px(600. * zoom), px(900. * zoom)));
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let actual = [
+                    "widget-timer-value",
+                    "widget-tools",
+                    "widget-pin",
+                    "timer-kind-Study",
+                ]
+                .map(|id| window.find(id).bounds().size.height);
+                if let Some(baseline) = baseline {
+                    for (actual, expected) in actual.into_iter().zip(baseline) {
+                        assert!(
+                            (actual - expected * zoom).abs() < px(2.),
+                            "scale={scale}: {actual:?} vs {expected:?}"
+                        );
+                    }
+                } else {
+                    baseline = Some(actual);
+                }
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn zero_opacity_leaves_no_opaque_digit_or_selected_button_backing(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (_, visual) = cx.add_window_view(|_, _| Transparent);
+        visual.simulate_resize(size(px(600.), px(700.)));
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            for hovered in [None, Some("timer-kind-Study"), Some("timer-kind-CountUp"), Some("widget-pin")] {
+                if let Some(id) = hovered { window.hover(id, cx); }
+                window.render_frame(cx);
+                let backgrounds: Vec<_> = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| !quad.background.is_transparent())
+                    .collect();
+                assert!(
+                    backgrounds.is_empty(),
+                    "transparent widget still paints opaque backgrounds when hovering {hovered:?}: {backgrounds:?}"
+                );
+            }
+        });
     }
 }

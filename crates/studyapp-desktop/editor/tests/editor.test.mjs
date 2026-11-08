@@ -199,7 +199,7 @@ test("reading defaults and compact toolbar preserve content selection and undo",
       code: css(".md-code-line").paddingLeft, mono: css(".md-code-line").fontFamily };
   });
   assert.equal(defaults.toolbar, 44);
-  assert.equal(defaults.width, "720px");
+  assert.equal(defaults.width, "100%");
   assert.ok(defaults.font.includes("Segoe UI Variable Text"));
   assert.equal(parseFloat(defaults.lineHeight) / parseFloat(defaults.body), 1.75);
   assert.equal(parseFloat(defaults.h1) / parseFloat(defaults.body), 1.85);
@@ -2207,7 +2207,7 @@ test("Markdown content stays within the remaining pane with wide tables and a si
         return {pane:pane.clientWidth,content:content.getBoundingClientRect().width,prose:prose.getBoundingClientRect().width};
       });
       assert.ok(Math.abs(geometry.content-geometry.pane)<=1, JSON.stringify({width,position,geometry}));
-      const expected=Math.min(720,geometry.pane-(geometry.pane<=600?36:52));
+      const expected=geometry.pane-(geometry.pane<=600?36:52);
       assert.ok(Math.abs(geometry.prose-expected)<=2, JSON.stringify({width,position,geometry,expected}));
     }
   }
@@ -2805,4 +2805,78 @@ test("migration outline teardown leaves the narrow final-draft body click unobsc
   assert.equal((await state(page)).text,"关闭窗口前的末次输入 🧠");
   assert.deepEqual(errors,[]);
   await page.close();
+});
+
+test("default Markdown prose fills the remaining pane while explicit width remains optional", async () => {
+  const text = "A long ordinary paragraph should use the space left by the workspace. ".repeat(90);
+  const { page, errors } = await setup(text);
+  for (const reading of [undefined, 0, 480, 920, 720, 0]) {
+    await page.evaluate(reading => window.studyappEditor.setTheme({ markdown: { reading_width: reading } }), reading);
+    for (const width of [2200, 1600, 800, 600, 380, 1800]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.waitForTimeout(50);
+      const geometry = await page.evaluate(() => {
+        const pane = document.querySelector("#editor").getBoundingClientRect();
+        const prose = document.querySelector(".cm-line").getBoundingClientRect();
+        return { pane: pane.width, prose: prose.width };
+      });
+      const available = geometry.pane - (geometry.pane <= 600 ? 36 : 52);
+      const expected = reading ? Math.min(reading, available) : available;
+      assert.ok(Math.abs(geometry.prose - expected) <= 2, JSON.stringify({ reading, width, geometry, expected }));
+    }
+  }
+  assert.equal((await state(page)).text, text);
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test("modal notifications retain rendered prose and block background input without changing document state", async () => {
+  for (const readonly of [false, true]) {
+    const text = Array.from({length:180}, (_, i) => `Paragraph ${i}: ` + "ordinary Markdown prose ".repeat(15)).join("\n\n");
+    const {page, errors} = await setup(text);
+    await select(page, 11, 24);
+    if (!readonly) await page.evaluate(() => window.studyappEditor.insertText("preserved edit"));
+    await page.evaluate(readonly => {
+      window.studyappEditor.setReadonly(readonly);
+      document.querySelector(".cm-scroller").scrollTop = 420;
+    }, readonly);
+    await page.waitForTimeout(80);
+    const before = await state(page);
+    for (const opacity of [0.48, 0.64, 0.48]) {
+      await page.evaluate(opacity => window.studyappEditor.setModalOverlay(true, opacity), opacity);
+      await page.waitForTimeout(30);
+      const geometry = await page.evaluate(() => ({
+        inert:document.querySelector("main").inert,
+        line:document.querySelector(".cm-line").getBoundingClientRect().width,
+        editor:document.querySelector("#editor").getBoundingClientRect().height,
+        shade:getComputedStyle(document.querySelector("#native-modal-shade")).display,
+        command:window.studyappEditor.command("bold"),
+        insert:window.studyappEditor.insertText("must not enter the background")
+      }));
+      assert.equal(geometry.inert, true);
+      assert.ok(geometry.line > 300 && geometry.editor > 300);
+      assert.notEqual(geometry.shade, "none");
+      assert.equal(geometry.command, false); assert.equal(geometry.insert, false);
+      await page.mouse.click(150, 180);
+      await page.keyboard.type("blocked input");
+      await page.keyboard.press("Control+z");
+      await page.mouse.wheel(0, 500);
+      await page.waitForTimeout(60);
+      const blocked = await state(page);
+      for (const key of ["text","generation","revision","selection","selections","scrollTop","scrollLeft"])
+        assert.deepEqual(blocked[key], before[key], key);
+      assert.equal(blocked.modalBlocked, true);
+    }
+    await page.evaluate(() => window.studyappEditor.setModalOverlay(false, 0));
+    const after = await state(page);
+    for (const key of ["text","generation","revision","selection","scrollTop","scrollLeft"])
+      assert.deepEqual(after[key], before[key], key);
+    assert.equal(after.modalBlocked, false);
+    if (!readonly) {
+      await page.evaluate(() => window.studyappEditor.command("undo"));
+      assert.equal((await state(page)).text, text, "modal must not replace undo history");
+    }
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
 });

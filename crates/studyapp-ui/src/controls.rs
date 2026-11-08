@@ -1,6 +1,6 @@
 use gpui_kit::component::{
     Disableable, FocusableExt, Icon, Selectable, Sizable, Size,
-    button::{Button as ComponentButton, ButtonVariants},
+    button::{Button as ComponentButton, ButtonCustomVariant, ButtonVariants},
     checkbox::Checkbox as ComponentCheckbox,
     text::Text,
 };
@@ -21,6 +21,8 @@ pub struct AppButton {
     has_icon: bool,
     has_label: bool,
     has_children: bool,
+    target_scale: f32,
+    surface_colors: Option<(gpui_kit::Hsla, gpui_kit::Hsla, gpui_kit::Hsla)>,
 }
 
 pub use AppButton as Button;
@@ -37,7 +39,30 @@ impl AppButton {
             has_icon: false,
             has_label: false,
             has_children: false,
+            target_scale: 1.,
+            surface_colors: None,
         }
+    }
+
+    /// Scale minimum pointer targets alongside custom-sized child content.
+    pub fn target_scale(mut self, factor: f32) -> Self {
+        self.target_scale = if factor.is_finite() {
+            factor.clamp(0.5, 2.)
+        } else {
+            1.
+        };
+        self
+    }
+
+    /// Transparent button states with explicit foreground and alpha-aware feedback.
+    pub fn transparent_surface(
+        mut self,
+        foreground: gpui_kit::Hsla,
+        hover: gpui_kit::Hsla,
+        active: gpui_kit::Hsla,
+    ) -> Self {
+        self.surface_colors = Some((foreground, hover, active));
+        self
     }
 
     pub fn label(mut self, label: impl Into<SharedString>) -> Self {
@@ -128,7 +153,8 @@ impl AppButton {
             Size::Medium | Size::Large => 36.,
             Size::Size(value) => value.into(),
         };
-        let minimum = nominal.max(crate::theme::palette().font_size as f32 * 1.25 + 8.);
+        let minimum =
+            nominal.max(crate::theme::palette().font_size as f32 * 1.25 + 8.) * self.target_scale;
         self.inner = self.inner.min_h(gpui_kit::px(minimum));
         // The component's small icon default is 24px wide. Raising only its
         // height produces off-center rectangular targets throughout toolbars.
@@ -224,7 +250,15 @@ impl ParentElement for AppButton {
 }
 
 impl RenderOnce for AppButton {
-    fn render(self, _: &mut Window, _: &mut App) -> impl IntoElement {
+    fn render(mut self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        if let Some((foreground, hover, active)) = self.surface_colors {
+            self.inner = self.inner.custom(
+                ButtonCustomVariant::new(cx)
+                    .foreground(foreground)
+                    .hover(hover)
+                    .active(active),
+            );
+        }
         self.into_button()
     }
 }
