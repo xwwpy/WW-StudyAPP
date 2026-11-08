@@ -369,10 +369,11 @@ async fn click_visible(window: AnyWindowHandle, id: ElementId, cx: &mut AsyncApp
     }
 }
 
-async fn native_visibility(
+async fn native_modal_state(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
-    visible: bool,
+    blocked: bool,
+    expected: &Value,
     name: &str,
     cx: &mut AsyncApp,
 ) {
@@ -385,20 +386,39 @@ async fn native_visibility(
             })
             .unwrap();
         #[cfg(target_os = "linux")]
-        let matches = state["viewable"] == visible
-            && state["mapped"] == visible
-            && state["appliedVisible"] == visible;
+        let matches =
+            state["viewable"] == true && state["mapped"] == true && state["appliedVisible"] == true;
         #[cfg(windows)]
-        let matches = state["visible"] == visible && state["controllerVisible"] == visible;
+        let matches = state["visible"] == true && state["controllerVisible"] == true;
         #[cfg(target_os = "macos")]
-        let matches = state["visible"] == visible && state["appliedVisible"] == visible;
-        if matches {
+        let matches = state["visible"] == true && state["appliedVisible"] == true;
+        if matches && state["inputBlocked"] == blocked {
+            let editor = view.read_with(cx, |app, _| app.note_content.clone());
+            let snapshot =
+                crate::smoke_editor::bridge(window, &editor, json!({"type":"snapshot"}), cx).await;
+            assert_eq!(snapshot["modalBlocked"], blocked);
+            for key in [
+                "text",
+                "generation",
+                "revision",
+                "selection",
+                "selections",
+                "scrollTop",
+                "scrollLeft",
+            ] {
+                assert_eq!(snapshot[key], expected[key], "update modal changed {key}");
+            }
+            #[cfg(windows)]
+            assert_eq!(
+                state["inputEnabled"], !blocked,
+                "native input must follow modal: {state}"
+            );
             save(name, state);
             return;
         }
         assert!(
             started.elapsed() < Duration::from_secs(10),
-            "native visibility did not follow modal: {state}"
+            "native background must stay visible with modal input blocked={blocked}: {state}"
         );
     }
 }
@@ -592,13 +612,13 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
         click_visible(window, "sidebar-version-open".into(), cx).await;
         wait(window,&view,cx,"signed update card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
         if config["settings_continuation"] != true {
-        native_visibility(window, &view, false, "card-first-native-state.json", cx).await;
+        native_modal_state(window, &view, true, &live, "card-first-native-state.json", cx).await;
         click_visible(window, "update-dialog-later".into(), cx).await;
         wait(window,&view,cx,"native dismissal",|a,cx|!a.update_panel.read(cx).dialog_visible()).await;
-        native_visibility(window, &view, true, "editor-restored-native-state.json", cx).await;
+        native_modal_state(window, &view, false, &live, "editor-restored-native-state.json", cx).await;
         click_visible(window, "sidebar-update".into(), cx).await;
         wait(window,&view,cx,"reopened card",|a,cx|a.update_panel.read(cx).dialog_visible()).await;
-        native_visibility(window, &view, false, "card-native-state.json", cx).await;
+        native_modal_state(window, &view, true, &live, "card-native-state.json", cx).await;
         }
         presented(window, cx).await;
         window.update(cx,|_,window,_|capture(window,"update-card.png")).unwrap();

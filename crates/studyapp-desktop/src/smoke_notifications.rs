@@ -831,11 +831,7 @@ pub(crate) async fn exercise_markdown_background(
                 });
             })
             .unwrap();
-        settle(window, view, cx, |app, window, cx| {
-            app.notifications.read(cx).modal_visible()
-                && window.try_find("modal-native-occlusion").is_some()
-        })
-        .await;
+        crate::smoke_editor::wait_modal_frame(window, view, editor, true, cx).await;
         let blocked =
             crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
         assert_eq!(blocked["modalBlocked"], true);
@@ -856,7 +852,13 @@ pub(crate) async fn exercise_markdown_background(
                 let state = editor.read(cx).native_state().unwrap();
                 assert_eq!(state["visible"], true);
                 assert_eq!(state["controllerVisible"], true);
-                assert_eq!(state["inputBlocked"], true);
+                assert_eq!(
+                    state["inputBlocked"],
+                    true,
+                    "modal={}, queue={:?}, native={state}",
+                    view.read(cx).has_modal(cx),
+                    view.read(cx).notifications.read(cx).test_state()
+                );
                 assert_eq!(state["bounds"], native["bounds"]);
                 assert_eq!(state["visibilityUpdates"], native["visibilityUpdates"]);
                 let child = windows::Win32::Foundation::HWND(state["hwnd"].as_u64().unwrap()
@@ -892,10 +894,7 @@ pub(crate) async fn exercise_markdown_background(
         .await;
         crate::smoke_workspace::native_pointer(&native, dismiss, Some(true));
         crate::smoke_workspace::native_pointer(&native, dismiss, Some(false));
-        settle(window, view, cx, |app, _, cx| {
-            !app.notifications.read(cx).modal_visible()
-        })
-        .await;
+        crate::smoke_editor::wait_modal_frame(window, view, editor, false, cx).await;
         let after =
             crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
         assert_eq!(after["modalBlocked"], false);

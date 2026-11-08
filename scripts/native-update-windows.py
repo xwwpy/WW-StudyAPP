@@ -155,6 +155,10 @@ def main():
         assert draft["draft"]["content"] == after["live_text"] == config["draft_marker"]
         for name in ("update-card.png", "restored.png"):
             assert (fixture / name).stat().st_size > 1000
+        for filename, blocked in [("card-first-native-state.json", True), ("editor-restored-native-state.json", False), ("card-native-state.json", True)]:
+            native = json.loads((fixture / filename).read_text(encoding="utf-8"))
+            assert native["visible"] is True and native["controllerVisible"] is True
+            assert native["inputBlocked"] is blocked and native["inputEnabled"] is not blocked
         result = {"source_sha": source_sha, "old_version": old_version, "installed_version": registered_version,
                   "installed_sha256": common.sha(installed), "candidate_sha256": common.sha(binaries["candidate"]),
                   "old_process": old_context, "new_process": new_context, "harness_user_sid": harness_context["user_sid"], "health": receipt,

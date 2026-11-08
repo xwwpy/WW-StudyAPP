@@ -426,7 +426,7 @@ mod windows_host {
                     Foundation::{HWND, POINT, RECT},
                     Graphics::Gdi::ClientToScreen,
                     UI::{
-                        Input::KeyboardAndMouse::GetFocus,
+                        Input::KeyboardAndMouse::{GetFocus, IsWindowEnabled},
                         WindowsAndMessaging::{
                             GA_ROOT, GWL_STYLE, GetAncestor, GetClassNameW, GetClientRect,
                             GetForegroundWindow, GetWindowLongW, GetWindowRect, IsChild,
@@ -496,6 +496,7 @@ mod windows_host {
             Ok(serde_json::json!({
                 "hwnd": child.0 as usize,
                 "inputBlocked": self.input_blocked.get(),
+                "inputEnabled": unsafe { IsWindowEnabled(child).as_bool() },
                 "parentHwnd": parent.0 as usize,
                 "visible": visible,
                 "ownVisible": own_visible,

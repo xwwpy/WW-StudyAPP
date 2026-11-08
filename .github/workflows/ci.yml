@@ -223,6 +223,7 @@ jobs:
             ${{ env.SETTINGS_DIR }}/settings-*
             ${{ env.SETTINGS_DIR }}/native-*.json
             ${{ env.SETTINGS_DIR }}/native-*.bmp
+            ${{ env.SETTINGS_DIR }}/markdown-modal-*
             ${{ env.SETTINGS_DIR }}/storage-render-timing.json
             ${{ env.SETTINGS_DIR }}/notification-native-result.json
             ${{ env.SETTINGS_DIR }}/notification-*.png

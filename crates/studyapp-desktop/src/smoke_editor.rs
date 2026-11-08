@@ -211,6 +211,42 @@ pub async fn default_preview(
     default_appearance_sample(window, view, database, cx).await;
 }
 
+#[cfg(feature = "ui-test")]
+pub(crate) async fn wait_modal_frame(
+    handle: AnyWindowHandle,
+    app: &Entity<StudyApp>,
+    editor: &Entity<MarkdownEditor>,
+    open: bool,
+    cx: &mut AsyncApp,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let observation = handle
+            .update(cx, |_, window, cx| {
+                // A queue transition is synchronous; the actual frame and native
+                // input/clip update are not. Observe the mounted card, not just the queue.
+                window.render_frame(cx);
+                json!({
+                    "queued": app.read(cx).notifications.read(cx).modal_visible(),
+                    "mounted": window.try_find("modal-native-occlusion").is_some(),
+                    "native": editor.read(cx).native_state().unwrap(),
+                })
+            })
+            .unwrap();
+        if observation["queued"] == open
+            && observation["mounted"] == open
+            && observation["native"]["inputBlocked"] == open
+        {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Modal frame failed to settle, open={open}: {observation}"
+        );
+        pause(cx).await;
+    }
+}
+
 #[cfg(all(feature = "ui-test", any(target_os = "macos", target_os = "linux")))]
 async fn modal_preview_continuity(
     window: AnyWindowHandle,
@@ -265,14 +301,7 @@ async fn modal_preview_continuity(
                 })
             })
             .unwrap();
-        crate::smoke_library::until(
-            window,
-            app,
-            "modal above native Unix preview",
-            |app, cx| app.notifications.read(cx).modal_visible(),
-            cx,
-        )
-        .await;
+        wait_modal_frame(window, app, editor, true, cx).await;
         let blocked = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
         assert_eq!(blocked["modalBlocked"], true);
         for key in [
@@ -322,14 +351,7 @@ async fn modal_preview_continuity(
                 window.click(format!("dismiss-notice-{id}"), cx);
             })
             .unwrap();
-        crate::smoke_library::until(
-            window,
-            app,
-            "native Unix preview restored",
-            |app, cx| !app.notifications.read(cx).modal_visible(),
-            cx,
-        )
-        .await;
+        wait_modal_frame(window, app, editor, false, cx).await;
         let after = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
         assert_eq!(after["modalBlocked"], false);
         for key in ["text", "generation", "revision", "selection", "scrollTop"] {

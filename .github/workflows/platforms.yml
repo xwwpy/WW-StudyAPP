@@ -148,6 +148,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-interactive/native-markdown-editor*.png
             ${{ runner.temp }}/native-interactive/native-markdown-editor-default-*.json
+            ${{ runner.temp }}/native-interactive/native-markdown-modal-*
             ${{ runner.temp }}/native-interactive/native-timer-pin*
             ${{ runner.temp }}/native-interactive/native-about.png
             ${{ runner.temp }}/native-interactive/page-4.png
@@ -156,6 +157,7 @@ jobs:
             ${{ runner.temp }}/native-interactive-*/native-timer-pin*
             ${{ runner.temp }}/native-interactive-*/native-app-migration.txt
             ${{ runner.temp }}/native-interactive-*/native-markdown-editor*.png
+            ${{ runner.temp }}/native-interactive-*/native-markdown-modal-*
             ${{ runner.temp }}/native-interactive-*/page-4.png
           if-no-files-found: warn
       - name: macOS native editor regression
@@ -169,6 +171,7 @@ jobs:
           path: |
             ${{ runner.temp }}/native-interactive/native-markdown-editor*.png
             ${{ runner.temp }}/native-interactive/native-markdown-editor-default-*.json
+            ${{ runner.temp }}/native-interactive/native-markdown-modal-*
             ${{ runner.temp }}/native-interactive/native-timer-pin*
             ${{ runner.temp }}/native-interactive/native-about.png
             ${{ runner.temp }}/native-interactive.stderr.log
