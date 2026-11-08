@@ -165,7 +165,9 @@ impl MacSurface {
         CATransaction::setDisableActions(true);
         self.mask.setFrame(layer.bounds());
         self.mask.setPath(Some(&path));
-        layer.setMask(Some(&self.mask));
+        // Each host owns this mask exclusively; it is retained alongside the
+        // container for the whole attachment and is never another view's layer.
+        unsafe { layer.setMask(Some(&self.mask)) };
         CATransaction::commit();
         *self.view.ivars().visible.borrow_mut() = local;
         *self.applied.borrow_mut() = Some((bounds, visible));
