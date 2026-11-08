@@ -775,6 +775,72 @@ pub async fn exercise(
     })).unwrap()).unwrap();
 }
 
+fn assert_modal_native_cutout(window: &Window, native: &serde_json::Value) {
+    use windows::Win32::{
+        Foundation::HWND,
+        Graphics::Gdi::{CreateRectRgn, DeleteObject, GetWindowRgn, PtInRegion},
+    };
+    let geometry = &native["logicalBounds"];
+    let x = geometry[0].as_f64().unwrap() as f32;
+    let y = geometry[1].as_f64().unwrap() as f32;
+    let width = geometry[2].as_f64().unwrap() as f32;
+    let height = geometry[3].as_f64().unwrap() as f32;
+    let scale = geometry[4].as_f64().unwrap() as f32 / 96.;
+    let editor = Bounds::new(point(px(x), px(y)), size(px(width), px(height)));
+    let card = window.find("modal-native-occlusion").bounds();
+    let overlap = card.intersect(&editor);
+    assert!(
+        overlap.size.width > px(1.) && overlap.size.height > px(1.),
+        "fixture must exercise a card over the native surface"
+    );
+    let hwnd = HWND(native["hwnd"].as_u64().unwrap() as usize as *mut _);
+    // Inspect the OS paint region, not just the bounds passed to SetWindowRgn.
+    let (kind, covered, outside_visible) = unsafe {
+        let region = CreateRectRgn(0, 0, 0, 0);
+        assert!(!region.is_invalid());
+        let kind = GetWindowRgn(hwnd, region).0;
+        let mut covered = Vec::new();
+        for a in [0.25, 0.5, 0.75] {
+            for b in [0.25, 0.5, 0.75] {
+                let at = overlap.origin + point(overlap.size.width * a, overlap.size.height * b);
+                covered.push(
+                    PtInRegion(
+                        region,
+                        (f32::from(at.x - editor.left()) * scale).round() as i32,
+                        (f32::from(at.y - editor.top()) * scale).round() as i32,
+                    )
+                    .as_bool(),
+                );
+            }
+        }
+        let mut outside_visible = false;
+        for a in [0.05, 0.95] {
+            for b in [0.05, 0.95] {
+                let at = editor.origin + point(editor.size.width * a, editor.size.height * b);
+                if !card.contains(&at) {
+                    outside_visible |= PtInRegion(
+                        region,
+                        (f32::from(at.x - editor.left()) * scale).round() as i32,
+                        (f32::from(at.y - editor.top()) * scale).round() as i32,
+                    )
+                    .as_bool();
+                }
+            }
+        }
+        let _ = DeleteObject(region.into());
+        (kind, covered, outside_visible)
+    };
+    assert!(kind > 0, "real native clipping region must exist: {native}");
+    assert!(
+        covered.iter().all(|visible| !visible),
+        "native editor must not paint over any part of the card: {covered:?}, card={card:?}, native={native}"
+    );
+    assert!(
+        outside_visible,
+        "background must remain painted outside the card: {native}"
+    );
+}
+
 /// Real HWND visibility, clipped paint, disabled input, native dismiss and state retention.
 pub(crate) async fn exercise_markdown_background(
     window: AnyWindowHandle,
@@ -846,6 +912,7 @@ pub(crate) async fn exercise_markdown_background(
                 assert!(!unsafe {
                     windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(child).as_bool()
                 });
+                assert_modal_native_cutout(window, &state);
                 let id = view.read(cx).notifications.read(cx).test_state()[0].0;
                 let dismiss = window
                     .find(format!("dismiss-notice-{id}"))

@@ -180,6 +180,7 @@ async fn exercise_zoom_and_zero_background(
     }
     settle(cx).await;
     let mut baseline: Option<[f32; 4]> = None;
+    let mut base_client_width: Option<f32> = None;
     let mut observations = Vec::new();
     for scale in [100u8, 50, 73, 173, 200, 100] {
         main.update(cx, |_, window, cx| {
@@ -232,7 +233,30 @@ async fn exercise_zoom_and_zero_background(
                 );
             })
             .unwrap();
-        observations.push(json!({"scale":scale,"heights":metrics,"bounds":[rect(native).right-rect(native).left,rect(native).bottom-rect(native).top]}));
+        let mut client = RECT::default();
+        unsafe {
+            GetClientRect(HWND(native as *mut _), &mut client).unwrap();
+        }
+        let width = (client.right - client.left) as f32;
+        if let Some(base) = base_client_width {
+            assert!(
+                (width - base * f32::from(scale) / 100.).abs() < 3.,
+                "native window width must scale with the full widget: scale={scale}, width={width}, baseline={base}"
+            );
+        } else {
+            base_client_width = Some(width);
+        }
+        let viewport = widget
+            .update(cx, |_, window, _| window.viewport_size())
+            .unwrap();
+        let native_scale = widget
+            .update(cx, |_, window, _| window.scale_factor())
+            .unwrap();
+        assert!(
+            (f32::from(viewport.width) * native_scale - width).abs() < 2.,
+            "GPUI viewport and actual client width must agree after zoom"
+        );
+        observations.push(json!({"scale":scale,"heights":metrics,"clientWidth":width,"viewportWidth":f32::from(viewport.width),"bounds":[rect(native).right-rect(native).left,rect(native).bottom-rect(native).top]}));
     }
     let points = widget
         .update(cx, |_, window, cx| {

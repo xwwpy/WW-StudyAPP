@@ -184,7 +184,7 @@ pub fn modal_frame_shell_observed(
                             |_, _, _, _| {},
                         )
                         .absolute()
-                        .size_full(),
+                        .inset_0(),
                     )
                     .text_selection_scope(TextSelectionScopeId::default()),
             ),
@@ -206,6 +206,72 @@ mod tests {
         open: bool,
         background_clicks: usize,
         outside: FocusHandle,
+    }
+
+    #[gpui_kit::test]
+    fn native_modal_occlusion_observes_the_card_not_its_following_static_position(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::{Bounds, Pixels, WindowBounds, point, px, size};
+        use std::{cell::RefCell, rc::Rc};
+        struct ObservedModal {
+            focus: ModalFocus,
+            observed: Rc<RefCell<Option<Bounds<Pixels>>>>,
+        }
+        impl Render for ObservedModal {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.focus.sync(true, window, cx);
+                let observed = self.observed.clone();
+                super::modal_frame_shell_observed(
+                    crate::modal_frame::ModalFrame::new(
+                        "通知裁剪",
+                        div().h(px(160.)).child("说明"),
+                    )
+                    .footer(Button::new("occlusion-dismiss").label("关闭")),
+                    &self.focus,
+                    window,
+                    cx,
+                    move |bounds, _, _| *observed.borrow_mut() = Some(bounds),
+                )
+            }
+        }
+        cx.update(gpui_kit::init);
+        let observed = Rc::new(RefCell::new(None));
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        size(px(1000.), px(700.)),
+                    ))),
+                    ..Default::default()
+                },
+                cx,
+                |_, cx| {
+                    cx.new(|cx| ObservedModal {
+                        focus: ModalFocus::new(cx),
+                        observed: observed.clone(),
+                    })
+                },
+            )
+            .unwrap()
+        });
+        cx.run_until_parked();
+        for viewport in [size(px(1000.), px(700.)), size(px(640.), px(550.))] {
+            cx.update_window(handle, |_, window, cx| {
+                window.resize(viewport);
+                window.bounds_changed(cx);
+                view.update(cx, |_, cx| cx.notify());
+                window.render_frame(cx);
+                assert_eq!(
+                    observed.borrow().as_ref().copied(),
+                    Some(window.find("modal-native-occlusion").bounds()),
+                    "native cutout must exactly track the visible card, including its origin"
+                );
+            })
+            .unwrap();
+            cx.run_until_parked();
+        }
     }
 
     #[gpui_kit::test]

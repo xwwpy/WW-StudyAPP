@@ -69,6 +69,13 @@ fn forward(app: WeakEntity<StudyApp>, action: TimerCardAction, cx: &mut App) {
     });
 }
 
+fn resize_widget(window: &mut Window, desired: Size<Pixels>, cx: &mut App) -> anyhow::Result<()> {
+    // Reconcile the native client size before another content-fit callback can
+    // reuse its previous width. Also avoid activating an unfocused widget.
+    let current = window.window_bounds().get_bounds();
+    crate::card_window::fit_passive(window, Bounds::new(current.origin, desired), cx)
+}
+
 impl TimerWidget {
     fn new(
         app: Entity<StudyApp>,
@@ -83,6 +90,7 @@ impl TimerWidget {
             this.presentation = WidgetPresentation::from_app(app.read(cx), cx);
             if this.state.rescale(this.presentation.settings.scale) {
                 let desired = this.state.bounds().size;
+                let owner = this.app.downgrade();
                 cx.defer(move |cx| {
                     let _ = handle.update(cx, |_, window, cx| {
                         let current = window.window_bounds().get_bounds();
@@ -96,10 +104,18 @@ impl TimerWidget {
                                 )
                             })
                             .unwrap_or(desired);
-                        window.resize(size(
-                            desired.width.min(available.width),
-                            desired.height.min(available.height),
-                        ));
+                        if let Err(error) = resize_widget(
+                            window,
+                            size(
+                                desired.width.min(available.width),
+                                desired.height.min(available.height),
+                            ),
+                            cx,
+                        ) {
+                            let _ = owner.update(cx, |app, cx| {
+                                app.push_notice(Err(format!("计时小组件缩放失败：{error:#}")), cx)
+                            });
+                        }
                     });
                 });
             }
@@ -315,9 +331,18 @@ impl Render for TimerWidget {
                         && (height - current.height).abs() >= px(1.)
                     {
                         // Never resize in layout or reenter the owner lease.
-                        window.defer(cx, move |window, _| {
-                            if window.viewport_size().width == current.width {
-                                window.resize(size(current.width, height));
+                        let owner = app.clone();
+                        window.defer(cx, move |window, cx| {
+                            if window.viewport_size().width == current.width
+                                && let Err(error) =
+                                    resize_widget(window, size(current.width, height), cx)
+                            {
+                                let _ = owner.update(cx, |app, cx| {
+                                    app.push_notice(
+                                        Err(format!("计时小组件尺寸调整失败：{error:#}")),
+                                        cx,
+                                    )
+                                });
                             }
                         });
                     }
@@ -611,5 +636,46 @@ impl StudyApp {
         if self.timer_pending.is_some() || self.timer_setup.is_some() {
             window.activate_window();
         }
+    }
+}
+
+#[cfg(all(test, feature = "ui-test"))]
+mod resize_tests {
+    use super::resize_widget;
+    use gpui_kit::{Context, IntoElement, Render, TestAppContext, Window, div, px, size};
+
+    struct Blank;
+    impl Render for Blank {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+        }
+    }
+
+    #[gpui_kit::test]
+    fn widget_zoom_updates_viewport_before_stale_content_fit_can_restore_old_width(
+        cx: &mut TestAppContext,
+    ) {
+        let (_, visual) = cx.add_window_view(|_, _| Blank);
+        visual.update(|window, cx| {
+            for scale in [50., 73., 173., 200., 100.] {
+                let before = window.viewport_size();
+                let desired = size(px(400. * scale / 100.), px(300. * scale / 100.));
+                resize_widget(window, desired, cx).unwrap();
+                assert_eq!(
+                    window.viewport_size(),
+                    desired,
+                    "native resize must reconcile the viewport synchronously"
+                );
+                // A height-only callback from the previous frame must not win
+                // over a newer overall zoom or user width change.
+                if window.viewport_size().width == before.width {
+                    resize_widget(window, size(before.width, px(120.)), cx).unwrap();
+                }
+                assert_eq!(window.viewport_size().width, desired.width);
+                let fitted = size(desired.width, desired.height + px(10.));
+                resize_widget(window, fitted, cx).unwrap();
+                assert_eq!(window.viewport_size(), fitted);
+            }
+        });
     }
 }
