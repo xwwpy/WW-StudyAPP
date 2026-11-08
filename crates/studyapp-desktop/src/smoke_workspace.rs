@@ -14,7 +14,10 @@ use std::{
 use windows::{
     Win32::{
         Foundation::{HWND, POINT, RECT},
-        Graphics::Gdi::{ClientToScreen, GetDC, GetPixel, ReleaseDC},
+        Graphics::{
+            Dwm::DwmFlush,
+            Gdi::{ClientToScreen, GetDC, GetPixel, ReleaseDC},
+        },
         UI::{
             HiDpi::GetDpiForWindow,
             Input::KeyboardAndMouse::{
@@ -115,8 +118,21 @@ fn assert_guide(native: &Value, expected: bool) {
         GetWindowRect(guide, &mut bounds).unwrap();
         assert!(bounds.right > bounds.left && bounds.right - bounds.left <= 8);
         assert!(bounds.bottom - bounds.top > 200);
-        // Read screen pixels, so a logical guide behind the native WebView is
-        // not mistaken for a visible line. Both dash and transparent gap occur.
+        let (dashes, gaps) = guide_screen_pixels(native, guide);
+        assert!(
+            dashes > 8 && gaps > 8,
+            "guide must paint visible dashes and gaps: {dashes}/{gaps}"
+        );
+    }
+}
+
+/// Observe the real desktop after the compositor has consumed pending paints.
+/// This does not invalidate/repaint the guide or change its z-order for the test.
+fn guide_screen_pixels(native: &Value, guide: HWND) -> (usize, usize) {
+    unsafe {
+        DwmFlush().unwrap();
+        let mut bounds = RECT::default();
+        GetWindowRect(guide, &mut bounds).unwrap();
         let dc = GetDC(None);
         let x = (bounds.left + bounds.right) / 2;
         let sample_y = (native["bounds"]["y"].as_i64().unwrap() as i32 + 40)
@@ -133,10 +149,38 @@ fn assert_guide(native: &Value, expected: bool) {
             }
         }
         ReleaseDC(None, dc);
+        (dashes, gaps)
+    }
+}
+
+async fn wait_presented_guide(window: AnyWindowHandle, native: &Value, cx: &mut AsyncApp) {
+    // A 70 ms input delay is not a WM_PAINT/compositor barrier. In particular,
+    // render_frame can first position the owned HWND in the very turn that the
+    // old assertion sampled. Yield to native message dispatch until the same
+    // strict dash/gap evidence is actually on screen, with a bounded deadline.
+    let started = Instant::now();
+    loop {
+        let pixels = window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                owned_guide(native).and_then(|guide| {
+                    unsafe { IsWindowVisible(guide).as_bool() }
+                        .then(|| guide_screen_pixels(native, guide))
+                })
+            })
+            .unwrap();
+        if pixels.is_some_and(|(dashes, gaps)| dashes > 8 && gaps > 8) {
+            eprintln!(
+                "native guide presented after {:?}: {pixels:?}",
+                started.elapsed()
+            );
+            return;
+        }
         assert!(
-            dashes > 8 && gaps > 8,
-            "guide must paint visible dashes and gaps: {dashes}/{gaps}"
+            started.elapsed() < Duration::from_secs(5),
+            "native guide never presented visible dashes and gaps: {pixels:?}; native={native}"
         );
+        native_tick(cx).await;
     }
 }
 
@@ -353,6 +397,7 @@ async fn resize_pane(
         .unwrap();
     native_pointer(&native, start, Some(true));
     native_tick(cx).await;
+    wait_presented_guide(window, &native, cx).await;
     window
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
@@ -368,6 +413,7 @@ async fn resize_pane(
     let end = start + point(px(delta), px(0.));
     native_pointer(&native, end, None);
     native_tick(cx).await;
+    wait_presented_guide(window, &native, cx).await;
     window
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
@@ -863,6 +909,7 @@ async fn cancel_resize(
     let end = start + point(px(45.), px(0.));
     native_pointer(&native, end, None);
     native_tick(cx).await;
+    wait_presented_guide(window, &native, cx).await;
     window
         .update(cx, |_, window, cx| {
             assert!(view.read(cx).is_layout_resizing());

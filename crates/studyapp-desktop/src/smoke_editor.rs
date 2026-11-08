@@ -229,6 +229,8 @@ pub(crate) async fn wait_modal_frame(
                 json!({
                     "queued": app.read(cx).notifications.read(cx).modal_visible(),
                     "mounted": window.try_find("modal-native-occlusion").is_some(),
+                    "entranceComplete": app.read(cx).notifications.read(cx).test_state()
+                        .iter().all(|(_, opacity)| *opacity >= 1.),
                     "native": editor.read(cx).native_state().unwrap(),
                 })
             })
@@ -236,6 +238,7 @@ pub(crate) async fn wait_modal_frame(
         if observation["queued"] == open
             && observation["mounted"] == open
             && observation["native"]["inputBlocked"] == open
+            && (!open || observation["entranceComplete"] == true)
         {
             return;
         }
