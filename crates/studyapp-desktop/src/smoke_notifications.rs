@@ -786,15 +786,6 @@ pub(crate) async fn exercise_markdown_background(
 ) {
     use serde_json::json;
     assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
-    let original = window
-        .update(cx, |_, _, cx| {
-            let app = view.read(cx);
-            (
-                app.preferences_ui.saved.clone(),
-                app.preferences_ui.draft.clone(),
-            )
-        })
-        .unwrap();
     for round in 0..3 {
         let before =
             crate::smoke_editor::bridge(window, editor, json!({"type":"snapshot"}), cx).await;
@@ -807,26 +798,14 @@ pub(crate) async fn exercise_markdown_background(
         window
             .update(cx, |_, window, cx| {
                 view.update(cx, |app, cx| {
-                    for settings in app
-                        .preferences_ui
-                        .saved
-                        .as_mut()
-                        .map(|s| &mut s.settings)
-                        .into_iter()
-                        .chain(app.preferences_ui.draft.as_mut())
-                    {
-                        settings.notifications.rules.insert(
-                            NoticeCategory::SaveFailure,
-                            NoticeRule {
-                                style: Some(NoticeStyle::ModalCard),
-                                ..Default::default()
-                            },
-                        );
-                        settings.appearance.notifications.reduce_motion = true;
-                    }
+                    // The worker republishes saved preferences on every timer tick.
+                    // Use the production critical-event route instead of a temporary
+                    // in-memory rule that would disappear during native capture.
                     app.clear_notices(cx);
                     app.sync_notification_preferences(window, cx);
-                    app.emit_notification(event(), cx);
+                    let mut notice = event();
+                    notice.severity = NoticeSeverity::Critical;
+                    app.emit_notification(notice, cx);
                     cx.notify();
                 });
             })
@@ -915,8 +894,6 @@ pub(crate) async fn exercise_markdown_background(
         .update(cx, |_, _, cx| {
             view.update(cx, |app, cx| {
                 app.clear_notices(cx);
-                app.preferences_ui.saved = original.0;
-                app.preferences_ui.draft = original.1;
                 cx.notify();
             })
         })

@@ -256,43 +256,22 @@ async fn modal_preview_continuity(
     phase: &str,
     cx: &mut AsyncApp,
 ) {
-    use studyapp_core::{NoticeCategory, NoticeEvent, NoticeRule, NoticeSeverity, NoticeStyle};
+    use studyapp_core::{NoticeCategory, NoticeEvent, NoticeSeverity};
     assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
-    let original = app.read_with(cx, |app, _| {
-        (
-            app.preferences_ui.saved.clone(),
-            app.preferences_ui.draft.clone(),
-        )
-    });
     for round in 0..3 {
         let before = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
         let native = editor.read_with(cx, |editor, _| editor.native_state().unwrap());
         window
             .update(cx, |_, window, cx| {
                 app.update(cx, |app, cx| {
-                    for settings in app
-                        .preferences_ui
-                        .saved
-                        .as_mut()
-                        .map(|s| &mut s.settings)
-                        .into_iter()
-                        .chain(app.preferences_ui.draft.as_mut())
-                    {
-                        settings.notifications.rules.insert(
-                            NoticeCategory::SaveFailure,
-                            NoticeRule {
-                                style: Some(NoticeStyle::ModalCard),
-                                ..Default::default()
-                            },
-                        );
-                        settings.appearance.notifications.reduce_motion = true;
-                    }
+                    // Saved preferences are republished on every timer tick; the
+                    // default critical route stays modal throughout the capture.
                     app.clear_notices(cx);
                     app.sync_notification_preferences(window, cx);
                     app.emit_notification(
                         NoticeEvent::new(
                             NoticeCategory::SaveFailure,
-                            NoticeSeverity::Error,
+                            NoticeSeverity::Critical,
                             "预览保持与通知输入隔离",
                         ),
                         cx,
@@ -374,8 +353,6 @@ async fn modal_preview_continuity(
         .update(cx, |_, _, cx| {
             app.update(cx, |app, cx| {
                 app.clear_notices(cx);
-                app.preferences_ui.saved = original.0;
-                app.preferences_ui.draft = original.1;
                 cx.notify();
             })
         })
