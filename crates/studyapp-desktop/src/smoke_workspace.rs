@@ -1818,8 +1818,16 @@ pub async fn exercise(
                 "lower-right source grab did not start a drag"
             );
             let preview = window.find("note-drag-preview").bounds();
-            assert!((f32::from(preview.origin.x - pointer_at.x) - 12.).abs() <= 2.);
-            assert!((f32::from(preview.origin.y - pointer_at.y) - 12.).abs() <= 2.);
+            // Center-following replaces the old bottom-right 12px offset.
+            // Check the actual rendered ghost, not just its offset arithmetic.
+            assert!(
+                (preview.center().x - pointer_at.x).abs() <= px(2.),
+                "drag preview center drifted horizontally: preview={preview:?}, pointer={pointer_at:?}"
+            );
+            assert!(
+                (preview.center().y - pointer_at.y).abs() <= px(2.),
+                "drag preview center drifted vertically: preview={preview:?}, pointer={pointer_at:?}"
+            );
             assert!(
                 preview.size.width <= px(222.) && preview.size.height <= px(64.),
                 "drag ghost grew to source bounds"
