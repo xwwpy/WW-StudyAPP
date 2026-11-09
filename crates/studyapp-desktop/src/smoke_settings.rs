@@ -16,6 +16,25 @@ const PREVIEW_VIEWPORTS: [(f32, f32); 4] =
     [(1000., 700.), (1024., 700.), (1000., 720.), (1024., 720.)];
 const LIVE_PREVIEW_VIEWPORT: (f32, f32) = (1000., 700.);
 
+fn preview_overlap_notices() -> [studyapp_core::NoticeEvent; 2] {
+    use studyapp_core::{NoticeCategory, NoticeEvent, NoticeSeverity};
+    [
+        "预览遮挡回归：通知应位于正文之上，关闭按钮仍能点击。
+",
+        "第二条独立通知：不得被原生阅读预览盖住。
+",
+    ]
+    .map(|summary| {
+        // Independent, already-readable events, not raw worker errors:
+        // push_notice intentionally sanitizes and deduplicates one operation.
+        NoticeEvent::new(
+            NoticeCategory::OperationFailure,
+            NoticeSeverity::Error,
+            summary.repeat(12),
+        )
+    })
+}
+
 fn settings_files(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     fn read(root: &Path, result: &mut BTreeMap<PathBuf, Vec<u8>>) {
         for entry in std::fs::read_dir(root).unwrap() {
@@ -1354,6 +1373,10 @@ async fn exercise_markdown_preview(
     database: &Path,
     cx: &mut AsyncApp,
 ) {
+    // This supported viewport stacks the panes, making the left-aligned
+    // controls genuinely overlap the native sample. Wide layouts below still
+    // receive exact clipping checks rather than an assumed popup intersection.
+    let overlap_size = size(px(LIVE_PREVIEW_VIEWPORT.0), px(LIVE_PREVIEW_VIEWPORT.1));
     let (
         note,
         generation,
@@ -1383,6 +1406,7 @@ async fn exercise_markdown_preview(
                 app.preferences_ui.appearance_preview_mode = true;
                 cx.notify();
             });
+            crate::smoke_library::resize(window, overlap_size);
             window.render_frame(cx);
             (
                 note,
@@ -1410,6 +1434,7 @@ async fn exercise_markdown_preview(
         cx,
     )
     .await;
+    settle_preview_viewport(window, view, overlap_size, cx).await;
     let preview = window
         .update(cx, |_, _, cx| {
             view.read(cx)
@@ -1537,7 +1562,7 @@ async fn exercise_markdown_preview(
     .await;
     // Switching from focused preview to parameters changes the native sample's
     // width. Popup measurement acknowledges GPUI only, not Chromium/CM layout.
-    settle_preview_viewport(window, view, original_size, cx).await;
+    settle_preview_viewport(window, view, overlap_size, cx).await;
     let (picker_id, open_native, popup, popup_shapes) = window
         .update(cx, |_, _window, cx| {
             let control = view.read(cx).preferences_ui.appearance_colors["text"].clone();
@@ -1960,18 +1985,29 @@ async fn exercise_markdown_preview(
         cx,
     )
     .await;
+    // Re-establish a real popup/native intersection after wide-layout checks.
+    window
+        .update(cx, |_, window, _| {
+            crate::smoke_library::resize(window, overlap_size)
+        })
+        .unwrap();
+    let notification_geometry = settle_preview_picker_geometry(
+        window,
+        view,
+        &preview,
+        picker_before_resize,
+        overlap_size,
+        cx,
+    )
+    .await;
+    assert_eq!(notification_geometry["overlapHitVerified"], true);
     window
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| {
                 app.clear_notices(cx);
-                app.push_notice(
-                    Err("预览遮挡回归：通知应位于正文之上，关闭按钮仍能点击。\n".repeat(12)),
-                    cx,
-                );
-                app.push_notice(
-                    Err("第二条独立通知：不得被原生阅读预览盖住。\n".repeat(12)),
-                    cx,
-                );
+                for notice in preview_overlap_notices() {
+                    app.emit_notification(notice, cx);
+                }
             });
             window.render_frame(cx);
         })
@@ -1980,12 +2016,13 @@ async fn exercise_markdown_preview(
         window,
         view,
         "preview receives native notification occlusions",
-        |_, cx| {
-            preview.read(cx).native_state().ok().is_some_and(|state| {
-                state["occlusions"]
-                    .as_array()
-                    .is_some_and(|bounds| bounds.len() >= 2)
-            })
+        |app, cx| {
+            app.notifications.read(cx).occlusions().len() == 2
+                && preview.read(cx).native_state().ok().is_some_and(|state| {
+                    state["occlusions"]
+                        .as_array()
+                        .is_some_and(|bounds| bounds.len() >= 2)
+                })
         },
         cx,
     )
@@ -2005,6 +2042,28 @@ async fn exercise_markdown_preview(
             assert!(
                 occluded["occlusions"].as_array().unwrap().len() >= 2,
                 "notification replaced picker occlusion: {occluded}"
+            );
+            let popup = app.preferences_ui.appearance_colors["text"]
+                .read(cx)
+                .popup_bounds()
+                .unwrap();
+            assert_preview_popup_hit(&occluded, popup);
+            let sample = preview_native_bounds(&occluded);
+            let mut overlapping_cards = 0;
+            for card in app.notifications.read(cx).occlusions() {
+                let overlap = sample.intersect(card);
+                if overlap.size.width > px(4.) && overlap.size.height > px(4.) {
+                    crate::smoke_interactions::assert_overlay_hit(
+                        &occluded,
+                        overlap.center(),
+                        true,
+                    );
+                    overlapping_cards += 1;
+                }
+            }
+            assert!(
+                overlapping_cards > 0,
+                "no real notification/native overlap: {occluded}"
             );
         })
         .unwrap();
@@ -2102,7 +2161,7 @@ async fn exercise_markdown_preview(
     std::fs::write(
         database.with_file_name("settings-markdown-preview.json"),
         serde_json::to_string_pretty(
-            &serde_json::json!({"before":before,"changed":changed,"scrolled":scrolled,"opened":opened,"hovered":hovered,"dismissed":dismissed,"selected":selected,"openNative":open_native,"selectedNative":selected_native,"geometry":geometry,"liveResized":live_resized,"liveRestored":live_restored,"afterLiveResize":after_live_resize,"occluded":occluded,"hidden":hidden,"reopened":reopened}),
+            &serde_json::json!({"before":before,"changed":changed,"scrolled":scrolled,"opened":opened,"hovered":hovered,"dismissed":dismissed,"selected":selected,"openNative":open_native,"selectedNative":selected_native,"geometry":geometry,"liveResized":live_resized,"liveRestored":live_restored,"notificationGeometry":notification_geometry,"afterLiveResize":after_live_resize,"occluded":occluded,"hidden":hidden,"reopened":reopened}),
         )
         .unwrap(),
     )
@@ -2348,6 +2407,19 @@ fn assert_preview_popup_hit(native: &serde_json::Value, popup: Bounds<Pixels>) {
 
 #[cfg(test)]
 mod viewport_tests {
+    #[test]
+    fn overlap_notices_remain_independent_and_keep_their_long_content() {
+        let [first, second] = super::preview_overlap_notices();
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.summary, second.summary);
+        for event in [first, second] {
+            event.validate().unwrap();
+            assert!(event.dedupe_key.is_none());
+            assert_eq!(event.summary.lines().count(), 12);
+            assert_eq!(event.severity, studyapp_core::NoticeSeverity::Error);
+        }
+    }
+
     #[test]
     fn preview_requests_fit_the_native_runner_viewport_range() {
         // The WindowOptions in main.rs require at least 1000x700. Windows
