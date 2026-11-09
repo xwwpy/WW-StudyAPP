@@ -1845,6 +1845,11 @@ pub async fn original_documents(
     }
     let docx_bytes = zip.finish().unwrap().into_inner();
     std::fs::write(&docx, &docx_bytes).unwrap();
+    // Production import stores canonical absolute paths. Windows canonicalize
+    // adds the verbatim prefix, so compare these exact identities, not the
+    // pre-import spelling or just a possibly duplicated filename.
+    let pdf = std::fs::canonicalize(pdf).unwrap();
+    let docx = std::fs::canonicalize(docx).unwrap();
     let selected = view.read_with(cx, |app, _| app.selected_note.clone());
     window
         .update(cx, |_, _, cx| {
