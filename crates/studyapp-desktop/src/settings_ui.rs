@@ -3777,7 +3777,7 @@ mod scoped_tests {
             app.preferences_ui.section = SettingsSection::Appearance;
             app.preferences_ui.appearance_page = AppearancePage::ThemeEditor;
         });
-        cx.replace_root_view(|_, _| AppearanceFixture {
+        let surface = cx.replace_root_view(|_, _| AppearanceFixture {
             app: app.clone(),
             width: 1050.,
             height: 700.,
@@ -3816,6 +3816,39 @@ mod scoped_tests {
             );
         });
         cx.run_until_parked();
+        // Label-above-control rows no longer place the picker over the
+        // parameter scrollbar at the old fixed 1050px layout. Deliberately
+        // construct that overlap from measured geometry; keep the real list,
+        // real popup and down/up event assertions below unchanged.
+        cx.simulate_resize(gpui_kit::size(gpui_kit::px(1050.), gpui_kit::px(3000.)));
+        surface.update(cx, |surface, cx| {
+            surface.height = 3000.;
+            cx.notify();
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
+        let overlap_width = cx.update(|window, cx| {
+            let target = window.find("color-close-accent").bounds().center();
+            let viewport = app
+                .read(cx)
+                .preferences_ui
+                .appearance_rows
+                .scroll
+                .viewport_bounds();
+            f32::from(
+                target.x - viewport.left() + gpui_kit::component::scroll::Scrollbar::width() / 2.,
+            )
+        });
+        surface.update(cx, |surface, cx| {
+            surface.width = overlap_width;
+            cx.notify();
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        }
         cx.update(|window, cx| {
             assert_eq!(
                 source.read(cx).value(),
@@ -3965,7 +3998,14 @@ mod scoped_tests {
         visual.update(|window, cx| {
             let before = app.read(cx).appearance_render_work().0;
             window.draw(cx).clear(cx);
-            assert_eq!(app.read(cx).appearance_render_work().0 - before, 2);
+            // The new stacked controls make each virtual row taller. Only
+            // visible rows are initialized, so a viewport can mount one or both
+            // parts; the strict zero-rebuild parent-notify check below remains.
+            let initialized = app.read(cx).appearance_render_work().0 - before;
+            assert!(
+                (1..=AppearancePage::ThemeEditor.parts().len() as u64).contains(&initialized),
+                "unbounded page-entry row builds: {initialized}"
+            );
             assert_eq!(
                 (
                     window.find("appearance-parameters").bounds(),
