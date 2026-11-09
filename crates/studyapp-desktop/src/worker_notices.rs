@@ -32,6 +32,7 @@ impl Context {
                 | Command::SaveSettings(_)
                 | Command::SaveLearningSettings { .. }
                 | Command::SetShowFilePaths(_)
+                | Command::SetTimerWidgetPinned(_)
                 | Command::SaveLayout(_)
                 | Command::Submit { .. }
                 | Command::Manual { .. }
@@ -135,7 +136,11 @@ impl Context {
             Severity::Success
         };
         let summary = if failed {
-            failure_summary.to_owned()
+            format!(
+                "{failure_summary}
+原因：{}",
+                failure_reason(outcome.as_ref().unwrap_err())
+            )
         } else {
             outcome.as_ref().unwrap().clone()
         };
@@ -236,6 +241,10 @@ mod tests {
                 Category::SaveFailure,
             ),
             (
+                Work::Apply(Command::SetTimerWidgetPinned(false)),
+                Category::SaveFailure,
+            ),
+            (
                 Work::Apply(Command::Backup("private-export-location".into())),
                 Category::ExportResult,
             ),
@@ -292,5 +301,122 @@ mod tests {
             Context::Save.event(&Ok("已保存".into())).category,
             Category::SaveSuccess
         );
+    }
+}
+
+/// Translate known failure boundaries without displaying credentials or raw stacks.
+fn failure_reason(error: &str) -> &'static str {
+    let text = error.to_lowercase();
+    if [
+        "permission",
+        "access is denied",
+        "os error 5",
+        "拒绝访问",
+        "权限",
+        "read-only",
+        "readonly",
+        "只读",
+    ]
+    .iter()
+    .any(|key| text.contains(key))
+    {
+        "没有访问或写入权限。请选择有权限的目录，或检查文件是否为只读。"
+    } else if [
+        "os error 32",
+        "os error 33",
+        "locked",
+        "being used",
+        "占用",
+        "被锁",
+    ]
+    .iter()
+    .any(|key| text.contains(key))
+    {
+        "文件或资料库正被其他进程占用。关闭另一实例或占用该文件的程序后重试。"
+    } else if ["no space", "disk full", "os error 112", "空间不足"]
+        .iter()
+        .any(|key| text.contains(key))
+    {
+        "目标磁盘空间不足。释放空间或更换存储位置后重试。"
+    } else if [
+        "not found",
+        "no such file",
+        "os error 2",
+        "os error 3",
+        "不存在",
+        "找不到",
+    ]
+    .iter()
+    .any(|key| text.contains(key))
+    {
+        "所需文件或目录不存在。检查文件是否已移动，以及外置磁盘或网络目录是否已连接。"
+    } else if ["timeout", "timed out", "超时"]
+        .iter()
+        .any(|key| text.contains(key))
+    {
+        "连接或处理超时。检查网络和服务状态后重试。"
+    } else if [
+        "http 401",
+        "http 403",
+        "unauthorized",
+        "forbidden",
+        "凭据",
+        "认证",
+    ]
+    .iter()
+    .any(|key| text.contains(key))
+    {
+        "服务拒绝访问。检查账号、访问令牌与服务权限，不要在公开反馈中粘贴凭据。"
+    } else if ["network", "connect", "dns", "网络", "连接"]
+        .iter()
+        .any(|key| text.contains(key))
+    {
+        "无法连接目标服务。检查网络、地址和服务是否可用。"
+    } else if ["超过", "too large", "过大", "限额"]
+        .iter()
+        .any(|key| text.contains(key))
+    {
+        "内容或文件超过此操作允许的大小或数量，请缩小范围后分批处理。"
+    } else if ["冲突", "stale", "revision", "已更改"]
+        .iter()
+        .any(|key| text.contains(key))
+    {
+        "内容已被另一操作修改。保留当前修改，刷新状态后再重试。"
+    } else if ["格式", "utf-8", "invalid", "损坏", "校验", "仅支持"]
+        .iter()
+        .any(|key| text.contains(key))
+    {
+        "文件格式、编码或完整性检查未通过，请确认文件可正常打开并使用支持的格式。"
+    } else {
+        "无法确认相关操作已完成。请检查目标状态；需要进一步排查时，开启诊断日志后重试。"
+    }
+}
+
+#[cfg(test)]
+mod readable_error_tests {
+    use super::*;
+    #[test]
+    fn failure_reasons_are_actionable_and_never_copy_raw_paths_tokens_or_identifiers() {
+        for (error, expected) in [
+            ("permission denied (os error 5)", "权限"),
+            ("being used (os error 32)", "占用"),
+            ("disk full (os error 112)", "空间不足"),
+            ("file not found (os error 2)", "不存在"),
+            ("connection timed out", "超时"),
+            ("HTTP 401", "服务拒绝访问"),
+            ("HTTP status client error (403 Forbidden)", "服务拒绝访问"),
+            ("read-only filesystem", "权限"),
+            ("unknown failure in folder-401", "无法确认"),
+            ("invalid UTF-8", "编码"),
+            ("stale revision", "另一操作"),
+        ] {
+            let raw =
+                format!("{error}\nC:/private/person.txt https://service/?token=secret EV-private");
+            let event = Context::Save.event(&Err(raw));
+            assert!(event.summary.contains(expected), "{}", event.summary);
+            for secret in ["person.txt", "token=", "EV-private", "secret"] {
+                assert!(!event.summary.contains(secret));
+            }
+        }
     }
 }

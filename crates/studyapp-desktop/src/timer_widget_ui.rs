@@ -9,7 +9,7 @@ use gpui_kit::{
     component::{
         Disableable, Selectable, Sizable,
         button::ButtonVariants,
-        input::{Input, InputEvent, InputState},
+        input::{InputEvent, InputState},
     },
     prelude::FluentBuilder,
     *,
@@ -68,12 +68,12 @@ impl StudyApp {
                     .child(kinds)
                     .child(form::field(
                         "计时名称（可选，最多 80 字）",
-                        Input::new(&self.timer_name),
+                        crate::settings_components::input(&self.timer_name, false),
                     ))
                     .when(kind == TimerKind::CountDown, |c| {
                         c.child(form::field(
                             "倒计时分钟数（正整数）",
-                            Input::new(&self.timer_duration),
+                            crate::settings_components::input(&self.timer_duration, false),
                         ))
                     })
                     .when(kind == TimerKind::CountDown, |c| c.child(presets))
@@ -477,7 +477,7 @@ impl StudyApp {
         if let Some(input) = self.preferences_ui.widget_fields.get("widget-presets") {
             presets = presets.child(form::field(
                 "倒计时预设（正整数分钟，最多 8 项）",
-                Input::new(input).disabled(busy),
+                crate::settings_components::input(input, false).disabled(busy),
             ));
         }
         column().w_full().min_w_0().flex_shrink_0().gap_4()

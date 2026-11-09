@@ -202,10 +202,7 @@ mod ui_tests {
     use gpui_kit::{
         AppContext, Context, Entity, Focusable, InputPreference, IntoElement, ParentElement,
         Render, Styled, TestAppContext, VisualTestContext,
-        component::{
-            Root,
-            input::{Input, InputState},
-        },
+        component::{Root, input::InputState},
     };
     use std::{cell::RefCell, rc::Rc};
 
@@ -219,8 +216,8 @@ mod ui_tests {
             gpui_kit::div()
                 .flex()
                 .flex_col()
-                .child(Input::new(&self.first))
-                .child(Input::new(&self.second))
+                .child(crate::settings_components::input(&self.first, false))
+                .child(crate::settings_components::input(&self.second, false))
         }
     }
 

@@ -42,6 +42,8 @@ pub(crate) struct State {
     pub versions: Arc<Vec<NoteVersion>>,
     #[serde(skip)]
     pub candidates: HashMap<String, (String, i64)>,
+    #[serde(skip)]
+    pub document_stamps: HashMap<String, crate::documents::ScanStamp>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -113,6 +115,7 @@ impl State {
             offline_unreconciled_notes: HashSet::new(),
             versions: Arc::new(vec![]),
             candidates: HashMap::new(),
+            document_stamps: HashMap::new(),
         }
     }
     pub fn snapshot(&self, path: String) -> Snapshot {

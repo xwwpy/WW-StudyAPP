@@ -31,6 +31,8 @@ pub struct NotificationActivityChanged {
 #[derive(Clone, Copy, Debug)]
 pub struct NotificationPresented {
     pub event_id: NoticeEventId,
+    pub category: studyapp_core::NoticeCategory,
+    pub severity: NoticeSeverity,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct NotificationDelivered {
@@ -195,8 +197,19 @@ impl NotificationCenter {
     pub fn did_present(&mut self, ids: &[u64], route: NoticeRoute, cx: &mut Context<Self>) {
         for event_id in self.queue.did_present(ids, route) {
             cx.emit(NotificationDelivered { event_id });
-            if self.policy.sound {
-                cx.emit(NotificationPresented { event_id });
+            if self.policy.sound
+                && let Some(event) = self
+                    .queue
+                    .visible()
+                    .chain(self.queue.desktop_visible())
+                    .filter_map(|notice| notice.event.as_ref())
+                    .find(|event| event.id == event_id)
+            {
+                cx.emit(NotificationPresented {
+                    event_id,
+                    category: event.category,
+                    severity: event.severity,
+                });
             }
         }
     }

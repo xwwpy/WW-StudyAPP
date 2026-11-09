@@ -4,6 +4,7 @@ use gpui_kit::{
     component::{
         Sizable,
         input::{Input, InputState},
+        tooltip::Tooltip,
     },
     *,
 };
@@ -177,8 +178,9 @@ pub fn field(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
         .min_w_0()
         .gap_1()
         .child(
-            typography(crate::design::TypeRole::Caption)
-                .text_color(crate::theme::color(MUTED))
+            typography(crate::design::TypeRole::Body)
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(crate::theme::color(INK))
                 .child(label.into()),
         )
         .child(control)
@@ -186,18 +188,18 @@ pub fn field(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
 
 /// One aligned label/value row, shared by ordinary values and location fields.
 pub fn settings_row(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
-    row()
+    column()
+        .w_full()
         .min_w_0()
-        .min_h(px(44.))
-        .gap_4()
+        .gap_1()
+        .py_2()
         .child(
             div()
-                .w(px(128.))
-                .flex_shrink_0()
                 .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
                 .child(label.into()),
         )
-        .child(div().flex_1().min_w_0().child(control))
+        .child(div().w_full().min_w_0().child(control))
 }
 
 /// Location display and optional precision editor share one presentation.
@@ -256,8 +258,14 @@ impl RenderOnce for DirectoryField {
             .filter(|_| !self.path.trim().is_empty())
             .map(str::to_owned)
             .map(Into::into)
-            .unwrap_or(self.fallback);
+            .unwrap_or_else(|| self.fallback.clone());
+        let absolute = if self.path.trim().is_empty() {
+            self.fallback.clone()
+        } else {
+            self.path.clone()
+        };
         column()
+            .min_w_0()
             .gap_1()
             .child(settings_row(
                 self.label,
@@ -265,6 +273,16 @@ impl RenderOnce for DirectoryField {
                     .child(div().flex_1().truncate().child(summary))
                     .children(self.actions),
             ))
+            .child(
+                div()
+                    .id(SharedString::from(format!("{}-path", self.id)))
+                    .test_support()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(crate::theme::color(MUTED))
+                    .child(absolute.clone())
+                    .tooltip(move |window, cx| Tooltip::new(absolute.clone()).build(window, cx)),
+            )
             .children(self.expanded.then(|| {
                 div().id(self.id).test_support().min_w_0().child(
                     self.editor
@@ -388,16 +406,19 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn directory_field_hides_full_path_until_expanded(cx: &mut TestAppContext) {
+    fn directory_field_always_shows_path_and_only_expands_precision_editor(
+        cx: &mut TestAppContext,
+    ) {
         cx.update(gpui_kit::init);
         let (view, cx) = cx.add_window_view(|_, _| DirectoryFixture { expanded: false });
         draw(cx);
         cx.update(|window, _| {
             assert!(
                 window.try_find("directory-detail").is_none(),
-                "default location row leaks the full path"
+                "precision editor should stay collapsed"
             )
         });
+        cx.update(|window, _| assert!(window.try_find("directory-detail-path").is_some()));
         view.update(cx, |view, cx| {
             view.expanded = true;
             cx.notify();

@@ -6,8 +6,7 @@ use crate::{
 };
 use chrono::{Local, TimeZone, Utc};
 use gpui_kit::component::{
-    Disableable, Selectable, Sizable, button::ButtonVariants, input::Input,
-    scroll::ScrollableElement,
+    Disableable, Selectable, Sizable, button::ButtonVariants, scroll::ScrollableElement,
 };
 use gpui_kit::{prelude::FluentBuilder, *};
 use studyapp_core::{Command, Review, SessionStatus, Snapshot};
@@ -230,14 +229,12 @@ impl StudyApp {
                                     .flex_1()
                                     .min_w_0()
                                     .child(heading("带入第一份笔记"))
-                                    .child(muted(
-                                        "导入 Markdown 文件后，版本历史会持续记录内容变化。",
-                                    )),
+                                    .child(muted("导入文档或文本后，版本历史会持续记录内容变化。")),
                             )
                             .child(
                                 Button::new("first-import")
                                     .ghost()
-                                    .action("选择 Markdown 笔记")
+                                    .action("选择文档或笔记")
                                     .on_click(
                                         cx.listener(|this, _, _, _| this.picker("import", None)),
                                     ),
@@ -440,14 +437,14 @@ impl StudyApp {
                             .flex_1()
                             .gap_2()
                             .child(muted("开始时间（本地）"))
-                            .child(Input::new(&self.start)),
+                            .child(crate::settings_components::input(&self.start, false)),
                     )
                     .child(
                         column()
                             .w(px(160.))
                             .gap_2()
                             .child(muted("学习分钟数"))
-                            .child(Input::new(&self.minutes)),
+                            .child(crate::settings_components::input(&self.minutes, false)),
                     ),
             );
         }
@@ -1078,10 +1075,10 @@ impl StudyApp {
                         .flex_wrap()
                         .child(heading(format!("全部学习记录 · {} 条", sessions.len())))
                         .child(
-                            div()
-                                .id("record-date-filter")
-                                .w(px(210.))
-                                .child(Input::new(&self.record_date).cleanable(true)),
+                            div().id("record-date-filter").w(px(210.)).child(
+                                crate::settings_components::input(&self.record_date, false)
+                                    .cleanable(true),
+                            ),
                         )
                         .child(div().flex_1())
                         .children(

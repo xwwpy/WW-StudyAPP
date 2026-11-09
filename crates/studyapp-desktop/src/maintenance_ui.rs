@@ -2,11 +2,7 @@
 use crate::maintenance_runtime::{self, DiscoveryContext, InstallDiscovery};
 use anyhow::{Result, ensure};
 use gpui_kit::{
-    component::{
-        Disableable, Theme, ThemeMode,
-        button::ButtonVariants,
-        input::{Input, InputState},
-    },
+    component::{Disableable, Theme, ThemeMode, button::ButtonVariants, input::InputState},
     *,
 };
 use studyapp_desktop::maintenance::*;
@@ -269,7 +265,7 @@ impl Render for MaintenanceView {
                         .text_color(rgb(0xA63737))
                         .child("第二次确认：此操作无法撤销。请输入“删除数据库”。"),
                 )
-                .child(Input::new(&self.phrase)),
+                .child(crate::settings_components::input(&self.phrase, false)),
             ConfirmationStage::Ready => content.child(if selection.database {
                 "已完成两次数据库确认。执行前仍会重新验证文件身份。"
             } else {

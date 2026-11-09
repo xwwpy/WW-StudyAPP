@@ -579,3 +579,53 @@ impl AppearanceSettings {
         Ok(())
     }
 }
+
+/// Ready-to-use palettes are copied into the user's editable preset collection.
+pub fn builtin_theme_presets() -> Vec<ThemePreset> {
+    [
+        ("paper", "暖纸", "#785B35", "#EEE8DD", "#FFFCF5", "#302B25"),
+        ("forest", "松林", "#28644A", "#E9F1EB", "#F9FCF9", "#21392B"),
+        ("ocean", "晴海", "#23638D", "#E8F0F7", "#FAFCFF", "#223748"),
+        (
+            "lavender", "雾紫", "#704C91", "#F0EAF6", "#FEFBFF", "#382B43",
+        ),
+        (
+            "midnight", "深海", "#8EC8EE", "#131D2B", "#1C2B3D", "#E7EFF8",
+        ),
+        (
+            "graphite", "石墨", "#B6C5D6", "#1B1D21", "#272A30", "#EDF0F5",
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(id, name, accent, background, surface, text)| ThemePreset {
+            id: format!("builtin-{id}"),
+            name: name.into(),
+            palette: ThemePalette {
+                accent: accent.into(),
+                background: background.into(),
+                surface: surface.into(),
+                text: text.into(),
+            },
+            markdown: MarkdownStyle::default(),
+        },
+    )
+    .collect()
+}
+
+#[cfg(test)]
+mod builtin_presets_tests {
+    #[test]
+    fn builtin_palettes_are_unique_valid_and_editable_without_replacing_other_presets() {
+        let presets = super::builtin_theme_presets();
+        assert_eq!(presets.len(), 6);
+        let mut settings = super::AppearanceSettings::default();
+        for preset in presets {
+            settings.active_preset = Some(preset.id.clone());
+            settings.mode = super::ThemeMode::Custom;
+            settings.custom_presets.push(preset);
+            settings.validate().unwrap();
+        }
+        assert_eq!(settings.custom_presets.len(), 6);
+    }
+}

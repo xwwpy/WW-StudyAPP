@@ -84,7 +84,7 @@ impl StudyApp {
         if self.worker.sender.send(work).is_err() {
             self.push_notice(Err("后台服务已停止".into()), cx);
         } else {
-            self.push_notice(Ok("正在后台导入拖入的 Markdown 文件…".into()), cx);
+            self.push_notice(Ok("正在后台导入拖入的文档与笔记…".into()), cx);
         }
     }
 

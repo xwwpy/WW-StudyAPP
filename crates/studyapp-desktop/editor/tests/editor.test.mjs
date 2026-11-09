@@ -360,6 +360,7 @@ test("link and table toolbar actions insert editable Markdown with isolated undo
   assert.equal((await state(page)).text, "学习[链接]");
   await select(page, 6);
   await page.getByRole("button", { name: "插入表格", exact: true }).click();
+  await page.getByRole("button", { name: "创建", exact: true }).click();
   assert.match((await state(page)).text, /^学习\[链接\]\n\n\| 列 1 \| 列 2 \|\n\| --- \| --- \|/);
   await page.evaluate(() => window.studyappEditor.command("undo"));
   assert.equal((await state(page)).text, "学习[链接]");
@@ -2903,4 +2904,238 @@ test("modal restores the focused editor even if the native parent already took f
     assert.deepEqual(after[key], before[key], key);
   assert.deepEqual(errors, []);
   await page.close();
+});
+
+
+test("0.3.5 empty list Enter and Backspace leave exactly one level with undo", async()=>{
+  for (const key of ["Enter","Backspace"]) for (const [text,expected] of [
+    ["- ",""],["1. ",""],["- [ ] ",""],["- parent\n  - ","- parent\n- "],["1. parent\n   - child\n     - ","1. parent\n   - child\n   - "]
+  ]) {
+    const {page,errors}=await setup(text);await select(page,text.length);await page.keyboard.press(key);
+    assert.equal((await state(page)).text,expected,`${key}: ${JSON.stringify(text)}`);
+    await page.keyboard.press("Control+z");assert.equal((await state(page)).text,text);
+    assert.deepEqual(errors,[]);await page.close();
+  }
+});
+
+test("0.3.5 fenced INI preserves spaces and tabs inside list continuations",async()=>{
+  for(const prefix of ["","- parent\n"]) {
+    const indent=prefix?"  ":"";
+    const text=prefix+["```ini","                          40                              30","                      30                ==>          20            40","                  20        ...                                ...","\t\t40\t30","```"].map(line=>indent+line).join("\n");
+    const {page,errors}=await setup(text);await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+    const lines=await page.locator(".md-code-line").evaluateAll(lines=>lines.filter(line=>/40|30|20/.test(line.textContent)).map(line=>({text:line.textContent,whiteSpace:getComputedStyle(line).whiteSpace,tabSize:getComputedStyle(line).tabSize})));
+    assert.ok(lines[0].text.startsWith("                          40"),JSON.stringify(lines));
+    assert.ok(lines[1].text.startsWith("                      30"));
+    assert.ok(lines[3].text.includes("\t\t40\t30"));
+    assert.ok(lines.every(line=>line.whiteSpace==="pre-wrap"&&line.tabSize==="4"));
+    assert.equal((await state(page)).text,text);assert.deepEqual(errors,[]);await page.close();
+  }
+});
+
+test("0.3.5 outline titles render emphasis and code without interpreting HTML",async()=>{
+  const text="# A **bold** and `code`\n\n## <img src=x onerror=alert(1)> *emphasis*";
+  const {page,errors,externalRequests}=await setup(text);await page.locator("#outline-toggle").click();
+  assert.equal(await page.locator(".outline-label strong").first().textContent(),"bold");
+  assert.equal(await page.locator(".outline-label code").first().textContent(),"code");
+  assert.equal(await page.locator(".outline-label em").first().textContent(),"emphasis");
+  assert.equal(await page.locator(".outline-label img").count(),0);assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 creates bounded custom table dimensions and cancels a stale dialog',async()=>{
+  const {page,errors}=await setup('intro');await select(page,5);
+  await page.getByRole('button',{name:'插入表格',exact:true}).click();
+  await page.getByLabel('行数（含表头）',{exact:true}).fill('4');await page.getByLabel('列数',{exact:true}).fill('3');
+  await page.getByRole('button',{name:'创建',exact:true}).click();
+  let text=(await state(page)).text;assert.equal(text.split('\n').filter(line=>line.startsWith('|')).length,5);assert.match(text,/\| 列 1 \| 列 2 \| 列 3 \|/);
+  await page.evaluate(()=>window.studyappEditor.command('undo'));assert.equal((await state(page)).text,'intro');
+  await page.getByRole('button',{name:'插入表格',exact:true}).click();
+  await page.getByLabel('行数（含表头）',{exact:true}).fill('1000');await page.getByLabel('列数',{exact:true}).fill('64');
+  await page.getByRole('button',{name:'创建',exact:true}).click();assert.match(await page.locator('#table-create-dialog [role=alert]').textContent(),/4,096/);
+  await page.evaluate(()=>window.studyappEditor.load({generation:99,text:'other document',readonly:false}));
+  await page.locator('#table-create-dialog').waitFor({state:'detached'});assert.equal((await state(page)).text,'other document');
+  await page.getByRole('button',{name:'插入表格',exact:true}).click();await page.evaluate(()=>window.studyappEditor.setReadonly(true));await page.locator('#table-create-dialog').waitFor({state:'detached'});
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 every table column supports insert duplicate delete and move with isolated undo',async()=>{
+  const original='| A | B | C |\n| --- | :---: | ---: |\n| a | b | c |\n';
+  for(const [label,expected]of [['左侧插入列',['A','','B','C']],['右侧插入列',['A','B','','C']],['复制此列',['A','B','B','C']],['删除此列',['A','C']],['此列左移',['B','A','C']],['此列右移',['A','C','B']]]) {
+    const {page,errors}=await tableSetup(original,{},false);
+    await page.getByLabel('选择表格列',{exact:true}).selectOption('1');await page.getByLabel('更多列操作',{exact:true}).click();await page.getByRole('button',{name:label,exact:true}).click();
+    const changed=(await state(page)).text;assert.deepEqual(changed.split('\n')[0].split('|').slice(1,-1).map(cell=>cell.trim()),expected,label);
+    const body=changed.split('\n')[2].split('|').slice(1,-1).map(cell=>cell.trim());assert.deepEqual(body,expected.map(cell=>cell.toLowerCase()),label);
+    await page.evaluate(()=>window.studyappEditor.command('undo'));assert.equal((await state(page)).text,original,label);
+    await page.evaluate(()=>window.studyappEditor.command('redo'));assert.equal((await state(page)).text,changed,label);
+    assert.deepEqual(errors,[]);await page.close();
+  }
+});
+
+test('0.3.5 table last-column width all-column alignment and structural undo preserve view overrides',async()=>{
+  const original='| A | B | C |\n| --- | --- | --- |\n| a | b | c |\n';const {page,errors}=await tableSetup(original,{},false);
+  await page.getByLabel('选择表格列',{exact:true}).selectOption('-1');await page.getByRole('button',{name:'居中对齐',exact:true}).click();
+  await page.waitForFunction(()=>[...document.querySelectorAll('.md-table-cell')].every(cell=>getComputedStyle(cell).textAlign==='center'));
+  await page.getByLabel('更多列操作',{exact:true}).click();assert.equal(await page.getByLabel('所选列宽度百分比',{exact:true}).isDisabled(),true);
+  await page.getByLabel('选择表格列',{exact:true}).selectOption('2');await page.getByLabel('所选列宽度百分比',{exact:true}).fill('50');await page.getByLabel('所选列宽度百分比',{exact:true}).press('Tab');
+  await page.waitForFunction(()=>{const cells=[...document.querySelectorAll('.md-table-header .md-table-cell')];return Math.abs(cells[2].getBoundingClientRect().width/document.querySelector('.md-table-header').clientWidth-.5)<.015;});
+  const before=(await tableMessages(page)).at(-1);assert.equal(before.value.widths[2],5000);assert.equal(before.value.widths.reduce((a,b)=>a+b,0),10000);
+  await page.getByLabel('选择表格列',{exact:true}).selectOption('1');await page.getByRole('button',{name:'复制此列',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.md-table-header .md-table-cell').length===4);
+  await page.evaluate(()=>window.studyappEditor.command('undo'));
+  await page.waitForFunction(()=>document.querySelectorAll('.md-table-header .md-table-cell').length===3);
+  const undone=(await tableMessages(page)).at(-1);assert.equal(undone.table,before.table);assert.deepEqual(undone.value.widths,before.value.widths);assert.deepEqual(undone.value.alignments,before.value.alignments);assert.equal((await state(page)).text,original);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 escaped pipes empty cells and the only remaining table column are preserved correctly',async()=>{
+  const text='| A\\|X | B |\n| --- | --- |\n| | b\\|c |\n';const {page,errors}=await tableSetup(text,{},false);
+  await page.getByLabel('选择表格列',{exact:true}).selectOption('1');await page.getByLabel('更多列操作',{exact:true}).click();await page.getByRole('button',{name:'复制此列',exact:true}).click();
+  assert.match((await state(page)).text,/\| A\\\|X \| B \| B \|/);assert.match((await state(page)).text,/\|  \| b\\\|c \| b\\\|c \|/);
+  await page.evaluate(()=>window.studyappEditor.load({generation:43,text:'| Only |\n| --- |\n| value |\n',readonly:false,tableConfigurable:true}));
+  await page.locator('.md-table-actions').waitFor({state:'visible'});await page.getByLabel('更多列操作',{exact:true}).click();await page.getByRole('button',{name:'删除此列',exact:true}).click();
+  assert.equal((await state(page)).text.trim(),'');await page.evaluate(()=>window.studyappEditor.command('undo'));assert.match((await state(page)).text,/Only/);
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));await page.locator('.md-table-actions').waitFor({state:'visible'});
+  const more=page.locator('.md-table-more');if((await more.getAttribute('open'))===null)await page.getByLabel('更多列操作',{exact:true}).click();
+  for(const label of ['左侧插入列','右侧插入列','复制此列','删除此列','此列左移','此列右移'])assert.equal(await page.getByRole('button',{name:label,exact:true}).isDisabled(),true,label);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 HTML images use only host-validated data and links open only through native IPC',async()=>{
+  const text='<div><img src="pixel.png" alt="host picture"><a href="https://example.com/guide">打开网页</a><a href="javascript:alert(1)">unsafe</a></div>\n';
+  const {page,errors,externalRequests}=await setup(text);await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  assert.equal(await page.locator('.md-html-fragment img').count(),0);
+  const image='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+  await page.evaluate(image=>window.studyappEditor.setImages({generation:41,images:{'pixel.png':image}}),image);
+  await page.locator('.md-html-fragment img').waitFor();assert.equal(await page.locator('.md-html-fragment img').getAttribute('src'),image);
+  await page.getByRole('link',{name:'打开网页',exact:true}).click();assert.equal(await page.evaluate(()=>window.messages.filter(message=>message.type==='openLink').at(-1).url),'https://example.com/guide');
+  assert.equal(await page.locator('.md-html-fragment a').last().getAttribute('href'),null);assert.equal(page.url(),base);
+  assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 Markdown reference links edit modifiers and local anchors preserve the source',async()=>{
+  const text='[web][reference] and [jump](#target-heading)\n\n[reference]: https://example.com/reference\n\n# Target **heading**\n\nend';
+  const {page,errors,externalRequests}=await setup(text);await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  await page.locator('[data-studyapp-href="https://example.com/reference"]').first().click();assert.equal(await page.evaluate(()=>window.messages.filter(message=>message.type==='openLink').at(-1).url),'https://example.com/reference');
+  await page.locator('[data-studyapp-href="#target-heading"]').first().click();assert.equal((await state(page)).selection.anchor,text.indexOf('# Target'));
+  await page.evaluate(text=>window.studyappEditor.load({generation:42,text,readonly:false}),text);await select(page,text.length);
+  const web=page.locator('[data-studyapp-href="https://example.com/reference"]').first();let before=await page.evaluate(()=>window.messages.filter(message=>message.type==='openLink').length);
+  await web.click();assert.equal(await page.evaluate(()=>window.messages.filter(message=>message.type==='openLink').length),before);
+  await select(page,text.length);await web.click({modifiers:['Control']});assert.equal(await page.evaluate(()=>window.messages.filter(message=>message.type==='openLink').length),before+1);
+  assert.equal((await state(page)).text,text);assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 code indentation has real monospaced geometry and first-level backspace removes list layout',async()=>{
+  const text='```ini\n                          40                              30\n                      30                ==>          20            40\n                  20        ...                                ...\n\t\t40\t30\n```';
+  const {page,errors}=await setup(text);await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  const geometry=await page.locator('.md-code-line').evaluateAll(lines=>lines.filter(line=>/40|30|20/.test(line.textContent)).map(line=>{
+    const walker=document.createTreeWalker(line,NodeFilter.SHOW_TEXT);let node;while(node=walker.nextNode()){const match=/\d+/.exec(node.textContent);if(match){const range=document.createRange();range.setStart(node,match.index);range.setEnd(node,match.index+match[0].length);return {x:range.getBoundingClientRect().left,text:line.textContent};}}
+  }));
+  assert.ok(geometry[0].x>geometry[1].x+20,JSON.stringify(geometry));assert.ok(geometry[1].x>geometry[2].x+20,JSON.stringify(geometry));assert.ok(geometry[3].x<geometry[2].x-40,JSON.stringify(geometry));
+  await page.evaluate(()=>window.studyappEditor.load({generation:42,text:'- ordinary',readonly:false}));await select(page,2);await page.keyboard.press('Backspace');assert.equal((await state(page)).text,'ordinary');assert.equal(await page.locator('.md-list-line').count(),0);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 editor fields share themed surfaces focus rings and disabled states at narrow widths', async()=>{
+  const original='```js\nconst value = 1;\n```\n\nEnd';
+  const {page,errors}=await setup(original);await select(page,original.indexOf('const'));
+  const language=page.getByRole('combobox',{name:'代码语言',exact:true});await language.focus();
+  const inputStyle=await language.evaluate(input=>{const style=getComputedStyle(input);return {radius:style.borderRadius,background:style.backgroundColor,outline:style.outlineWidth,outlineStyle:style.outlineStyle,height:input.getBoundingClientRect().height};});
+  assert.equal(inputStyle.radius,'8px');assert.equal(inputStyle.outline,'2px');assert.equal(inputStyle.outlineStyle,'solid');assert.ok(inputStyle.height>=28);
+  await select(page,original.length);await page.getByRole('button',{name:'插入表格',exact:true}).click();await page.setViewportSize({width:320,height:640});
+  const dimensions=page.getByLabel('行数（含表头）',{exact:true});await dimensions.focus();
+  const dialogStyle=await dimensions.evaluate(input=>{const style=getComputedStyle(input),bounds=input.getBoundingClientRect(),dialog=input.closest('dialog').getBoundingClientRect();return {radius:style.borderRadius,background:style.backgroundColor,outline:style.outlineWidth,height:bounds.height,inside:bounds.left>=dialog.left&&bounds.right<=dialog.right};});
+  assert.equal(dialogStyle.radius,inputStyle.radius);assert.equal(dialogStyle.background,inputStyle.background);assert.equal(dialogStyle.outline,'2px');assert.ok(dialogStyle.height>=34);assert.equal(dialogStyle.inside,true);
+  await page.getByRole('button',{name:'取消',exact:true}).click();assert.equal((await state(page)).text,original);
+  await page.evaluate(()=>window.studyappEditor.load({generation:42,text:'| A | B |\n| --- | --- |\n| a | b |\n',readonly:false,tableConfigurable:true}));
+  await page.locator('.md-table-actions').waitFor({state:'visible'});await page.getByLabel('更多列操作',{exact:true}).click();await page.getByLabel('选择表格列',{exact:true}).selectOption('-1');
+  const width=page.getByLabel('所选列宽度百分比',{exact:true});assert.equal(await width.isDisabled(),true);
+  assert.equal(await width.evaluate(input=>getComputedStyle(input).opacity),'0.45');assert.deepEqual(errors,[]);await page.close();
+});
+
+const documentPixel='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+async function pdfReader(page,password=false) {
+  await page.evaluate(({image,password})=>{
+    const post=window.ipc.postMessage;window.ipc.postMessage=raw=>{
+      post(raw);const message=JSON.parse(raw);if(message.type!=='renderDocument')return;
+      const response=message.page===0?(password&&message.password!=='local-password'?{passwordRequired:true}:{pages:[[612,792],[792,612],[400,1800]]}):{image};
+      setTimeout(()=>window.studyappEditor.documentResult({generation:message.generation,request:message.request,...response}),10);
+    };
+    window.studyappEditor.load({generation:42,text:'原文档阅读；页面内容和版式保存在资料库版本中。',readonly:false,canRequestEdit:true,document:{kind:'pdf',data:''}});
+  },{image:documentPixel,password});
+}
+
+test('0.3.5 PDF reader lazily requests original pages supports zoom and stays readonly',async()=>{
+  const {page,errors,externalRequests}=await setup('old');await pdfReader(page);
+  await page.locator('.document-page img').first().waitFor();assert.equal(await page.locator('.document-page').count(),3);
+  assert.equal(await page.locator('#editor').isVisible(),false);assert.equal(await page.locator('#toolbar').isVisible(),false);
+  await page.evaluate(()=>window.studyappEditor.setReadonly(false));assert.equal((await action(page,{type:'passiveVisibility'})).readonly,true);
+  assert.equal(await page.evaluate(()=>window.studyappEditor.command('source')),false);
+  const before=await page.locator('.document-page').first().boundingBox();await page.getByLabel('文档缩放',{exact:true}).selectOption('1.5');
+  await page.waitForFunction(()=>Math.abs(document.querySelector('.document-page').getBoundingClientRect().width-918)<2);
+  const after=await page.locator('.document-page').first().boundingBox();assert.notEqual(before.width,after.width);
+  await page.getByLabel('文档页码',{exact:true}).fill('3');await page.getByLabel('文档页码',{exact:true}).press('Tab');
+  await page.waitForFunction(()=>window.messages.some(message=>message.type==='renderDocument'&&message.page===3));
+  await page.evaluate(()=>window.studyappEditor.setModalOverlay(true,.4));assert.equal(await page.locator('main').evaluate(main=>main.inert),true);
+  await page.evaluate(()=>window.studyappEditor.setModalOverlay(false,.4));
+  await page.evaluate(()=>window.studyappEditor.load({generation:43,text:'back to Markdown',readonly:false}));
+  assert.equal(await page.locator('#original-document').count(),0);assert.equal(await page.locator('#editor').isVisible(),true);assert.equal((await state(page)).text,'back to Markdown');
+  assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 encrypted PDF prompt clears submitted input and ignores stale results after switching',async()=>{
+  const {page,errors}=await setup('old');await pdfReader(page,true);
+  const password=page.getByLabel('PDF 打开密码',{exact:true});await password.fill('wrong');await page.getByRole('button',{name:'打开',exact:true}).click();
+  await page.getByText('密码未被接受，请重试。',{exact:false}).waitFor();assert.equal(await password.inputValue(),'');
+  await password.fill('local-password');await page.getByRole('button',{name:'打开',exact:true}).click();await page.locator('.document-page img').first().waitFor();
+  await page.evaluate(()=>{
+    window.studyappEditor.load({generation:44,text:'new text',readonly:false});
+    for(const message of window.messages.filter(message=>message.type==='renderDocument'))window.studyappEditor.documentResult({generation:42,request:message.request,pages:[[100,100]],image:'unsafe'});
+  });
+  assert.equal(await page.locator('#original-document').count(),0);assert.equal((await state(page)).text,'new text');assert.deepEqual(errors,[]);await page.close();
+});
+
+async function originalWordFixture() {
+  const JSZip=(await import('jszip')).default,zip=new JSZip();
+  const namespace='xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
+  zip.file('[Content_Types].xml','<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="png" ContentType="image/png"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>');
+  zip.file('_rels/.rels','<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="office" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>');
+  zip.file('word/document.xml',`<w:document ${namespace}><w:body><w:p><w:r><w:rPr><w:b/><w:color w:val="AA0000"/></w:rPr><w:t>原版式粗体</w:t></w:r></w:p><w:p><w:hyperlink r:id="web"><w:r><w:t>文档网页</w:t></w:r></w:hyperlink><w:hyperlink r:id="unsafe"><w:r><w:t>不安全链接</w:t></w:r></w:hyperlink></w:p><w:tbl><w:tblPr><w:tblW w:w="5000" w:type="dxa"/></w:tblPr><w:tblGrid><w:gridCol w:w="2500"/><w:gridCol w:w="2500"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>A1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>B1</w:t></w:r></w:p></w:tc></w:tr></w:tbl><w:p><w:r><w:br w:type="page"/><w:t>第二页正文</w:t></w:r></w:p><w:altChunk r:id="chunk"/><w:sectPr><w:headerReference w:type="default" r:id="header"/><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440" w:header="720" w:footer="720"/></w:sectPr></w:body></w:document>`);
+  zip.file('word/_rels/document.xml.rels','<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="web" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/word" TargetMode="External"/><Relationship Id="unsafe" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="javascript:alert(1)" TargetMode="External"/><Relationship Id="header" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="chunk" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/aFChunk" Target="injected.html"/></Relationships>');
+  zip.file('word/media/image.png',documentPixel.split(',')[1],{base64:true});
+  const body=await zip.file('word/document.xml').async('string');
+  zip.file('word/document.xml',body.replace('<w:tbl>',`<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"><wp:extent cx="914400" cy="914400"/><wp:docPr id="1" name="Embedded image"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="1" name="Embedded image"/></pic:nvPicPr><pic:blipFill><a:blip r:embed="picture"/></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="914400"/></a:xfrm></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p><w:tbl>`));
+  const relationships=await zip.file('word/_rels/document.xml.rels').async('string');
+  zip.file('word/_rels/document.xml.rels',relationships.replace('</Relationships>','<Relationship Id="picture" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image.png"/></Relationships>'));
+  zip.file('word/header1.xml',`<w:hdr ${namespace}><w:p><w:r><w:t>页眉标题</w:t></w:r></w:p></w:hdr>`);
+  zip.file('word/injected.html','<script>window.wordScriptExecuted=true</script><iframe src="https://example.com/blocked"></iframe>');
+  return zip.generateAsync({type:'base64'});
+}
+
+test('0.3.5 DOCX preserves pages styled text tables and headers inside a constrained shadow reader',async()=>{
+  const data=await originalWordFixture(),{page,errors,externalRequests}=await setup('old');
+  await page.evaluate(data=>window.studyappEditor.load({generation:42,text:'原文档只读',readonly:false,document:{kind:'docx',data}}),data);
+  await page.locator('.document-word section.docx').first().waitFor();
+  assert.equal(await page.locator('.document-word section.docx').count(),2);
+  await page.getByText('第二页正文',{exact:true}).waitFor();assert.ok(await page.getByText('页眉标题',{exact:true}).count()>0);
+  await page.waitForFunction(()=>{const image=document.querySelector('.document-word')?.shadowRoot?.querySelector('img');return image?.complete&&image.naturalWidth>0;});
+  assert.match(await page.locator('.document-word img').first().getAttribute('src'),/^data:image\/png;base64,/);
+  assert.equal(await page.locator('.document-word table td').count(),2);assert.ok(await page.getByText('A1',{exact:true}).count()>0);
+  const bold=await page.getByText('原版式粗体',{exact:true}).evaluate(node=>({weight:getComputedStyle(node).fontWeight,color:getComputedStyle(node).color}));assert.ok(Number(bold.weight)>=600,JSON.stringify(bold));assert.equal(bold.color,'rgb(170, 0, 0)');
+  const geometry=await page.locator('.document-word').evaluate(host=>({width:host.getBoundingClientRect().width,height:host.getBoundingClientRect().height}));assert.ok(geometry.width>300&&geometry.height>500,JSON.stringify(geometry));
+  await page.getByRole('link',{name:'文档网页',exact:true}).click();assert.equal(await page.evaluate(()=>window.messages.filter(message=>message.type==='openLink').at(-1).url),'https://example.com/word');
+  assert.equal(await page.getByText('不安全链接',{exact:true}).getAttribute('href'),null);assert.equal(await page.evaluate(()=>window.wordScriptExecuted),undefined);assert.equal(await page.locator('.document-word iframe,.document-word script').count(),0);
+  await page.getByLabel('文档缩放',{exact:true}).selectOption('0.5');await page.waitForTimeout(100);const half=await page.locator('.document-word').boundingBox();assert.ok(half.width<geometry.width);
+  await page.evaluate(()=>window.studyappEditor.load({generation:43,text:'Markdown again',readonly:false}));assert.equal(await page.locator('.document-word').count(),0);assert.equal((await state(page)).text,'Markdown again');assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
+});
+
+test('0.3.5 malformed originals have readable errors and abandoned DOCX cannot replace a new note',async()=>{
+  const {page,errors,externalRequests}=await setup('old');
+  await page.evaluate(()=>window.studyappEditor.load({generation:42,text:'只读',readonly:true,document:{kind:'docx',data:'bm90IGEgemlw'}}));
+  await page.getByRole('status').filter({hasText:'文档未能显示'}).waitFor();
+  const data=await originalWordFixture();
+  await page.evaluate(data=>{
+    window.studyappEditor.load({generation:43,text:'只读',readonly:true,document:{kind:'docx',data}});
+    window.studyappEditor.load({generation:44,text:'new Markdown survives',readonly:false});
+  },data);
+  await page.waitForTimeout(250);assert.equal(await page.locator('#original-document').count(),0);assert.equal((await state(page)).text,'new Markdown survives');
+  assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
 });

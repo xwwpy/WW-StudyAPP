@@ -73,12 +73,7 @@ pub fn collect(paths: Vec<PathBuf>) -> ImportSelection {
                     studyapp_desktop::presentation::path_label(&path)
                 )),
             }
-        } else if metadata.is_file()
-            && path
-                .extension()
-                .and_then(|p| p.to_str())
-                .is_some_and(|p| p.eq_ignore_ascii_case("md") || p.eq_ignore_ascii_case("markdown"))
-        {
+        } else if metadata.is_file() && studyapp_core::documents::supported_import(&path) {
             match std::fs::canonicalize(&path) {
                 Ok(canonical) => {
                     let key = canonical.to_string_lossy().to_string();
@@ -98,7 +93,7 @@ pub fn collect(paths: Vec<PathBuf>) -> ImportSelection {
             }
         } else if depth == 0 {
             output.warnings.push(format!(
-                "仅支持 Markdown 文件或目录：{}",
+                "支持 Markdown、PDF、DOCX、文本文件或目录；不支持此文件格式：{}",
                 studyapp_desktop::presentation::path_label(&path)
             ));
         }
@@ -122,7 +117,41 @@ mod tests {
         std::fs::write(&unsupported, "fixture").unwrap();
         let result = collect(vec![root, note, unsupported]);
         assert_eq!(result.files.len(), 1);
-        assert!(result.warnings.iter().any(|w| w.contains("仅支持")));
+        assert!(result.warnings.iter().any(|w| w.contains("不支持")));
+    }
+
+    #[test]
+    fn document_and_text_pickers_collect_supported_files_without_changing_sources() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let mut paths = Vec::new();
+        for extension in [
+            "PDF", "DOCX", "txt", "csv", "json", "yaml", "yml", "toml", "ini", "log", "rst",
+            "html", "htm", "xml",
+        ] {
+            let path = root.join(format!("source.{extension}"));
+            std::fs::write(&path, b"source is validated by the import worker").unwrap();
+            paths.push(path);
+        }
+        let legacy = root.join("legacy.doc");
+        std::fs::write(&legacy, b"unsupported legacy Word").unwrap();
+        let mut selected = paths.clone();
+        selected.push(paths[0].clone());
+        selected.push(legacy.clone());
+        let result = collect(selected);
+        assert_eq!(result.files.len(), paths.len());
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("不支持"))
+        );
+        for path in paths {
+            assert_eq!(
+                std::fs::read(path).unwrap(),
+                b"source is validated by the import worker"
+            );
+        }
+        assert_eq!(std::fs::read(legacy).unwrap(), b"unsupported legacy Word");
     }
 
     #[test]

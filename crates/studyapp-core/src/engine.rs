@@ -299,7 +299,7 @@ impl Engine {
                 path,
             } => {
                 crate::managed::export(&next, note_id, version_id.as_deref(), path)?;
-                return Ok(format!("Markdown 已导出：{}", path.display()));
+                return Ok(format!("笔记原文已导出：{}", path.display()));
             }
             _ => {}
         }

@@ -1,12 +1,14 @@
-import { setListMarkers, listPresentationChanged } from "./lists";
-import { setTableDocument, setTableDefaults, tableUpdates, tablePresentationChanged, installTableControls, syncTableAnchors, hideTableControls } from "./tables";
+import { closeDocument, showDocument, documentResult, type OriginalDocument, type DocumentResult } from "./documents";
+import { installLinks } from "./links";
+import { setListMarkers, listPresentationChanged, leaveList } from "./lists";
+import { tableHistory, createTableDialog, setTableDocument, setTableDefaults, tableUpdates, tablePresentationChanged, installTableControls, syncTableAnchors, hideTableControls } from "./tables";
 import { sanitizeHtml, sanitizeStyle } from "./safe-html";
 import { htmlConfiguration, htmlRendering } from "./html-rendering";
 import { previewCaret, previewMouseSelection } from "./preview";
 import { renderedSelection, copyMenuUpdates, installCopyMenu } from "./selection";
 import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled, setOutlinePreference } from "./outline";
 import { applyEditorTheme } from "./theme";
-import { ChangeSet, Compartment, EditorSelection, EditorState, Extension, Text, Transaction } from "@codemirror/state";
+import { ChangeSet, Compartment, Prec, EditorSelection, EditorState, Extension, Text, Transaction } from "@codemirror/state";
 import { EditorView, keymap, placeholder, ViewUpdate } from "@codemirror/view";
 import {
   addCursorAbove, addCursorBelow, copyLineDown, copyLineUp, cursorMatchingBracket,
@@ -14,7 +16,7 @@ import {
   indentSelection, insertBlankLine, moveLineDown, moveLineUp, redoSelection, selectAll,
   selectLine, selectParentSyntax, toggleBlockComment, toggleComment, toggleTabFocusMode, undoSelection
 } from "@codemirror/commands";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { markdown, markdownLanguage, insertNewlineContinueMarkup, deleteMarkupBackward } from "@codemirror/lang-markdown";
 import { syntaxHighlighting } from "@codemirror/language";
 import { codeHighlighting, fencedLanguage } from "./languages";
 import { imageMapChanged, updateImages, renderedMarkdown, rawUrlWrapping } from "./decorations";
@@ -24,11 +26,12 @@ import { incompleteScalars, scalarText, splitsScalar } from "./unicode";
 import { eventBinding, resolveBindings, typingKeymap } from "./shortcuts";
 import { scanDocumentStatistics } from "./statistics";
 
-interface Load { outlinePreference?:unknown; tableViews?:unknown; tableConfigurable?:boolean; outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
+interface Load { document?:OriginalDocument; outlinePreference?:unknown; tableViews?:unknown; tableConfigurable?:boolean; outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
 interface Rebase extends Load { previousGeneration: number; previousRevision: number; changes: { from: number; to: number; insert: string }[]; }
 interface TestAction { shown?:boolean; type: string; request?: string | number; from?: number; to?: number; text?: string; anchor?: number; head?: number; name?: string; edits?: number; width?: number; height?: number; }
 interface Bridge {
   load(value: Load): void;
+  documentResult(value:DocumentResult):void;
   rebase(value: Rebase): void;
   setReadonly(value: boolean): void;
   setModalOverlay(blocked: boolean, opacity: number): void;
@@ -61,6 +64,7 @@ let bindings = resolveBindings({});
 let generation = 0;
 let revision = 0;
 let source = false;
+let originalDocument = false;
 let loaded = false;
 let canRequestEdit = false;
 let loadEpoch = 0;
@@ -153,7 +157,7 @@ function clearWarning(): void {
 function updateToolbar(): void {
   for (const button of toolbar.querySelectorAll<HTMLButtonElement>("button[data-command],button[data-menu-command]")) {
     const command = button.dataset.command ?? button.dataset.menuCommand;
-    button.disabled = command !== "source" && (view.state.readOnly || pendingFlush);
+    button.disabled = originalDocument || (command !== "source" && (view.state.readOnly || pendingFlush));
     const binding = bindings[`editor.${command}`];
     button.title = `${button.getAttribute("aria-label") ?? ""}${binding ? ` · ${binding.replaceAll(";", " / ")}` : ""}`;
   }
@@ -250,11 +254,12 @@ const editorCommands: Readonly<Record<string, (view: EditorView) => boolean>> = 
   "delete-group-forward": deleteGroupForward
 });
 function command(name: string): boolean {
-  if (modalBlocked || typeof name !== "string" || !loaded || view.composing || pendingFlush) return false;
+  if (modalBlocked || originalDocument || typeof name !== "string" || !loaded || view.composing || pendingFlush) return false;
   name = name.startsWith("editor.") ? name.slice(7) : name;
   if (name === "source") { setSource(!source); return true; }
   if (name === "save" && !view.state.readOnly) { post({ type: "save", generation, revision }); return true; }
   if (view.state.readOnly) return false;
+  if (name === "table") return createTableDialog(view);
   if (name === "insert-image") { post({type:"requestInsertImage",generation}); return true; }
   const result = Object.hasOwn(editorCommands, name) ? editorCommands[name](view) : formatCommand(view, name);
   if (result) view.focus();
@@ -311,7 +316,7 @@ function setShortcuts(values: Record<string, string>): void {
 }
 function extensions(readonly: boolean, rawText = ""): Extension[] {
   return [
-    tableUpdates, outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : [renderedMarkdown, htmlRendering]),
+    tableHistory, tableUpdates, outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : [renderedMarkdown, htmlRendering]),
     themeMode.of([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)]), rawUrlWrapping,
     documentLimits(rawText, warning, clearWarning),
     markdown({ base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
@@ -321,6 +326,7 @@ function extensions(readonly: boolean, rawText = ""): Extension[] {
     EditorView.contentAttributes.of({ "aria-label": "笔记正文", spellcheck: "false", tabindex: "0" }),
     EditorView.updateListener.of(publishChanges), EditorView.updateListener.of(scheduleStatistics),
     shortcutsMode.of(shortcutExtensions(bindings)),
+    Prec.highest(keymap.of([{key:"Enter",run:view=>leaveList(view)||insertNewlineContinueMarkup(view)}, {key:"Backspace",run:view=>leaveList(view,true)||deleteMarkupBackward(view)}])),
     keymap.of([...typingKeymap, {key: "Tab", run: view => indentMarkdown(view), shift: view => indentMarkdown(view, true)}]),
     EditorView.domEventHandlers({
       click(event, editor) {
@@ -397,10 +403,11 @@ const view = new EditorView({
 });
 
 function setReadonly(value: boolean): void {
-  view.dispatch({ effects: readOnlyMode.reconfigure(readonlyExtensions(Boolean(value))) });
+  view.dispatch({ effects: readOnlyMode.reconfigure(readonlyExtensions(originalDocument || Boolean(value))) });
   updateToolbar();
 }
 function setSource(value: boolean): void {
+  if (originalDocument) return;
   hideTableControls();
   source = Boolean(value);
   document.documentElement.dataset.source = String(source);
@@ -412,25 +419,29 @@ function load(value: Load): void {
     error("笔记载入参数无效"); return;
   }
   loaded = false;
+  closeDocument();
+  originalDocument = Boolean(value.document);
   updateImages({});
   unpublished = undefined;
   loadEpoch++;
   generation = value.generation;
-  canRequestEdit = value.canRequestEdit === true;
+  canRequestEdit = !originalDocument && value.canRequestEdit === true;
   revision = 0;
   pendingFlush = false;
   status.textContent = "";
   status.classList.remove("error", "warning");
   // CM's Text uses LF internally. Only host canonical text owns raw CRLF/mixed EOL.
   setTableDocument(value.tableViews, value.tableConfigurable === true);
-  view.setState(EditorState.create({ doc: value.text.replace(/\r\n?/g, "\n"), extensions: extensions(Boolean(value.readonly), value.text) }));
-  setOutlineEnabled(value.outlineEnabled !== false);
+  view.setState(EditorState.create({ doc: value.text.replace(/\r\n?/g, "\n"), extensions: extensions(originalDocument || Boolean(value.readonly), value.text) }));
+  setOutlineEnabled(!originalDocument && value.outlineEnabled !== false);
   setOutlinePreference(value.outlinePreference);
   refreshOutline();
   view.scrollDOM.scrollTop = 0;
   loaded = true;
   updateToolbar();
   updateStatistics(true);
+  try { showDocument(value.document, url => { if(!modalBlocked)post({type:"openLink",generation,url}); }, request => post({type:"renderDocument",generation,...request})); }
+  catch (reason) { error(reason instanceof Error ? reason.message : "原文档未能显示"); }
 }
 function rebase(value: Rebase): void {
   try {
@@ -613,7 +624,7 @@ function setModalOverlay(blocked: boolean, opacity: number): void {
   if (!modalBlocked) resumeModalFocus = false;
 }
 
-const bridge: Bridge = { load, rebase, setReadonly, setModalOverlay, setOutlinePreference, setCanRequestEdit: value => {canRequestEdit = value === true;}, restoreSelection, setTheme, setImages, insertText, setSource, setShortcuts, command, flush };
+const bridge: Bridge = { load, documentResult:value=>{if(value.generation===generation)documentResult(value);}, rebase, setReadonly, setModalOverlay, setOutlinePreference, setCanRequestEdit: value => {canRequestEdit = !originalDocument && value === true;}, restoreSelection, setTheme, setImages, insertText, setSource, setShortcuts, command, flush };
 if (window.__STUDYAPP_EDITOR_TEST__ === true) {
   const observedKeys: Array<{key:string;code:string;binding:string|undefined;keyCode:number;prevented:boolean}> = [];
   // Metadata only: native smoke tests must never copy clipboard contents into
@@ -703,6 +714,17 @@ if (window.__STUDYAPP_EDITOR_TEST__ === true) {
       }
       result = snapshot();
     }
+    else if (action.type === "originalDocumentSnapshot") {
+      const reader=document.querySelector<HTMLElement>("#original-document");
+      const shadow=reader?.querySelector(".document-word")?.shadowRoot;
+      const zoom=reader?.querySelector<HTMLSelectElement>("select");
+      if(action.name==="zoom"&&zoom){zoom.value="1.5";zoom.dispatchEvent(new Event("change",{bubbles:true}));}
+      const image=reader?.querySelector<HTMLImageElement>(".document-page img");
+      result={kind:document.documentElement.dataset.document||null,readonly:view.state.readOnly,
+        pages:shadow?shadow.querySelectorAll("section.docx").length:reader?.querySelectorAll(".document-page").length||0,
+        images:image?.complete&&image.naturalWidth>0?1:0,zoom:zoom?.value||null,
+        text:shadow?.textContent||reader?.textContent||"",height:reader?.getBoundingClientRect().height||0};
+    }
     else if (action.type === "snapshot") result = snapshot();
     else if (action.type === "layout") {
       // Setup only: acknowledge the host's actual viewport and a completed CM
@@ -765,3 +787,5 @@ post({ type: "ready" });
 installTableControls(view,(table,value)=>{ if(loaded) post({type:"tableView",generation,table,value}); });
 installOutline(view, value => { if (loaded) post({type:"outlinePreference", generation, value}); });
 installCopyMenu(view, warning);
+
+installLinks(view,url=>{if(loaded&&!modalBlocked)post({type:"openLink",generation,url});});

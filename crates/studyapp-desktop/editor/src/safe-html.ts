@@ -1,3 +1,5 @@
+import { imageSource } from "./decorations";
+import { safeHref } from "./links";
 import policy from "../../../studyapp-core/src/html_policy.json";
 export { policy as htmlPolicy };
 const bytes = (s:string) => new TextEncoder().encode(s).length;
@@ -37,20 +39,32 @@ export function inertHtml(source:string):DocumentFragment|null {
   inert.innerHTML=source;
   return inert.content;
 }
-export function sanitizeHtml(source:string):DocumentFragment|null {
+export function sanitizeHtml(source:string,resources=false):DocumentFragment|null {
   const parsed=inertHtml(source); if(!parsed) return null;
-  const result=document.createDocumentFragment(); let remaining=policy.nodes-2, output=0;
+  const result=document.createDocumentFragment(); let remaining=policy.nodes-2, output=0, resourceBytes=0;
   const visit=(node:Node,parent:Node,depth:number):boolean=>{
     if(depth>policy.depth || --remaining<0) return false;
     if(node.nodeType===Node.TEXT_NODE) { const text=node.textContent||""; output+=bytes(text)*6; parent.appendChild(document.createTextNode(text)); }
     else if(node instanceof Element) {
       const tag=node.localName;
       if(node.namespaceURI!=="http://www.w3.org/1999/xhtml" || policy.blocked.includes(tag)) return true;
-      if(tag==="img") { const text=`[图片：${node.getAttribute("alt")??"图片"}]`; output+=bytes(text)*6; parent.appendChild(document.createTextNode(text)); return output<=policy.outputBytes; }
+      if(tag==="img") {
+        const alt=node.getAttribute("alt")??"图片",source=node.getAttribute("src")||"",resolved=resources?imageSource(source):undefined;
+        if(resolved && resourceBytes+resolved.length<=32*1024*1024){resourceBytes+=resolved.length;const image=document.createElement("img");image.className="md-image";image.src=resolved;image.alt=alt;image.draggable=false;const style=sanitizeStyle(node.getAttribute("style")||"");if(style)image.setAttribute("style",style);parent.appendChild(image);}
+        else {const text=`[图片：${alt}]`;output+=bytes(text)*6;const placeholder=document.createElement("span");if(resources){placeholder.className="md-image-placeholder";placeholder.title="图片未找到或暂时无法加载";}placeholder.textContent=text;if(resources)parent.appendChild(placeholder);else parent.appendChild(document.createTextNode(text));}
+        return output<=policy.outputBytes;
+      }
+      if(resources && tag==="a") {
+        const anchor=document.createElement("a"),href=safeHref(node.getAttribute("href")||"");
+        if(href){anchor.href=href;anchor.title=href;anchor.rel="noreferrer noopener";}
+        parent.appendChild(anchor);for(const child of node.childNodes)if(!visit(child,anchor,depth+1))return false;
+        output+=32;return output<=policy.outputBytes;
+      }
       let target=parent;
       if(policy.tags.includes(tag)) {
         const clean=document.createElement(tag),style=sanitizeStyle(node.getAttribute("style")||"");
         if(style) clean.setAttribute("style",style);
+        const id=node.getAttribute("id");if(resources&&id&&id.length<=256&&!/[^\p{L}\p{N}_-]/u.test(id))clean.dataset.studyappAnchor=id;
         if(Object.hasOwn(policy.integerAttributes,tag)) {
           const rules=(policy.integerAttributes as Record<string,Record<string,number[]>>)[tag];
           for(const [key,[min,max]] of Object.entries(rules)) {

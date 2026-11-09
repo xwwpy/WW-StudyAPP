@@ -1807,3 +1807,158 @@ pub async fn close_with_draft(window: AnyWindowHandle, view: &Entity<StudyApp>, 
         })
         .unwrap();
 }
+
+/// Run only on CI: imported original bytes cross the actual native worker,
+/// WebView IPC and PDF rasterizer, rather than a mocked browser responder.
+#[cfg(windows)]
+pub async fn original_documents(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    use crate::smoke_library::until;
+    use std::io::Write as _;
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let pdf = database.with_file_name("native-original.pdf");
+    let docx = database.with_file_name("native-original.docx");
+    let pdf_bytes = crate::document_renderer::sample().bytes().unwrap();
+    std::fs::write(&pdf, &pdf_bytes).unwrap();
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    for (name, body) in [
+        (
+            "[Content_Types].xml",
+            r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>"#,
+        ),
+        (
+            "_rels/.rels",
+            r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="office" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#,
+        ),
+        (
+            "word/document.xml",
+            r#"<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>原版式 DOCX 原生阅读</w:t></w:r></w:p><w:p><w:r><w:br w:type="page"/><w:t>第二页内容</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:bottom="1440" w:left="1440" w:right="1440"/></w:sectPr></w:body></w:document>"#,
+        ),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(body.as_bytes()).unwrap();
+    }
+    let docx_bytes = zip.finish().unwrap().into_inner();
+    std::fs::write(&docx, &docx_bytes).unwrap();
+    let selected = view.read_with(cx, |app, _| app.selected_note.clone());
+    window
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, cx| {
+                assert!(
+                    app.note_editor.is_none(),
+                    "original reader scenario requires a settled reader"
+                );
+                app.send(
+                    studyapp_core::Command::Import(vec![pdf.clone(), docx.clone()]),
+                    cx,
+                );
+            })
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "original files imported",
+        |app, _| {
+            app.snapshot.as_ref().is_some_and(|snapshot| {
+                [pdf.as_path(), docx.as_path()].iter().all(|path| {
+                    snapshot
+                        .notes
+                        .iter()
+                        .any(|note| Path::new(&note.path) == *path)
+                })
+            })
+        },
+        cx,
+    )
+    .await;
+    let editor = view.read_with(cx, |app, _| app.note_content.clone());
+    for (path, kind) in [(&pdf, "pdf"), (&docx, "docx"), (&pdf, "pdf")] {
+        window
+            .update(cx, |_, window, cx| {
+                view.update(cx, |app, cx| {
+                    app.clear_notices(cx);
+                    let id = app
+                        .snapshot
+                        .as_ref()
+                        .unwrap()
+                        .notes
+                        .iter()
+                        .find(|note| Path::new(&note.path) == path)
+                        .unwrap()
+                        .id
+                        .clone();
+                    app.select_note_document(id, None, false, window, cx);
+                })
+            })
+            .unwrap();
+        for attempt in 0..200 {
+            pause(cx).await;
+            let state = bridge(
+                window,
+                &editor,
+                json!({"type":"originalDocumentSnapshot"}),
+                cx,
+            )
+            .await;
+            if state["kind"] == kind
+                && state["pages"] == 2
+                && (kind == "docx" || state["images"].as_u64().unwrap_or(0) > 0)
+            {
+                assert_eq!(state["readonly"], true);
+                assert!(state["height"].as_f64().unwrap() > 100.);
+                if kind == "docx" {
+                    assert!(state["text"].as_str().unwrap().contains("第二页内容"));
+                }
+                break;
+            }
+            assert!(
+                attempt < 199,
+                "native {kind} original reader did not render: {state}"
+            );
+        }
+        let changed = bridge(
+            window,
+            &editor,
+            json!({"type":"originalDocumentSnapshot","name":"zoom"}),
+            cx,
+        )
+        .await;
+        assert_eq!(changed["zoom"], "1.5");
+    }
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| {
+                if let Some(id) = selected {
+                    app.select_note_document(id, None, false, window, cx);
+                }
+            })
+        })
+        .unwrap();
+    for attempt in 0..100 {
+        let state = bridge(
+            window,
+            &editor,
+            json!({"type":"originalDocumentSnapshot"}),
+            cx,
+        )
+        .await;
+        if state["kind"].is_null() {
+            break;
+        }
+        pause(cx).await;
+        assert!(
+            attempt < 99,
+            "original reader remained over Markdown: {state}"
+        );
+    }
+    assert_eq!(std::fs::read(pdf).unwrap(), pdf_bytes);
+    assert_eq!(std::fs::read(docx).unwrap(), docx_bytes);
+    std::fs::write(database.with_file_name("native-documents-result.txt"),"PASS: real PDF/DOCX import, native IPC rasterization, rotated page metadata, styled DOCX pagination, zoom, repeated switching, readonly state, Markdown restoration and exact original source bytes.
+").unwrap();
+}

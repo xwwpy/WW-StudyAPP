@@ -6,6 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+base64 = "0.22"
+zip = { version = "=9.1.2", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 anyhow = "1"
 html5ever = "=0.27.0"
 markup5ever_rcdom = "=0.3.0"

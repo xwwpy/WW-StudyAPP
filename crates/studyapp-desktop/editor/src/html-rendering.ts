@@ -1,3 +1,4 @@
+import { imageMapChanged } from "./decorations";
 import { Facet, StateEffect, StateField, type EditorState, type Range } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
 import { Decoration, EditorView, ViewPlugin, WidgetType } from "@codemirror/view";
@@ -5,10 +6,12 @@ import { htmlPolicy, inertHtml, sanitizeHtml, sanitizeStyle } from "./safe-html"
 export const htmlConfiguration=Facet.define<boolean,boolean>({combine:values=>values.at(-1)??true});
 const parsed=StateEffect.define<void>();
 type Region={from:number;to:number;tag?:string;style?:string;inside?:[number,number];source?:string;block?:boolean};
+let imageRevision=0;
 class HtmlWidget extends WidgetType {
+  readonly imageRevision=imageRevision;
   constructor(readonly source:string,readonly block:boolean){super();}
-  eq(other:HtmlWidget){return other.source===this.source && other.block===this.block;}
-  toDOM(){const dom=document.createElement(this.block?"div":"span");dom.className="md-html-fragment";const clean=sanitizeHtml(this.source);if(clean)dom.append(clean);else dom.textContent=this.source;return dom;}
+  eq(other:HtmlWidget){return other.source===this.source && other.block===this.block && other.imageRevision===this.imageRevision;}
+  toDOM(){const dom=document.createElement(this.block?"div":"span");dom.className="md-html-fragment";const clean=sanitizeHtml(this.source,true);if(clean)dom.append(clean);else dom.textContent=this.source;return dom;}
   // Let the browser own selection inside rendered HTML. CodeMirror's public
   // widget contract also exempts its selectionchange from source-position
   // reconciliation. Click still reaches the existing request-edit boundary.
@@ -80,8 +83,9 @@ function decorate(state:EditorState,models:Region[]):ReturnType<typeof Decoratio
 const field=StateField.define<{models:Region[];tree:ReturnType<typeof syntaxTree>;decorations:ReturnType<typeof Decoration.set>}>({
   create(state){const models=state.facet(htmlConfiguration)?regions(state):[];return {models,tree:syntaxTree(state),decorations:decorate(state,models)};},
   update(old,tr){
+    const imagesChanged=tr.effects.some(effect=>effect.is(imageMapChanged));if(imagesChanged)imageRevision++;
     const enabled=tr.state.facet(htmlConfiguration),tree=syntaxTree(tr.state);
-    const rebuild=tr.docChanged || tree!==old.tree || tr.startState.facet(htmlConfiguration)!==enabled || tr.effects.some(e=>e.is(parsed));
+    const rebuild=imagesChanged || tr.docChanged || tree!==old.tree || tr.startState.facet(htmlConfiguration)!==enabled || tr.effects.some(e=>e.is(parsed));
     if(!rebuild && !tr.selection && tr.state.readOnly===tr.startState.readOnly) return old;
     const models=rebuild?enabled?regions(tr.state):[]:old.models;
     return {models,tree,decorations:decorate(tr.state,models)};

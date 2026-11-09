@@ -276,3 +276,72 @@ pub fn sanitize_inline_html(source: &str) -> Option<String> {
         && opening.bytes().filter(|b| *b == b'>').count() == 1)
         .then(|| opening.to_owned())
 }
+
+/// Resource discovery only. Returned paths are resolved by the bounded image worker,
+/// never by adopting an untrusted HTML element or granting WebView file access.
+pub fn html_image_sources(source: &str) -> Vec<String> {
+    if source.len() > policy().input_bytes {
+        return Vec::new();
+    }
+    let dom = parse_fragment(
+        RcDom::default(),
+        Default::default(),
+        QualName::new(None, ns!(html), local_name!("div")),
+        vec![],
+    )
+    .one(source);
+    // Keep the root alive: RcDom node destruction drains descendant lists.
+    let mut stack = vec![(dom.document.clone(), 0)];
+    let mut remaining = policy().nodes;
+    let mut result = Vec::new();
+    while let Some((node, depth)) = stack.pop() {
+        if remaining == 0 || result.len() >= 200 {
+            break;
+        }
+        remaining -= 1;
+        if depth > policy().depth {
+            continue;
+        }
+        if let NodeData::Element { name, attrs, .. } = &node.data {
+            if name.ns != ns!(html)
+                || policy()
+                    .blocked
+                    .iter()
+                    .any(|tag| tag == name.local.as_ref())
+            {
+                continue;
+            }
+            if name.local.as_ref() == "img"
+                && let Some(value) = attrs
+                    .borrow()
+                    .iter()
+                    .find(|attr| attr.name.ns == ns!() && attr.name.local.as_ref() == "src")
+                    .map(|attr| attr.value.to_string())
+                    .filter(|value| !value.is_empty() && value.len() <= 8192)
+            {
+                result.push(value);
+            }
+        }
+        stack.extend(
+            node.children
+                .borrow()
+                .iter()
+                .rev()
+                .cloned()
+                .map(|child| (child, depth + 1)),
+        );
+    }
+    result
+}
+
+#[cfg(test)]
+mod resource_discovery_tests {
+    #[test]
+    fn images_are_discovered_in_html_namespace_only_and_entities_are_decoded() {
+        let sources = super::html_image_sources(
+            "<img src='https://example.com/a.png?x=1&amp;y=2'><script><img src=bad></script><svg><image href=bad /></svg>",
+        );
+        assert_eq!(sources, vec!["https://example.com/a.png?x=1&y=2"]);
+        assert!(super::html_image_sources(&"x".repeat(65537)).is_empty());
+    }
+}

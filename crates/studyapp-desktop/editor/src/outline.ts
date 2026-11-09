@@ -202,8 +202,9 @@ export function installOutline(view: EditorView, onPreferenceChange: (value: Out
       label.type = "button";
       label.className = "outline-label";
       label.tabIndex = -1;
-      label.textContent = title;
-      label.title = title;
+      label.append(outlineTitle(title));
+      label.title = label.textContent || title;
+      item.setAttribute("aria-label",label.title);
       const group = document.createElement("div");
       group.setAttribute("role", "group");
       const heading: Heading = { from: node.from, level, title, parent, children: [], row: item, group };
@@ -343,4 +344,25 @@ export function installOutline(view: EditorView, onPreferenceChange: (value: Out
   panel.hidden = !shown;
   layout();
   render();
+}
+
+/** Local text/emphasis/code only; never interpret headings as HTML. */
+function outlineTitle(source:string):DocumentFragment {
+  const result=document.createDocumentFragment();
+  const styles:Record<string,string>={StrongEmphasis:"strong",Emphasis:"em",InlineCode:"code",Strikethrough:"s"};
+  const visit=(node:import("@lezer/common").SyntaxNode,parent:Node)=>{
+    if (["EmphasisMark","CodeMark","StrikethroughMark"].includes(node.name)) return;
+    const tag=styles[node.name];
+    const target=tag?document.createElement(tag):parent;
+    if(tag)parent.appendChild(target);
+    if(!node.firstChild){target.appendChild(document.createTextNode(source.slice(node.from,node.to)));return;}
+    let at=node.from;
+    for(let child:import("@lezer/common").SyntaxNode|null=node.firstChild;child;child=child.nextSibling){
+      if(child.from>at)target.appendChild(document.createTextNode(source.slice(at,child.from)));
+      visit(child,target);at=child.to;
+    }
+    if(at<node.to)target.appendChild(document.createTextNode(source.slice(at,node.to)));
+  };
+  visit(parser.parse(source).topNode,result);
+  return result;
 }

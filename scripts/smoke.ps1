@@ -43,6 +43,8 @@ $draftsReport = Join-Path $data 'native-multiple-drafts-result.txt'
 if ((Get-Content -LiteralPath $draftsReport -Raw) -notmatch '^PASS:') { throw 'Multiple independent drafts smoke report did not pass' }
 $saveViewReport = Join-Path $data 'native-save-view-result.txt'
 if ((Get-Content -LiteralPath $saveViewReport -Raw) -notmatch '^PASS:') { throw 'Saved note viewport smoke report did not pass' }
+$documentsReport = Join-Path $data 'native-documents-result.txt'
+if ((Get-Content -LiteralPath $documentsReport -Raw) -notmatch '^PASS:') { throw 'Original PDF/DOCX native reader smoke did not pass' }
 foreach ($nativeImage in @('native-first-reader.bmp', 'native-first-editor.bmp', 'native-after-history.bmp', 'native-after-menu.bmp', 'native-after-settings.bmp', 'native-after-resize.bmp', 'multiple-drafts-native.bmp')) {
     $nativePath = Join-Path $data $nativeImage
     if (-not (Test-Path -LiteralPath $nativePath) -or (Get-Item -LiteralPath $nativePath).Length -lt 1000) {

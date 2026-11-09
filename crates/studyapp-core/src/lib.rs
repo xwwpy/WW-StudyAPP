@@ -1,6 +1,7 @@
 //! Persistent learning rules, independent of the desktop interface.
 mod appearance;
 mod color;
+pub mod documents;
 mod engine;
 mod folders;
 pub mod integration;
@@ -30,7 +31,7 @@ pub use purge::{
     finish_purge_cleanup, inspect_purge_backup, purge_backup_revision,
     purge_managed_note_from_backup, scrub_confirmed_backup,
 };
-pub use safe_html::{sanitize_html, sanitize_html_style, sanitize_inline_html};
+pub use safe_html::{html_image_sources, sanitize_html, sanitize_html_style, sanitize_inline_html};
 pub use stats::daily_stats;
 pub use table_layout::*;
 pub use timer::*;

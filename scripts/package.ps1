@@ -78,43 +78,11 @@ WebView2：https://developer.microsoft.com/microsoft-edge/webview2/
 更新程序不会改变你选择的资料库位置。
 "@
     [IO.File]::WriteAllText((Join-Path $staging 'README.md'), $readme, [Text.UTF8Encoding]::new($false))
-    $notices = [Collections.Generic.List[string]]::new()
-    $notices.Add("WW-StudyApp — Third-party notices`n`nThe following components retain their original licenses and copyright notices. Exact source is available at the linked versions.`n")
-    $notices.Add("Microsoft Visual C++ Runtime`nCopyright (c) Microsoft Corporation. All rights reserved.`nRuntime files: $($runtime.Files -join ', ')`nLicense terms: https://visualstudio.microsoft.com/license-terms/`nRedistribution: https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files`n")
-    $notices.Add([IO.File]::ReadAllText((Join-Path $repoRoot 'crates/studyapp-desktop/editor/dist/THIRD_PARTY_LICENSES.txt')))
-    $anyhow = $metadata.packages | Where-Object { $_.name -eq 'anyhow' } | Select-Object -First 1
-    $notices.Add([IO.File]::ReadAllText((Join-Path (Split-Path -Parent $anyhow.manifest_path) 'LICENSE-APACHE')))
-    $dependencies = @($metadata.packages | Where-Object { $_.id -notin $metadata.workspace_members } | Sort-Object name,version)
-    foreach ($package in $dependencies) {
-        $root = Split-Path -Parent $package.manifest_path
-        if ($package.source -match '^registry\+') {
-            $notices.Add("## $($package.name) $($package.version)`n`nLicense expression: $($package.license)`n`nSource: https://crates.io/api/v1/crates/$($package.name)/$($package.version)/download`n")
-        } elseif (-not $package.source -and $package.name -in @('gpui-pre', 'gpui-pre-windows', 'gpui-component') -and [IO.Path]::GetFullPath($root) -eq [IO.Path]::GetFullPath((Join-Path $repoRoot "vendor/$($package.name)"))) {
-            $notices.Add("## $($package.name) $($package.version) (modified)`nLicense: $($package.license)`nModified for WW-StudyApp window rendering, menus and scrollbars.`nSource: https://github.com/xwwpy/WW-StudyAPP/tree/v$Version/vendor/$($package.name)`n")
-        } else {
-            throw "Review non-registry dependency notices manually: $($package.id)"
-        }
-        if ($package.repository) { $notices.Add("Upstream: $($package.repository)`n") }
-        if ($package.authors.Count) { $notices.Add("Declared authors: $($package.authors -join ', ')`n") }
-        $licenseFiles = @(Get-ChildItem -LiteralPath $root -File | Where-Object { $_.Name -match '^(LICEN[CS]E|COPYING|NOTICE|AUTHORS)($|[._-])' })
-        if ($package.license_file) {
-            $declaredFile = Get-Item -LiteralPath (Join-Path $root $package.license_file)
-            if ($declaredFile.FullName -notin @($licenseFiles | ForEach-Object FullName)) { $licenseFiles += $declaredFile }
-        }
-        if ($licenseFiles.Count -eq 0) {
-            # Some crates distribute notices in a licenses/ directory.
-            $licenseDirectory = Join-Path $root 'licenses'
-            if (Test-Path -LiteralPath $licenseDirectory -PathType Container) {
-                $licenseFiles = @(Get-ChildItem -LiteralPath $licenseDirectory -File -Recurse)
-            }
-        }
-        foreach ($file in ($licenseFiles | Sort-Object FullName -Unique)) {
-            $relative = [IO.Path]::GetRelativePath($root, $file.FullName)
-            $notices.Add("--- $($package.name) $($package.version): $($relative.Replace('\', '/')) ---`n")
-            $notices.Add([IO.File]::ReadAllText($file.FullName))
-        }
-    }
-    [IO.File]::WriteAllText((Join-Path $staging 'THIRD-PARTY-NOTICES.txt'), ($notices -join "`n"), [Text.UTF8Encoding]::new($false))
+    $noticePath = Join-Path $staging 'THIRD-PARTY-NOTICES.txt'
+    python (Join-Path $PSScriptRoot 'third-party-notices.py') --target x86_64-pc-windows-msvc --output $noticePath
+    if ($LASTEXITCODE -ne 0) { throw 'Third-party license notice collection failed' }
+    $runtimeNotice = "Microsoft Visual C++ Runtime`nCopyright (c) Microsoft Corporation. All rights reserved.`nRuntime files: $($runtime.Files -join ', ')`nLicense terms: https://visualstudio.microsoft.com/license-terms/`nRedistribution: https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files`n`n"
+    [IO.File]::WriteAllText($noticePath, $runtimeNotice + [IO.File]::ReadAllText($noticePath), [Text.UTF8Encoding]::new($false))
     # ZipFile accepts literal directory names; it does not interpret wildcard paths.
     [IO.Compression.ZipFile]::CreateFromDirectory($staging, $archive, [IO.Compression.CompressionLevel]::Optimal, $true)
     & (Join-Path $PSScriptRoot 'check-package.ps1') -ArchivePath $archive -Version $Version

@@ -140,7 +140,17 @@ impl StudyApp {
                 form::DirectoryField::new(
                     "logging-directory-detail",
                     "日志目录",
-                    input.read(cx).value(),
+                    if input.read(cx).value().trim().is_empty() {
+                        crate::audit_log::configuration(&settings)
+                            .map(|configuration| {
+                                studyapp_desktop::presentation::path_label(
+                                    &configuration.default_directory,
+                                )
+                            })
+                            .unwrap_or_else(|| "默认日志目录尚不可用".into())
+                    } else {
+                        input.read(cx).value().to_string()
+                    },
                 )
                 .fallback("应用本地数据 / logs")
                 .expanded(expanded)

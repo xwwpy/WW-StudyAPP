@@ -9,16 +9,52 @@ use std::{
 };
 pub(crate) fn read(path: &Path) -> Result<String> {
     ensure!(
-        path.extension()
-            .and_then(|s| s.to_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("md") || s.eq_ignore_ascii_case("markdown")),
-        "仅支持 .md 或 .markdown 文件"
+        crate::documents::supported_import(path),
+        "不支持此文件格式；支持 Markdown、PDF、DOCX 和常见文本文件"
     );
+    if crate::documents::is_original_document(path) {
+        return crate::documents::read_document(path);
+    }
     let mut file =
         std::fs::File::open(path).with_context(|| format!("无法读取 {}", path.display()))?;
     let mut bytes = vec![];
-    file.read_to_end(&mut bytes)?;
-    let text = String::from_utf8(bytes).context("笔记不是有效的 UTF-8 文本")?;
+    let markdown = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| {
+            value.eq_ignore_ascii_case("md") || value.eq_ignore_ascii_case("markdown")
+        });
+    if markdown {
+        file.read_to_end(&mut bytes)?;
+    } else {
+        let limit = crate::documents::MAX_DOCUMENT_BYTES as u64;
+        ensure!(
+            file.metadata()?.len() <= limit,
+            "文本文件超过 32 MiB，请拆分后导入"
+        );
+        file.take(limit + 1).read_to_end(&mut bytes)?;
+        ensure!(bytes.len() as u64 <= limit, "文本文件超过 32 MiB");
+    }
+    let text =
+        if !markdown && (bytes.starts_with(&[0xff, 0xfe]) || bytes.starts_with(&[0xfe, 0xff])) {
+            ensure!(bytes.len() % 2 == 0, "UTF-16 文本字节数不完整");
+            let little = bytes[0] == 0xff;
+            let units = bytes[2..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|part| {
+                    if little {
+                        u16::from_le_bytes([part[0], part[1]])
+                    } else {
+                        u16::from_be_bytes([part[0], part[1]])
+                    }
+                })
+                .collect::<Vec<_>>();
+            String::from_utf16(&units).context("文本不是有效的 UTF-16 编码")?
+        } else {
+            String::from_utf8(bytes).context("笔记不是有效的 UTF-8 文本")?
+        };
     Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).into())
 }
 pub(crate) fn hash(content: &str) -> String {
@@ -57,7 +93,16 @@ pub(crate) fn append_version(
         .find(|v| v.note_id == note.id)
         .map(|v| v.content.as_str())
         .unwrap_or("");
-    let (diff, summary) = if baseline {
+    let (diff, summary) = if content.starts_with(crate::documents::DOCUMENT_PREFIX) {
+        (
+            String::new(),
+            if baseline {
+                String::new()
+            } else {
+                "原文档已更新；在阅读页查看完整页面。".into()
+            },
+        )
+    } else if baseline {
         (String::new(), String::new())
     } else {
         let delta = TextDiff::from_lines(previous, &content);
@@ -332,6 +377,22 @@ fn scan_filtered(state: &mut State, offline: bool, now: i64, external_only: bool
         let path = PathBuf::from(&state.notes[index].path);
         let note_id = state.notes[index].id.clone();
         let capture_offline = offline || state.offline_unreconciled_notes.contains(&note_id);
+        let stamp = crate::documents::is_original_document(&path)
+            .then(|| crate::documents::ScanStamp::read(&path, now))
+            .flatten();
+        if !state.notes[index].missing
+            && state.notes[index].error.is_none()
+            && let Some(current) = stamp.as_ref()
+            && state
+                .document_stamps
+                .get(&note_id)
+                .is_some_and(|previous| previous.unchanged(current))
+        {
+            state.candidates.remove(&note_id);
+            state.unattributed_notes.remove(&note_id);
+            state.offline_unreconciled_notes.remove(&note_id);
+            continue;
+        }
         let content = if state.notes[index].managed {
             crate::managed::read_content(&path)
         } else {
@@ -353,6 +414,9 @@ fn scan_filtered(state: &mut State, offline: bool, now: i64, external_only: bool
                     .find(|v| v.note_id == note_id)
                     .is_some_and(|v| v.hash == digest)
                 {
+                    if let Some(stamp) = stamp {
+                        state.document_stamps.insert(note_id.clone(), stamp);
+                    }
                     state.candidates.remove(&note_id);
                     state.unattributed_notes.remove(&note_id);
                     state.offline_unreconciled_notes.remove(&note_id);
@@ -368,6 +432,9 @@ fn scan_filtered(state: &mut State, offline: bool, now: i64, external_only: bool
                         })
                 {
                     append_version(state, index, content, now, capture_offline, false);
+                    if let Some(stamp) = stamp {
+                        state.document_stamps.insert(note_id.clone(), stamp);
+                    }
                     state.candidates.remove(&note_id);
                     state.unattributed_notes.remove(&note_id);
                     state.offline_unreconciled_notes.remove(&note_id);
@@ -381,6 +448,7 @@ fn scan_filtered(state: &mut State, offline: bool, now: i64, external_only: bool
                 }
             }
             Err(error) => {
+                state.document_stamps.remove(&note_id);
                 let missing = !path.exists();
                 let error = format!("{error:#}");
                 if state.notes[index].missing != missing

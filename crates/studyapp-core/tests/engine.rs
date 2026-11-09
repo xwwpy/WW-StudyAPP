@@ -508,7 +508,7 @@ fn large_import_succeeds_while_invalid_encoding_and_extension_fail() {
     let (dir, mut engine) = fixture();
     let invalid = dir.path().join("invalid.md");
     let huge = dir.path().join("huge.md");
-    let other = dir.path().join("other.txt");
+    let other = dir.path().join("other.unsupported");
     let valid = dir.path().join("valid.markdown");
     std::fs::write(&invalid, [0xff, 0xfe]).unwrap();
     std::fs::write(&huge, "a".repeat(10 * 1024 * 1024 + 1)).unwrap();

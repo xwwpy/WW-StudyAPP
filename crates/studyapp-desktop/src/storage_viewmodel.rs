@@ -39,9 +39,9 @@ pub struct ManagedCopyView {
 
 #[derive(Clone, Debug, Default)]
 pub struct StoragePresentation {
+    pub tree: crate::storage_tree::Tree,
     pub logical_label: String,
     pub application_label: String,
-    pub application_locations: Vec<String>,
     pub application_issues: Vec<String>,
     pub scanned_label: String,
     pub categories: Vec<StorageCategory>,
@@ -141,7 +141,13 @@ impl StoragePresentation {
             .enumerate()
             .map(|(ix, copy)| (copy.note_id.clone(), ix))
             .collect();
+        let mut tree = crate::storage_tree::Tree::default();
+        for location in &report.application.locations {
+            tree.append(&location.tree, &location.label);
+        }
+        tree.aggregate();
         Self {
+            tree,
             application_label: format!(
                 "应用文件大小 {} · 去重文件大小 {}{}",
                 size_label(report.application.logical_bytes),
@@ -152,26 +158,6 @@ impl StoragePresentation {
                     ""
                 }
             ),
-            application_locations: report
-                .application
-                .locations
-                .iter()
-                .map(|r| {
-                    format!(
-                        "{} · {} · {} 个文件 · {} · {} · {}",
-                        r.label,
-                        size_label(r.bytes),
-                        r.files,
-                        display_path(&r.path.to_string_lossy()),
-                        if r.movable {
-                            "可移动类别"
-                        } else {
-                            "不可直接移动"
-                        },
-                        r.reason
-                    )
-                })
-                .collect(),
             application_issues: report
                 .application
                 .issues
@@ -242,7 +228,7 @@ impl StoragePresentation {
     }
 }
 
-fn size_label(bytes: u64) -> String {
+pub(crate) fn size_label(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{bytes} B")
     } else if bytes < 1024 * 1024 {

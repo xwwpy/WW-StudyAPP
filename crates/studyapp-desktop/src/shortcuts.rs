@@ -25,7 +25,7 @@ actions![
         "Ctrl+Shift+T"
     ),
     ("app.new", "新建笔记", "应用", "Ctrl+N"),
-    ("app.import", "导入 Markdown", "应用", "Ctrl+O"),
+    ("app.import", "导入文档或笔记", "应用", "Ctrl+O"),
     ("app.settings", "打开设置", "应用", "Ctrl+Comma"),
     ("app.library", "打开资料库", "应用", "Ctrl+Shift+L"),
     (

@@ -8,7 +8,7 @@ use gpui_kit::{
     component::{
         Disableable, Icon, IconName, Selectable, Sizable,
         button::ButtonVariants,
-        input::{Input, InputEvent, InputState},
+        input::{InputEvent, InputState},
         menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
     },
     *,
@@ -1083,10 +1083,11 @@ impl FolderPanel {
                         self.destination_name(parent_id.as_deref())
                     )))
                     .child(
-                        div()
-                            .id("folder-name-input")
-                            .test_support()
-                            .child(Input::new(&self.name).small().disabled(self.busy)),
+                        div().id("folder-name-input").test_support().child(
+                            crate::settings_components::input(&self.name, false)
+                                .small()
+                                .disabled(self.busy),
+                        ),
                     );
                 can_submit &= !self.name.read(cx).value().trim().is_empty();
             }
@@ -1094,10 +1095,11 @@ impl FolderPanel {
                 form = form
                     .child(muted("输入笔记显示名称（1 至 200 个字符）"))
                     .child(
-                        div()
-                            .id("note-rename-input")
-                            .test_support()
-                            .child(Input::new(&self.name).small().disabled(self.busy)),
+                        div().id("note-rename-input").test_support().child(
+                            crate::settings_components::input(&self.name, false)
+                                .small()
+                                .disabled(self.busy),
+                        ),
                     );
                 can_submit &= !self.name.read(cx).value().trim().is_empty();
             }
@@ -1105,10 +1107,11 @@ impl FolderPanel {
                 form = form
                     .child(muted(format!("重命名：{}", self.folder_name(folder_id))))
                     .child(
-                        div()
-                            .id("folder-name-input")
-                            .test_support()
-                            .child(Input::new(&self.name).small().disabled(self.busy)),
+                        div().id("folder-name-input").test_support().child(
+                            crate::settings_components::input(&self.name, false)
+                                .small()
+                                .disabled(self.busy),
+                        ),
                     );
                 can_submit &= !self.name.read(cx).value().trim().is_empty();
             }

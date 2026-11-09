@@ -1784,9 +1784,9 @@ impl StudyApp {
                                 .small()
                                 .ghost()
                                 .action(if expanded {
-                                    "隐藏路径"
+                                    "收起详情"
                                 } else {
-                                    "显示路径"
+                                    "查看详情"
                                 })
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.preferences_ui.library_directory_expanded =
@@ -2749,6 +2749,47 @@ impl StudyApp {
             custom = custom.child(muted(
                 "颜色和版式会即时更新阅读预览；保存全部设置后才会写入资料库。",
             ));
+            custom = custom.child(heading("主题预设"));
+            let mut builtins = row().flex_wrap();
+            for preset in studyapp_core::builtin_theme_presets() {
+                let id = preset.id.clone();
+                builtins = builtins.child(
+                    Button::new(SharedString::from(format!("builtin-theme-{id}")))
+                        .small()
+                        .label(preset.name.clone())
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if this.preferences_ui.appearance_touched
+                                && !this.stage_custom_appearance(cx)
+                            {
+                                return;
+                            }
+                            let settings = if let Some(draft) = &mut this.preferences_ui.draft {
+                                if let Err(error) = select_custom_preset(
+                                    &mut draft.appearance,
+                                    Some(preset.clone()),
+                                    &id,
+                                ) {
+                                    this.preferences_ui.error = Some(error.to_string());
+                                    this.settings_validation_notice(error.to_string(), cx);
+                                    cx.notify();
+                                    return;
+                                }
+                                Some(draft.appearance.clone())
+                            } else {
+                                None
+                            };
+                            if let Some(settings) = settings {
+                                this.fill_appearance_fields(&settings, window, cx);
+                            }
+                            this.refresh_appearance(window, cx);
+                            cx.notify();
+                        })),
+                );
+            }
+            custom = custom
+                .child(builtins)
+                .child(muted("点击应用后可继续自定义；保存全部设置后生效。"));
             for preset in &appearance.custom_presets {
                 let id = preset.id.clone();
                 let delete_id = id.clone();
@@ -2976,7 +3017,16 @@ impl StudyApp {
                 form::DirectoryField::new(
                     "image-directory-detail",
                     "本地图片",
-                    input.read(cx).value(),
+                    if input.read(cx).value().trim().is_empty() {
+                        std::path::Path::new(&self.last_library)
+                            .parent()
+                            .map(|path| {
+                                studyapp_desktop::presentation::path_label(path.join("images"))
+                            })
+                            .unwrap_or_default()
+                    } else {
+                        input.read(cx).value().to_string()
+                    },
                 )
                 .fallback("资料库内的图片文件夹")
                 .expanded(expanded)
@@ -3593,8 +3643,7 @@ mod scoped_tests {
     };
     use gpui_kit::{
         AppContext, Context, Entity, Focusable, IntoElement, Keystroke, ParentElement, Render,
-        Styled, TestAppContext, VisualTestContext, Window, component::input::Input, div,
-        test::TestWindowExt,
+        Styled, TestAppContext, VisualTestContext, Window, div, test::TestWindowExt,
     };
     use gpui_kit::{InputEvent as _, VisualContext as _};
 
@@ -4119,7 +4168,7 @@ mod scoped_tests {
                     .flex()
                     .flex_col()
                     .child(app.settings_header(cx))
-                    .child(Input::new(&app.interval))
+                    .child(crate::settings_components::input(&app.interval, false))
                     .children(app.settings_modal(cx))
             })
         }

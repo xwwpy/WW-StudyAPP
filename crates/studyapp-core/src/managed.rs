@@ -240,12 +240,17 @@ pub(crate) fn export(
         .rev()
         .find(|v| v.note_id == id && version.is_none_or(|id| id == v.id))
         .context("找不到指定笔记版本")?;
+    let original = crate::documents::DocumentPreview::from_content(&version.content);
+    let bytes = original
+        .as_ref()
+        .map(|document| document.bytes())
+        .transpose()?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(destination)
         .context("导出目标已存在或无法创建，请选择新文件名")?;
-    file.write_all(version.content.as_bytes())?;
+    file.write_all(bytes.as_deref().unwrap_or(version.content.as_bytes()))?;
     file.sync_all()?;
     Ok(())
 }

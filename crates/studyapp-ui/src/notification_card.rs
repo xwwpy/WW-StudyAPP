@@ -144,22 +144,6 @@ pub fn notification_card(
         .when(appearance.shadow, |card| card.shadow_sm())
         .child(header)
         .child(body);
-    if !compact
-        && let Some(id) = model
-            .event_id
-            .filter(|_| model.severity >= NoticeSeverity::Error)
-    {
-        card = card.child(
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .text_ellipsis()
-                .font_family(crate::design::MONO_FONT)
-                .text_xs()
-                .text_color(rgb(secondary))
-                .child(id),
-        );
-    }
     if let Some(action) = action {
         card = card.child(row().justify_end().child(action));
     }

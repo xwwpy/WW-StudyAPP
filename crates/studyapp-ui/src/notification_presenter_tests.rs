@@ -173,7 +173,9 @@ fn presentation_sound_waits_for_layout_and_never_repeats_on_route_changes(cx: &m
         cx.subscribe(
             &center,
             move |_, event: &super::NotificationPresented, _| {
-                capture.borrow_mut().push(event.event_id)
+                capture
+                    .borrow_mut()
+                    .push((event.event_id, event.category, event.severity))
             },
         )
     });
@@ -202,14 +204,20 @@ fn presentation_sound_waits_for_layout_and_never_repeats_on_route_changes(cx: &m
     visual.run_until_parked();
     visual.update(|window, cx| window.draw(cx).clear(cx));
     visual.run_until_parked();
-    assert_eq!(*played.borrow(), [id]);
+    assert_eq!(
+        *played.borrow(),
+        [(id, NoticeCategory::IntegrityResult, NoticeSeverity::Error)]
+    );
     center.update(visual, |center, cx| {
         center.configure(&policy, &appearance, environment(false), false, cx);
         center.configure(&policy, &appearance, environment(true), false, cx);
     });
     visual.update(|window, cx| window.draw(cx).clear(cx));
     visual.run_until_parked();
-    assert_eq!(*played.borrow(), [id]);
+    assert_eq!(
+        *played.borrow(),
+        [(id, NoticeCategory::IntegrityResult, NoticeSeverity::Error)]
+    );
 }
 
 #[gpui_kit::test]

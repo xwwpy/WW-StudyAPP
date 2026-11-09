@@ -25,6 +25,7 @@ pub enum MarkdownEvent {
     },
     Save,
     RequestEdit(usize),
+    OpenLink(String),
     RequestInsertImage,
     RequestNativeImagePaste {
         generation: u64,
@@ -84,6 +85,17 @@ enum Message {
         generation: u64,
         position: usize,
     },
+    OpenLink {
+        generation: u64,
+        url: String,
+    },
+    RenderDocument {
+        generation: u64,
+        request: u64,
+        page: usize,
+        width: u32,
+        password: String,
+    },
     RequestInsertImage {
         generation: u64,
     },
@@ -138,6 +150,11 @@ pub struct MarkdownEditor {
     visible: bool,
     modal_overlay: Option<f32>,
     readonly: bool,
+    preview: Option<std::sync::Arc<studyapp_core::documents::DocumentPreview>>,
+    pdf_busy: bool,
+    preview_checked: bool,
+    preview_validating: bool,
+    preview_error: Option<String>,
     resume_readonly: bool,
     can_request_edit: bool,
     outline_enabled: bool,
@@ -154,6 +171,19 @@ pub struct MarkdownEditor {
     pub(crate) test_results: std::collections::HashMap<String, serde_json::Value>,
     _poll: Task<()>,
 }
+fn valid_open_link(generation: u64, current: u64, interactive: bool, url: &str) -> bool {
+    generation == current
+        && interactive
+        && !url.is_empty()
+        && url.len() <= 8192
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+        && reqwest::Url::parse(url).is_ok_and(|value| {
+            matches!(value.scheme(), "https" | "http" | "mailto")
+                && value.username().is_empty()
+                && value.password().is_none()
+        })
+}
+
 fn valid_outline_message(generation: u64, current: u64, interactive: bool) -> bool {
     generation == current && interactive
 }
@@ -249,6 +279,11 @@ impl MarkdownEditor {
             visible: false,
             modal_overlay: None,
             readonly: false,
+            preview: None,
+            pdf_busy: false,
+            preview_checked: false,
+            preview_validating: false,
+            preview_error: None,
             resume_readonly: false,
             can_request_edit: false,
             outline_enabled: true,
@@ -451,6 +486,17 @@ impl MarkdownEditor {
     ) {
         self.poll(cx);
         self.tables.commit();
+        self.preview = studyapp_core::documents::DocumentPreview::from_content(&value)
+            .map(std::sync::Arc::new);
+        self.preview_checked = false;
+        self.preview_validating = false;
+        self.preview_error = None;
+        let readonly = readonly || self.preview.is_some();
+        let value = if self.preview.is_some() {
+            "原文档阅读；页面内容和版式保存在资料库版本中。".to_owned()
+        } else {
+            value
+        };
         self.document.reset(value);
         self.images.clear();
         self.readonly = readonly;
@@ -510,7 +556,37 @@ impl MarkdownEditor {
     }
 
     fn load(&mut self, cx: &mut Context<Self>) {
-        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled, "outlinePreference": self.outline_preference, "tableViews": self.tables.views, "tableConfigurable": self.tables.current.is_some()});
+        if !self.preview_checked
+            && let Some(document) = self
+                .preview
+                .as_ref()
+                .filter(|document| document.kind == "docx")
+                .cloned()
+        {
+            let generation = self.document.generation();
+            let payload = serde_json::json!({"generation":generation,"text":"正在检查原文档，请稍候…","readonly":true,"outlineEnabled":false});
+            let _ = self.evaluate(&format!("window.studyappEditor.load({payload});"));
+            if !self.preview_validating {
+                self.preview_validating = true;
+                cx.spawn(async move |this, cx| {
+                    let result = cx.background_executor().spawn(async move { document.validate().map_err(|_| "原文档格式、编码或大小检查未通过。请重新导入可正常打开的 DOCX 文件；原文件未被改变。".to_owned()) }).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.document.generation() != generation { return; }
+                        this.preview_validating = false;
+                        this.preview_checked = true;
+                        this.preview_error = result.err();
+                        if this.ready { this.load(cx); }
+                    });
+                }).detach();
+            }
+            return;
+        }
+        if let Some(error) = &self.preview_error {
+            let payload = serde_json::json!({"generation":self.document.generation(),"text":error,"readonly":true,"outlineEnabled":false});
+            let _ = self.evaluate(&format!("window.studyappEditor.load({payload});"));
+            return;
+        }
+        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled, "outlinePreference": self.outline_preference, "tableViews": self.tables.views, "tableConfigurable": self.tables.current.is_some(), "document": self.preview.as_deref().map(|document| if document.kind == "pdf" { serde_json::json!({"kind":"pdf","data":""}) } else { serde_json::json!(document) })});
         let shortcuts = serde_json::to_string(&self.shortcuts).expect("string map serializes");
         let theme = &self.theme;
         if let Err(error) = self.evaluate(&format!("window.studyappEditor.setShortcuts({shortcuts}); window.studyappEditor.setTheme({theme}); window.studyappEditor.load({payload}); {}", self.modal_overlay_script())) {
@@ -565,6 +641,7 @@ impl MarkdownEditor {
     }
 
     pub fn set_can_request_edit(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let enabled = enabled && self.preview.is_none();
         if self.can_request_edit == enabled {
             return;
         }
@@ -610,6 +687,7 @@ impl MarkdownEditor {
     }
 
     pub fn set_readonly(&mut self, readonly: bool, cx: &mut Context<Self>) {
+        let readonly = readonly || self.preview.is_some();
         self.readonly = readonly;
         self.resume_readonly = readonly;
         if self.ready
@@ -799,6 +877,77 @@ impl MarkdownEditor {
                             && !self.recovering
                         {
                             cx.emit(MarkdownEvent::RequestEdit(position));
+                        }
+                    }
+                    Message::RenderDocument {
+                        generation,
+                        request,
+                        page,
+                        width,
+                        password,
+                    } => {
+                        if generation == self.document.generation()
+                            && self.visible
+                            && self.ready
+                            && self.pending.is_none()
+                            && !self.recovering
+                            && password.len() <= 1024
+                            && (96..=3200).contains(&width)
+                            && let Some(document) = self
+                                .preview
+                                .as_ref()
+                                .filter(|document| document.kind == "pdf")
+                                .cloned()
+                        {
+                            if self.pdf_busy {
+                                let value = serde_json::json!({"generation":generation,"request":request,"retry":true});
+                                let _ = self.evaluate(&format!(
+                                    "window.studyappEditor.documentResult({value});"
+                                ));
+                            } else {
+                                self.pdf_busy = true;
+                                let epoch = self.host_epoch;
+                                cx.spawn(async move |this, cx| {
+                                    let mut value = cx
+                                        .background_executor()
+                                        .spawn(async move {
+                                            crate::document_renderer::render(
+                                                &document,
+                                                page,
+                                                width,
+                                                zeroize::Zeroizing::new(password),
+                                            )
+                                        })
+                                        .await;
+                                    value["generation"] = generation.into();
+                                    value["request"] = request.into();
+                                    let _ = this.update(cx, |this, _| {
+                                        this.pdf_busy = false;
+                                        if generation == this.document.generation()
+                                            && epoch == this.host_epoch
+                                            && this.ready
+                                        {
+                                            let _ = this.evaluate(&format!(
+                                                "window.studyappEditor.documentResult({value});"
+                                            ));
+                                        }
+                                    });
+                                })
+                                .detach();
+                            }
+                        }
+                    }
+                    Message::OpenLink { generation, url } => {
+                        if valid_open_link(
+                            generation,
+                            self.document.generation(),
+                            self.visible
+                                && self.modal_overlay.is_none()
+                                && self.pending.is_none()
+                                && !self.recovering,
+                            &url,
+                        ) {
+                            cx.emit(MarkdownEvent::OpenLink(url));
                         }
                     }
                     Message::RequestInsertImage { generation } => {
@@ -1395,3 +1544,33 @@ mod profile_tests {
 #[cfg(all(test, feature = "ui-test"))]
 #[path = "markdown_editor_startup_tests.rs"]
 mod startup_tests;
+
+#[cfg(test)]
+mod navigation_gate_tests {
+    use super::valid_open_link;
+    #[test]
+    fn stale_hidden_modal_and_untrusted_navigation_cannot_open_the_operating_system() {
+        for url in [
+            "https://example.com/",
+            "http://example.com/path?q=1",
+            "mailto:person@example.com",
+        ] {
+            assert!(valid_open_link(41, 41, true, url));
+            assert!(!valid_open_link(40, 41, true, url));
+            assert!(!valid_open_link(41, 41, false, url));
+        }
+        for url in [
+            "javascript:alert(1)",
+            "file:///C:/private.txt",
+            "data:text/html,hi",
+            "https://user:secret@example.com/",
+            "https://example.com/\n",
+            " https://example.com/",
+            "shell:downloads",
+            "//example.com/",
+            "https://",
+        ] {
+            assert!(!valid_open_link(41, 41, true, url), "{url:?}");
+        }
+    }
+}

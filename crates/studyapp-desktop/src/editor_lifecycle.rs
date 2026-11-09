@@ -166,6 +166,7 @@ impl StudyApp {
                     );
                 }
             }
+            MarkdownEvent::OpenLink(url) => cx.open_url(&url),
             MarkdownEvent::RequestInsertImage => self.request_insert_image(window, cx),
             MarkdownEvent::RequestNativeImagePaste { generation } => {
                 self.paste_native_image(generation, window, cx);

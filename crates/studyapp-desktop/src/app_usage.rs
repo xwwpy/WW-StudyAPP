@@ -117,11 +117,11 @@ impl ApplicationReport {
 }
 #[derive(Clone, Debug)]
 pub struct ApplicationLocation {
+    pub tree: crate::storage_tree::Tree,
     pub label: String,
     pub path: PathBuf,
     pub bytes: u64,
     pub files: u64,
-    pub movable: bool,
     pub reason: String,
     file_only: bool,
     members: Vec<PathBuf>,
@@ -133,13 +133,13 @@ pub struct ApplicationIssue {
 }
 fn location(label: &str, path: PathBuf, movable: bool) -> ApplicationLocation {
     ApplicationLocation {
+        tree: Default::default(),
         file_only: false,
         members: Vec::new(),
         label: label.into(),
         path,
         bytes: 0,
         files: 0,
-        movable,
         reason: if movable {
             "支持迁移；当前仅统计"
         } else {
@@ -216,6 +216,7 @@ fn visit(
         return Ok(());
     }
     if directory {
+        row.tree.record(&row.path, path, true, 0);
         let mut entries = std::fs::read_dir(path)?;
         loop {
             if seen.exhausted {
@@ -253,6 +254,12 @@ fn visit(
         }
     } else {
         let size = file.metadata()?.len();
+        let root = if path == row.path {
+            path.parent().unwrap_or(path)
+        } else {
+            &row.path
+        };
+        row.tree.record(root, path, false, size);
         row.bytes = row.bytes.saturating_add(size);
         row.files += 1;
         report.logical_bytes = report.logical_bytes.saturating_add(size);
@@ -303,6 +310,7 @@ fn scan_with_budget(
                 });
             }
         }
+        row.tree.finish();
         report.locations.push(row);
     }
     report.incomplete = !report.issues.is_empty();
@@ -861,7 +869,7 @@ mod safety_tests {
     }
     #[cfg(windows)]
     #[test]
-    fn junction_and_access_denied_are_incomplete_without_following() {
+    fn junctions_are_rejected_and_locked_files_match_actual_access() {
         let root = tempfile::tempdir().unwrap().keep();
         let outside = tempfile::tempdir().unwrap().keep();
         std::fs::write(outside.join("secret"), b"secret").unwrap();
@@ -884,9 +892,23 @@ mod safety_tests {
             .share_mode(0)
             .open(&protected)
             .unwrap();
+        // The guarded backup-semantics handle can remain available on some
+        // Windows filesystems even while a regular reader denies sharing.
+        // Inventory must report actual inspection failures, not guess that
+        // every exclusive data-reader also prevents safe size inspection.
+        let available = crate::storage_backend::plain_handle(&protected, false, false).is_ok();
         let report = scan(vec![location("locked", protected.clone(), true)], vec![]);
-        assert!(report.incomplete);
-        assert!(report.issues.iter().any(|i| i.path == protected));
+        assert_eq!(report.incomplete, !available, "{report:?}");
+        if available {
+            assert_eq!(report.logical_bytes, 6);
+            assert_eq!(report.files, 1);
+            assert!(report.issues.is_empty());
+        } else {
+            assert_eq!(report.logical_bytes, 0);
+            assert_eq!(report.files, 0);
+            assert!(report.issues.iter().any(|i| i.path == protected));
+        }
+        drop(_lock);
     }
 }
 

@@ -28,7 +28,16 @@ struct CopySource {
     rows: Rc<Vec<usize>>,
 }
 
+#[derive(Default)]
+struct ExplorerState {
+    presentation: Option<Arc<StoragePresentation>>,
+    expanded: std::collections::HashSet<std::path::PathBuf>,
+    rows: Option<Rc<Vec<(usize, usize)>>>,
+    row_height: f32,
+}
 pub struct StorageUi {
+    explorer: RefCell<ExplorerState>,
+    explorer_scroll: ListState,
     pub(crate) purge_page: usize,
     pub(crate) purge: Option<(
         crate::storage_backend::purge::remote::Scope,
@@ -62,6 +71,8 @@ pub struct StorageUi {
 impl Default for StorageUi {
     fn default() -> Self {
         Self {
+            explorer: RefCell::new(ExplorerState::default()),
+            explorer_scroll: ListState::new(0, ListAlignment::Top, px(58.)),
             purge: None,
             purge_page: 0,
             scroll: ListState::new(0, ListAlignment::Top, px(48.)),
@@ -166,6 +177,162 @@ fn storage_copy_list(
 }
 
 impl StudyApp {
+    fn storage_explorer(
+        &self,
+        presentation: &Arc<StoragePresentation>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let height = (crate::theme::palette().font_size as f32 * 3. + 16.).max(58.);
+        let rows = {
+            let mut state = self.storage_ui.explorer.borrow_mut();
+            if state.row_height != height {
+                state.row_height = height;
+                state.rows = None;
+            }
+            if state
+                .presentation
+                .as_ref()
+                .is_none_or(|old| !Arc::ptr_eq(old, presentation))
+            {
+                state.presentation = Some(presentation.clone());
+                state.rows = None;
+            }
+            if state.rows.is_none() {
+                let rows = Rc::new(presentation.tree.visible(&state.expanded));
+                let top = self.storage_ui.explorer_scroll.logical_scroll_top();
+                self.storage_ui
+                    .explorer_scroll
+                    .reset_with_uniform_height(rows.len(), px(height));
+                if !rows.is_empty() {
+                    self.storage_ui.explorer_scroll.scroll_to(ListOffset {
+                        item_ix: top.item_ix.min(rows.len() - 1),
+                        offset_in_item: top.offset_in_item,
+                    });
+                }
+                state.rows = Some(rows);
+            }
+            state.rows.as_ref().unwrap().clone()
+        };
+        let presentation = presentation.clone();
+        let owner = cx.entity().downgrade();
+        div()
+            .id("storage-file-explorer")
+            .test_support()
+            .relative()
+            .h(px(380.))
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                list(
+                    self.storage_ui.explorer_scroll.clone(),
+                    move |row_index, _, cx| {
+                        let (index, depth) = rows[row_index];
+                        let entry = &presentation.tree.entries[index];
+                        let toggle_path = entry.path.clone();
+                        let reveal_path = entry.path.clone();
+                        let directory = entry.directory;
+                        let owner = owner.clone();
+                        let expanded = owner
+                            .update(cx, |this, _| {
+                                this.storage_ui
+                                    .explorer
+                                    .borrow()
+                                    .expanded
+                                    .contains(&entry.path)
+                            })
+                            .unwrap_or(false);
+                        detail_list_row()
+                            .h(px(height))
+                            .py_1()
+                            .pl(px(8. + depth.min(12) as f32 * 16.))
+                            .child(
+                                row()
+                                    .min_w_0()
+                                    .child(
+                                        Button::new(("storage-tree-toggle", index))
+                                            .small()
+                                            .ghost()
+                                            .icon_action(
+                                                if entry.directory {
+                                                    if expanded {
+                                                        gpui_kit::assets::IconName::ChevronDown
+                                                    } else {
+                                                        gpui_kit::assets::IconName::ChevronRight
+                                                    }
+                                                } else {
+                                                    gpui_kit::assets::IconName::FileText
+                                                },
+                                                if expanded {
+                                                    "收起文件夹"
+                                                } else {
+                                                    "展开文件夹"
+                                                },
+                                            )
+                                            .disabled(!entry.directory || entry.children.is_empty())
+                                            .on_click(move |_, _, cx| {
+                                                let _ = owner.update(cx, |this, cx| {
+                                                    let mut state =
+                                                        this.storage_ui.explorer.borrow_mut();
+                                                    if !state.expanded.remove(&toggle_path) {
+                                                        state.expanded.insert(toggle_path.clone());
+                                                    }
+                                                    state.rows = None;
+                                                    cx.notify();
+                                                });
+                                            }),
+                                    )
+                                    .child(
+                                        column()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap_0()
+                                            .child(div().truncate().child(entry.name.clone()))
+                                            .child(
+                                                muted(
+                                                    studyapp_desktop::presentation::display_path(
+                                                        &entry.path.to_string_lossy(),
+                                                    ),
+                                                )
+                                                .text_xs()
+                                                .truncate(),
+                                            ),
+                                    )
+                                    .child(
+                                        muted(crate::storage_backend::viewmodel::size_label(
+                                            entry.bytes,
+                                        ))
+                                        .flex_shrink_0(),
+                                    )
+                                    .child(
+                                        Button::new(("storage-tree-open", index))
+                                            .small()
+                                            .ghost()
+                                            .action(if entry.directory {
+                                                "打开目录"
+                                            } else {
+                                                "定位文件"
+                                            })
+                                            .on_click(move |_, _, cx| {
+                                                if directory && reveal_path.is_dir() {
+                                                    cx.open_with_system(&reveal_path)
+                                                } else {
+                                                    cx.reveal_path(&reveal_path)
+                                                }
+                                            }),
+                                    ),
+                            )
+                            .into_any_element()
+                    },
+                )
+                .size_full(),
+            )
+            .child(studyapp_ui::virtual_list_scrollbar::virtual_list_scrollbar(
+                "storage-explorer-scrollbar",
+                &self.storage_ui.explorer_scroll,
+                px(0.),
+            ))
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+    }
     fn storage_action_blocked(&self, read_only_scan: bool, cx: &App) -> bool {
         self.storage_busy
             || crate::storage_policy::media_blocks_storage(read_only_scan, self.media_jobs_active())
@@ -547,12 +714,7 @@ impl StudyApp {
                 .child(muted(
                     "按文件长度统计；去重大小按文件身份去重，不等同于磁盘分配块。",
                 ))
-                .children(
-                    presentation
-                        .application_locations
-                        .iter()
-                        .map(|text| muted(text.clone())),
-                )
+                .child(self.storage_explorer(&presentation, cx))
                 .children(
                     presentation
                         .application_issues

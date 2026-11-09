@@ -461,6 +461,13 @@ fn save_scoped_settings(
 ) -> anyhow::Result<String> {
     let current = preferences.snapshot();
     let mut settings = current.settings;
+    let saved_section = match &command {
+        Command::SaveLearningSettings { .. } => "学习规则（询问间隔、回答期限和复习阶段）",
+        Command::SetShowFilePaths(_) => "文件路径显示方式",
+        Command::SaveLayout(_) => "页面布局",
+        Command::SetTimerWidgetPinned(_) => "计时小组件置顶设置",
+        _ => "应用设置",
+    };
     match command {
         Command::SaveSettings(next) => settings = *next,
         Command::SaveLearningSettings {
@@ -494,7 +501,7 @@ fn save_scoped_settings(
         engine,
         synchronization,
     )?;
-    Ok("设置已保存".into())
+    Ok(format!("已保存{saved_section}。"))
 }
 
 impl Worker {
@@ -929,7 +936,7 @@ impl Worker {
                                 | Command::EditSession { .. }
                         );
                         let restoring = matches!(&command, Command::Restore(_));
-                        let result = if (synchronization.status.busy || image_cloud_busy)
+                        let mut result = if (synchronization.status.busy || image_cloud_busy)
                             && (restoring || matches!(&command, Command::UnmanageNote { .. }))
                         {
                             Err(if restoring {
@@ -948,6 +955,31 @@ impl Worker {
                             )
                             .map_err(|e| format!("{e:#}"))
                         };
+                        if let Ok(message) = &mut result
+                            && !message.is_empty()
+                            && let Some(id) = saved_note.clone().or_else(|| {
+                                existing_notes.as_ref().and_then(|existing| {
+                                    engine
+                                        .snapshot()
+                                        .notes
+                                        .iter()
+                                        .find(|note| !existing.contains(&note.id))
+                                        .map(|note| note.id.clone())
+                                })
+                            })
+                            && let Some(note) = engine
+                                .snapshot()
+                                .notes
+                                .into_iter()
+                                .find(|note| note.id == id)
+                        {
+                            *message = format!(
+                                "已保存笔记「{}」。
+位置：{}",
+                                note.title,
+                                studyapp_desktop::presentation::display_path(&note.path)
+                            );
+                        }
                         if existing_notes.is_some() || saved_note.is_some() {
                             note_result = Some(match &result {
                                 Ok(_) => saved_note
@@ -983,7 +1015,9 @@ impl Worker {
                         let result = preferences
                             .save(*request, &mut engine, &mut synchronization)
                             .map_err(|error| format!("{error:#}"));
-                        notice = Some(result.clone().map(|()| "全部设置已保存".into()));
+                        notice = Some(result.clone().map(|()| {
+                            "已保存全部设置：学习规则、外观、图片、通知、快捷键和同步配置。".into()
+                        }));
                         preferences_result = Some(result);
                         last_sync_attempt = Instant::now();
                         sync_changed = true;
@@ -1787,17 +1821,27 @@ mod tests {
             })
             .unwrap();
         let saved = receive_notice(&worker);
+        assert!(saved.notifications[0].summary.contains("已保存全部设置"));
         assert!(saved.preferences_result.unwrap().is_ok());
         let committed = saved.preferences.unwrap();
         assert_eq!(committed.settings.answer_minutes, 9);
         assert!(!committed.settings.layout.folders_visible);
         let patched = apply(&worker, Command::SetShowFilePaths(true));
+        assert_eq!(patched.notifications[0].summary, "已保存文件路径显示方式。");
         let patched = patched.preferences.unwrap();
         assert!(patched.settings.show_file_paths);
         assert_eq!(patched.settings.answer_minutes, 9);
         assert!(!patched.settings.layout.folders_visible);
         assert_eq!(patched.shortcuts, committed.shortcuts);
         let pinned = apply(&worker, Command::SetTimerWidgetPinned(false));
+        assert_eq!(
+            pinned.notifications[0].summary,
+            "已保存计时小组件置顶设置。"
+        );
+        assert_eq!(
+            pinned.notifications[0].category,
+            studyapp_core::NoticeCategory::SaveSuccess
+        );
         assert!(
             !pinned
                 .snapshot
@@ -2616,6 +2660,32 @@ mod tests {
         assert_eq!(event.category, Category::SaveSuccess);
         assert_eq!(event.severity, Severity::Success);
         let original_id = event.id;
+        let snapshot = created.snapshot.as_ref().unwrap();
+        let note = &snapshot.notes[0];
+        let location = studyapp_desktop::presentation::display_path(&note.path);
+        assert!(event.summary.contains("notice test"));
+        assert!(event.summary.contains(&location));
+        assert!(!event.summary.contains("private-body"));
+        let saved = apply(
+            &worker,
+            Command::SaveNote {
+                note_id: note.id.clone(),
+                expected_hash: snapshot
+                    .versions
+                    .iter()
+                    .find(|version| version.note_id == note.id)
+                    .unwrap()
+                    .hash
+                    .clone(),
+                content: "updated private-body".into(),
+            },
+        );
+        let event = &saved.notifications[0];
+        assert_eq!(event.category, Category::SaveSuccess);
+        assert_eq!(event.severity, Severity::Success);
+        assert!(event.summary.contains("notice test"));
+        assert!(event.summary.contains(&location));
+        assert!(!event.summary.contains("private-body"));
         let source = root.join("import.md");
         std::fs::write(&source, "# imported").unwrap();
         let imported = apply(&worker, Command::Import(vec![source]));

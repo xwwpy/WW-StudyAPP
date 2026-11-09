@@ -295,8 +295,8 @@ impl StudyApp {
         .detach();
         cx.subscribe(
             &notifications,
-            |_, _, _: &crate::notifications::NotificationPresented, _| {
-                crate::notification_sound::play();
+            |_, _, event: &crate::notifications::NotificationPresented, _| {
+                crate::notification_sound::play(event.category, event.severity);
             },
         )
         .detach();
@@ -1262,12 +1262,12 @@ impl StudyApp {
             .unwrap_or_else(|| std::path::PathBuf::from(&library));
         std::thread::spawn(move || {
             let work = match action {
-                "import" => rfd::FileDialog::new().set_title("导入 Markdown 笔记").add_filter("Markdown", &["md", "markdown"]).pick_files().map(Work::ImportPaths),
-                "import-folder" => crate::folder_picker::pick_folder("导入目录中的 Markdown", Some(std::path::PathBuf::from(&library))).map(|p| Work::ImportPaths(vec![p])),
-                "relink" => rfd::FileDialog::new().add_filter("Markdown", &["md", "markdown"]).pick_file().zip(note).map(|(path, note_id)| Work::Apply(Command::Relink { note_id, path })),
+                "import" => rfd::FileDialog::new().set_title("导入文档或笔记").add_filter("文档与文本", &["md", "markdown", "pdf", "docx", "txt", "csv", "json", "yaml", "yml", "toml", "ini", "log", "rst", "html", "htm", "xml"]).pick_files().map(Work::ImportPaths),
+                "import-folder" => crate::folder_picker::pick_folder("导入目录中的文档与文本", Some(std::path::PathBuf::from(&library))).map(|p| Work::ImportPaths(vec![p])),
+                "relink" => rfd::FileDialog::new().add_filter("文档或笔记", &["md", "markdown", "pdf", "docx", "txt", "csv", "json", "yaml", "yml", "toml", "ini", "log", "rst", "html", "htm", "xml"]).pick_file().zip(note).map(|(path, note_id)| Work::Apply(Command::Relink { note_id, path })),
                 "backup" => rfd::FileDialog::new().set_file_name(format!("WW-StudyApp-{}.sqlite3", Local::now().format("%Y%m%d-%H%M%S"))).save_file().map(|p| Work::Apply(Command::Backup(p))),
                 "restore" => rfd::FileDialog::new().set_title("选择 WW-StudyApp 备份（恢复前自动保留当前资料）").add_filter("SQLite 备份", &["sqlite3", "sqlite", "db"]).pick_file().and_then(|p| {
-                    let confirmed = rfd::MessageDialog::new().set_title("恢复资料库").set_description("将用选中的备份恢复当前资料库。恢复前会自动保存当前资料的备份；源 Markdown 文件不会改变。").set_buttons(rfd::MessageButtons::OkCancel).show();
+                    let confirmed = rfd::MessageDialog::new().set_title("恢复资料库").set_description("将用选中的备份恢复当前资料库。恢复前会自动保存当前资料的备份；外部原文件不会改变。").set_buttons(rfd::MessageButtons::OkCancel).show();
                     (confirmed == rfd::MessageDialogResult::Ok).then_some(Work::Apply(Command::Restore(p)))
                 }),
                 "library" => crate::folder_picker::pick_folder("选择本地资料库文件夹", Some(library_directory)).map(Work::SwitchLibrary),

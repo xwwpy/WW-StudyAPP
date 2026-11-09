@@ -66,6 +66,7 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
       - run: python scripts/check-user-docs.py
+      - run: python scripts/test-third-party-notices.py
       - run: python scripts/test-nsis-sources.py
       - run: python scripts/test-update-manifest.py
       - run: python scripts/test-file-integrity.py
@@ -207,6 +208,7 @@ jobs:
             ${{ env.SMOKE_DIR }}/interactions-smoke-result.txt
             ${{ env.SMOKE_DIR }}/workspace-smoke-result.txt
             ${{ env.SMOKE_DIR }}/native-shortcut-settings-result.txt
+            ${{ env.SMOKE_DIR }}/native-documents-result.txt
             ${{ env.SMOKE_DIR }}/native-image-smoke-result.txt
             ${{ env.SMOKE_DIR }}/native-multiple-drafts-result.txt
             ${{ env.SMOKE_DIR }}/native-save-view-result.txt

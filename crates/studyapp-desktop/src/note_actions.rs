@@ -42,7 +42,7 @@ impl Render for DraftDragPreview {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         anchored()
             .position_mode(AnchoredPositionMode::Local)
-            .position(self.source_offset + point(px(12.), px(12.)))
+            .position(NoteDragPreview::content_offset(self.source_offset))
             .snap_to_window()
             .child(library_drag_card(
                 "draft-drag-preview",
@@ -73,8 +73,8 @@ impl NoteDrag {
 }
 
 /// GPUI places a drag view at `pointer - source_offset`, even when the view is
-/// smaller than the source. Restore that offset inside the view, then leave a
-/// fixed gap so a lower-right grab stays just as close as a top-left grab.
+/// smaller than the source. Restore that offset and subtract half the preview
+/// dimensions so its center, not its upper-left corner, follows the pointer.
 pub struct NoteDragPreview {
     title: String,
     source_offset: Point<Pixels>,
@@ -89,7 +89,7 @@ impl NoteDragPreview {
     }
 
     fn content_offset(source_offset: Point<Pixels>) -> Point<Pixels> {
-        source_offset + point(px(12.), px(12.))
+        source_offset - point(px(110.), px(LIBRARY_ROW_HEIGHT / 2.))
     }
 }
 
@@ -254,7 +254,7 @@ mod tests {
     use studyapp_core::{NoteFolder, Settings, TimerState};
 
     #[::core::prelude::v1::test]
-    fn bottom_right_grab_keeps_compact_preview_near_pointer() {
+    fn every_grab_keeps_the_note_preview_center_at_the_pointer() {
         let pointer = point(px(720.), px(390.));
         // Includes the long/tall source row which exposed the old compact ghost.
         for source_offset in [
@@ -264,7 +264,10 @@ mod tests {
         ] {
             let gpui_origin = pointer - source_offset;
             let preview_origin = gpui_origin + NoteDragPreview::content_offset(source_offset);
-            assert_eq!(preview_origin - pointer, point(px(12.), px(12.)));
+            assert_eq!(
+                preview_origin + point(px(110.), px(LIBRARY_ROW_HEIGHT / 2.)),
+                pointer
+            );
         }
     }
 

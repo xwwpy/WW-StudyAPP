@@ -80,6 +80,11 @@ def stage_macos(app, binary, release_version):
     (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
 
 
+def write_notices(destination, target):
+    import sys
+    run(sys.executable, ROOT / "scripts/third-party-notices.py", "--target", target, "--output", destination)
+
+
 def write_checksum(path):
     with path.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -99,6 +104,7 @@ def deb(binary, destination, release_version):
     stage = Path(tempfile.mkdtemp(prefix="studyapp-deb-"))
     stage.chmod(0o755)
     stage_debian(stage, binary)
+    write_notices(stage / "usr/share/doc/studyapp/THIRD-PARTY-NOTICES.txt", "x86_64-unknown-linux-gnu")
     debian = stage / "debian"
     debian.mkdir()
     (debian / "control").write_text("Source: studyapp\nSection: education\nPriority: optional\n"
@@ -135,6 +141,8 @@ def dmg(binary, destination, release_version):
     stage.chmod(0o755)
     app = stage / f"{APP_NAME}.app"
     stage_macos(app, binary, release_version)
+    write_notices(app / "Contents/Resources/THIRD-PARTY-NOTICES.txt",
+                  "aarch64-apple-darwin" if arch == "arm64" else "x86_64-apple-darwin")
     from PIL import Image
     iconset = Path(tempfile.mkdtemp(prefix="studyapp-icon-")) / "studyapp.iconset"
     iconset.mkdir()

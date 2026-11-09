@@ -8,7 +8,6 @@ use gpui_kit::{
     component::{
         Disableable, Icon, IconName, Selectable, Sizable,
         button::ButtonVariants,
-        input::Input,
         menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
     },
     prelude::FluentBuilder,
@@ -80,7 +79,11 @@ pub fn external_drop_overlay(
     let (title, hint, color) = match state.blocked() {
         Some(DropBlock::Busy) => ("暂时无法导入", "资料库正在处理中，请稍后重试", MUTED),
         Some(DropBlock::Modal) => ("先完成当前操作", "关闭对话框后，再拖入文件", MUTED),
-        None => ("松开以导入", "Markdown、图片或文件夹", GREEN),
+        None => (
+            "松开以导入",
+            "Markdown、PDF、DOCX、文本、图片或文件夹",
+            GREEN,
+        ),
     };
     div()
         .id("external-drop-overlay")
@@ -457,7 +460,7 @@ impl StudyApp {
                 };
                 menu = menu.min_w(px(210.));
                 for (label, action, visible, disabled) in [
-                    ("导出 Markdown…", ReaderAction::Export, true, busy),
+                    ("导出原文…", ReaderAction::Export, true, busy),
                     ("移动到目录…", ReaderAction::Move, true, busy),
                     (
                         "取消管理…",
@@ -944,6 +947,9 @@ impl StudyApp {
                             .min_w_0()
                             .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
+                            .whitespace_nowrap()
+                            .overflow_hidden()
+                            .text_ellipsis()
                             .child(if drafts_only {
                                 "草稿箱"
                             } else if self.show_detached {
@@ -957,7 +963,11 @@ impl StudyApp {
                     .child(self.library_sort_button(cx))
                     .child(self.library_more_button(cx)),
             )
-            .child(div().px_2().child(Input::new(&self.search).cleanable(true)))
+            .child(
+                div()
+                    .px_2()
+                    .child(crate::settings_components::input(&self.search, false).cleanable(true)),
+            )
             .child(tree);
         let selected = self
             .selected_note
@@ -1024,6 +1034,12 @@ impl StudyApp {
                         )
                         .child(
                             Button::new("edit-note")
+                                .when(
+                                    studyapp_core::documents::is_original_document(
+                                        std::path::Path::new(&note.path),
+                                    ),
+                                    |button| button.invisible(),
+                                )
                                 .small()
                                 .action(if historical {
                                     "复制版本"

@@ -20,11 +20,11 @@ fn remote_image_url(value: &str) -> Result<reqwest::Url> {
     ensure!(value.len() <= 8192, "图片网址过长");
     let url = reqwest::Url::parse(value).context("图片网址无效")?;
     ensure!(
-        url.scheme() == "https"
+        matches!(url.scheme(), "https" | "http")
             && url.host_str().is_some()
             && url.username().is_empty()
             && url.password().is_none(),
-        "网络图片仅支持不含用户名和密码的 HTTPS 地址"
+        "网络图片仅支持不含用户名和密码的 HTTP(S) 地址"
     );
     Ok(url)
 }
@@ -180,10 +180,13 @@ fn preview_cache_key(
     if dest
         .get(..8)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+        || dest
+            .get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
     {
         return remote_image_url(dest)
             .ok()
-            .map(|url| format!("https:{url}"));
+            .map(|url| format!("remote:{url}"));
     }
     let path = if dest.starts_with(PREFIX) {
         local_asset(database, settings, &asset_key(dest).ok()?).ok()?
@@ -914,15 +917,19 @@ pub fn execute(
         } => {
             control.remaining()?;
             let uses = image_uses(&content)?;
+            let mut destinations = uses
+                .into_iter()
+                .map(|image| image.destination)
+                .collect::<BTreeSet<_>>();
+            for event in Parser::new_ext(&content, Options::all()) {
+                if let Event::Html(html) | Event::InlineHtml(html) = event {
+                    destinations.extend(studyapp_core::html_image_sources(&html));
+                }
+            }
             let mut images = BTreeMap::new();
             let mut missing = Vec::new();
             let mut total = 0;
-            for dest in uses
-                .into_iter()
-                .map(|u| u.destination)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-            {
+            for dest in destinations {
                 control.remaining()?;
                 let result = (|| -> Result<String> {
                     let load_dest = bindings.get(&dest).unwrap_or(&dest);
@@ -1880,8 +1887,8 @@ mod tests {
     #[test]
     fn network_images_allow_only_https_without_embedded_credentials() {
         assert!(remote_image_url("https://example.com/picture.png?size=2").is_ok());
+        assert!(remote_image_url("http://example.com/picture.png").is_ok());
         for url in [
-            "http://example.com/a.png",
             "https://alice:secret@example.com/a.png",
             "https://alice@example.com/a.png",
             "file:///C:/private.png",

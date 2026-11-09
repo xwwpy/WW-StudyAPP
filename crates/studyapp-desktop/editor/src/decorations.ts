@@ -1,3 +1,4 @@
+import { safeHref } from "./links";
 import { listDepth, listSymbol, listPresentationChanged } from "./lists";
 import { Range, StateEffect, Text, Transaction } from "@codemirror/state";
 import { syntaxTree } from "@codemirror/language";
@@ -25,6 +26,7 @@ export function updateImages(images: Record<string, unknown>): void {
   }
   resolvedImages = next;
 }
+export function imageSource(destination:string):string|undefined {return resolvedImages.get(destination);}
 class ImageWidget extends WidgetType {
   constructor(readonly source:string,readonly alt:string) { super(); }
   eq(other:ImageWidget) { return this.source === other.source && this.alt === other.alt; }
@@ -310,6 +312,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
       }
     };
     const listLines = new Map<number,{depth:number;marker:boolean}>();
+    const codePrefixes = new Map<number,number>();
     for (const visible of view.visibleRanges) {
       this.tree.iterate({
         from: visible.from, to: visible.to,
@@ -337,7 +340,13 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
           } else if (name === "FencedCode" || name === "CodeBlock") {
             const first = state.doc.lineAt(Math.max(from, visible.from)).number;
             const last = state.doc.lineAt(Math.min(to, visible.to)).number;
-            for (let i = first; i <= last; i++) line(state.doc.line(i).from, "md-code-line");
+            const opening = state.doc.lineAt(from);
+            const structural = name === "FencedCode" ? /^[ \t]*/.exec(opening.text)![0].length : from-opening.from;
+            for (let i = first; i <= last; i++) {
+              const position=state.doc.line(i).from;
+              codePrefixes.set(position,structural);
+              line(position,"md-code-line");
+            }
             line(from,"md-code-start");
             line(to,"md-code-end");
             if (name === "FencedCode") {
@@ -406,9 +415,10 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
             return false;
           } else if (name === "Link" || name === "Autolink") {
             const urlNode = node.getChild("URL");
-            const url = urlNode ? state.sliceDoc(urlNode.from, urlNode.to) : "";
-            const safe = /^(https?:\/\/|mailto:)/i.test(url);
-            mark(from, to, "md-link", { title: safe ? `${url}（选中以编辑链接）` : "选中以编辑链接" });
+            const label=node.getChild("LinkLabel");
+            const url = urlNode ? decodeMarkdown(state.sliceDoc(urlNode.from, urlNode.to).replace(/^<|>$/g,"")) : references().get(referenceLabel(label?state.sliceDoc(label.from+1,label.to-1):state.sliceDoc(from+1,to-1)))||"";
+            const href = safeHref(url);
+            mark(from,to,"md-link",{title:href?`${href}（阅读时点击，编辑时 Ctrl+点击）`:"选中以编辑链接",...(href?{"data-studyapp-href":href,role:"link",tabindex:"0"}:{})});
             if (!active(from, to) && name === "Link") {
               for (let child = node.firstChild; child; child = child.nextSibling) {
                 if (["LinkMark", "URL", "LinkTitle"].includes(child.name)) hide(child.from, child.to);
@@ -454,7 +464,8 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
     }
     for (const [position,{depth,marker}] of listLines) {
       const current = state.doc.lineAt(position);
-      const indentation = /^\s*/.exec(current.text)![0].length;
+      const rawIndentation = /^[ \t]*/.exec(current.text)![0].length;
+      const indentation = codePrefixes.has(position) ? Math.min(rawIndentation,codePrefixes.get(position)!) : rawIndentation;
       if (indentation) hide(position,position+indentation);
       line(position,`md-list-line${marker ? "" : " md-list-continuation"}`,{"data-list-depth":String(depth),style:`--list-depth:${depth}`});
     }
