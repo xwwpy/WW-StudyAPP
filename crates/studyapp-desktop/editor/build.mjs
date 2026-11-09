@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { licenseNotices } from "./license-notices.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const result = await build({
@@ -54,7 +55,7 @@ const files = new Map([
   ["editor.js", result.outputFiles[0].text.replace(/(^\.[^\n]*\{[^\n]*\})[ \t]+$/gm,"$1")],
   ["editor.css", await readFile(join(root, "src/editor.css"), "utf8")],
   ["index.html", await readFile(join(root, "src/index.html"), "utf8")],
-  ["THIRD_PARTY_LICENSES.txt", [...notices.entries()].sort(([a], [b]) => a.localeCompare(b, "en")).map(([, text]) => text).join("\n--------------------\n\n")]
+  ["THIRD_PARTY_LICENSES.txt", licenseNotices(notices.values())]
 ]);
 await mkdir(join(root, "dist"), { recursive: true });
 for (const [name, text] of files) {

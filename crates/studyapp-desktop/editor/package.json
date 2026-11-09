@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "node build.mjs",
-    "bundle:check": "node build.mjs --check",
+    "bundle:check": "node --test tests/licenses.test.mjs && node build.mjs --check",
     "test": "node --test --test-concurrency=1 tests/editor.test.mjs",
     "check": "tsc --noEmit",
     "verify": "npm run check && npm run build && npm test"
