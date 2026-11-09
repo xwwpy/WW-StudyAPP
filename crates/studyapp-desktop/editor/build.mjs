@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -16,8 +16,10 @@ async function notice(packagePath, closure=false) {
   if (notices.has(packagePath)) return;
   const pkg = JSON.parse(await readFile(join(packagePath, "package.json"), "utf8"));
   let license;
+  const names=await readdir(packagePath);
   for (const name of ["LICENSE", "LICENSE.txt", "LICENSE.md", "LICENSE.markdown", "license", "license.txt"]) {
-    try { license = await readFile(join(packagePath, name), "utf8"); break; } catch {}
+    const actual=names.find(value=>value.toLowerCase()===name.toLowerCase());
+    if(actual){license=await readFile(join(packagePath,actual),"utf8");break;}
   }
   if (!license) {
     try {
