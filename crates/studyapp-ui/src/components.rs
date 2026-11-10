@@ -114,11 +114,20 @@ pub fn library_interaction(row: Stateful<Div>, selected: bool, disabled: bool) -
         .tab_stop(!disabled)
         .border_1()
         .border_color(if selected {
-            rgb(crate::theme::palette().accent).opacity(0.35)
+            rgb(crate::theme::palette().selected_border)
         } else {
             rgba(0)
         })
-        .when(selected, |row| row.bg(crate::theme::selection_color()))
+        .bg(rgb(if selected {
+            crate::theme::palette().selected_background
+        } else {
+            crate::theme::palette().idle_background
+        }))
+        .text_color(rgb(if selected {
+            crate::theme::palette().selected_text
+        } else {
+            crate::theme::palette().idle_text
+        }))
         .when(disabled, |row| row.opacity(0.5).cursor_default())
         .when(!disabled, |row| {
             row.cursor_pointer()
@@ -260,21 +269,18 @@ pub fn heading(text: impl Into<SharedString>) -> Div {
 /// A compact selection marker shared by navigation surfaces; the supplied
 /// control retains ownership of focus, hit testing, and action identifiers.
 pub fn navigation_item(control: impl IntoElement, selected: bool) -> Div {
-    div()
-        .relative()
-        .w_full()
-        .min_w_0()
-        .child(control)
-        .children(selected.then(|| {
+    div().relative().w_full().min_w_0().child(control).children(
+        (selected && crate::theme::palette().selection_indicator).then(|| {
             div()
                 .absolute()
                 .left_0()
                 .top(px(9.))
                 .bottom(px(9.))
-                .w(px(2.))
+                .w(px(3.))
                 .rounded_full()
-                .bg(rgb(crate::theme::palette().accent))
-        }))
+                .bg(rgb(crate::theme::palette().selected_border))
+        }),
+    )
 }
 pub fn pill(text: impl Into<SharedString>, color: u32) -> Div {
     let background = crate::theme::resolve_color(color);

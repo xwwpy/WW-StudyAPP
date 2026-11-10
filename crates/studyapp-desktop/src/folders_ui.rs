@@ -2340,6 +2340,7 @@ mod ui_tests {
 
     fn panel_snapshot() -> Arc<Snapshot> {
         Arc::new(Snapshot {
+            pending_snapshot_count: 0,
             table_views: Default::default(),
             settings: studyapp_core::Settings::default(),
             notes: Vec::new(),

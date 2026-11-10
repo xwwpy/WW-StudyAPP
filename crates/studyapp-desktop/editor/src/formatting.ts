@@ -4,6 +4,9 @@ import { undo, redo, isolateHistory } from "@codemirror/commands";
 import { syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 
+let indentSubtree = false;
+export function setIndentSubtree(value: unknown): void { indentSubtree = value === true; }
+
 export function indentMarkdown(view: EditorView, outdent = false): boolean {
   if (view.state.readOnly) return false;
   const { state } = view;
@@ -53,7 +56,7 @@ export function indentMarkdown(view: EditorView, outdent = false): boolean {
       }
     }
     const first = state.doc.lineAt(item.from).number;
-    const last = state.doc.lineAt(Math.max(item.from, item.to - 1)).number;
+    const last = (indentSubtree || state.selection.ranges.some(range=>!range.empty)) ? state.doc.lineAt(Math.max(item.from, item.to - 1)).number : first;
     for (let number = first; number <= last; number++) shifts.set(number, delta);
   }
   for (const number of lines) if (!shifts.has(number)) {

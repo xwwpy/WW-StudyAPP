@@ -353,12 +353,25 @@ pub(crate) fn relink(state: &mut State, note_id: &str, path: PathBuf, now: i64) 
     Ok(())
 }
 pub(crate) fn scan(state: &mut State, offline: bool, now: i64) -> String {
-    scan_filtered(state, offline, now, false)
+    scan_filtered(state, offline, now, false, false)
 }
 pub(crate) fn scan_external(state: &mut State, offline: bool, now: i64) -> String {
-    scan_filtered(state, offline, now, true)
+    scan_filtered(state, offline, now, true, false)
 }
-fn scan_filtered(state: &mut State, offline: bool, now: i64, external_only: bool) -> String {
+pub(crate) fn capture(state: &mut State, now: i64) -> String {
+    scan_filtered(state, false, now, false, true)
+}
+fn scan_filtered(
+    state: &mut State,
+    offline: bool,
+    now: i64,
+    external_only: bool,
+    explicit: bool,
+) -> String {
+    if !explicit && !state.settings.snapshots.scheduled() {
+        return "手动模式：未扫描".into();
+    }
+    let save = explicit || state.settings.snapshots.mode == crate::SnapshotMode::Automatic;
     if offline {
         state.offline_unreconciled_notes.extend(
             state
@@ -422,14 +435,16 @@ fn scan_filtered(state: &mut State, offline: bool, now: i64, external_only: bool
                     state.offline_unreconciled_notes.remove(&note_id);
                     continue;
                 }
-                if capture_offline
-                    || state.unattributed_notes.contains(&note_id)
-                    || state
-                        .candidates
-                        .get(&note_id)
-                        .is_some_and(|(candidate, first)| {
-                            *candidate == digest && now.saturating_sub(*first) >= 3
-                        })
+                if save
+                    && (explicit
+                        || capture_offline
+                        || state.unattributed_notes.contains(&note_id)
+                        || state
+                            .candidates
+                            .get(&note_id)
+                            .is_some_and(|(candidate, first)| {
+                                *candidate == digest && now.saturating_sub(*first) >= 3
+                            }))
                 {
                     append_version(state, index, content, now, capture_offline, false);
                     if let Some(stamp) = stamp {

@@ -73,6 +73,8 @@ pub struct Settings {
     pub notifications: crate::NotificationSettings,
     #[serde(default)]
     pub logging: crate::LoggingSettings,
+    #[serde(default)]
+    pub snapshots: crate::SnapshotSettings,
 }
 /// Validated configuration, ready to install without another storage operation.
 pub struct PreparedSettings {
@@ -179,6 +181,8 @@ pub struct TimerState {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub pending_snapshot_count: usize,
     #[serde(default)]
     pub table_views: std::sync::Arc<crate::LibraryTableViews>,
     pub settings: Settings,
@@ -319,6 +323,8 @@ pub enum Command {
     Scan {
         offline: bool,
     },
+    /// Explicit capture bypasses the passive scan debounce in every mode.
+    CaptureSnapshots,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DayStat {

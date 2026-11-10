@@ -11,7 +11,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        Disableable, Sizable,
+        Disableable, Selectable, Sizable,
         button::ButtonVariants,
         input::{InputEvent, InputState},
     },
@@ -353,6 +353,7 @@ impl StudyApp {
         };
         match scope {
             SettingsResetScope::Learning => {
+                draft.snapshots = defaults.settings.snapshots;
                 draft.interval_minutes = defaults.settings.interval_minutes;
                 draft.answer_minutes = defaults.settings.answer_minutes;
                 draft.review_days = defaults.settings.review_days.clone();
@@ -595,6 +596,7 @@ impl StudyApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.fill_selection_fields(&settings.selection, window, cx);
         if self.preferences_ui.appearance_view.is_none() {
             let owner = cx.weak_entity();
             self.preferences_ui.appearance_view =
@@ -1653,7 +1655,7 @@ impl StudyApp {
                             .label(label)
                             .disabled(busy)
                             .rounded_md()
-                            .text_color(crate::theme::color(if selected { INK } else { MUTED }))
+                            .selected(selected)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_settings_section(section, cx)
                             }));
@@ -1663,9 +1665,7 @@ impl StudyApp {
                         button = button.flex_1().min_w_0();
                     }
                     if selected {
-                        button = button
-                            .bg(crate::theme::selection_color())
-                            .font_weight(FontWeight::SEMIBOLD);
+                        button = button.selected(true).font_weight(FontWeight::SEMIBOLD);
                     }
                     button
                 }),
@@ -1720,15 +1720,14 @@ impl StudyApp {
                 let mut button = Button::new(id)
                     .small()
                     .ghost()
+                    .selected(self.preferences_ui.appearance_page == page)
                     .label(label)
                     .disabled(busy)
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.select_appearance_page(page, cx)),
                     );
                 if self.preferences_ui.appearance_page == page {
-                    button = button
-                        .bg(crate::theme::selection_color())
-                        .font_weight(FontWeight::SEMIBOLD);
+                    button = button.selected(true).font_weight(FontWeight::SEMIBOLD);
                 }
                 navigation = navigation.child(button);
             }
@@ -1742,15 +1741,14 @@ impl StudyApp {
                 let mut button = Button::new(id)
                     .small()
                     .ghost()
+                    .selected(self.preferences_ui.storage_page == page)
                     .label(label)
                     .disabled(busy)
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.select_storage_page(page, cx)),
                     );
                 if self.preferences_ui.storage_page == page {
-                    button = button
-                        .bg(crate::theme::selection_color())
-                        .font_weight(FontWeight::SEMIBOLD);
+                    button = button.selected(true).font_weight(FontWeight::SEMIBOLD);
                 }
                 navigation = navigation.child(button);
             }
@@ -1846,27 +1844,32 @@ impl StudyApp {
     pub fn preference_controls(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         match self.preferences_ui.section {
-            SettingsSection::Learning => form::section("学习节奏")
-                .child(form::settings_row(
-                    "询问间隔",
-                    row()
-                        .child(form::input(&self.interval, busy).w(px(100.)))
-                        .child(muted("分钟 · 正整数")),
-                ))
-                .child(form::settings_row(
-                    "回答期限",
-                    row()
-                        .child(form::input(&self.deadline, busy).w(px(100.)))
-                        .child(muted("分钟 · 正整数")),
-                ))
-                .child(form::settings_row(
-                    "复习间隔",
-                    form::input(&self.review_days, busy),
-                ))
-                .child(muted("复习间隔以天为单位，用逗号分隔。"))
-                .child(muted(
-                    "保存后生效；询问间隔从下一时间段生效，复习间隔只影响新建计划。",
-                )),
+            SettingsSection::Learning => column()
+                .gap_4()
+                .child(
+                    form::section("学习节奏")
+                        .child(form::settings_row(
+                            "询问间隔",
+                            row()
+                                .child(form::input(&self.interval, busy).w(px(100.)))
+                                .child(muted("分钟 · 正整数")),
+                        ))
+                        .child(form::settings_row(
+                            "回答期限",
+                            row()
+                                .child(form::input(&self.deadline, busy).w(px(100.)))
+                                .child(muted("分钟 · 正整数")),
+                        ))
+                        .child(form::settings_row(
+                            "复习间隔",
+                            form::input(&self.review_days, busy),
+                        ))
+                        .child(muted("复习间隔以天为单位，用逗号分隔。"))
+                        .child(muted(
+                            "保存后生效；询问间隔从下一时间段生效，复习间隔只影响新建计划。",
+                        )),
+                )
+                .child(self.snapshot_settings(cx)),
             SettingsSection::Appearance => column(),
             SettingsSection::Notifications => column(),
             SettingsSection::Logging => self.logging_controls(cx),
@@ -2505,11 +2508,7 @@ impl StudyApp {
                         cx.notify();
                     },
                 ));
-                if focus == focused {
-                    button.primary()
-                } else {
-                    button
-                }
+                button.selected(focus == focused)
             }),
         );
         let sample = div()
@@ -2615,11 +2614,7 @@ impl StudyApp {
                                             this.refresh_appearance(window, cx);
                                             cx.notify();
                                         }));
-                                if appearance.mode == mode {
-                                    button.primary()
-                                } else {
-                                    button
-                                }
+                                button.selected(appearance.mode == mode)
                             }),
                         ),
                     )
@@ -2673,11 +2668,7 @@ impl StudyApp {
                                         this.refresh_appearance(window, cx);
                                         cx.notify();
                                     }));
-                                if appearance.spacing == spacing {
-                                    button.primary()
-                                } else {
-                                    button
-                                }
+                                button.selected(appearance.spacing == spacing)
                             },
                         ),
                     ))
@@ -2691,7 +2682,7 @@ impl StudyApp {
                                 if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.table_defaults.sizing = value; }
                                 this.refresh_appearance(window, cx); cx.notify();
                             }));
-                        if appearance.table_defaults.sizing == value { button.primary() } else { button }
+                        button.selected(appearance.table_defaults.sizing == value)
                     })))
                     .child(row().flex_wrap().child("列对齐").children([
                         (studyapp_core::TableAlignment::Source, "source", "沿用源文"),
@@ -2704,11 +2695,11 @@ impl StudyApp {
                                 if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.table_defaults.alignment = value; }
                                 this.refresh_appearance(window, cx); cx.notify();
                             }));
-                        if appearance.table_defaults.alignment == value { button.primary() } else { button }
+                        button.selected(appearance.table_defaults.alignment == value)
                     })))
                     .child(muted("适用于所有主题；正文中可为单张表格调整列宽与对齐，恢复默认后重新跟随此处。不会改写 Markdown。"))
                     .child(muted("修改可即时预览；保存全部设置后才会写入资料库。")),
-            ).child(self.list_style_settings(cx));
+            ).child(self.list_style_settings(cx)).child(self.selection_settings(cx));
         }
         if part == 1 {
             let mut custom = card().gap_3().child(
@@ -3000,11 +2991,7 @@ impl StudyApp {
                                     }
                                     cx.notify();
                                 }));
-                        if draft.images.storage == storage {
-                            button.primary()
-                        } else {
-                            button
-                        }
+                        button.selected(draft.images.storage == storage)
                     }),
                 ),
         );
@@ -3100,11 +3087,7 @@ impl StudyApp {
                                     }
                                     cx.notify();
                                 }));
-                        if cloud.kind == kind {
-                            button.primary()
-                        } else {
-                            button
-                        }
+                        button.selected(cloud.kind == kind)
                     }),
                 ),
             );
@@ -3135,7 +3118,7 @@ impl StudyApp {
                                 if let Some(cloud) = &mut this.preferences_ui.image_cloud { cloud.addressing = style; }
                                 cx.notify();
                             }));
-                        if cloud.addressing == style { button.primary() } else { button }
+                        button.selected(cloud.addressing == style)
                     })))
                     .child(muted("虚拟主机：bucket.endpoint/key；路径：endpoint/bucket/key。不同服务的兼容范围与要求不同，请按服务商文档选择。"))
                     .child(row().child(muted(if cloud.clear_secret { "保存后将清除当前密钥" } else if cloud.secret_saved { "当前目标的密钥已加密保存；留空保留。更换目标需重新填写。" } else { "请填写 Secret；它只会加密保存，不进入笔记或编辑器。" }))
@@ -4539,6 +4522,7 @@ mod scoped_tests {
                 let settings = studyapp_core::Settings::default();
                 app.snapshot = Some(
                     studyapp_core::Snapshot {
+                        pending_snapshot_count: 0,
                         settings,
                         table_views: Default::default(),
                         notes: Vec::new(),

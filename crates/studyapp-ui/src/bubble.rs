@@ -200,7 +200,11 @@ pub(crate) struct PointerBubble {
 impl Render for PointerBubble {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let owner = cx.weak_entity();
-        let metrics = BubbleMetrics::default();
+        let palette = crate::theme::palette();
+        let metrics = BubbleMetrics {
+            radius: px(f32::from(palette.hover_radius)),
+            ..Default::default()
+        };
         let viewport = window.viewport_size();
         let available_width = (viewport.width - metrics.margin * 2.).max(px(0.));
         let available_height = bubble_layout(
@@ -215,7 +219,7 @@ impl Render for PointerBubble {
         let padding = px(8.)
             .min(available_width * 0.25)
             .min(available_height * 0.25);
-        let border = px(1.)
+        let border = px(f32::from(palette.hover_border_width))
             .min(available_width * 0.25)
             .min(available_height * 0.25);
         let scroll = window
@@ -225,20 +229,23 @@ impl Render for PointerBubble {
         let body = crate::components::scroll_body("sidebar-tooltip-content", &scroll)
             .test_support()
             .min_w(px(120.).min(available_width))
-            .max_w(px(320.).min(available_width))
-            .max_h(available_height)
+            .max_w(px(f32::from(palette.hover_width)).min(available_width))
+            .max_h(available_height.min(px(f32::from(palette.hover_height))))
             .overflow_hidden()
             .overflow_y_scroll()
             .whitespace_normal()
             .p(padding)
             .rounded(metrics.radius)
             .border(border)
-            .border_color(crate::theme::color(crate::components::BORDER))
-            .bg(rgb(crate::theme::palette().surface_raised))
-            .text_color(crate::theme::color(crate::components::INK))
+            .border_color(rgba(palette.hover_border.packed_rgba()))
+            .bg(rgba(palette.hover_background.packed_rgba()))
+            .text_color(rgb(studyapp_core::readable_theme_color(
+                palette.text,
+                &[palette.hover_background.over(palette.surface)],
+            )))
             .text_sm()
             .shadow_md()
-            .child(self.text.clone())
+            .child(palette.hover_content.filter(&self.text))
             .into_any_element();
         BubbleElement {
             body,
@@ -354,7 +361,10 @@ impl Element for BubbleElement {
                 .body
                 .union(&Bounds::new(layout.arrow[1], Size::default()));
             window.paint_layer(layer, |window| {
-                window.paint_path(path, rgb(crate::theme::palette().surface_raised));
+                window.paint_path(
+                    path,
+                    rgba(crate::theme::palette().hover_background.packed_rgba()),
+                );
             });
         }
         let owner = self.owner.clone();

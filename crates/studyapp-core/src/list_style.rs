@@ -153,6 +153,8 @@ impl ListPreset {
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct ListStyle {
     pub preset: ListPreset,
+    /// Cursor Tab affects only its line unless explicitly enabled.
+    pub indent_subtree: bool,
     pub levels: [Option<ListMarker>; LIST_LEVELS],
 }
 impl ListStyle {

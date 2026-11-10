@@ -193,6 +193,8 @@ pub fn settings_row(label: impl Into<SharedString>, control: impl IntoElement) -
         .min_w_0()
         .gap_1()
         .py_2()
+        .border_b_1()
+        .border_color(crate::theme::color(BORDER))
         .child(
             div()
                 .text_sm()
@@ -711,4 +713,42 @@ mod tests {
             "new viewport bounds reused obsolete layout"
         );
     }
+}
+
+/// Compact enumerated preference control; only the selected value stays on the page.
+pub fn choice<T: 'static, V: Clone + PartialEq + 'static>(
+    id: impl Into<ElementId>,
+    current: V,
+    options: Vec<(V, String)>,
+    disabled: bool,
+    owner: WeakEntity<T>,
+    change: impl Fn(&mut T, V, &mut Window, &mut Context<T>) + Clone + 'static,
+) -> impl IntoElement {
+    use gpui_kit::component::{
+        Disableable,
+        menu::{DropdownMenu, PopupMenuItem},
+    };
+    let label = options
+        .iter()
+        .find(|(value, _)| *value == current)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| "选择…".into());
+    crate::controls::Button::new(id)
+        .label(label)
+        .disabled(disabled)
+        .dropdown_menu(move |mut menu, _, _| {
+            for (value, label) in &options {
+                let owner = owner.clone();
+                let change = change.clone();
+                let value = value.clone();
+                let checked = value == current;
+                menu = menu.item(PopupMenuItem::new(label.clone()).checked(checked).on_click(
+                    move |_, window, cx| {
+                        let _ =
+                            owner.update(cx, |this, cx| change(this, value.clone(), window, cx));
+                    },
+                ));
+            }
+            menu
+        })
 }

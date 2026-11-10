@@ -12,8 +12,23 @@ use studyapp_core::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedTheme {
     pub table_defaults: studyapp_core::TableDefaults,
+    pub indent_subtree: bool,
     pub list_markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
     pub render_html: bool,
+    pub hover_content: studyapp_core::HoverContent,
+    pub hover_background: RgbaColor,
+    pub hover_border: RgbaColor,
+    pub hover_width: u16,
+    pub hover_height: u16,
+    pub hover_radius: u8,
+    pub hover_border_width: u8,
+    pub selected_background: u32,
+    pub selected_text: u32,
+    pub selected_border: u32,
+    pub idle_background: u32,
+    pub idle_text: u32,
+    pub selection_indicator: bool,
+    pub selection_radius: u8,
     pub dark: bool,
     pub background: u32,
     pub surface: u32,
@@ -111,7 +126,63 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
     let success = semantic(if dark { 0x84D6AD } else { 0x247448 });
     let soft = |semantic| blend(surface, semantic, 0.08);
     let focus = readable_theme_color(accent, &[surface]);
+    let chosen = &settings.selection;
+    let custom = |value: &Option<String>, base, fallback| {
+        value
+            .as_deref()
+            .and_then(studyapp_core::parse_rgba_color)
+            .map_or(fallback, |v| v.over(base))
+    };
+    let selected_default = blend(surface, accent, if dark { 0.30 } else { 0.20 });
+    let selected_background = custom(
+        &chosen.selected_background,
+        surface,
+        if theme_contrast(text, selected_default) >= 4.5 {
+            selected_default
+        } else {
+            surface
+        },
+    );
+    let idle_background = custom(&chosen.idle_background, surface, surface);
+    let hover = settings
+        .notifications
+        .surface(studyapp_core::NoticeStyle::Anchored);
+    let hover_background = hover
+        .background
+        .as_deref()
+        .and_then(studyapp_core::parse_rgba_color)
+        .unwrap_or(RgbaColor::opaque(surface_raised));
+    let hover_background = RgbaColor::new(
+        hover_background.rgb(),
+        (u16::from(hover_background.alpha()) * u16::from(hover.opacity) / 100) as u8,
+    );
     ResolvedTheme {
+        hover_content: settings.notifications.hover_content,
+        hover_background,
+        hover_border: hover
+            .border_color
+            .as_deref()
+            .and_then(studyapp_core::parse_rgba_color)
+            .unwrap_or(RgbaColor::opaque(blend(surface, text, 0.10))),
+        hover_width: hover.width,
+        hover_height: hover.max_height,
+        hover_radius: hover.radius,
+        hover_border_width: hover.border_width,
+        selected_background,
+        selected_text: custom(
+            &chosen.selected_text,
+            selected_background,
+            readable_theme_color(text, &[selected_background]),
+        ),
+        selected_border: custom(&chosen.selected_border, selected_background, focus),
+        idle_background,
+        idle_text: custom(
+            &chosen.idle_text,
+            idle_background,
+            readable_theme_color(text, &[idle_background]),
+        ),
+        selection_indicator: chosen.indicator,
+        selection_radius: chosen.radius,
         dark,
         background,
         surface,
@@ -127,6 +198,7 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
                 surface_raised,
                 inset,
                 accent_soft,
+                selected_background,
                 neutral_selection(surface, text),
             ],
         ),
@@ -168,6 +240,7 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
         render_html: settings.render_html,
         table_defaults: settings.table_defaults,
         list_markers: settings.list_style.markers(),
+        indent_subtree: settings.list_style.indent_subtree,
     }
 }
 
@@ -213,6 +286,7 @@ impl ResolvedTheme {
             "renderHtml": self.render_html,
             "tableDefaults": self.table_defaults,
             "listMarkers": self.list_markers,
+            "indentSubtree": self.indent_subtree,
             "mode": if self.dark { "dark" } else { "light" },
             "accent": hex(self.accent), "background": hex(self.surface),
             "surface": hex(self.surface), "text": hex(self.text),
@@ -261,7 +335,7 @@ fn interaction_surface(p: ResolvedTheme, amount: f32) -> u32 {
 }
 
 fn selection_surface(current: ResolvedTheme) -> u32 {
-    neutral_selection(current.surface, current.text)
+    current.selected_background
 }
 
 fn neutral_selection(surface: u32, text: u32) -> u32 {

@@ -585,6 +585,7 @@ fn synced_content_is_excluded_from_active_learning_and_history_exports_are_exact
                 timer_widget: Default::default(),
                 notifications: Default::default(),
                 logging: Default::default(),
+                snapshots: Default::default(),
             })),
             1000,
         )
@@ -767,6 +768,7 @@ fn synced_copy_keeps_its_title_is_offline_and_never_overwrites() {
                 timer_widget: Default::default(),
                 notifications: Default::default(),
                 logging: Default::default(),
+                snapshots: Default::default(),
             })),
             1002,
         )

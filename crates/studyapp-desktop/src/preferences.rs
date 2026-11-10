@@ -68,6 +68,8 @@ struct Manifest {
 
 #[derive(Serialize, Deserialize)]
 struct Learning {
+    #[serde(default)]
+    snapshots: studyapp_core::SnapshotSettings,
     interval_minutes: u32,
     answer_minutes: u32,
     review_days: Vec<u32>,
@@ -228,6 +230,7 @@ fn category_files(snapshot: &PreferenceSnapshot) -> Result<Vec<(&'static str, Ve
             "learning.json",
             serde_json::to_vec_pretty(&LearningFile {
                 learning: Learning {
+                    snapshots: settings.snapshots,
                     interval_minutes: settings.interval_minutes,
                     answer_minutes: settings.answer_minutes,
                     review_days: settings.review_days.clone(),
@@ -605,6 +608,7 @@ impl PreferencesStore {
         let current = PreferenceSnapshot {
             revision: revision.to_owned(),
             settings: Settings {
+                snapshots: learning.learning.snapshots,
                 interval_minutes: learning.learning.interval_minutes,
                 answer_minutes: learning.learning.answer_minutes,
                 review_days: learning.learning.review_days,

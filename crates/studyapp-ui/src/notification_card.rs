@@ -45,11 +45,17 @@ pub fn notification_card(
     action: Option<Button>,
 ) -> Div {
     let palette = crate::theme::palette();
-    let background = appearance
+    let surface = appearance.surface(model.style);
+    let fields = &appearance.content;
+    let required = model.severity >= NoticeSeverity::Error;
+    let raw_background = surface
         .background
         .as_deref()
         .and_then(studyapp_core::parse_rgba_color)
-        .map_or(palette.surface, |value| value.over(palette.surface));
+        .unwrap_or(studyapp_core::RgbaColor::opaque(palette.surface));
+    let alpha = (u16::from(raw_background.alpha()) * u16::from(surface.opacity) / 100) as u8;
+    let painted_background = studyapp_core::RgbaColor::new(raw_background.rgb(), alpha);
+    let background = painted_background.over(palette.surface);
     let semantic = match model.severity {
         NoticeSeverity::Information => palette.accent,
         NoticeSeverity::Success => palette.success,
@@ -60,7 +66,7 @@ pub fn notification_card(
         .accent
         .as_deref()
         .and_then(studyapp_core::parse_rgba_color)
-        .map_or(semantic, |value| value.over(background));
+        .map_or(semantic, |v| v.over(background));
     let foreground = studyapp_core::readable_theme_color(palette.text, &[background]);
     let secondary = studyapp_core::readable_theme_color(palette.muted, &[background]);
     let symbol = match model.severity {
@@ -70,81 +76,103 @@ pub fn notification_card(
         NoticeSeverity::Error | NoticeSeverity::Critical => IconName::CircleX,
     };
     let glyph = px((palette.font_size as f32 + 2.).clamp(16., 22.));
-    let badge = glyph + px(12.);
-    let tint = studyapp_core::RgbaColor::new(accent, 22).over(background);
-    let compact = model.style == NoticeStyle::Bubble;
-    let header = row()
-        .min_w_0()
-        .gap_2()
-        .items_center()
-        .child(
+    let compact = matches!(model.style, NoticeStyle::Bubble | NoticeStyle::Snackbar);
+    let mut header = row().min_w_0().gap_2().items_center();
+    if fields.icon {
+        header = header.child(
             div()
                 .flex_shrink_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(badge)
-                .rounded(px(crate::design::CONTROL_RADIUS))
-                .bg(rgb(tint))
-                .child(
-                    Icon::new(symbol)
-                        .with_size(glyph)
-                        .text_color(rgb(studyapp_core::readable_theme_color(accent, &[tint]))),
-                ),
-        )
-        .child(
+                .child(Icon::new(symbol).with_size(glyph).text_color(rgb(accent))),
+        );
+    }
+    if fields.title || required {
+        header = header.child(
             div()
                 .min_w_0()
                 .flex_1()
                 .font_weight(FontWeight::SEMIBOLD)
                 .child(model.title),
-        )
-        .when(model.repetitions > 1, |row| {
-            row.child(
-                div()
-                    .flex_shrink_0()
-                    .text_sm()
-                    .text_color(rgb(secondary))
-                    .child(format!("×{}", model.repetitions)),
-            )
-        })
-        .child(close);
-    let body = scroll_body(
-        SharedString::from(format!("notification-body-{}", model.key)),
-        scroll,
-    )
-    .test_support()
-    .min_w_0()
-    .max_h(px(164.))
-    .text_color(rgb(foreground))
-    .text_size(crate::design::type_size(
-        palette.font_size,
-        crate::design::TypeRole::Body,
-    ))
-    .line_height(px(
-        palette.font_size as f32 * crate::design::line_height(crate::design::TypeRole::Body)
-    ))
-    .child(model.summary)
-    .on_scroll_wheel(|_, _, cx| cx.stop_propagation());
+        );
+    } else {
+        header = header.child(div().flex_1());
+    }
+    if fields.repetitions && model.repetitions > 1 {
+        header = header.child(
+            div()
+                .text_sm()
+                .text_color(rgb(secondary))
+                .child(format!("×{}", model.repetitions)),
+        );
+    }
+    header = header.child(close);
     let mut card = column()
         .min_w_0()
-        .w(px(f32::from(appearance.width)))
+        .w(px(f32::from(surface.width)))
         .max_w_full()
         .gap(px(if compact { 2. } else { 8. }))
-        .p(px(if appearance.density == NoticeDensity::Compact {
+        .p(px(if surface.density == NoticeDensity::Compact {
             8.
         } else {
             12.
         }))
-        .rounded(px(f32::from(appearance.radius)))
+        .rounded(px(f32::from(surface.radius)))
         .border_1()
-        .border_color(rgb(palette.border))
-        .bg(rgb(background))
+        .border_color(
+            surface
+                .border_color
+                .as_deref()
+                .and_then(studyapp_core::parse_rgba_color)
+                .map_or(rgb(palette.border), |v| rgba(v.packed_rgba())),
+        )
+        .bg(rgba(painted_background.packed_rgba()))
         .text_color(rgb(foreground))
-        .when(appearance.shadow, |card| card.shadow_sm())
-        .child(header)
-        .child(body);
-    if let Some(action) = action {
+        .when(appearance.shadow, |c| c.shadow_sm())
+        .child(header);
+    card = card.border(px(f32::from(surface.border_width)));
+    if matches!(
+        model.style,
+        NoticeStyle::ActivityView | NoticeStyle::ActionSheet | NoticeStyle::ModalCard
+    ) {
+        card = card.child(div().h(px(2.)).w_full().bg(rgb(accent).opacity(0.35)));
+    }
+    if fields.summary || required {
+        let summary = if fields.detailed || required {
+            model.summary.to_string()
+        } else {
+            model.summary.chars().take(120).collect::<String>()
+                + if model.summary.chars().count() > 120 {
+                    "…"
+                } else {
+                    ""
+                }
+        };
+        card = card.child(
+            scroll_body(
+                SharedString::from(format!("notification-body-{}", model.key)),
+                scroll,
+            )
+            .test_support()
+            .min_w_0()
+            .max_h(px(f32::from(surface.max_height)))
+            .text_color(rgb(foreground))
+            .text_size(crate::design::type_size(
+                palette.font_size,
+                crate::design::TypeRole::Body,
+            ))
+            .line_height(px(palette.font_size as f32
+                * crate::design::line_height(crate::design::TypeRole::Body)))
+            .child(summary)
+            .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
+        );
+    }
+    if fields.event_id
+        && let Some(id) = model.event_id
+    {
+        card = card.child(div().text_xs().text_color(rgb(secondary)).child(id));
+    }
+    if (fields.action || required)
+        && let Some(action) = action
+    {
         card = card.child(row().justify_end().child(action));
     }
     if model.style == NoticeStyle::Banner {

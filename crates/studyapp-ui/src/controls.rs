@@ -22,6 +22,7 @@ pub struct AppButton {
     has_label: bool,
     has_children: bool,
     target_scale: f32,
+    selection_state: Option<bool>,
     surface_colors: Option<(gpui_kit::Hsla, gpui_kit::Hsla, gpui_kit::Hsla)>,
 }
 
@@ -40,6 +41,7 @@ impl AppButton {
             has_label: false,
             has_children: false,
             target_scale: 1.,
+            selection_state: None,
             surface_colors: None,
         }
     }
@@ -180,6 +182,7 @@ impl Disableable for AppButton {
 
 impl Selectable for AppButton {
     fn selected(mut self, selected: bool) -> Self {
+        self.selection_state = Some(selected);
         self.inner = self.inner.selected(selected);
         self
     }
@@ -251,6 +254,34 @@ impl ParentElement for AppButton {
 
 impl RenderOnce for AppButton {
     fn render(mut self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        if let Some(selected) = self.selection_state {
+            let p = crate::theme::palette();
+            let bg = if selected {
+                p.selected_background
+            } else {
+                p.idle_background
+            };
+            let fg = if selected {
+                p.selected_text
+            } else {
+                p.idle_text
+            };
+            self.inner = self.inner.custom(
+                ButtonCustomVariant::new(cx)
+                    .color(gpui_kit::rgb(bg).into())
+                    .foreground(gpui_kit::rgb(fg).into())
+                    .hover(crate::theme::hover_color())
+                    .active(crate::theme::pressed_color()),
+            );
+            self.inner = self
+                .inner
+                .rounded(gpui_kit::px(f32::from(p.selection_radius)))
+                .border_1()
+                .border_color(gpui_kit::rgb(if selected { p.selected_border } else { bg }));
+            if selected {
+                self.inner = self.inner.font_weight(gpui_kit::FontWeight::SEMIBOLD);
+            }
+        }
         if let Some((foreground, hover, active)) = self.surface_colors {
             self.inner = self.inner.custom(
                 ButtonCustomVariant::new(cx)

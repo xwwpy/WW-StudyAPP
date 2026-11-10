@@ -52,3 +52,28 @@ export function leaveList(view: EditorView, backward = false): boolean {
     annotations:[Transaction.userEvent.of(backward?"delete.backward":"input.list"),isolateHistory.of("full")],scrollIntoView:true});
   return true;
 }
+
+/** One physical Enter creates one bullet line, even in a formerly loose list. */
+export function continueBullet(view: EditorView): boolean {
+  const {state} = view;
+  if (state.readOnly) return false;
+  for (const range of state.selection.ranges) {
+    const line = state.doc.lineAt(range.head);
+    const prefix = /^([ \t]*)([-+*])[ \t]+(?:\[[ xX]\][ \t]+)?/.exec(line.text);
+    if (!range.empty || !prefix || range.head < line.from + prefix[0].length || !line.text.slice(prefix[0].length).trim()) return false;
+    let item = false;
+    for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(line.from + prefix[1].length, 1); node; node = node.parent) {
+      if (node.name === "FencedCode" || node.name === "CodeBlock") return false;
+      if (node.name === "ListItem") item = true;
+    }
+    if (!item) return false;
+  }
+  const changes = state.changeByRange(range => {
+    const line = state.doc.lineAt(range.head);
+    const prefix = /^([ \t]*)([-+*])[ \t]+(?:\[[ xX]\][ \t]+)?/.exec(line.text)!;
+    const insert = state.lineBreak + prefix[1] + prefix[2] + " " + (/\[[ xX]\]/.test(prefix[0]) ? "[ ] " : "");
+    return {changes: {from:range.head,insert}, range:EditorSelection.cursor(range.head + insert.length)};
+  });
+  view.dispatch({...changes,annotations:[Transaction.userEvent.of("input.list"),isolateHistory.of("full")],scrollIntoView:true});
+  return true;
+}
