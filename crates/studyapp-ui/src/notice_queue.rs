@@ -109,7 +109,7 @@ impl NoticeQueue {
             return None;
         }
         self.tick(now);
-        self.visible_limit = usize::from(appearance.max_visible);
+        self.visible_limit = usize::from(appearance.visible_limit());
         if let Some(key) = &event.dedupe_key
             && let Some(index) = self.entries.iter().position(|entry| {
                 entry.closing_at.is_none()
@@ -199,7 +199,7 @@ impl NoticeQueue {
         mut resolve: impl FnMut(&NoticeEvent) -> NoticeRoute,
     ) {
         self.tick(now);
-        self.visible_limit = usize::from(appearance.max_visible.clamp(1, 4));
+        self.visible_limit = usize::from(appearance.visible_limit().clamp(1, 4));
         for entry in &mut self.entries {
             if let Some(event) = &entry.event {
                 let next = resolve(event);
@@ -522,6 +522,45 @@ mod structured_tests {
         let mut event = NoticeEvent::new(Category::SaveFailure, severity, "无法保存，请重试");
         event.dedupe_key = Some(key.into());
         event
+    }
+    #[test]
+    fn single_card_mode_keeps_other_types_queued_until_dismissal() {
+        let mut queue = NoticeQueue::default();
+        let appearance = NotificationAppearance {
+            stack: studyapp_core::NoticeStack::Queue,
+            max_visible: 4,
+            ..Default::default()
+        };
+        let first = event("first", Severity::Error);
+        let first_event_id = first.id;
+        queue.push_event(
+            first,
+            Route::Foreground(Style::CornerCard),
+            &appearance,
+            at(0),
+        );
+        let second = event("second", Severity::Error);
+        let second_event_id = second.id;
+        queue.push_event(
+            second,
+            Route::Foreground(Style::ActionSheet),
+            &appearance,
+            at(0),
+        );
+        assert_eq!(queue.visible().count(), 1);
+        let id = queue.visible().next().unwrap().id;
+        assert_eq!(
+            queue.visible().next().unwrap().event.as_ref().unwrap().id,
+            first_event_id
+        );
+        queue.tick(at(1000));
+        assert_eq!(queue.visible().count(), 1);
+        queue.dismiss(id, at(1000));
+        queue.tick(at(1001));
+        assert_eq!(queue.visible().count(), 1);
+        let promoted = queue.visible().next().unwrap();
+        assert_eq!(promoted.event.as_ref().unwrap().id, second_event_id);
+        assert_eq!(promoted.route, Route::Foreground(Style::ActionSheet));
     }
     #[test]
     fn explicit_dedupe_keeps_one_correlation_id_and_errors_do_not_expire() {

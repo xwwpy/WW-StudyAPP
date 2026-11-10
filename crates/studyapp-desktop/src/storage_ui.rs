@@ -715,12 +715,10 @@ impl StudyApp {
                     "按文件长度统计；去重大小按文件身份去重，不等同于磁盘分配块。",
                 ))
                 .child(self.storage_explorer(&presentation, cx))
-                .children(
-                    presentation
-                        .application_issues
-                        .iter()
-                        .map(|text| muted(text.clone())),
-                )
+                .child(studyapp_ui::file_issues::file_issue_list(
+                    "application-stat-issue",
+                    &presentation.application_issues,
+                ))
                 .child(heading(format!("当前资料库 · {}", presentation.logical_label)).text_xl())
                 .child(muted(presentation.scanned_label.clone()));
             for (index, category) in presentation.categories.iter().enumerate() {
@@ -793,13 +791,10 @@ impl StudyApp {
                     );
                 }
             }
-            for issue in &presentation.issues {
-                view = view
-                    .child(muted(issue.message.clone()).text_color(crate::theme::color(0xA34829)));
-                if show_paths {
-                    view = view.child(muted(issue.path.clone()).text_xs());
-                }
-            }
+            view = view.child(studyapp_ui::file_issues::file_issue_list(
+                "library-stat-issue",
+                &presentation.issue_groups,
+            ));
             return view;
         }
         let query = self

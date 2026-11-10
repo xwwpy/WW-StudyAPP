@@ -2,8 +2,7 @@
 use crate::{app::StudyApp, components::*, controls::Button, settings_components as form};
 use gpui_kit::{
     component::{
-        Disableable, Sizable,
-        button::ButtonVariants,
+        Disableable, Selectable, Sizable,
         menu::{DropdownMenu, PopupMenuItem},
     },
     *,
@@ -42,17 +41,35 @@ impl StudyApp {
                                 if let Some(draft) = &mut this.preferences_ui.draft {
                                     draft.appearance.list_style = ListStyle {
                                         preset,
+                                        indent_subtree: style.indent_subtree,
                                         ..Default::default()
                                     };
                                 }
                                 this.refresh_appearance(window, cx);
                                 cx.notify();
                             }));
-                        if style.preset == preset && style.levels.iter().all(Option::is_none) {
-                            button.primary()
-                        } else {
-                            button
+                        button.selected(
+                            style.preset == preset && style.levels.iter().all(Option::is_none),
+                        )
+                    })),
+            )
+            .child(
+                crate::controls::Checkbox::new("list-indent-subtree")
+                    .label("Tab 调整当前项时，同时调整其子项（默认仅当前行）")
+                    .checked(style.indent_subtree)
+                    .disabled(busy)
+                    .on_click(cx.listener(|this, value, window, cx| {
+                        if this.preferences_ui.busy
+                            || this.preferences_ui.replacing
+                            || this.storage_busy
+                        {
+                            return;
                         }
+                        if let Some(draft) = &mut this.preferences_ui.draft {
+                            draft.appearance.list_style.indent_subtree = *value;
+                        }
+                        this.refresh_appearance(window, cx);
+                        cx.notify();
                     })),
             )
             .child(muted(

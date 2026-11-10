@@ -7,6 +7,7 @@ pub mod controls;
 pub mod design;
 pub mod feedback;
 pub mod file_integrity;
+pub mod file_issues;
 pub mod markdown_content;
 pub mod markdown_format;
 pub mod markdown_view;

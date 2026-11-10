@@ -273,6 +273,7 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
+            pending_snapshot_count: 0,
             table_views: Default::default(),
             settings: Settings::default(),
             notes: vec![Note {

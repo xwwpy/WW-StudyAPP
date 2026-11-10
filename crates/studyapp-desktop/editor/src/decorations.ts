@@ -376,9 +376,12 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
           } else if (name === "ListItem") {
             const depth = listDepth(node);
             const first = state.doc.lineAt(Math.max(from,visible.from)).number;
-            const last = state.doc.lineAt(Math.min(to,visible.to)).number;
+            const last = state.doc.lineAt(Math.max(from,Math.min(to-1,visible.to))).number;
             for (let i = first; i <= last; i++) {
               const current = state.doc.line(i);
+              // CommonMark permits lazy continuation; an unindented physical
+              // line is displayed as body text, not with a hanging list margin.
+              if (!current.text.trim() || (i !== state.doc.lineAt(from).number && !/^[ 	>]/.test(current.text))) continue;
               if ((listLines.get(current.from)?.depth ?? 0) < depth) listLines.set(current.from,{depth,marker:current.number===state.doc.lineAt(from).number});
             }
           } else if (name === "ListMark") {

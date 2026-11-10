@@ -58,6 +58,7 @@ impl Default for Settings {
             timer_widget: Default::default(),
             notifications: Default::default(),
             logging: Default::default(),
+            snapshots: Default::default(),
         }
     }
 }
@@ -68,6 +69,7 @@ impl Settings {
         self.timer_widget.validate()?;
         self.notifications.validate()?;
         self.logging.validate()?;
+        self.snapshots.validate()?;
         crate::media_settings::validate_images(&self.images)?;
         ensure!(self.interval_minutes > 0, "询问间隔请填写正整数分钟");
         ensure!(self.answer_minutes > 0, "回答期限请填写正整数分钟");
@@ -120,6 +122,7 @@ impl State {
     }
     pub fn snapshot(&self, path: String) -> Snapshot {
         Snapshot {
+            pending_snapshot_count: self.candidates.len(),
             table_views: self.table_views.clone(),
             settings: self.settings.clone(),
             notes: self.notes.clone(),

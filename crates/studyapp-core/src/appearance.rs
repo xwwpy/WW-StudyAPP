@@ -427,6 +427,7 @@ fn markdown_backdrop(index: usize, colors: &[RgbaColor; 26], surface: u32) -> u3
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppearanceSettings {
+    pub selection: crate::SelectionAppearance,
     pub table_defaults: crate::TableDefaults,
     pub list_style: crate::ListStyle,
     /// Formatting-only HTML; never grants resource or script access.
@@ -442,6 +443,7 @@ pub struct AppearanceSettings {
 impl Default for AppearanceSettings {
     fn default() -> Self {
         Self {
+            selection: Default::default(),
             notifications: Default::default(),
             render_html: true,
             table_defaults: Default::default(),
@@ -541,6 +543,7 @@ impl AppearanceSettings {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.selection.validate()?;
         self.notifications.validate()?;
         ensure!((12..=22).contains(&self.font_size), "字号须为 12–22 像素");
         ensure!((4..=16).contains(&self.spacing), "间距须为 4–16 像素");

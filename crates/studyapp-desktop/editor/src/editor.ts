@@ -1,6 +1,6 @@
 import { closeDocument, showDocument, documentResult, type OriginalDocument, type DocumentResult } from "./documents";
 import { installLinks } from "./links";
-import { setListMarkers, listPresentationChanged, leaveList } from "./lists";
+import { setListMarkers, listPresentationChanged, leaveList, continueBullet } from "./lists";
 import { tableHistory, createTableDialog, setTableDocument, setTableDefaults, tableUpdates, tablePresentationChanged, installTableControls, syncTableAnchors, hideTableControls } from "./tables";
 import { sanitizeHtml, sanitizeStyle } from "./safe-html";
 import { htmlConfiguration, htmlRendering } from "./html-rendering";
@@ -20,7 +20,7 @@ import { markdown, markdownLanguage, insertNewlineContinueMarkup, deleteMarkupBa
 import { syntaxHighlighting } from "@codemirror/language";
 import { codeHighlighting, fencedLanguage } from "./languages";
 import { imageMapChanged, updateImages, renderedMarkdown, rawUrlWrapping } from "./decorations";
-import { formatCommand, indentMarkdown } from "./formatting";
+import { formatCommand, indentMarkdown, setIndentSubtree } from "./formatting";
 import { documentBudget, documentLimits, resetDocumentBudget, MAX_TRANSACTION_PATCHES, stringBytes } from "./limits";
 import { incompleteScalars, scalarText, splitsScalar } from "./unicode";
 import { eventBinding, resolveBindings, typingKeymap } from "./shortcuts";
@@ -326,7 +326,7 @@ function extensions(readonly: boolean, rawText = ""): Extension[] {
     EditorView.contentAttributes.of({ "aria-label": "笔记正文", spellcheck: "false", tabindex: "0" }),
     EditorView.updateListener.of(publishChanges), EditorView.updateListener.of(scheduleStatistics),
     shortcutsMode.of(shortcutExtensions(bindings)),
-    Prec.highest(keymap.of([{key:"Enter",run:view=>leaveList(view)||insertNewlineContinueMarkup(view)}, {key:"Backspace",run:view=>leaveList(view,true)||deleteMarkupBackward(view)}])),
+    Prec.highest(keymap.of([{key:"Enter",run:view=>leaveList(view)||continueBullet(view)||insertNewlineContinueMarkup(view)}, {key:"Backspace",run:view=>leaveList(view,true)||deleteMarkupBackward(view)}])),
     keymap.of([...typingKeymap, {key: "Tab", run: view => indentMarkdown(view), shift: view => indentMarkdown(view, true)}]),
     EditorView.domEventHandlers({
       click(event, editor) {
@@ -590,6 +590,7 @@ function restoreSelection(position: number): void {
 function setTheme(tokens: Record<string, unknown>): void {
   setTableDefaults(tokens?.tableDefaults);
   setListMarkers(tokens?.listMarkers);
+  setIndentSubtree(tokens?.indentSubtree);
   themeWarning.hidden = !applyEditorTheme(tokens);
   // A changed style module invalidates CodeMirror's measured text geometry,
   // including its cursor layer, without replacing document/history/selection.

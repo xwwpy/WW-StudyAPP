@@ -19,12 +19,6 @@ pub struct StorageCategory {
 }
 
 #[derive(Clone, Debug)]
-pub struct StorageIssueView {
-    pub path: String,
-    pub message: String,
-}
-
-#[derive(Clone, Debug)]
 pub struct ManagedCopyView {
     pub note_id: String,
     pub title: String,
@@ -42,12 +36,12 @@ pub struct StoragePresentation {
     pub tree: crate::storage_tree::Tree,
     pub logical_label: String,
     pub application_label: String,
-    pub application_issues: Vec<String>,
+    pub application_issues: Vec<studyapp_ui::file_issues::FileIssueGroup>,
     pub scanned_label: String,
     pub categories: Vec<StorageCategory>,
     pub image_summary: String,
     pub image_locations: Vec<String>,
-    pub issues: Vec<StorageIssueView>,
+    pub issue_groups: Vec<studyapp_ui::file_issues::FileIssueGroup>,
     pub copies: Vec<ManagedCopyView>,
     copy_indices: HashMap<String, usize>,
 }
@@ -158,12 +152,19 @@ impl StoragePresentation {
                     ""
                 }
             ),
-            application_issues: report
-                .application
-                .issues
-                .iter()
-                .map(|i| format!("{}：{}", display_path(&i.path.to_string_lossy()), i.message))
-                .collect(),
+            application_issues: studyapp_ui::file_issues::group_file_issues(
+                report
+                    .application
+                    .issues
+                    .iter()
+                    .map(|i| (display_path(&i.path.to_string_lossy()), i.message.clone())),
+            ),
+            issue_groups: studyapp_ui::file_issues::group_file_issues(
+                report
+                    .issues
+                    .iter()
+                    .map(|i| (display_path(&i.path), i.message.clone())),
+            ),
             logical_label: format!(
                 "已统计逻辑大小 {}{}",
                 size_label(report.logical_bytes()),
@@ -183,14 +184,6 @@ impl StoragePresentation {
                 .image_locations
                 .iter()
                 .map(|path| display_path(path))
-                .collect(),
-            issues: report
-                .issues
-                .iter()
-                .map(|issue| StorageIssueView {
-                    path: display_path(&issue.path),
-                    message: issue.message.clone(),
-                })
                 .collect(),
             copies,
             copy_indices,
@@ -338,7 +331,11 @@ mod tests {
         let view = StoragePresentation::prepare(&report);
         assert!(view.logical_label.ends_with("（统计不完整）"));
         assert_eq!(view.copy_rows("", CopyOrder::Name), vec![0]);
-        assert_eq!(view.issues[0].path, r"D:\images");
+        assert_eq!(view.issue_groups[0].directory, "D:/");
+        assert_eq!(
+            view.issue_groups[0].files[0],
+            ("images".into(), "无法访问".into())
+        );
         assert_eq!(view.image_locations[0], r"C:\images");
     }
 

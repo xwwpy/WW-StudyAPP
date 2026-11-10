@@ -337,7 +337,7 @@ fn open_locked_library(
     let mut engine = startup_step!(
         result,
         Engine,
-        Engine::open(path, now).map_err(|error| StartupFailure::from_error(
+        Engine::open_deferred_scan(path, now).map_err(|error| StartupFailure::from_error(
             path,
             StartupStage::Database,
             path,
@@ -354,6 +354,9 @@ fn open_locked_library(
             StartupFailure::from_error(path, StartupStage::Preferences, &settings_path, &error)
         })
     )?;
+    engine
+        .complete_startup_scan(now)
+        .map_err(|error| StartupFailure::from_error(path, StartupStage::Database, path, &error))?;
     #[cfg(test)]
     startup_timing::event("OpenAttempt", "exit");
     Ok((lock, engine, preferences, synchronization))
@@ -1373,7 +1376,12 @@ impl Worker {
                 }
                 // Polling uses content hashes and the core's stability debounce.
                 // All reads happen off the UI thread, including the boundary scan.
-                if last_scan.elapsed() >= Duration::from_secs(3) {
+                if engine.settings().snapshots.scheduled()
+                    && last_scan.elapsed()
+                        >= Duration::from_secs(u64::from(
+                            engine.settings().snapshots.interval_seconds,
+                        ))
+                {
                     if let Err(e) = engine.apply(Command::Scan { offline: false }, now) {
                         notice = Some(Err(format!("笔记扫描失败：{e:#}")));
                         notifications.push(notices::Context::Operation.event(&Err(String::new())));

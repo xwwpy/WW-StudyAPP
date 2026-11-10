@@ -81,7 +81,7 @@ impl NoticeCategory {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum NoticeStyle {
     Bubble,
@@ -89,14 +89,20 @@ pub enum NoticeStyle {
     Banner,
     ModalCard,
     Anchored,
+    ActionSheet,
+    Snackbar,
+    ActivityView,
 }
 impl NoticeStyle {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 8] = [
         Self::Bubble,
         Self::CornerCard,
         Self::Banner,
         Self::ModalCard,
         Self::Anchored,
+        Self::ActionSheet,
+        Self::Snackbar,
+        Self::ActivityView,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -104,7 +110,10 @@ impl NoticeStyle {
             Self::CornerCard => "角落操作卡片",
             Self::Banner => "顶部悬浮横幅",
             Self::ModalCard => "居中弹出卡片",
-            Self::Anchored => "控件定位气泡",
+            Self::Anchored => "控件定位气泡 / Popover",
+            Self::ActionSheet => "底部操作面板 / Action Sheet",
+            Self::Snackbar => "底部反馈条 / Snackbar",
+            Self::ActivityView => "任务活动面板 / Activity View",
         }
     }
 }
@@ -228,6 +237,10 @@ pub enum NoticeDensity {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct NotificationAppearance {
+    pub stack: crate::NoticeStack,
+    pub content: crate::NoticeContent,
+    pub hover_content: crate::HoverContent,
+    pub surfaces: BTreeMap<NoticeStyle, crate::NoticeSurface>,
     pub style: NoticeStyle,
     pub position: NoticePosition,
     pub duration_seconds: u8,
@@ -244,6 +257,10 @@ pub struct NotificationAppearance {
 impl Default for NotificationAppearance {
     fn default() -> Self {
         Self {
+            stack: Default::default(),
+            content: Default::default(),
+            hover_content: Default::default(),
+            surfaces: Default::default(),
             style: NoticeStyle::Bubble,
             position: Default::default(),
             duration_seconds: 5,
@@ -261,6 +278,13 @@ impl Default for NotificationAppearance {
 }
 impl NotificationAppearance {
     pub fn validate(&self) -> Result<()> {
+        for surface in self.surfaces.values() {
+            surface.validate()?;
+        }
+        ensure!(
+            self.content.title || self.content.summary,
+            "气泡至少展示标题或摘要"
+        );
         ensure!(
             (2..=30).contains(&self.duration_seconds),
             "通知停留时间须为2–30秒"

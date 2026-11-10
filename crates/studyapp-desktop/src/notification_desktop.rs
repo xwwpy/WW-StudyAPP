@@ -68,6 +68,9 @@ impl Render for DesktopNotifications {
                 .iter()
                 .any(|(entry, _)| entry.id == *id)
         });
+        if self.presentation.appearance.stack == studyapp_core::NoticeStack::NewestFirst {
+            self.presentation.entries.reverse();
+        }
         let mut content = column()
             .relative()
             .w_full()
@@ -75,7 +78,7 @@ impl Render for DesktopNotifications {
             .flex_shrink_0()
             .gap(px(8.))
             .p(px(8.));
-        for (entry, opacity) in &self.presentation.entries {
+        for (index, (entry, opacity)) in self.presentation.entries.iter().enumerate() {
             let Some(event) = &entry.event else {
                 continue;
             };
@@ -113,6 +116,15 @@ impl Render for DesktopNotifications {
                 div()
                     .id(SharedString::from(format!("desktop-notice-{id}")))
                     .test_support()
+                    .ml(px(
+                        if self.presentation.appearance.stack
+                            == studyapp_core::NoticeStack::Staggered
+                        {
+                            index as f32 * 8.
+                        } else {
+                            0.
+                        },
+                    ))
                     .opacity(*opacity)
                     .on_hover(move |hovered, _, cx| {
                         let _ = hover_owner.update(cx, |center, cx| center.hover(id, *hovered, cx));
@@ -147,7 +159,12 @@ impl Render for DesktopNotifications {
         }
         let fit = self.fit.clone();
         let owner = self.owner.clone();
-        let width = px(f32::from(self.presentation.appearance.width) + 16.);
+        let width = px(f32::from(
+            self.presentation
+                .appearance
+                .surface(NoticeStyle::CornerCard)
+                .width,
+        ) + 16.);
         let position = self.presentation.appearance.position;
         content = content.child(
             canvas(
@@ -308,7 +325,12 @@ impl StudyApp {
         let screen = display.visible_bounds();
         let bounds = crate::card_window::notification_bounds(
             screen,
-            px(f32::from(presentation.appearance.width) + 16.),
+            px(f32::from(
+                presentation
+                    .appearance
+                    .surface(NoticeStyle::CornerCard)
+                    .width,
+            ) + 16.),
             px(1.),
             presentation.appearance.position,
         );

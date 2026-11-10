@@ -12,6 +12,7 @@ pub struct Engine {
     state: State,
     deferred_settings_baseline: Option<SettingsMirrorBaseline>,
     managed_storage_checked: bool,
+    pending_startup_errors: Option<Vec<(String, String)>>,
 }
 struct SettingsMirrorBaseline {
     settings: Settings,
@@ -26,6 +27,14 @@ fn add_days(now: i64, days: u32) -> Result<i64> {
 }
 impl Engine {
     pub fn open(database: &Path, now: i64) -> Result<Self> {
+        let mut engine = Self::open_deferred_scan(database, now)?;
+        engine.complete_startup_scan(now)?;
+        Ok(engine)
+    }
+
+    /// Open storage without scanning note sources so the host can restore its
+    /// authoritative preferences before completing startup.
+    pub fn open_deferred_scan(database: &Path, now: i64) -> Result<Self> {
         if let Some(parent) = database.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
         }
@@ -46,8 +55,9 @@ impl Engine {
             state,
             deferred_settings_baseline: None,
             managed_storage_checked: false,
+            pending_startup_errors: Some(Vec::new()),
         };
-        let recovery_errors: Vec<_> = if recovered_conflict {
+        engine.pending_startup_errors = Some(if recovered_conflict {
             engine
                 .state
                 .notes
@@ -56,23 +66,47 @@ impl Engine {
                 .collect()
         } else {
             Vec::new()
+        });
+        Ok(engine)
+    }
+
+    /// Complete the one-time offline reconciliation using the restored policy.
+    /// Manual mode records provenance only and does not read source files.
+    pub fn complete_startup_scan(&mut self, now: i64) -> Result<()> {
+        let Some(recovery_errors) = self.pending_startup_errors.clone() else {
+            return Ok(());
         };
-        engine.apply(Command::Scan { offline: true }, now)?;
+        if self.state.settings.snapshots.scheduled() {
+            self.apply(Command::Scan { offline: true }, now)?;
+        } else {
+            self.state.offline_unreconciled_notes.extend(
+                self.state
+                    .notes
+                    .iter()
+                    .filter(|n| !n.detached)
+                    .map(|n| n.id.clone()),
+            );
+        }
         if !recovery_errors.is_empty() {
             for (id, error) in recovery_errors {
-                if let Some(note) = engine.state.notes.iter_mut().find(|note| note.id == id) {
+                if let Some(note) = self.state.notes.iter_mut().find(|note| note.id == id) {
                     note.error = Some(error);
                 }
             }
             storage::save(
-                &mut engine.conn,
-                &engine.state,
-                engine.state.versions.len(),
+                &mut self.conn,
+                &self.state,
+                self.state.versions.len(),
                 false,
             )?;
         }
-        Ok(engine)
+        self.pending_startup_errors = None;
+        Ok(())
     }
+    pub fn settings(&self) -> &Settings {
+        &self.state.settings
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         self.state
             .snapshot(self.path.to_string_lossy().into_owned())
@@ -482,6 +516,7 @@ impl Engine {
                 "笔记已重新关联".into()
             }
             Command::Scan { offline } => crate::notes::scan(&mut next, offline, now),
+            Command::CaptureSnapshots => crate::notes::capture(&mut next, now),
             Command::Submit {
                 session_id,
                 summary,

@@ -960,6 +960,23 @@ impl StudyApp {
                     )
                     .child(muted(note_count.to_string()).text_xs())
                     .child(self.library_add_button(cx))
+                    .child(
+                        Button::new("library-capture-snapshots")
+                            .small()
+                            .ghost()
+                            .icon(IconName::RefreshCw)
+                            .accessibility_label("扫描并保存快照")
+                            .tooltip(format!(
+                                "扫描并保存快照 · {} 份已检测变化待保存 · 相同内容不重复记录",
+                                self.snapshot
+                                    .as_ref()
+                                    .map_or(0, |s| s.pending_snapshot_count)
+                            ))
+                            .disabled(self.library_controls_busy(cx))
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.send(studyapp_core::Command::CaptureSnapshots, cx)
+                            })),
+                    )
                     .child(self.library_sort_button(cx))
                     .child(self.library_more_button(cx)),
             )

@@ -835,6 +835,7 @@ test("Markdown indentation uses ordered marker width and moves selected subtrees
 test("configurable indentation shares Markdown nesting and readonly semantics with Tab", async () => {
   const original = "10. parent\n2. child\n   - grandchild\n3. end";
   const { page } = await setup(original);
+  await page.evaluate(()=>window.studyappEditor.setTheme({indentSubtree:true}));
   await shortcuts(page, { "editor.indent-more": "Ctrl+Alt+I", "editor.indent-less": "Ctrl+Alt+O" });
   await select(page, original.indexOf("child"));
   await page.keyboard.press("Control+Alt+i");
@@ -855,6 +856,7 @@ test("configurable indentation shares Markdown nesting and readonly semantics wi
 test("Markdown indentation nests mixed list markers beneath their preceding ordered parent", async () => {
   const original = "10. parent\n- [ ] child\n  - grandchild\n- end";
   const { page } = await setup(original);
+  await page.evaluate(()=>window.studyappEditor.setTheme({indentSubtree:true}));
   await select(page,original.indexOf("child"));
   await page.keyboard.press("Tab");
   const nested = (await state(page)).text;
@@ -3138,4 +3140,44 @@ test('0.3.5 malformed originals have readable errors and abandoned DOCX cannot r
   },data);
   await page.waitForTimeout(250);assert.equal(await page.locator('#original-document').count(),0);assert.equal((await state(page)).text,'new Markdown survives');
   assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
+});
+
+test("0.3.6 body after a bullet without a blank line starts at the body margin",async()=>{
+  for(const text of ["- item\nbody", "- item\nbody\n\n- next\n\nbody", "- parent\n  - child\nbody"]) {
+    const {page,errors}=await setup(text);
+    await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+    const lines=await page.locator('.cm-line').evaluateAll(lines=>lines.map(line=>({text:line.textContent,list:line.classList.contains('md-list-line'),indent:getComputedStyle(line).textIndent})));
+    for(const line of lines.filter(line=>line.text.includes('body'))) {
+      assert.equal(line.list,false,JSON.stringify(lines)); assert.equal(line.indent,'0px');
+    }
+    assert.equal((await state(page)).text,text); assert.deepEqual(errors,[]);await page.close();
+  }
+});
+test("0.3.6 Enter inserts one physical bullet line in tight and loose lists",async()=>{
+  for(const text of ["- first","- first\n\n- second","- [x] task","- parent\n  - nested"]) {
+    const {page,errors}=await setup(text); await select(page,text.length); await page.keyboard.press('Enter');
+    const prefix=text.endsWith('nested')?'  - ':text.endsWith('task')?'- [ ] ':'- ';
+    assert.equal((await state(page)).text,text+'\n'+prefix);
+    await page.keyboard.press('Control+z'); assert.equal((await state(page)).text,text);
+    assert.deepEqual(errors,[]);await page.close();
+  }
+});
+test("0.3.6 cursor Tab defaults to current item only and subtree mode is opt in",async()=>{
+  const text='- parent\n- current\n  - child\n- after';
+  for(const subtree of [false,true]) {
+    const {page,errors}=await setup(text);
+    await page.evaluate(value=>window.studyappEditor.setTheme({indentSubtree:value}),subtree);
+    await select(page,text.indexOf('current'));await page.keyboard.press('Tab');
+    assert.equal((await state(page)).text,subtree?'- parent\n  - current\n    - child\n- after':'- parent\n  - current\n  - child\n- after');
+    await page.keyboard.press('Control+z');assert.equal((await state(page)).text,text);
+    assert.deepEqual(errors,[]);await page.close();
+  }
+});
+
+test("0.3.6 Tab on a newly inserted empty bullet leaves neighboring levels untouched",async()=>{
+  const text='- before\n- \n- after';const {page,errors}=await setup(text);
+  await select(page,text.indexOf('\n- after'));await page.keyboard.press('Tab');
+  assert.equal((await state(page)).text,'- before\n  - \n- after');
+  await page.keyboard.press('Shift+Tab');assert.equal((await state(page)).text,text);
+  assert.deepEqual(errors,[]);await page.close();
 });

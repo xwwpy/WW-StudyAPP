@@ -288,6 +288,7 @@ impl NotificationCenter {
             _ => NoticeStyle::CornerCard,
         };
         let route = entry.route;
+        let surface_width = self.appearance.surface(style).width;
         let model = if let Some(event) = &entry.event {
             NotificationCardModel::from_event(event, entry.repetitions, style)
         } else {
@@ -330,6 +331,8 @@ impl NotificationCenter {
                 .test_support()
                 .occlude()
                 .min_w_0()
+                .w(px(f32::from(surface_width)))
+                .max_w_full()
                 .flex_shrink_0()
                 .opacity(entry.opacity(self.now()))
                 .on_hover(cx.listener(move |this, hovered, _, cx| this.hover(id, *hovered, cx)))
@@ -378,12 +381,24 @@ impl NotificationCenter {
             .map(|surface| surface.clone().into_any_element())
     }
     pub(super) fn structured_surface(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let entries: Vec<_> = self.queue.visible().cloned().collect();
+        let mut entries: Vec<_> = self.queue.visible().cloned().collect();
+        if self.appearance.stack == studyapp_core::NoticeStack::NewestFirst {
+            entries.reverse();
+        }
         self.scrolls
             .retain(|id, _| entries.iter().any(|e| e.id == *id));
         let viewport = window.viewport_size();
-        let width =
-            px(f32::from(self.appearance.width)).min((viewport.width - px(32.)).max(px(0.)));
+        let width = px(f32::from(
+            entries
+                .iter()
+                .filter_map(|e| match e.route {
+                    NoticeRoute::Foreground(style) => Some(self.appearance.surface(style).width),
+                    _ => None,
+                })
+                .max()
+                .unwrap_or(self.appearance.width),
+        ))
+        .min((viewport.width - px(32.)).max(px(0.)));
         let frame = Rc::new(RefCell::new(Vec::new()));
         let mut corners = column().absolute().gap_2().w(width).min_w_0();
         corners = match self.appearance.position {
@@ -402,8 +417,20 @@ impl NotificationCenter {
             .left(px(16.))
             .right(px(16.))
             .gap_2();
+        let mut sheets = column()
+            .absolute()
+            .bottom(px(16.))
+            .left((viewport.width - width) * 0.5)
+            .w(width)
+            .gap_2();
+        let mut activities = column()
+            .absolute()
+            .top(px(crate::design::TITLE_BAR_HEIGHT + 80.))
+            .right(px(16.))
+            .w(width)
+            .gap_2();
         let mut anchored = div().absolute().inset_0();
-        for entry in entries {
+        for (index, entry) in entries.into_iter().enumerate() {
             let style = match entry.route {
                 NoticeRoute::Foreground(style) => style,
                 _ => continue,
@@ -423,8 +450,15 @@ impl NotificationCenter {
                 .copied()
                 .unwrap_or(size(width, px(220.)));
             let card = self.render_card(entry, frame.clone(), cx);
+            let card = if self.appearance.stack == studyapp_core::NoticeStack::Staggered {
+                div().min_w_0().ml(px(index as f32 * 8.)).child(card)
+            } else {
+                div().min_w_0().child(card)
+            };
             match style {
                 NoticeStyle::Banner => banners = banners.child(card),
+                NoticeStyle::ActionSheet | NoticeStyle::Snackbar => sheets = sheets.child(card),
+                NoticeStyle::ActivityView => activities = activities.child(card),
                 NoticeStyle::Anchored if anchor.is_some() => {
                     let anchor = anchor.expect("checked anchor");
                     let x = anchor
@@ -452,6 +486,8 @@ impl NotificationCenter {
                 .inset_0()
                 .child(corners)
                 .child(banners)
+                .child(sheets)
+                .child(activities)
                 .child(anchored)
                 .child(
                     canvas(

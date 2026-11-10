@@ -106,6 +106,7 @@ fn low_contrast_colors_save_and_resolve_exactly_as_requested() {
 fn custom_theme_presets_round_trip_and_reject_missing_selection_and_duplicates() {
     use studyapp_core::{AppearanceSettings, ThemeMode, ThemePalette, ThemePreset};
     let mut appearance = AppearanceSettings {
+        selection: Default::default(),
         table_defaults: Default::default(),
         list_style: Default::default(),
         render_html: true,
@@ -368,6 +369,7 @@ fn rapid_updates(learning_first: bool) {
             timer_widget: Default::default(),
             notifications: Default::default(),
             logging: Default::default(),
+            snapshots: Default::default(),
         };
         assert_eq!(
             engine.snapshot().settings,

@@ -7,6 +7,7 @@ use studyapp_desktop::{presentation::calendar_stats, read_models::ReadModelCache
 
 fn snapshot() -> Snapshot {
     Snapshot {
+        pending_snapshot_count: 0,
         table_views: Default::default(),
         settings: Default::default(),
         notes: vec![],

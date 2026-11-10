@@ -6,8 +6,7 @@ use crate::{
     settings_components as form,
 };
 use gpui_kit::{
-    component::{Disableable, Sizable, button::ButtonVariants, input::InputState},
-    prelude::FluentBuilder,
+    component::{Disableable, Selectable, Sizable, button::ButtonVariants, input::InputState},
     *,
 };
 use studyapp_core::{
@@ -297,9 +296,7 @@ impl StudyApp {
                         .ghost()
                         .label(style.map_or("跟随默认", NoticeStyle::label))
                         .disabled(busy || !rule.enabled)
-                        .when(rule.style == style, |b| {
-                            b.bg(crate::theme::selection_color())
-                        })
+                        .selected(rule.style == style)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(draft) = &mut this.preferences_ui.draft {
                                 draft
@@ -367,6 +364,7 @@ impl StudyApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.fill_surface_fields(value, window, cx);
         if self.preferences_ui.notification_view.is_none() {
             let owner = cx.weak_entity();
             self.preferences_ui.notification_view =
@@ -508,9 +506,7 @@ impl StudyApp {
                         .ghost()
                         .label(style.label())
                         .disabled(busy)
-                        .when(appearance.style == style, |b| {
-                            b.bg(crate::theme::selection_color())
-                        })
+                        .selected(appearance.style == style)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(draft) = &mut this.preferences_ui.draft {
                                 draft.appearance.notifications.style = style;
@@ -534,9 +530,7 @@ impl StudyApp {
                     .ghost()
                     .label(label)
                     .disabled(busy)
-                    .when(appearance.position == value, |b| {
-                        b.bg(crate::theme::selection_color())
-                    })
+                    .selected(appearance.position == value)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if let Some(draft) = &mut this.preferences_ui.draft {
                             draft.appearance.notifications.position = value;
@@ -551,7 +545,14 @@ impl StudyApp {
             .child(self.notification_number("notification-visible","最多叠放",appearance.max_visible.into(),(1,4,1),|s,v|s.max_visible=v as u8,cx))
             .child(self.notification_number("notification-width","卡片宽度",appearance.width,(240,480,20),|s,v|s.width=v,cx))
             .child(self.notification_number("notification-radius","卡片圆角",appearance.radius.into(),(0,24,2),|s,v|s.radius=v as u8,cx));
-            return controls;
+            return column().gap_4().child(controls)
+                .child(form::section("同时出现时")
+                    .child(form::settings_row("堆叠方式",form::choice("notification-stack",appearance.stack,
+                        studyapp_core::NoticeStack::ALL.into_iter().map(|v|(v,v.label().into())).collect(),busy,cx.weak_entity(),|this,value,_,cx| {
+                            if let Some(draft)=&mut this.preferences_ui.draft { draft.appearance.notifications.stack=value; } cx.notify();
+                        })))
+                    .child(muted("最多展示指定数量，超出的通知排队；悬停暂停计时。阻塞对话框打开时，普通通知让位。")))
+                .child(self.notice_surface_controls(cx));
         }
         let mut controls = form::section("间距、动效与颜色");
         let toggles: [Toggle<NotificationAppearance>; 3] = [
@@ -615,7 +616,11 @@ impl StudyApp {
                 controls = controls.child(form::field(label, color.clone()));
             }
         }
-        controls
+        column()
+            .gap_4()
+            .child(controls)
+            .child(self.notice_content_controls(cx))
+            .child(self.hover_content_controls(cx))
     }
     fn notification_preview(&self, cx: &App) -> Div {
         let appearance = self.preview_notification_appearance(cx);
