@@ -728,6 +728,13 @@ impl Render for ColorSetting {
             crate::interactive_surface::popover(Popover::new("color-popover"))
                 .open(self.open)
                 .on_surface_geometry(move |geometry, cx| {
+                    let geometry = geometry.map(|mut geometry| {
+                        geometry.body = crate::interactive_surface::outer_bounds(
+                            geometry.body,
+                            px(f32::from(limits.border_width)),
+                        );
+                        geometry
+                    });
                     let _ = weak.update(cx, |this, cx| {
                         this.surface_geometry(revision, surface.clone(), geometry, cx)
                     });

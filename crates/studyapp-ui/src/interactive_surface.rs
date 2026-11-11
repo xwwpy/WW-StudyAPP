@@ -53,3 +53,27 @@ pub fn popover(mut popover: Popover) -> Popover {
         .max_w(px(f32::from(surface.width)))
         .max_h(px(f32::from(surface.max_height)))
 }
+
+/// GPUI content/prepaint bounds exclude the element's border. Native child
+/// occlusion must cover the entire painted frame, including that border.
+pub(crate) fn outer_bounds(bounds: Bounds<Pixels>, border: Pixels) -> Bounds<Pixels> {
+    Bounds::new(
+        bounds.origin - point(border, border),
+        bounds.size + size(border * 2., border * 2.),
+    )
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::outer_bounds;
+    use gpui_kit::{Bounds, point, px, size};
+    #[test]
+    fn native_occlusion_includes_the_border_without_changing_borderless_bounds() {
+        let content = Bounds::new(point(px(4.), px(4.)), size(px(272.), px(102.)));
+        assert_eq!(
+            outer_bounds(content, px(4.)),
+            Bounds::new(point(px(0.), px(0.)), size(px(280.), px(110.)))
+        );
+        assert_eq!(outer_bounds(content, px(0.)), content);
+    }
+}

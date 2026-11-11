@@ -33,7 +33,25 @@ fn foreground_styles_keep_real_card_occlusions_and_explicit_actions(cx: &mut Tes
         gpui_kit::init(cx);
         crate::theme::apply(&Default::default(), false, cx);
     });
-    let (center, visual) = cx.add_window_view(|_, _| NotificationCenter::new());
+    struct ForegroundFixture {
+        center: gpui_kit::Entity<NotificationCenter>,
+    }
+    impl Render for ForegroundFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let banner = self
+                .center
+                .update(cx, |center, cx| center.banner_content(cx));
+            crate::components::column()
+                .relative()
+                .size_full()
+                .child(banner)
+                .child(self.center.clone())
+        }
+    }
+    let (fixture, visual) = cx.add_window_view(|_, cx| ForegroundFixture {
+        center: cx.new(|_| NotificationCenter::new()),
+    });
+    let center = fixture.read_with(visual, |fixture, _| fixture.center.clone());
     visual.simulate_resize(size(px(800.), px(700.)));
     let output = Rc::new(RefCell::new(Vec::new()));
     let capture = output.clone();
@@ -89,7 +107,14 @@ fn foreground_styles_keep_real_card_occlusions_and_explicit_actions(cx: &mut Tes
             assert!(bounds.size.width > px(100.));
             assert!(bounds.left() >= px(0.) && bounds.right() <= px(800.));
             assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(700.));
-            assert_eq!(center.read(cx).occlusions(), &[bounds]);
+            if style == NoticeStyle::Banner {
+                // Default Banner occupies real layout instead of obscuring
+                // the native editor as an independently painted overlay.
+                assert!(center.read(cx).occlusions().is_empty());
+                assert_eq!(bounds.top(), px(0.));
+            } else {
+                assert_eq!(center.read(cx).occlusions(), &[bounds]);
+            }
             window.click(format!("notice-action-{id}"), cx);
         });
         visual.run_until_parked();
@@ -335,7 +360,9 @@ fn mounted_control_anchors_move_clip_and_release_without_stale_ownership(cx: &mu
         );
         assert_eq!(
             center.queue.visible().next().unwrap().route,
-            studyapp_core::NoticeRoute::Foreground(NoticeStyle::Anchored)
+            // Anchored is an interactive click-open surface, not a passive
+            // business notification route, even while its control is mounted.
+            studyapp_core::NoticeRoute::Foreground(NoticeStyle::CornerCard)
         );
     });
     fixture.update(visual, |fixture, cx| {

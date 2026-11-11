@@ -1592,7 +1592,10 @@ impl Render for PopupMenu {
             .vertical_scrollbar(&self.scroll_handle)
             .on_prepaint(move |bounds, _, cx| {
                 view.update(cx, |r, cx| {
-                    r.bounds = bounds;
+                    r.bounds = crate::interactive_surface::outer_bounds(
+                        bounds,
+                        px(f32::from(surface.border_width)),
+                    );
                     r.publish_layout(cx);
                 })
             })

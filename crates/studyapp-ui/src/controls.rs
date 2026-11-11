@@ -176,6 +176,17 @@ impl AppButton {
         // height produces off-center rectangular targets throughout toolbars.
         // Keep explicit caller dimensions and text/navigation buttons intact.
         if self.has_icon && !self.has_label && !self.has_children {
+            // A minimum alone still lets the component's horizontal padding
+            // or its parent's stretch turn an icon target into a rectangle.
+            // Preserve explicit caller sizes (titlebars and scaled widgets).
+            let implicit_width = self.inner.style().size.width.is_none();
+            let implicit_height = self.inner.style().size.height.is_none();
+            if implicit_width {
+                self.inner = self.inner.w(gpui_kit::px(minimum)).px_0();
+            }
+            if implicit_height {
+                self.inner = self.inner.h(gpui_kit::px(minimum));
+            }
             self.inner = self.inner.min_w(gpui_kit::px(minimum));
         }
         if self.disabled || self.loading {
@@ -271,7 +282,9 @@ impl RenderOnce for AppButton {
         if let Some(text) = self.tooltip_text.take() {
             self.inner = crate::components::control_tooltip(self.inner, text.to_string());
         }
-        if let Some(selected) = self.selection_state {
+        if self.surface_colors.is_none()
+            && let Some(selected) = self.selection_state
+        {
             let p = self
                 .selection_category
                 .map_or_else(crate::theme::global_selection, crate::theme::selection);

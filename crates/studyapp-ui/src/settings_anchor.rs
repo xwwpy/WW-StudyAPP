@@ -82,16 +82,18 @@ mod tests {
                 .w(px(self.width))
                 .h(px(180.))
                 .child(
-                    crate::components::column().children((0_usize..20).map(|index| {
-                        crate::settings_components::settings_row(
-                            format!("field-{index}"),
-                            div()
-                                .id(("anchor-value", index))
-                                .test_support()
-                                .h(px(42.))
-                                .child("unchanged"),
-                        )
-                    })),
+                    crate::components::column()
+                        .flex_shrink_0()
+                        .children((0_usize..20).map(|index| {
+                            crate::settings_components::settings_row(
+                                format!("field-{index}"),
+                                div()
+                                    .id(("anchor-value", index))
+                                    .test_support()
+                                    .h(px(42.))
+                                    .child("unchanged"),
+                            )
+                        })),
                 )
         }
     }
@@ -107,6 +109,10 @@ mod tests {
         });
         visual.update(|window, cx| {
             let scroll = view.read(cx).scroll.clone();
+            assert!(
+                scroll.max_offset().y > px(500.),
+                "fixture must contain genuinely overflowing settings rows"
+            );
             seek("field-17", SettingScroll::Normal(scroll), window, cx);
             window.refresh();
         });

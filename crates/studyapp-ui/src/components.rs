@@ -965,7 +965,7 @@ mod tests {
             crate::theme::apply(&settings, false, cx);
         });
         let (_, visual) = cx.add_window_view(|_, _| gpui_kit::Empty);
-        visual.update(|window, cx| {
+        let (weak, mut anchor) = visual.update(|window, cx| {
             let registry = crate::bubble::window_bubble_registry(window, cx);
             let bubble = cx.new(|_| crate::bubble::PointerBubble {
                 registry,
@@ -995,6 +995,12 @@ mod tests {
                 super::control_tooltip_anchor(unchanged, narrow_viewport)
             );
             drop(bubble);
+            (weak, anchor)
+        });
+        // Entity release is finalized when the App update ends. Keep the
+        // anchor alive across that boundary to test actual weak ownership.
+        visual.run_until_parked();
+        visual.update(|window, cx| {
             assert!(weak.upgrade().is_none(), "anchor retained a closed tooltip");
             anchor.publish(gpui_kit::Bounds::default(), window.viewport_size(), cx);
         });
