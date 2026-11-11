@@ -1664,110 +1664,115 @@ impl FolderPanel {
         }
         let tip = format!("{} · 直接包含 {count} 份笔记", folder.path);
 
-        self.folder_drop_target(format!("folder-drop-{id}").into(), Some(id.clone()), cx)
-            .h(px(LIBRARY_ROW_HEIGHT))
-            .px_2()
-            .test_support()
-            .debug_selector({
-                let selector = format!("folder-drop-{id}");
-                move || selector
-            })
-            .aria_selected(chosen)
-            .bg(rgb(if chosen {
-                crate::theme::selection(studyapp_core::SelectionCategory::Directory)
-                    .selected_background
-            } else {
-                crate::theme::selection(studyapp_core::SelectionCategory::Directory).idle_background
-            }))
-            .map(|view| studyapp_ui::components::control_tooltip(view, tip.clone()))
-            .child(
-                entry
-                    .child(
-                        Button::new(SharedString::from(format!("folder-row-{id}")))
-                            .selection_category(studyapp_core::SelectionCategory::Directory)
-                            .selected(chosen)
-                            .small()
-                            .h(px(LIBRARY_ROW_HEIGHT - 2.))
-                            .ghost()
-                            .flex_1()
-                            .min_w_0()
-                            .px_0()
-                            .accessibility_label(format!("{}，{count} 份笔记", folder.name))
-                            .child(
-                                row()
-                                    .w_full()
-                                    .min_w_0()
-                                    .gap_2()
-                                    .child(
-                                        Icon::new(if expanded {
-                                            IconName::FolderOpen
-                                        } else {
-                                            IconName::FolderClosed
-                                        })
-                                        .small()
-                                        .text_color(crate::theme::color(MUTED)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_left()
-                                            .child(folder.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_shrink_0()
-                                            .text_xs()
-                                            .text_color(crate::theme::color(MUTED))
-                                            .child(count.to_string()),
-                                    ),
-                            )
-                            .when(!self.busy && self.action.is_none(), |button| {
-                                button.on_drag(drag, |drag, source_offset, _, cx| {
-                                    cx.new(|_| FolderDragPreview {
-                                        title: drag.title.clone(),
-                                        source_offset,
+        let selection = crate::theme::selection(studyapp_core::SelectionCategory::Directory);
+        collection_interaction(
+            self.folder_drop_target(format!("folder-drop-{id}").into(), Some(id.clone()), cx),
+            chosen,
+            self.busy,
+            studyapp_core::SelectionCategory::Directory,
+        )
+        .h(px(LIBRARY_ROW_HEIGHT))
+        .px_2()
+        .test_support()
+        .debug_selector({
+            let selector = format!("folder-drop-{id}");
+            move || selector
+        })
+        .aria_selected(chosen)
+        .map(|view| studyapp_ui::components::control_tooltip(view, tip.clone()))
+        .child(
+            entry
+                .child(
+                    Button::new(SharedString::from(format!("folder-row-{id}")))
+                        // The drop target owns selection painting; the command
+                        // stays transparent and only follows its foreground.
+                        .text_color(rgb(if chosen {
+                            selection.selected_text
+                        } else {
+                            selection.idle_text
+                        }))
+                        .small()
+                        .h(px(LIBRARY_ROW_HEIGHT - 2.))
+                        .ghost()
+                        .flex_1()
+                        .min_w_0()
+                        .px_0()
+                        .accessibility_label(format!("{}，{count} 份笔记", folder.name))
+                        .child(
+                            row()
+                                .w_full()
+                                .min_w_0()
+                                .gap_2()
+                                .child(
+                                    Icon::new(if expanded {
+                                        IconName::FolderOpen
+                                    } else {
+                                        IconName::FolderClosed
                                     })
+                                    .small()
+                                    .text_color(crate::theme::color(MUTED)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_left()
+                                        .child(folder.name.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_xs()
+                                        .text_color(crate::theme::color(MUTED))
+                                        .child(count.to_string()),
+                                ),
+                        )
+                        .when(!self.busy && self.action.is_none(), |button| {
+                            button.on_drag(drag, |drag, source_offset, _, cx| {
+                                cx.new(|_| FolderDragPreview {
+                                    title: drag.title.clone(),
+                                    source_offset,
                                 })
                             })
-                            .disabled(self.busy)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.set_filter(FolderFilter::Folder(id.clone()), cx)
-                            })),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("folder-menu-{keyboard_id}")))
-                            .small()
-                            .ghost()
-                            .icon(IconName::Ellipsis)
-                            .w(px(18.))
-                            .px_0()
-                            .flex_shrink_0()
-                            .accessibility_label(format!("{}的目录操作", folder.name))
-                            .tooltip("目录操作（也可右键目录）")
-                            .disabled(self.busy)
-                            .dropdown_menu(move |menu, _, cx| {
-                                Self::row_menu(
-                                    keyboard_owner.clone(),
-                                    library.clone(),
-                                    keyboard_id.clone(),
-                                    menu,
-                                    cx,
-                                )
-                            }),
-                    ),
-            )
-            .context_menu(move |menu, _, cx| {
-                Self::row_menu(
-                    menu_owner.clone(),
-                    menu_library.clone(),
-                    menu_id.clone(),
-                    menu,
-                    cx,
+                        })
+                        .disabled(self.busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_filter(FolderFilter::Folder(id.clone()), cx)
+                        })),
                 )
-            })
-            .into_any_element()
+                .child(
+                    Button::new(SharedString::from(format!("folder-menu-{keyboard_id}")))
+                        .small()
+                        .ghost()
+                        .icon(IconName::Ellipsis)
+                        .w(px(18.))
+                        .px_0()
+                        .flex_shrink_0()
+                        .accessibility_label(format!("{}的目录操作", folder.name))
+                        .tooltip("目录操作（也可右键目录）")
+                        .disabled(self.busy)
+                        .dropdown_menu(move |menu, _, cx| {
+                            Self::row_menu(
+                                keyboard_owner.clone(),
+                                library.clone(),
+                                keyboard_id.clone(),
+                                menu,
+                                cx,
+                            )
+                        }),
+                ),
+        )
+        .context_menu(move |menu, _, cx| {
+            Self::row_menu(
+                menu_owner.clone(),
+                menu_library.clone(),
+                menu_id.clone(),
+                menu,
+                cx,
+            )
+        })
+        .into_any_element()
     }
 }
 

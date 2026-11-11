@@ -3867,23 +3867,27 @@ mod scoped_tests {
             cx.run_until_parked();
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
-        let overlap_width = cx.update(|window, cx| {
-            let target = window.find("color-close-accent").bounds().center();
-            let viewport = app
-                .read(cx)
-                .preferences_ui
-                .appearance_rows
-                .scroll
-                .viewport_bounds();
-            f32::from(
-                target.x - viewport.left() + gpui_kit::component::scroll::Scrollbar::width() / 2.,
-            )
-        });
-        surface.update(cx, |surface, cx| {
-            surface.width = overlap_width;
-            cx.notify();
-        });
-        for _ in 0..3 {
+        // Resolve the overlap from the current responsive layout. A width
+        // change can move the trigger into a different form column, so measure
+        // again rather than assuming the old one-shot layout remains valid.
+        for _ in 0..8 {
+            let adjustment = cx.update(|window, cx| {
+                let target = window.find("color-close-accent").bounds().center();
+                let viewport = app
+                    .read(cx)
+                    .preferences_ui
+                    .appearance_rows
+                    .scroll
+                    .viewport_bounds();
+                target.x - viewport.right() + gpui_kit::component::scroll::Scrollbar::width() / 2.
+            });
+            if adjustment.abs() < gpui_kit::px(1.) {
+                break;
+            }
+            surface.update(cx, |surface, cx| {
+                surface.width += f32::from(adjustment);
+                cx.notify();
+            });
             cx.run_until_parked();
             cx.update(|window, cx| window.draw(cx).clear(cx));
         }
@@ -4234,6 +4238,7 @@ mod scoped_tests {
                     .flex_col()
                     .child(app.settings_header(false, cx))
                     .child(crate::settings_components::input(&app.interval, false))
+                    .child(app.settings_footer(cx))
                     .children(app.settings_modal(cx))
             })
         }
@@ -4929,6 +4934,18 @@ mod scoped_tests {
             window.draw(cx).clear(cx);
             studyapp_ui::settings_components::select_choice(window, "notification-position", 0, cx);
             window.click("notification-width-increase", cx);
+            assert_eq!(
+                app.read(cx).preferences_ui.number_fields.borrow()["notification-width"]
+                    .input
+                    .read(cx)
+                    .value(),
+                "361"
+            );
+        });
+        // NumericSetting emits InputEvent::Change. Flush semantic subscribers
+        // before checking the application draft, not a layout timer or delay.
+        visual.run_until_parked();
+        visual.update(|_, cx| {
             app.update(cx, |app, cx| {
                 let settings = app.preferences_ui.draft.as_ref().unwrap();
                 assert_eq!(

@@ -294,6 +294,9 @@ export function syncTableAnchors():void { controller?.sync(); }
 export const tableUpdates=ViewPlugin.fromClass(class {
   update(update:ViewUpdate) {
     if(update.docChanged||update.state.readOnly)closeTableDialog();
+    // Reconfiguration may change readOnly without changing selection or geometry.
+    // Reflect command availability now, not on a later measurement frame.
+    if(update.startState.readOnly!==update.state.readOnly)controller?.updatePressed();
     if(update.docChanged) {
       controller?.cancel();
       const next=new Map<number,Entry>();

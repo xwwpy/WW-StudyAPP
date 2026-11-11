@@ -33,6 +33,7 @@ pub struct ColorSetting {
     inherited: u32,
     disabled: bool,
     open: bool,
+    popup_scroll: ScrollHandle,
     popup_bounds: Option<Bounds<Pixels>>,
     popup_geometry: Option<gpui_kit::component::popover::PopoverSurfaceGeometry>,
     popup_surface: Option<Rc<()>>,
@@ -87,6 +88,7 @@ impl ColorSetting {
             inherited: 0x233631,
             disabled: false,
             open: false,
+            popup_scroll: ScrollHandle::new(),
             popup_bounds: None,
             popup_geometry: None,
             popup_surface: None,
@@ -227,6 +229,7 @@ impl ColorSetting {
         if open {
             // Restore from the authoritative text when reopening, including a
             // source preset changed while this field was out of the viewport.
+            self.popup_scroll.set_offset(point(px(0.), px(0.)));
             self.last_source = self.source.read(cx).value().to_string();
             self.draft.set_text(self.last_source.clone());
             if let Some(editor) = &self.editor {
@@ -412,7 +415,7 @@ impl ColorSetting {
             )
     }
 
-    fn palette(&self, cx: &mut Context<Self>) -> Div {
+    fn palette(&self, height: Pixels, cx: &mut Context<Self>) -> Div {
         let picker = self.picker.as_ref().expect("open picker exists");
         let colors = [
             0x233631, 0xFFFFFF, 0x64748B, 0xEF4444, 0xF97316, 0xEAB308, 0x22C55E, 0x06B6D4,
@@ -420,21 +423,27 @@ impl ColorSetting {
         ];
         let mut panel = column().gap_2().child(muted("常用颜色"));
         for (group, colors) in colors.chunks(6).enumerate() {
-            panel = panel.child(row().gap_2().children(colors.iter().enumerate().map(
-                |(index, &rgb)| {
-                    let select = picker.clone();
-                    let preview = picker.clone();
-                    let color: Hsla = gpui_kit::rgb(rgb).into();
-                    div()
-                        .id(SharedString::from(format!(
-                            "color-swatch-{}-{}",
-                            self.key,
-                            group * 6 + index
-                        )))
-                        .test_support()
-                        .size(px(28.))
-                        .child(
-                            gpui_kit::base::ColorSwatch::new(("swatch", group * 6 + index), color)
+            panel = panel.child(
+                row()
+                    .flex_wrap()
+                    .gap_2()
+                    .children(colors.iter().enumerate().map(|(index, &rgb)| {
+                        let select = picker.clone();
+                        let preview = picker.clone();
+                        let color: Hsla = gpui_kit::rgb(rgb).into();
+                        div()
+                            .id(SharedString::from(format!(
+                                "color-swatch-{}-{}",
+                                self.key,
+                                group * 6 + index
+                            )))
+                            .test_support()
+                            .size(px(28.))
+                            .child(
+                                gpui_kit::base::ColorSwatch::new(
+                                    ("swatch", group * 6 + index),
+                                    color,
+                                )
                                 .cursor_pointer()
                                 .size_full()
                                 .rounded_md()
@@ -448,14 +457,16 @@ impl ColorSetting {
                                 .on_hover(move |color, entered, window, cx| {
                                     preview_swatch(&preview, color, entered, window, cx)
                                 })
-                                .on_click(move |color, _, window, cx| {
-                                    select.update(cx, |picker, cx| {
-                                        picker.select_color(color, window, cx)
-                                    })
-                                }),
-                        )
-                },
-            )));
+                                .on_click(
+                                    move |color, _, window, cx| {
+                                        select.update(cx, |picker, cx| {
+                                            picker.select_color(color, window, cx)
+                                        })
+                                    },
+                                ),
+                            )
+                    })),
+            );
         }
         let color = self.slider_color(cx);
         // Hover is a visual preview only. Slider labels and gradients must use
@@ -566,7 +577,7 @@ impl ColorSetting {
                 .packed_rgba(),
         )
         .into();
-        panel.child(
+        panel = panel.child(
             row()
                 .gap_2()
                 .child(
@@ -580,26 +591,49 @@ impl ColorSetting {
                         .gap_1()
                         .child(muted("预览"))
                         .child(div().w(px(40.)).h(px(28.)).child(checker_swatch(preview))),
-                )
-                .child(div().flex_1())
-                .child(
-                    Button::new(SharedString::from(format!("color-cancel-{}", self.key)))
-                        .small()
-                        .ghost()
-                        .label("取消")
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.set_open(false, window, cx)),
-                        ),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("color-close-{}", self.key)))
-                        .small()
-                        .primary()
-                        .action("应用")
-                        .disabled(self.draft.choice() == ColorChoice::Invalid)
-                        .on_click(cx.listener(|this, _, window, cx| this.apply(window, cx))),
                 ),
-        )
+        );
+        // Bound the actual interactive content, not only the outer popover.
+        // Keep Apply/Cancel reachable even at a short user-selected height;
+        // palette, sliders and HEX scroll independently without overflowing
+        // the published native-editor occlusion rectangle.
+        column()
+            .h(height)
+            .min_h_0()
+            .gap_1()
+            .child(
+                div()
+                    .id("color-palette-scroll")
+                    .test_support()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.popup_scroll)
+                    .child(panel),
+            )
+            .child(
+                row()
+                    .flex_shrink_0()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new(SharedString::from(format!("color-cancel-{}", self.key)))
+                            .small()
+                            .ghost()
+                            .label("取消")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.set_open(false, window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("color-close-{}", self.key)))
+                            .small()
+                            .primary()
+                            .action("应用")
+                            .disabled(self.draft.choice() == ColorChoice::Invalid)
+                            .on_click(cx.listener(|this, _, window, cx| this.apply(window, cx))),
+                    ),
+            )
     }
 
     fn slider_color(&self, cx: &App) -> Hsla {
@@ -681,6 +715,11 @@ impl Render for ColorSetting {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync_source(window, cx);
         let revision = self.layout_revision;
+        let appearance = crate::theme::notification_appearance();
+        let limits = appearance.surface(studyapp_core::NoticeStyle::Anchored);
+        let height = px(f32::from(limits.max_height))
+            .min((window.viewport_size().height - px(16.)).max(px(0.)));
+        let inner_height = (height - px(8. + 2. * f32::from(limits.border_width))).max(px(0.));
         let surface = Rc::new(());
         let weak = cx.weak_entity();
         let trigger = if self.disabled {
@@ -694,11 +733,13 @@ impl Render for ColorSetting {
                     });
                 })
                 .w(px(296.))
+                .max_h(height)
+                .p_1()
                 .on_open_change(
                     cx.listener(|this, open: &bool, window, cx| this.set_open(*open, window, cx)),
                 )
                 .trigger(self.trigger())
-                .children(self.open.then(|| self.palette(cx)))
+                .children(self.open.then(|| self.palette(inner_height, cx)))
                 .into_any_element()
         };
         let mut field = row().min_w_0().flex_wrap().gap_2().child(trigger).child(
@@ -745,9 +786,24 @@ impl Render for ColorSetting {
 mod tests {
     use super::{ColorSetting, preview_swatch};
     use gpui_kit::{
-        AppContext, Axis, TestAppContext, VisualTestContext, component::input::InputState, hsla,
-        test::TestWindowExt,
+        App, AppContext, Axis, TestAppContext, VisualTestContext, component::input::InputState,
+        hsla, px, test::TestWindowExt,
     };
+
+    // Interaction fixtures that inspect all sliders and HEX use an explicitly
+    // tall surface. Compact/default surfaces have their own bounded regression.
+    fn init_full_color_palette(cx: &mut App) {
+        gpui_kit::init(cx);
+        let mut appearance = studyapp_core::AppearanceSettings::default();
+        appearance.notifications.surfaces.insert(
+            studyapp_core::NoticeStyle::Anchored,
+            studyapp_core::NoticeSurface {
+                max_height: 480,
+                ..Default::default()
+            },
+        );
+        crate::theme::apply(&appearance, false, cx);
+    }
 
     fn draw(cx: &mut VisualTestContext) {
         cx.run_until_parked();
@@ -776,8 +832,64 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn popup_geometry_tracks_move_unmount_and_rejects_old_callbacks(cx: &mut TestAppContext) {
+    fn compact_popups_scroll_content_but_keep_apply_inside_the_real_surface(
+        cx: &mut TestAppContext,
+    ) {
         cx.update(gpui_kit::init);
+        let (control, cx) = cx.add_window_view(|window, cx| {
+            let source = cx.new(|cx| InputState::new(window, cx).default_value("#123456"));
+            ColorSetting::new("bounded", source, false, window, cx)
+        });
+        for height in [48, 164, 480] {
+            cx.update(|window, cx| {
+                let mut appearance = studyapp_core::AppearanceSettings::default();
+                appearance.notifications.surfaces.insert(
+                    studyapp_core::NoticeStyle::Anchored,
+                    studyapp_core::NoticeSurface {
+                        max_height: height,
+                        ..Default::default()
+                    },
+                );
+                crate::theme::apply(&appearance, false, cx);
+                control.update(cx, |control, cx| control.set_open(true, window, cx));
+            });
+            draw(cx);
+            cx.update(|window, cx| {
+                let surface = control.read(cx).popup_bounds().unwrap();
+                let apply = window.find("color-close-bounded").bounds();
+                assert!(surface.size.height <= px(f32::from(height)) + px(1.));
+                assert!(apply.top() >= surface.top() && apply.bottom() <= surface.bottom());
+                assert!(apply.left() >= surface.left() && apply.right() <= surface.right());
+                if height < 480 {
+                    assert!(control.read(cx).popup_scroll.max_offset().y > px(0.));
+                }
+                if height == 48 {
+                    // The minimum-height palette scrolls, but its action stays
+                    // reachable after the real picker emits a color selection.
+                    let picker = control.read(cx).picker.clone().unwrap();
+                    picker.update(cx, |picker, cx| {
+                        picker.select_color(hsla(0., 1., 0.5, 1.), window, cx)
+                    });
+                } else {
+                    window.click("color-swatch-bounded-3", cx);
+                }
+            });
+            draw(cx);
+            cx.update(|window, cx| window.click("color-close-bounded", cx));
+            draw(cx);
+            control.read_with(cx, |control, cx| {
+                assert!(!control.popup_open());
+                assert_eq!(
+                    control.source.read(cx).value().as_str(),
+                    if height == 48 { "#FF0000" } else { "#EF4444" }
+                );
+            });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn popup_geometry_tracks_move_unmount_and_rejects_old_callbacks(cx: &mut TestAppContext) {
+        cx.update(init_full_color_palette);
         let (host, cx) = cx.add_window_view(|window, cx| {
             let source = cx.new(|cx| InputState::new(window, cx).default_value("#123456"));
             let control = cx.new(|cx| ColorSetting::new("geometry", source, false, window, cx));
@@ -869,7 +981,7 @@ mod tests {
     fn popup_reports_outer_surface_and_clears_on_close_disable_and_unmount(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_kit::init);
+        cx.update(init_full_color_palette);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#123456"));
             ColorSetting::new("layout", input, false, window, cx)
@@ -913,7 +1025,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use crate::bubble::OverlayShape;
-        cx.update(gpui_kit::init);
+        cx.update(init_full_color_palette);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#123456"));
             ColorSetting::new("swatch-close", input, false, window, cx)
@@ -978,7 +1090,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn collapsed_color_setting_uses_swatch_and_keeps_hex_inside_popup(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
+        cx.update(init_full_color_palette);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#123456"));
             ColorSetting::new("compact", input, true, window, cx)
@@ -1007,7 +1119,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn color_picker_is_lazy_reused_and_applies_rgba_without_hover_commit(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
+        cx.update(init_full_color_palette);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#123456"));
             ColorSetting::new("test", input, true, window, cx)
@@ -1079,7 +1191,7 @@ mod tests {
     fn automatic_and_disabled_controls_do_not_allocate_or_discard_invalid_text(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_kit::init);
+        cx.update(init_full_color_palette);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#123456"));
             ColorSetting::new("automatic-test", input, true, window, cx)
@@ -1118,7 +1230,7 @@ mod tests {
     fn alpha_hex_cancel_invalid_and_external_replacement_never_dirty_the_source(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_kit::init);
+        cx.update(init_full_color_palette);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#12345680"));
             ColorSetting::new("transaction", input, false, window, cx)
@@ -1171,7 +1283,7 @@ mod tests {
     fn popup_children_accept_slider_and_hex_input_after_pointer_containment(
         cx: &mut TestAppContext,
     ) {
-        cx.update(gpui_kit::init);
+        cx.update(init_full_color_palette);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#FF0000"));
             ColorSetting::new("pointer", input, false, window, cx)
@@ -1215,7 +1327,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn hover_preview_leaves_slider_values_consistent_and_clears_on_exit(cx: &mut TestAppContext) {
-        cx.update(gpui_kit::init);
+        cx.update(init_full_color_palette);
         let (view, cx) = cx.add_window_view(|window, cx| {
             let input = cx.new(|cx| InputState::new(window, cx).default_value("#FF0000"));
             ColorSetting::new("hover", input, false, window, cx)

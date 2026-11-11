@@ -146,11 +146,24 @@ fn historic_managed_refs_survive_adoption_retention_and_real_engine_reopen() {
             120,
         )
         .unwrap();
+    let saved = engine.snapshot();
+    assert_eq!(saved.versions.len(), 1, "saving body is not a snapshot");
+    assert_eq!(saved.saved_bodies[&note.id].content, edited);
+    assert_eq!(std::fs::read_to_string(&note.path).unwrap(), edited);
+    assert_eq!(saved.notes[0].revision, note.revision + 1);
+    assert_eq!(inventory(database.parent().unwrap()), baseline);
+    drop(engine);
+    engine = Engine::open(&database, 121).unwrap();
+    assert_eq!(engine.snapshot().note_body(&note.id).unwrap().0, edited);
+    // Automatic startup captures the durable body as an offline change;
+    // an explicit capture after reopening must deduplicate that same content.
+    assert_eq!(engine.snapshot().versions.len(), 2);
+    engine.apply(Command::CaptureSnapshots, 122).unwrap();
     let after = engine.snapshot();
     assert_eq!(after.versions.len(), 2);
     assert_eq!(after.versions[0].content, content);
     assert_eq!(after.versions[1].content, edited);
-    assert_eq!(after.notes[0].revision, note.revision + 1);
+    assert_eq!(after.notes[0].revision, saved.notes[0].revision + 1);
     assert_eq!(inventory(database.parent().unwrap()), baseline);
 }
 

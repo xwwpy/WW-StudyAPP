@@ -22,13 +22,14 @@ export function installActionbar(view: EditorView, command: (name: string) => bo
   const host = document.querySelector("#editor")!;
   host.parentElement!.insertBefore(bar, host);
   const update = () => {
+    // Command availability is semantic state, not a deferred geometry update.
+    for (const button of bar.querySelectorAll<HTMLButtonElement>("[data-selection-command]")) button.hidden = view.state.readOnly;
     if (scheduled) return; scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
       const selected = view.state.selection.ranges.some(range => !range.empty);
       bar.hidden = !selected || !allowed() || (!view.hasFocus && !bar.contains(document.activeElement));
       if (bar.hidden) return;
-      for (const button of bar.querySelectorAll<HTMLButtonElement>("[data-selection-command]")) button.hidden = view.state.readOnly;
       bar.classList.toggle("actionbar-fixed", fixed);
       if (fixed) { bar.style.left = ""; bar.style.top = ""; return; }
       const range = view.state.selection.main;

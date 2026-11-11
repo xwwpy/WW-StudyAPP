@@ -512,7 +512,9 @@ fn settings_sections_use_the_full_remaining_pane_including_cached_surfaces(
         for navigation in [true, false] {
             visual.simulate_resize(size(px(width), px(1000.)));
             for (section, id, gutter) in [
-                (SettingsSection::Learning, "settings-page-content", 16.),
+                // The scroll body reserves pr_3 (12px) for its scrollbar;
+                // page_content itself has no horizontal padding or width cap.
+                (SettingsSection::Learning, "settings-page-content", 12.),
                 (
                     SettingsSection::Notifications,
                     "settings-notifications-surface",

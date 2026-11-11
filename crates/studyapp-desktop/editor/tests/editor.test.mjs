@@ -2989,6 +2989,23 @@ test('0.3.5 table last-column width all-column alignment and structural undo pre
   assert.deepEqual(errors,[]);await page.close();
 });
 
+test('table text commands follow readonly transitions synchronously without waiting for geometry',async()=>{
+  const original='| A | B |\n| --- | --- |\n| a | b |\n';
+  const {page,errors}=await tableSetup(original,{},false);
+  await page.getByLabel('选择表格列',{exact:true}).selectOption('1');
+  const states=await page.evaluate(()=>{
+    const disabled=()=>[...document.querySelectorAll('[data-table-text-action]')].map(button=>button.disabled);
+    window.studyappEditor.setReadonly(true);
+    const readonly=disabled();
+    window.studyappEditor.setReadonly(false);
+    return {readonly,editable:disabled()};
+  });
+  assert.deepEqual(states.readonly,Array(6).fill(true));
+  assert.deepEqual(states.editable,Array(6).fill(false));
+  assert.equal((await state(page)).text,original);
+  assert.deepEqual(errors,[]);await page.close();
+});
+
 test('0.3.5 escaped pipes empty cells and the only remaining table column are preserved correctly',async()=>{
   const text='| A\\|X | B |\n| --- | --- |\n| | b\\|c |\n';const {page,errors}=await tableSetup(text,{},false);
   await page.getByLabel('选择表格列',{exact:true}).selectOption('1');await page.getByLabel('更多列操作',{exact:true}).click();await page.getByRole('button',{name:'复制此列',exact:true}).click();
@@ -3254,7 +3271,11 @@ test("selection actionbar follows the selection, preserves exact commands, hides
   await select(page,2,7);
   await bar.waitFor({state:'visible'});
   assert.equal(await bar.evaluate(el=>getComputedStyle(el).position),'relative');
-  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  const hiddenCommands=await page.evaluate(()=>{
+    window.studyappEditor.setReadonly(true);
+    return [...document.querySelectorAll('#editor-actionbar [data-selection-command]')].map(button=>button.hidden);
+  });
+  assert.deepEqual(hiddenCommands,Array(4).fill(true));
   await bar.waitFor({state:'visible'});
   assert.equal(await bar.getByRole('button',{name:'加粗',exact:true}).isVisible(),false);
   assert.equal(await bar.getByRole('button',{name:'复制',exact:true}).isVisible(),true);
