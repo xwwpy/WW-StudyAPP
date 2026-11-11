@@ -779,22 +779,6 @@ impl StudyApp {
                     )
                     .child(overflow),
             )
-            .child(
-                row()
-                    .px(studyapp_ui::design::space(palette.spacing, 1.5))
-                    .py(studyapp_ui::design::space(palette.spacing, 0.5))
-                    .gap(studyapp_ui::design::space(palette.spacing, 1.))
-                    .child(
-                        pill_tone(status, tone)
-                            .id("note-draft-status")
-                            .test_support(),
-                    )
-                    .child(
-                        muted("草稿自动保留，点击保存后写入笔记。")
-                            .min_w_0()
-                            .truncate(),
-                    ),
-            )
             .children(self.snapshot.as_ref().and_then(|snapshot| {
                 if !snapshot.settings.show_file_paths {
                     return None;
@@ -813,7 +797,11 @@ impl StudyApp {
                         })
                 })
             }))
-            .child(self.note_content.clone());
+            .child(self.note_content.clone())
+            .child(studyapp_ui::components::document_status_bar(
+                row().min_w_0().child(pill_tone(status, tone).id("note-draft-status").test_support())
+                    .child(muted("草稿自动保留，点击保存后写入笔记。").truncate().min_w_0()),
+            ));
         column().flex_1().min_h_0().h_full().min_w_0().child(view)
     }
 }
