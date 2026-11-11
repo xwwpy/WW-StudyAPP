@@ -182,8 +182,8 @@ impl StartupFailure {
     fn new(database: &Path, stage: StartupStage, path: &Path, kind: StartupFailureKind) -> Self {
         let (message, action) = match kind {
             StartupFailureKind::RestrictedProcess => (
-                "当前程序运行在受限环境，无法写入所选资料库。",
-                "请从普通用户终端将程序构建到受限工作区之外，或把发行包解压到普通目录运行，再重试。原资料已保留。",
+                "当前程序运行在受限环境（完整性级别低于 Medium），无法写入所选资料库。",
+                "请关闭本窗口，从普通用户终端将程序构建到受限工作区之外，或把发行包解压到普通目录后重新启动；开发构建可使用 scripts/run-dev.ps1，或双击仓库根目录的 run-dev.cmd。重新启动后会自动重试打开资料库；原资料已保留。",
             ),
             StartupFailureKind::PermissionDenied => (
                 "当前账户没有足够权限访问资料库或其设置。",
@@ -254,6 +254,8 @@ mod tests {
             assert!(failure.message.contains("受限环境"));
             assert!(failure.action.contains("构建到受限工作区之外"));
             assert!(failure.action.contains("发行包解压到普通目录"));
+            assert!(failure.action.contains("重新启动"));
+            assert!(!failure.action.contains("再重试"));
             assert!(failure.action.contains("原资料已保留"));
             assert!(!failure.to_string().contains("private OS"));
             assert_eq!(failure.path, Path::new("library/studyapp.lock"));
