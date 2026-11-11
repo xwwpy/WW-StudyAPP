@@ -777,6 +777,21 @@ async fn measure_appearance_cache(
     );
 }
 
+/// Match the canvas allocation after every ancestor's clipping, not the
+/// offscreen portion of a scrolled theme card. The native host uses the same
+/// content mask when placing its child window.
+fn measured_preview_bounds(window: &Window) -> Option<Bounds<Pixels>> {
+    let editor = window.try_find("markdown-native-viewport")?.bounds();
+    let pane = window.try_find("appearance-preview-pane")?.bounds();
+    let scroll = window.try_find("settings-section-scroll")?.bounds();
+    Some(
+        editor
+            .intersect(&pane)
+            .intersect(&scroll)
+            .intersect(&Bounds::new(Point::default(), window.viewport_size())),
+    )
+}
+
 fn appearance_cache_state(app: &StudyApp, window: &Window, cx: &App) -> serde_json::Value {
     let editor = app
         .preferences_ui
@@ -788,10 +803,7 @@ fn appearance_cache_state(app: &StudyApp, window: &Window, cx: &App) -> serde_js
     };
     let editor = editor.read(cx);
     let native = editor.native_state().ok();
-    let measured = window
-        .try_find("continuous-markdown-editor")
-        .zip(window.try_find("appearance-preview-pane"))
-        .map(|(editor, pane)| editor.bounds().intersect(&pane.bounds()));
+    let measured = measured_preview_bounds(window);
     let geometry_matches = native
         .as_ref()
         .zip(measured)
@@ -1851,7 +1863,7 @@ async fn exercise_markdown_preview(
             assert!((viewport.width - px(width)).abs() <= px(1.) && (viewport.height - px(height)).abs() <= px(1.), "native preview viewport did not reach supported request: requested={width}x{height}, actual={viewport:?}");
             let parameters = window.find("appearance-parameters").bounds();
             let pane = window.find("appearance-preview-pane").bounds();
-            let editor = window.find("continuous-markdown-editor").bounds().intersect(&pane);
+            let editor = measured_preview_bounds(window).expect("visible preview surfaces");
             let native = preview.read(cx).native_state().unwrap();
             let logical = native["logicalBounds"].as_array().unwrap();
             for (index, expected) in [editor.left(), editor.top(), editor.size.width, editor.size.height].into_iter().enumerate() {
@@ -2257,8 +2269,7 @@ async fn settle_preview_picker_geometry(
             assert_eq!(control.picker_id(), picker_id, "resize recreated the picker");
             assert_eq!(app.preferences_ui.appearance_preview.as_ref().unwrap().read(cx).editor().unwrap().entity_id(), preview.entity_id());
             let native = preview.read(cx).native_state().unwrap();
-            let pane = window.find("appearance-preview-pane").bounds();
-            let editor = window.find("continuous-markdown-editor").bounds().intersect(&pane);
+            let editor = measured_preview_bounds(window).expect("visible preview surfaces");
             let Some(popup) = control.popup_bounds() else { return (false, native) };
             let input = window.find("color-value-text").bounds();
             let logical = native["logicalBounds"].as_array().unwrap();
@@ -2314,10 +2325,7 @@ fn record_preview_continuity(
     let after = window
         .update(cx, |_, window, cx| {
             let pane = window.find("appearance-preview-pane").bounds();
-            let editor = window
-                .find("continuous-markdown-editor")
-                .bounds()
-                .intersect(&pane);
+            let editor = measured_preview_bounds(window).expect("visible preview surfaces");
             let bounds = |bounds: Bounds<Pixels>| {
                 [
                     f32::from(bounds.left()),
@@ -2437,6 +2445,60 @@ fn assert_preview_popup_hit(native: &serde_json::Value, popup: Bounds<Pixels>) {
 
 #[cfg(test)]
 mod viewport_tests {
+    #[gpui_kit::test]
+    fn preview_measurement_clips_the_scrolled_card_at_its_viewport(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{test::TestWindowExt, *};
+        struct ClippedPreview;
+        impl Render for ClippedPreview {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    div()
+                        .id("settings-section-scroll")
+                        .test_support()
+                        .absolute()
+                        .left(px(196.))
+                        .top(px(119.))
+                        .w(px(774.))
+                        .h(px(500.))
+                        .overflow_hidden()
+                        .child(
+                            div()
+                                .id("appearance-preview-pane")
+                                .test_support()
+                                .absolute()
+                                .left(px(16.))
+                                .top(px(-7.))
+                                .w(px(742.))
+                                .h(px(220.))
+                                .overflow_hidden()
+                                .child(
+                                    div()
+                                        .id("markdown-native-viewport")
+                                        .test_support()
+                                        .size_full(),
+                                ),
+                        ),
+                )
+            }
+        }
+        let (_, visual) = cx.add_window_view(|_, _| ClippedPreview);
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            let pane = window.find("appearance-preview-pane").bounds();
+            assert_eq!(pane.origin, point(px(212.), px(112.)));
+            assert_eq!(pane.size, size(px(742.), px(220.)));
+            assert_eq!(
+                super::measured_preview_bounds(window),
+                Some(Bounds::new(
+                    point(px(212.), px(119.)),
+                    size(px(742.), px(213.))
+                )),
+            );
+        });
+    }
+
     #[test]
     fn overlap_notices_remain_independent_and_keep_their_long_content() {
         let [first, second] = super::preview_overlap_notices();

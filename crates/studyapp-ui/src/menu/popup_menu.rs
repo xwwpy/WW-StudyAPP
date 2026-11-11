@@ -1738,6 +1738,79 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn enter_confirms_first_destination_and_dismisses_both_submenu_directions(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::{prelude::FluentBuilder, test::TestWindowExt, *};
+        use std::{cell::Cell, rc::Rc};
+        struct EdgeMenu {
+            menu: Entity<PopupMenu>,
+            left_opening: bool,
+        }
+        impl Render for EdgeMenu {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_start()
+                    .when(self.left_opening, |row| row.justify_end())
+                    .child(self.menu.clone())
+            }
+        }
+        cx.update(gpui_kit::init);
+        for left_opening in [false, true] {
+            let calls = Rc::new(Cell::new(0));
+            let dismissals = Rc::new(Cell::new(0));
+            let (root, visual) = cx.add_window_view(|window, cx| EdgeMenu {
+                left_opening,
+                menu: PopupMenu::build(window, cx, |menu, window, cx| {
+                    let dismissals = dismissals.clone();
+                    cx.subscribe_self(move |_, _: &DismissEvent, _| {
+                        dismissals.set(dismissals.get() + 1);
+                    })
+                    .detach();
+                    let calls = calls.clone();
+                    menu.submenu("Move", window, cx, move |menu, _, _| {
+                        let calls = calls.clone();
+                        menu.item(PopupMenuItem::new("Unclassified").on_click(move |_, _, _| {
+                            calls.set(calls.get() + 1);
+                        }))
+                    })
+                }),
+            });
+            draw(visual);
+            let menu = visual.update(|_, cx| root.read(cx).menu.clone());
+            visual.update(|window, cx| {
+                assert_eq!(
+                    matches!(
+                        menu.read(cx).submenu_anchor.0,
+                        Anchor::TopRight | Anchor::BottomRight
+                    ),
+                    left_opening,
+                );
+                menu.read(cx).focus_handle(cx).focus(window, cx);
+                window.press("down", cx);
+            });
+            draw(visual);
+            visual.update(|window, cx| window.press("enter", cx));
+            draw(visual);
+            visual.update(|window, cx| {
+                let child = menu
+                    .read(cx)
+                    .active_submenu()
+                    .expect("selected Move submenu");
+                assert!(child.read(cx).focus_handle(cx).is_focused(window));
+                assert_eq!(child.read(cx).selected_index, Some(0));
+                window.press("enter", cx);
+            });
+            visual.run_until_parked();
+            assert_eq!(calls.get(), 1);
+            assert_eq!(dismissals.get(), 1);
+            assert_eq!(menu.read_with(visual, |menu, _| menu.selected_index), None);
+        }
+    }
+
+    #[gpui_kit::test]
     fn keyboard_skips_noncommands_enters_submenus_and_cannot_confirm_a_disabled_row(
         cx: &mut gpui_kit::TestAppContext,
     ) {
