@@ -5300,6 +5300,71 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
+    fn nonpalette_popup_appearance_previews_and_discards_without_replacing_editor_state(
+        cx: &mut TestAppContext,
+    ) {
+        use studyapp_core::{NoticeDensity, NoticeLayout, NoticeStyle};
+        let (app, visual) = fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.refresh_appearance(window, cx);
+                let original = app
+                    .preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .appearance
+                    .clone();
+                let palette = crate::theme::palette();
+                let generation = app.note_content.read(cx).generation();
+                let value = app.note_content.read(cx).value().to_owned();
+                let notices = &mut app
+                    .preferences_ui
+                    .draft
+                    .as_mut()
+                    .unwrap()
+                    .appearance
+                    .notifications;
+                notices.surface_patch_mut(NoticeStyle::Anchored).max_height = Some(480);
+                notices.surface_patch_mut(NoticeStyle::PopupMenu).density =
+                    Some(NoticeDensity::Compact);
+                notices
+                    .layouts
+                    .insert(NoticeStyle::PopupMenu, NoticeLayout::Alternative);
+                let expected = notices.clone();
+                assert_eq!(
+                    crate::theme::resolve(&app.effective_appearance(), palette.dark),
+                    palette,
+                    "fixture must change component appearance without changing palette tokens",
+                );
+                app.refresh_appearance(window, cx);
+                assert_eq!(crate::theme::notification_appearance(), expected);
+                assert_eq!(crate::theme::palette(), palette);
+                assert_eq!(app.note_content.read(cx).generation(), generation);
+                assert_eq!(app.note_content.read(cx).value(), value);
+                assert!(!app.note_content.read(cx).creating());
+                assert_eq!(
+                    app.preferences_ui
+                        .saved
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .appearance,
+                    original
+                );
+                app.discard_settings(window, cx);
+                assert_eq!(
+                    crate::theme::notification_appearance(),
+                    original.notifications
+                );
+                assert_eq!(crate::theme::palette(), palette);
+                assert_eq!(app.note_content.read(cx).generation(), generation);
+                assert_eq!(app.note_content.read(cx).value(), value);
+            });
+        });
+    }
+
+    #[gpui_kit::test]
     fn notification_appearance_preview_changes_never_create_an_event_or_mount_a_native_editor(
         cx: &mut TestAppContext,
     ) {

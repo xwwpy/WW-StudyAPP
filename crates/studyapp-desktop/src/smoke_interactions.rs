@@ -1196,9 +1196,14 @@ pub async fn exercise(
                 "opening a note menu must keep the document visible"
             );
             window.press("down", cx);
-            let move_command = window.within("popup-menu").find(0_usize);
-            assert_eq!(move_command.label(), Some("移动到目录"));
-            assert_eq!(move_command.selected(), Some(true));
+            // Selecting the parent mounts a second popup-menu scope. Resolve
+            // the unique command label rather than an ambiguous shared ID.
+            let move_commands: Vec<_> = gpui_kit::base::test_support::snapshots(window)
+                .into_iter()
+                .filter(|element| element.label() == Some("移动到目录"))
+                .collect();
+            assert_eq!(move_commands.len(), 1);
+            assert_eq!(move_commands[0].selected(), Some(true));
             // Enter opens the selected submenu on either side of the window.
             // Right means return/collapse when the menu has flipped left.
             window.press("enter", cx);

@@ -1411,9 +1411,10 @@ async fn exercise_markdown_preview(
     database: &Path,
     cx: &mut AsyncApp,
 ) {
-    // This supported viewport stacks the panes, making the left-aligned
-    // controls genuinely overlap the native sample. Wide layouts below still
-    // receive exact clipping checks rather than an assumed popup intersection.
+    // The preview is above its controls inside a scrollable card. Use a
+    // supported tall Popover configuration so its clamped body really reaches
+    // the native sample; default compact popovers need not overlap at all.
+    // Keep the real intersection/hit checks and restore the draft afterward.
     let overlap_size = size(px(LIVE_PREVIEW_VIEWPORT.0), px(LIVE_PREVIEW_VIEWPORT.1));
     let (
         note,
@@ -1423,6 +1424,7 @@ async fn exercise_markdown_preview(
         original_width,
         original_text,
         original_size,
+        original_notices,
         touched,
     ) = window
         .update(cx, |_, window, cx| {
@@ -1438,7 +1440,23 @@ async fn exercise_markdown_preview(
                 .read(cx)
                 .value();
             let original_size = window.viewport_size();
+            let original_notices = app
+                .preferences_ui
+                .draft
+                .as_ref()
+                .unwrap()
+                .appearance
+                .notifications
+                .clone();
             view.update(cx, |app, cx| {
+                app.preferences_ui
+                    .draft
+                    .as_mut()
+                    .unwrap()
+                    .appearance
+                    .notifications
+                    .surface_patch_mut(studyapp_core::NoticeStyle::Anchored)
+                    .max_height = Some(480);
                 app.select_settings_section(SettingsSection::Appearance, cx);
                 app.select_appearance_page(AppearancePage::ThemeEditor, cx);
 
@@ -1454,6 +1472,7 @@ async fn exercise_markdown_preview(
                 original_width,
                 original_text,
                 original_size,
+                original_notices,
                 touched,
             )
         })
@@ -2115,6 +2134,12 @@ async fn exercise_markdown_preview(
                 app.preferences_ui.appearance_fields["text"]
                     .update(cx, |input, cx| input.set_value(original_text, window, cx));
                 app.preferences_ui.appearance_touched = touched;
+                app.preferences_ui
+                    .draft
+                    .as_mut()
+                    .unwrap()
+                    .appearance
+                    .notifications = original_notices;
 
                 app.select_appearance_page(AppearancePage::Workspace, cx);
                 cx.notify();

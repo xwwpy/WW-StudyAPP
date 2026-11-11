@@ -15,11 +15,16 @@ impl StudyApp {
         }
         let next = crate::theme::resolve(&settings, system_dark);
         self.appearance_source = Some((settings.clone(), system_dark));
-        if self.applied_appearance != Some(next) {
+        let palette_changed = self.applied_appearance != Some(next);
+        // Menu/Popover appearance also lives in the shared theme, but most of
+        // it is deliberately absent from the native/editor palette tokens.
+        if palette_changed || crate::theme::notification_appearance() != settings.notifications {
             crate::theme::apply(&settings, system_dark, cx);
             self.applied_appearance = Some(next);
-            self.note_content
-                .update(cx, |editor, cx| editor.set_theme(next.editor_tokens(), cx));
+            if palette_changed {
+                self.note_content
+                    .update(cx, |editor, cx| editor.set_theme(next.editor_tokens(), cx));
+            }
             cx.notify();
         }
     }
