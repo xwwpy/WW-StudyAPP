@@ -10,7 +10,7 @@ ui-test = ["gpui-kit/test-support"]
 
 [dependencies]
 gpui-kit = "=0.7.3"
-studyapp-core = { version = "0.3.6", path = "../studyapp-core" }
+studyapp-core = { version = "0.4.0", path = "../studyapp-core" }
 serde_json = "1"
 pulldown-cmark = "0.13.6"
 unicode-segmentation = "=1.13.3"
