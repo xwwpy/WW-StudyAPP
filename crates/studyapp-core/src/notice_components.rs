@@ -88,6 +88,11 @@ impl NoticeContentPatch {
     }
 }
 impl NoticeStyle {
+    /// Only these surfaces have independently adjustable content/command spacing.
+    /// Other components keep the spacing defined by their structural layout.
+    pub fn supports_density(self) -> bool {
+        matches!(self, Self::CornerCard | Self::PopupMenu)
+    }
     pub fn region(self) -> Option<NoticeRegion> {
         match self {
             Self::Bubble => Some(NoticeRegion::Toast),

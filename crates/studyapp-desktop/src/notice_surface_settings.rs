@@ -8,7 +8,9 @@ use gpui_kit::{
     component::{Disableable, input::InputState},
     *,
 };
-use studyapp_core::{NoticeContent, NoticeStyle, NoticeSurfacePatch, NotificationAppearance};
+use studyapp_core::{
+    NoticeContent, NoticeDensity, NoticeStyle, NoticeSurfacePatch, NotificationAppearance,
+};
 const COLORS: [(NoticeStyle, &str, &str); 14] = [
     (
         NoticeStyle::Bubble,
@@ -229,6 +231,57 @@ impl StudyApp {
         )
     }
 
+    fn notice_density_control(
+        &self,
+        style: NoticeStyle,
+        appearance: &NotificationAppearance,
+        busy: bool,
+        cx: &Context<Self>,
+    ) -> Option<Div> {
+        if !style.supports_density() {
+            return None;
+        }
+        let effective = appearance.surface(style).density;
+        let current = appearance
+            .surface_patches
+            .get(&style)
+            .and_then(|p| p.density)
+            .or_else(|| appearance.surfaces.get(&style).map(|s| s.density));
+        Some(form::settings_row(
+            "组件间距",
+            form::inherited_choice(
+                "notice-component-density",
+                current,
+                (
+                    effective,
+                    format!(
+                        "继承全局／组件默认 · 当前有效值：{}",
+                        match effective {
+                            NoticeDensity::Compact => "紧凑",
+                            NoticeDensity::Comfortable => "舒适",
+                        }
+                    ),
+                ),
+                vec![
+                    (NoticeDensity::Comfortable, "舒适".into()),
+                    (NoticeDensity::Compact, "紧凑".into()),
+                ],
+                busy,
+                cx.weak_entity(),
+                move |this, density, _, cx| {
+                    if let Some(draft) = &mut this.preferences_ui.draft {
+                        draft
+                            .appearance
+                            .notifications
+                            .surface_patch_mut(style)
+                            .density = density;
+                    }
+                    cx.notify();
+                },
+            ),
+        ))
+    }
+
     pub(crate) fn notice_surface_controls(&self, cx: &mut Context<Self>) -> Div {
         let appearance = self
             .preferences_ui
@@ -268,6 +321,7 @@ impl StudyApp {
                     },
                 ),
             ))
+            .children(self.notice_density_control(style, &appearance, busy, cx))
             .child(self.surface_number(
                 "不透明度（%）",
                 "surface-opacity",

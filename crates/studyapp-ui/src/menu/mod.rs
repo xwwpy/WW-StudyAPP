@@ -17,16 +17,23 @@ struct MenuMetrics {
 }
 impl MenuMetrics {
     fn new(layout: NoticeLayout, density: NoticeDensity) -> Self {
+        // Layout and density are independent choices: a compact command layout
+        // must still visibly respond to its own inherited/custom density.
         match (layout, density) {
             (NoticeLayout::Primary, NoticeDensity::Comfortable) => Self {
                 row_height: 28.,
                 padding: 6.,
                 gap: 3.,
             },
-            _ => Self {
+            (NoticeLayout::Alternative, NoticeDensity::Compact) => Self {
                 row_height: 20.,
                 padding: 3.,
                 gap: 1.,
+            },
+            _ => Self {
+                row_height: 24.,
+                padding: 4.,
+                gap: 2.,
             },
         }
     }
@@ -90,6 +97,16 @@ mod tests {
             compact.row_height
         );
         assert!(compact.padding < standard.padding && compact.gap < standard.gap);
+    }
+    #[test]
+    fn both_layouts_respond_to_density_without_changing_command_semantics() {
+        for layout in [NoticeLayout::Primary, NoticeLayout::Alternative] {
+            let comfortable = MenuMetrics::new(layout, NoticeDensity::Comfortable);
+            let compact = MenuMetrics::new(layout, NoticeDensity::Compact);
+            assert!(compact.row_height < comfortable.row_height);
+            assert!(compact.padding < comfortable.padding);
+            assert!(compact.gap < comfortable.gap);
+        }
     }
     #[test]
     fn menu_extents_respect_real_viewport_and_explicit_constraints() {

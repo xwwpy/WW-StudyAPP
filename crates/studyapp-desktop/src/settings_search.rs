@@ -1056,6 +1056,16 @@ fn field_settings() -> Vec<SettingResult> {
             .anchor("同步目标"),
     );
     for style in studyapp_core::NoticeStyle::ALL {
+        if style.supports_density() {
+            let mut entry = SettingResult::new(
+                S::Appearance,
+                "组件间距",
+                "通知 菜单 卡片 密度 紧凑 舒适 继承 默认 间距",
+            )
+            .anchor("组件间距");
+            entry.component = Some(style);
+            fields.push(entry);
+        }
         for label in [
             "组件布局",
             "不透明度（%）",
@@ -1373,6 +1383,24 @@ mod tests {
     fn empty_and_unmatched_queries_do_not_create_results() {
         assert!(search(" \t ").is_empty());
         assert!(search("absolutely-not-a-setting").is_empty());
+    }
+    #[test]
+    fn density_search_only_targets_components_with_effective_spacing_controls() {
+        let entries = search("组件间距");
+        for style in studyapp_core::NoticeStyle::ALL {
+            assert_eq!(
+                entries.iter().any(|entry| entry.label == "组件间距"
+                    && entry.component == Some(style)
+                    && entry.anchor.as_deref() == Some("组件间距")),
+                style.supports_density(),
+                "{style:?}"
+            );
+        }
+        assert!(
+            search("紧凑 舒适")
+                .iter()
+                .any(|entry| entry.label == "组件间距")
+        );
     }
     #[test]
     fn workspace_fields_search_by_name_and_reveal_their_own_anchor() {

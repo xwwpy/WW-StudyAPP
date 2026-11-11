@@ -6528,6 +6528,103 @@ mod scoped_tests {
         }
     }
     #[gpui_kit::test]
+    fn component_density_customization_inherits_and_discards_without_persisting(
+        cx: &mut TestAppContext,
+    ) {
+        use studyapp_core::{NoticeDensity, NoticeStyle};
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(1600.)));
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            TypedControlFixture {
+                app: app.clone(),
+                selection: false,
+            }
+        });
+        for style in NoticeStyle::ALL {
+            visual.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.preferences_ui.notice_component = Some(style);
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert_eq!(
+                    window
+                        .try_find((
+                            gpui_kit::ElementId::from("notice-component-density"),
+                            "customize"
+                        ))
+                        .is_some(),
+                    style.supports_density(),
+                    "{style:?}"
+                );
+                if !style.supports_density() {
+                    return;
+                }
+                window.click(
+                    (
+                        gpui_kit::ElementId::from("notice-component-density"),
+                        "customize",
+                    ),
+                    cx,
+                );
+                window.render_frame(cx);
+                crate::settings_components::select_choice(
+                    window,
+                    "notice-component-density",
+                    1,
+                    cx,
+                );
+                assert_eq!(
+                    app.read(cx)
+                        .preferences_ui
+                        .draft
+                        .as_ref()
+                        .unwrap()
+                        .appearance
+                        .notifications
+                        .surface(style)
+                        .density,
+                    NoticeDensity::Compact
+                );
+                assert_eq!(
+                    app.read(cx)
+                        .preferences_ui
+                        .saved
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .appearance
+                        .notifications
+                        .surface(style)
+                        .density,
+                    NoticeDensity::Comfortable
+                );
+                window.click(
+                    (
+                        gpui_kit::ElementId::from("notice-component-density"),
+                        "inherit",
+                    ),
+                    cx,
+                );
+                app.update(cx, |app, cx| {
+                    let appearance = &mut app
+                        .preferences_ui
+                        .draft
+                        .as_mut()
+                        .unwrap()
+                        .appearance
+                        .notifications;
+                    assert_eq!(appearance.surface_patches[&style].density, None);
+                    appearance.density = NoticeDensity::Compact;
+                    assert_eq!(appearance.surface(style).density, NoticeDensity::Compact);
+                    app.discard_settings(window, cx);
+                });
+                assert!(!app.read(cx).settings_dirty(cx));
+            });
+        }
+    }
+    #[gpui_kit::test]
     fn numeric_rows_have_natural_height_and_scoped_reset_preserves_other_invalid_drafts(
         cx: &mut TestAppContext,
     ) {

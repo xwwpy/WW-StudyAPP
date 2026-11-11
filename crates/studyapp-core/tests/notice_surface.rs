@@ -90,3 +90,37 @@ fn legacy_full_surface_migrates_without_freezing_inherited_or_losing_auto_colors
     );
     appearance.validate().unwrap();
 }
+
+#[test]
+fn component_density_is_optional_and_legacy_reset_preserves_other_overrides() {
+    use studyapp_core::{NoticeDensity, NoticeStyle, NotificationAppearance};
+    for style in NoticeStyle::ALL {
+        assert_eq!(
+            style.supports_density(),
+            matches!(style, NoticeStyle::CornerCard | NoticeStyle::PopupMenu)
+        );
+    }
+    for style in [NoticeStyle::CornerCard, NoticeStyle::PopupMenu] {
+        let mut appearance = NotificationAppearance::default();
+        assert_eq!(
+            appearance.surface(style).density,
+            NoticeDensity::Comfortable
+        );
+        appearance.density = NoticeDensity::Compact;
+        assert_eq!(appearance.surface(style).density, NoticeDensity::Compact);
+        let mut legacy = appearance.surface(style);
+        legacy.density = NoticeDensity::Comfortable;
+        legacy.width = 444;
+        appearance.surfaces.insert(style, legacy);
+        appearance.surface_patch_mut(style).density = None;
+        assert_eq!(appearance.surface(style).density, NoticeDensity::Compact);
+        assert_eq!(appearance.surface(style).width, 444);
+        appearance.density = NoticeDensity::Comfortable;
+        assert_eq!(
+            appearance.surface(style).density,
+            NoticeDensity::Comfortable
+        );
+        appearance.surface_patch_mut(style).density = Some(NoticeDensity::Compact);
+        assert_eq!(appearance.surface(style).density, NoticeDensity::Compact);
+    }
+}
