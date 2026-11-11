@@ -3072,15 +3072,15 @@ test('0.3.5 editor fields share themed surfaces focus rings and disabled states 
 });
 
 const documentPixel='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
-async function pdfReader(page,password=false) {
-  await page.evaluate(({image,password})=>{
+async function pdfReader(page,password=false,identity) {
+  await page.evaluate(({image,password,identity})=>{
     const post=window.ipc.postMessage;window.ipc.postMessage=raw=>{
       post(raw);const message=JSON.parse(raw);if(message.type!=='renderDocument')return;
       const response=message.page===0?(password&&message.password!=='local-password'?{passwordRequired:true}:{pages:[[612,792],[792,612],[400,1800]]}):{image};
       setTimeout(()=>window.studyappEditor.documentResult({generation:message.generation,request:message.request,...response}),10);
     };
-    window.studyappEditor.load({generation:42,text:'原文档阅读；页面内容和版式保存在资料库版本中。',readonly:false,canRequestEdit:true,document:{kind:'pdf',data:''}});
-  },{image:documentPixel,password});
+    window.studyappEditor.load({generation:42,text:'原文档阅读；页面内容和版式保存在资料库版本中。',readonly:false,canRequestEdit:true,positionKey:identity,document:{kind:'pdf',data:''}});
+  },{image:documentPixel,password,identity});
 }
 
 test('0.3.5 PDF reader lazily requests original pages supports zoom and stays readonly',async()=>{
@@ -3393,4 +3393,100 @@ test("lost mouse release and non-left hover never extend text selection", async 
     await page.mouse.up();
   }
   assert.deepEqual(errors,[]); await page.close();
+});
+
+async function originalPosition(page) {
+  return page.locator('.document-pages').evaluate(pages=>{
+    const top=pages.getBoundingClientRect().top;
+    const slots=[...pages.querySelectorAll('.document-page')];
+    if(!slots.length)slots.push(...pages.querySelector('.document-word').shadowRoot.querySelectorAll('section.docx'));
+    const index=slots.findIndex(slot=>slot.getBoundingClientRect().bottom>top+16);
+    const bounds=slots[index].getBoundingClientRect();
+    return {page:index+1,offset:Math.max(0,(top-bounds.top)/bounds.height)};
+  });
+}
+for(const kind of ['pdf','docx'])test(`original ${kind} reading position restores page offset and zoom per library and note`,async()=>{
+  const {page,errors,externalRequests}=await setup('old');
+  const data=kind==='docx'?await originalWordFixture():'';
+  if(kind==='pdf')await pdfReader(page);
+  const load=key=>page.evaluate(({kind,data,key})=>window.studyappEditor.load({generation:70,text:'原文档只读',readonly:true,positionKey:key,document:{kind,data}}),{kind,data,key});
+  const ready=async()=>{
+    await page.locator(kind==='pdf'?'.document-page':'.document-word section.docx').first().waitFor();
+    await page.waitForTimeout(200);
+  };
+  await load('library-a/original-1');await ready();
+  await page.getByLabel('文档缩放',{exact:true}).selectOption('1.25');
+  const target=kind==='pdf'?3:2;
+  await page.getByLabel('文档页码',{exact:true}).fill(String(target));
+  await page.getByLabel('文档页码',{exact:true}).press('Tab');
+  await page.locator('.document-pages').evaluate((pages,target)=>{
+    const slots=[...pages.querySelectorAll('.document-page')];
+    if(!slots.length)slots.push(...pages.querySelector('.document-word').shadowRoot.querySelectorAll('section.docx'));
+    const bounds=slots[target-1].getBoundingClientRect();
+    pages.scrollTop+=bounds.top-pages.getBoundingClientRect().top+bounds.height*.15;
+  },target);
+  await page.waitForTimeout(250);
+  const expected=await originalPosition(page);assert.equal(expected.page,target);
+  await load('library-a/original-2');await ready();
+  assert.equal((await originalPosition(page)).page,1);
+  assert.equal(await page.getByLabel('文档缩放',{exact:true}).inputValue(),'fit');
+  await load('library-a/original-1');await ready();
+  let restored=await originalPosition(page);assert.equal(restored.page,expected.page);assert.ok(Math.abs(restored.offset-expected.offset)<.005,JSON.stringify({expected,restored}));
+  assert.equal(await page.getByLabel('文档缩放',{exact:true}).inputValue(),'1.25');
+  const stored=await page.evaluate(kind=>JSON.parse(localStorage.getItem(`studyapp.document-reading.v1:${kind}:library-a/original-1`)),kind);
+  assert.deepEqual(Object.keys(stored).sort(),['offset','page','scale']);
+  await page.reload();
+  if(kind==='pdf')await pdfReader(page);
+  await load('library-a/original-1');await ready();
+  restored=await originalPosition(page);assert.equal(restored.page,expected.page);assert.ok(Math.abs(restored.offset-expected.offset)<.005,JSON.stringify({expected,restored}));
+  await load('library-b/original-1');await ready();assert.equal((await originalPosition(page)).page,1);
+  await page.evaluate(()=>Object.defineProperty(window,'localStorage',{get(){throw new Error('blocked');}}));
+  await load('blocked');await ready();assert.equal((await originalPosition(page)).page,1);
+  await page.evaluate(()=>window.studyappEditor.load({generation:71,text:'new Markdown survives',readonly:false}));
+  assert.equal((await state(page)).text,'new Markdown survives');
+  assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
+});
+
+test('original reader rejects corrupt position metadata clamps shortened documents and cancels stale restore',async()=>{
+  const {page,errors}=await setup('old');await pdfReader(page);
+  const key='studyapp.document-reading.v1:pdf:original';
+  for(const saved of ['invalid JSON',JSON.stringify({page:1,offset:-1,scale:'fit'}),JSON.stringify({page:1,offset:.2,scale:'999'}),JSON.stringify({page:1.5,offset:.2,scale:'fit'})]) {
+    await page.evaluate(({key,saved})=>{localStorage.setItem(key,saved);window.studyappEditor.load({generation:80,text:'original',readonly:true,positionKey:'original',document:{kind:'pdf',data:''}});},{key,saved});
+    await page.locator('.document-page').first().waitFor();await page.waitForTimeout(100);
+    assert.equal(await page.getByLabel('文档页码',{exact:true}).inputValue(),'1');
+  }
+  await page.evaluate(key=>{
+    window.studyappEditor.load({generation:81,text:'away',readonly:true});
+    localStorage.setItem(key,JSON.stringify({page:999,offset:.2,scale:'1'}));
+    window.studyappEditor.load({generation:82,text:'original',readonly:true,positionKey:'original',document:{kind:'pdf',data:''}});
+  },key);
+  await page.waitForFunction(()=>document.querySelector('[aria-label="文档页码"]').value==='3');
+  await page.evaluate(()=>{
+    window.studyappEditor.load({generation:83,text:'old original',readonly:true,positionKey:'original',document:{kind:'pdf',data:''}});
+    window.studyappEditor.load({generation:84,text:'latest note',readonly:false,positionKey:'other'});
+  });
+  await page.waitForTimeout(200);assert.equal(await page.locator('#original-document').count(),0);assert.equal((await state(page)).text,'latest note');
+  assert.deepEqual(errors,[]);await page.close();
+});
+
+test('original position flushes before switching and pagehide without persisting PDF passwords',async()=>{
+  const {page,errors}=await setup('old');await pdfReader(page,true,'encrypted-original');
+  await page.getByLabel('PDF 打开密码',{exact:true}).fill('local-password');
+  await page.getByRole('button',{name:'打开',exact:true}).click();
+  await page.locator('.document-page').first().waitFor();
+  const saved=await page.evaluate(()=>{
+    const pages=document.querySelector('.document-pages'),slot=pages.querySelector('[data-page="3"]');
+    pages.scrollTop+=slot.getBoundingClientRect().top-pages.getBoundingClientRect().top+200;
+    window.dispatchEvent(new Event('pagehide'));
+    const key='studyapp.document-reading.v1:pdf:encrypted-original';
+    const first=JSON.parse(localStorage.getItem(key));
+    pages.scrollTop+=100;
+    window.studyappEditor.load({generation:99,text:'next note',readonly:false});
+    return {first,last:JSON.parse(localStorage.getItem(key))};
+  });
+  assert.equal(saved.first.page,3);assert.equal(saved.last.page,3);
+  assert.ok(saved.last.offset>saved.first.offset);
+  assert.deepEqual(Object.keys(saved.last).sort(),['offset','page','scale']);
+  assert.equal(JSON.stringify(saved).includes('local-password'),false);
+  assert.deepEqual(errors,[]);await page.close();
 });

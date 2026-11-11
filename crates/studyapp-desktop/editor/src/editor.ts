@@ -450,7 +450,7 @@ function load(value: Load): void {
   updateToolbar();
   updateStatistics(true);
   if (!originalDocument) readingPositions.restore(value.positionKey);
-  try { showDocument(value.document, url => { if(!modalBlocked)post({type:"openLink",generation,url}); }, request => post({type:"renderDocument",generation,...request})); }
+  try { showDocument(value.document, url => { if(!modalBlocked)post({type:"openLink",generation,url}); }, request => post({type:"renderDocument",generation,...request}), value.positionKey); }
   catch (reason) { error(reason instanceof Error ? reason.message : "原文档未能显示"); }
 }
 function rebase(value: Rebase): void {

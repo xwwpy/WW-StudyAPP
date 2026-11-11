@@ -11,10 +11,10 @@ let current:OriginalReader|undefined;
 let sequence=0;
 export function closeDocument():void {current?.destroy();current=undefined;delete document.documentElement.dataset.document;}
 export function documentResult(value:DocumentResult):void {current?.receive(value);}
-export function showDocument(value:OriginalDocument|undefined,open:(url:string)=>void,request:RequestPage):void {
+export function showDocument(value:OriginalDocument|undefined,open:(url:string)=>void,request:RequestPage,identity?:unknown):void {
   closeDocument();if(!value)return;
   if(!["pdf","docx"].includes(value.kind)||typeof value.data!=="string"||value.data.length>Math.ceil(MAX_BYTES/3)*4)throw new Error("原文档格式或大小无效");
-  document.documentElement.dataset.document=value.kind;current=new OriginalReader(value,open,request);
+  document.documentElement.dataset.document=value.kind;current=new OriginalReader(value,open,request,identity);
 }
 
 // Generated Office markup is still untrusted. Only bounded passive nodes are
@@ -93,6 +93,8 @@ function passiveWordNodes(nodes:Node[]):Node[] {
   const recreate=officeFactory();return nodes.map(node=>recreate(value(node)));
 }
 
+interface DocumentPosition {page:number;offset:number;scale:string;}
+const SCALES=new Set(["fit","0.5","0.75","1","1.25","1.5","2"]);
 class OriginalReader {
   root=document.createElement("section");toolbar=document.createElement("div");pages=document.createElement("div");status=document.createElement("span");
   pageInput=document.createElement("input");total=document.createElement("span");zoom=document.createElement("select");
@@ -101,7 +103,30 @@ class OriginalReader {
   observer:IntersectionObserver|undefined;resize:ResizeObserver;resizeTimer:ReturnType<typeof setTimeout>|undefined;
   pending=new Map<number,{resolve:(value:DocumentResult)=>void;timer:ReturnType<typeof setTimeout>}>();
   wordRoot:ShadowRoot|undefined;wordContent:HTMLElement|undefined;
-  constructor(readonly value:OriginalDocument,readonly open:(url:string)=>void,readonly request:RequestPage) {
+  positionKey:string|undefined;initialPosition:DocumentPosition|undefined;positionEpoch=0;
+  positionTimer:ReturnType<typeof setTimeout>|undefined;
+  readonly savePosition=():void=>{
+    if(!this.positionKey||this.initialPosition||!this.slots.length||this.dead)return;
+    const top=this.pages.getBoundingClientRect().top;
+    const index=this.slots.findIndex(slot=>slot.getBoundingClientRect().bottom>top+16);
+    if(index<0)return;
+    const bounds=this.slots[index].getBoundingClientRect();
+    if(!bounds.height)return;
+    // Only display metadata: no document bytes, source text or opening password.
+    const position:DocumentPosition={page:index+1,offset:Math.max(0,Math.min(1,(top-bounds.top)/bounds.height)),scale:this.scale};
+    try{localStorage.setItem(this.positionKey,JSON.stringify(position));}catch{/* Reading remains available without browser storage. */}
+  };
+  constructor(readonly value:OriginalDocument,readonly open:(url:string)=>void,readonly request:RequestPage,identity?:unknown) {
+    if(typeof identity==="string"&&identity&&identity.length<=8192) {
+      this.positionKey=`studyapp.document-reading.v1:${value.kind}:${identity}`;
+      try{
+        const saved:DocumentPosition=JSON.parse(localStorage.getItem(this.positionKey)||"null");
+        if(saved&&Number.isSafeInteger(saved.page)&&saved.page>0&&saved.page<=2000&&Number.isFinite(saved.offset)&&saved.offset>=0&&saved.offset<=1&&SCALES.has(saved.scale)) {
+          this.initialPosition=saved;this.scale=saved.scale;
+        }
+      }catch{/* Invalid or unavailable storage never prevents opening a document. */}
+    }
+
     this.root.id="original-document";this.root.setAttribute("aria-label",value.kind==="pdf"?"PDF 原文阅读":"Word 原文阅读");
     this.toolbar.className="document-toolbar";this.toolbar.setAttribute("role","toolbar");this.toolbar.setAttribute("aria-label","文档阅读控制");
     this.pages.className="document-pages";this.pages.tabIndex=0;this.pages.setAttribute("aria-label","文档页面");
@@ -109,12 +134,25 @@ class OriginalReader {
     const button=(text:string,label:string,run:()=>void)=>{const e=document.createElement("button");e.type="button";e.textContent=text;e.setAttribute("aria-label",label);e.onclick=run;return e;};
     this.pageInput.type="number";this.pageInput.min="1";this.pageInput.value="1";this.pageInput.setAttribute("aria-label","文档页码");this.pageInput.onchange=()=>this.go(Number(this.pageInput.value));
     for(const [value,label] of [["fit","适合宽度"],["0.5","50%"],["0.75","75%"],["1","100%"],["1.25","125%"],["1.5","150%"],["2","200%"]])this.zoom.append(new Option(label,value));
-    this.zoom.setAttribute("aria-label","文档缩放");this.zoom.onchange=()=>{this.scale=this.zoom.value;this.layout();};
+    this.zoom.setAttribute("aria-label","文档缩放");this.zoom.value=this.scale;this.zoom.onchange=()=>{this.scale=this.zoom.value;this.layout();this.schedulePositionSave();};
     this.toolbar.append(button("‹","上一页",()=>this.go(this.activePage-1)),this.pageInput,this.total,button("›","下一页",()=>this.go(this.activePage+1)),this.zoom,this.status);
     this.root.append(this.toolbar,this.pages);document.querySelector("#editor-workspace")!.append(this.root);
     this.resize=new ResizeObserver(()=>{if(!this.wordContent&&this.scale!=="fit")return;clearTimeout(this.resizeTimer);this.resizeTimer=setTimeout(()=>this.layout(),100);});this.resize.observe(this.pages);
-    this.pages.addEventListener("scroll",()=>{const top=this.pages.getBoundingClientRect().top;const index=this.slots.findIndex(slot=>slot.getBoundingClientRect().bottom>top+16);if(index>=0){this.activePage=index+1;if(document.activeElement!==this.pageInput)this.pageInput.value=String(index+1);}},{passive:true});
+    this.pages.addEventListener("scroll",()=>{const top=this.pages.getBoundingClientRect().top;const index=this.slots.findIndex(slot=>slot.getBoundingClientRect().bottom>top+16);if(index>=0){this.activePage=index+1;if(document.activeElement!==this.pageInput)this.pageInput.value=String(index+1);}this.schedulePositionSave();},{passive:true});
+    window.addEventListener("pagehide",this.savePosition);window.addEventListener("beforeunload",this.savePosition);
     void this.start().catch(error=>this.fail(error));
+  }
+  schedulePositionSave():void {clearTimeout(this.positionTimer);this.positionTimer=setTimeout(this.savePosition,120);}
+  restorePosition():void {
+    const saved=this.initialPosition;if(!saved||!this.slots.length)return;
+    const epoch=++this.positionEpoch;
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
+      if(this.dead||epoch!==this.positionEpoch)return;
+      const index=Math.min(saved.page,this.slots.length)-1,slot=this.slots[index];
+      const bounds=slot.getBoundingClientRect();
+      this.pages.scrollTop+=bounds.top-this.pages.getBoundingClientRect().top+saved.offset*bounds.height;
+      this.activePage=index+1;this.pageInput.value=String(this.activePage);this.initialPosition=undefined;
+    }));
   }
   fail(error:unknown):void {if(!this.dead){this.status.textContent=error instanceof Error?`文档未能显示：${error.message}`:"文档未能显示，请检查文件格式。";this.status.classList.add("error");}}
   receive(value:DocumentResult):void {
@@ -159,6 +197,7 @@ class OriginalReader {
       void this.pump();
     },{root:this.pages,rootMargin:"200px 0px"});
     for(const slot of this.slots)this.observer.observe(slot);
+    this.restorePosition();
   }
   async pump():Promise<void> {
     if(this.running||this.dead)return;this.running=true;
@@ -208,6 +247,7 @@ class OriginalReader {
     content.style.transform="none";const width=Math.max(1,content.scrollWidth),height=Math.max(1,content.scrollHeight);
     const scale=this.scale==="fit"?Math.max(.01,(this.pages.clientWidth-24)/width):Number(this.scale);
     content.style.transform=`scale(${scale})`;host.style.width=`${width*scale}px`;host.style.height=`${height*scale}px`;
+    this.restorePosition();
   }
-  destroy():void {this.dead=true;this.epoch++;this.password="";clearTimeout(this.resizeTimer);this.resize.disconnect();this.observer?.disconnect();for(const [request,pending] of this.pending){clearTimeout(pending.timer);pending.resolve({generation:0,request,error:"文档已关闭"});}this.pending.clear();this.root.remove();}
+  destroy():void {this.savePosition();clearTimeout(this.positionTimer);window.removeEventListener("pagehide",this.savePosition);window.removeEventListener("beforeunload",this.savePosition);this.positionEpoch++;this.dead=true;this.epoch++;this.password="";clearTimeout(this.resizeTimer);this.resize.disconnect();this.observer?.disconnect();for(const [request,pending] of this.pending){clearTimeout(pending.timer);pending.resolve({generation:0,request,error:"文档已关闭"});}this.pending.clear();this.root.remove();}
 }
