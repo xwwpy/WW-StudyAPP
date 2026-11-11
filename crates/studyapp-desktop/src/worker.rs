@@ -1580,13 +1580,23 @@ mod tests {
     const INITIALIZATION_BUDGET: Duration = Duration::from_secs(60);
     const STORAGE_COMPLETION_BUDGET: Duration = Duration::from_secs(60);
 
-    // Log failure timing before panic/Drop can spend more time joining a worker.
     fn initial_update(worker: &Worker) -> Update {
+        initialization_update(worker, "InitialReceive")
+    }
+
+    // Retrying or switching away from a failed startup initializes the same
+    // durable defaults/preferences as the first open, not an ordinary command.
+    fn recovery_update(worker: &Worker) -> Update {
+        initialization_update(worker, "RecoveryReceive")
+    }
+
+    // Log failure timing before panic/Drop can spend more time joining a worker.
+    fn initialization_update(worker: &Worker, stage: &str) -> Update {
         let started = Instant::now();
-        worker.startup_probe.observe("InitialReceive", "enter");
+        worker.startup_probe.observe(stage, "enter");
         let received = worker.receiver.recv_timeout(INITIALIZATION_BUDGET);
         worker.startup_probe.observe(
-            "InitialReceive",
+            stage,
             &format!(
                 "{} wait={}us result={:?}",
                 if received.is_ok() { "exit" } else { "error" },
@@ -1600,7 +1610,9 @@ mod tests {
                     })
             ),
         );
-        received.expect("initial worker update exceeded 60s initialization budget")
+        received.unwrap_or_else(|error| {
+            panic!("{stage} exceeded {INITIALIZATION_BUDGET:?} initialization budget: {error}")
+        })
     }
 
     #[test]
@@ -1625,10 +1637,7 @@ mod tests {
             .sender
             .send(Work::SwitchLibrary(root.join("another")))
             .unwrap();
-        let opened = worker
-            .receiver
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
+        let opened = recovery_update(&worker);
         assert!(opened.snapshot.is_some());
         assert!(opened.library_result.unwrap().is_ok());
         assert_eq!(
@@ -1675,10 +1684,7 @@ mod tests {
         assert_eq!(std::fs::read(&lock).unwrap(), b"retained lock content");
         std::fs::set_permissions(&lock, original_permissions).unwrap();
         worker.sender.send(Work::RetryOpenLibrary).unwrap();
-        let recovered = worker
-            .receiver
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
+        let recovered = recovery_update(&worker);
         assert!(recovered.startup_failure.is_none());
         assert!(recovered.library_result.unwrap().is_ok());
         assert!(recovered.snapshot.is_some());
@@ -1786,18 +1792,12 @@ mod tests {
         assert_eq!(failure.kind, startup::StartupFailureKind::InUse);
         assert_eq!(failure.database, database);
         waiting.sender.send(Work::RetryOpenLibrary).unwrap();
-        let still_busy = waiting
-            .receiver
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
+        let still_busy = recovery_update(&waiting);
         assert!(still_busy.snapshot.is_none());
         assert!(still_busy.library_result.unwrap().is_err());
         drop(owner);
         waiting.sender.send(Work::RetryOpenLibrary).unwrap();
-        let reopened = waiting
-            .receiver
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
+        let reopened = recovery_update(&waiting);
         assert!(reopened.startup_failure.is_none());
         assert!(reopened.library_result.unwrap().is_ok());
         assert!(reopened.library_replaced);
@@ -1830,14 +1830,7 @@ mod tests {
         assert_eq!(failure.path, manifest);
         drop(held);
         worker.sender.send(Work::RetryOpenLibrary).unwrap();
-        assert!(
-            worker
-                .receiver
-                .recv_timeout(Duration::from_secs(10))
-                .unwrap()
-                .snapshot
-                .is_some()
-        );
+        assert!(recovery_update(&worker).snapshot.is_some());
     }
 
     #[test]
