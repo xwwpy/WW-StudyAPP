@@ -249,6 +249,13 @@ impl StudyApp {
         if !targets().iter().any(|item| item.id == target) {
             return;
         }
+        self.preferences_ui.image_cloud_search_reveal = false;
+        self.sync_panel.update(cx, |panel, cx| {
+            if panel.search_reveal {
+                panel.search_reveal = false;
+                cx.notify();
+            }
+        });
         let mut state = self.preferences_ui.browsing.clone();
         self.remember_settings_offset(&mut state);
         let section = match target.split('.').next().unwrap_or_default() {

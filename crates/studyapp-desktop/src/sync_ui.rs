@@ -21,6 +21,7 @@ pub struct SyncPanel {
     pub(crate) notification_center: Option<Entity<crate::notifications::NotificationCenter>>,
     pub status: SyncStatus,
     pub editing_locked: bool,
+    pub(crate) search_reveal: bool,
     pub target: usize,
     pub folder: Entity<InputState>,
     pub url: Entity<InputState>,
@@ -109,6 +110,7 @@ impl SyncPanel {
             notification_center: None,
             status: SyncStatus::default(),
             editing_locked: false,
+            search_reveal: false,
             target: 0,
             folder: input("选择本地文件夹、网盘同步目录或 NAS 路径", window, cx),
             url: input("https://dav.example.com/path/", window, cx),
@@ -307,7 +309,8 @@ impl Render for SyncPanel {
                     this.target = target; cx.notify();
                 },
             )));
-        if self.target == 1 {
+        if self.target == 1 || self.search_reveal {
+            let busy = busy || self.target != 1;
             panel = panel.child(
                 form::DirectoryField::new(
                     "sync-directory-detail",
@@ -350,9 +353,17 @@ impl Render for SyncPanel {
                         ),
                 ),
             );
-        } else if self.target == 2 {
+        }
+        if self.target == 2 || self.search_reveal {
+            let busy = busy || self.target != 2;
             panel = panel
-                .child(form::field("WebDAV 地址", form::input(&self.url, busy)))
+                .child(form::field(
+                    "WebDAV 地址",
+                    div()
+                        .id("sync-url-field")
+                        .test_support()
+                        .child(form::input(&self.url, busy)),
+                ))
                 .child(
                     row()
                         .flex_wrap()
@@ -378,6 +389,9 @@ impl Render for SyncPanel {
                     "建议使用服务商提供的应用密码；凭据不进入学习数据库或备份。"
                 }));
         }
+        if self.search_reveal {
+            panel = panel.child(muted("搜索仅展开相关配置；不属于当前同步目标的字段仅供查看。选择对应目标后才能编辑，搜索不会切换目标或修改草稿。"));
+        }
         let sync_now = Button::new("sync-now")
             .icon_action(
                 gpui_kit::assets::IconName::RefreshCw,
@@ -401,12 +415,13 @@ impl Render for SyncPanel {
         } else {
             sync_now.into_any_element()
         };
-        panel.child(row().child(studyapp_ui::settings_switch::SettingSwitch::new("auto-sync").default_value(false).label("自动同步").checked(self.automatic).disabled(busy)
+        panel.child(column().child(studyapp_ui::settings_switch::SettingSwitch::new("auto-sync").default_value(false).label("自动同步").checked(self.automatic).disabled(busy)
             .on_click(cx.listener(|this, checked, _, cx| {
                 if this.editing_locked || this.status.busy { return; }
                 this.automatic = *checked; cx.notify();
             })))
-            .child(form::NumericSetting::new("auto-sync-interval", &self.interval, "分钟", 30, 5, 1440, busy || !self.automatic)))
+            .child(form::settings_row("自动同步间隔", form::NumericSetting::new("auto-sync-interval", &self.interval, "分钟", 30, 5, 1440, busy || !self.automatic)))
+            .children((!self.automatic).then(|| muted("启用自动同步后才能调整间隔；当前间隔草稿保留。"))))
             .child(row().child(Button::new("test-sync").action("测试连接").disabled(busy || unsaved || matches!(self.status.settings.target, SyncTarget::Disabled)).on_click(cx.listener(|this, _, _, cx| this.start(true, cx))))
                 .child(sync_now))
             .child(muted(if unsaved { "同步设置有未保存的修改，请先保存。" } else { "使用已保存的同步设置" }))
@@ -424,6 +439,43 @@ mod feedback_tests {
     use crate::sync_runtime::SyncStatus;
     use gpui_kit::TestAppContext;
     use std::sync::mpsc;
+
+    #[gpui_kit::test]
+    fn search_reveal_keeps_inactive_target_fields_disabled_and_preserves_raw_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt;
+        cx.update(gpui_kit::init);
+        let (sender, _receiver) = mpsc::channel();
+        let (panel, visual) = cx.add_window_view(|window, cx| SyncPanel::new(sender, window, cx));
+        visual.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.folder.update(cx, |input, cx| {
+                    input.set_value("preserved-folder", window, cx)
+                });
+                panel.url.update(cx, |input, cx| {
+                    input.set_value("https://dav.invalid/", window, cx)
+                });
+                panel.search_reveal = true;
+                assert!(!panel.has_unsaved_changes(cx));
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("sync-url-field").is_some());
+            assert!(window.try_find("sync-directory-detail").is_some());
+            window.click("reset-sync-folder", cx);
+            panel.update(cx, |panel, cx| {
+                assert_eq!(panel.target, 0);
+                assert_eq!(panel.folder.read(cx).value(), "preserved-folder");
+                assert_eq!(panel.url.read(cx).value(), "https://dav.invalid/");
+                assert!(!panel.has_unsaved_changes(cx));
+                assert!(panel.password.read(cx).value().is_empty());
+            });
+        });
+    }
 
     #[gpui_kit::test]
     fn stopped_worker_emits_one_floating_error_instead_of_inline_state(cx: &mut TestAppContext) {

@@ -789,7 +789,7 @@ impl StudyApp {
                 })),
             );
         }
-        view = view.child(presets);
+        let mut fields = column().gap_2().child(presets);
         for field in style.configurable_fields().iter().copied() {
             let stored = *field.patch(&mut patch);
             let checked = stored.unwrap_or_else(|| field.get(&defaults));
@@ -835,7 +835,7 @@ impl StudyApp {
                     }
                 )))
             };
-            view = view.child(
+            fields = fields.child(
                 control
                     .relative()
                     .child(studyapp_ui::settings_anchor::probe(format!(
@@ -871,6 +871,6 @@ impl StudyApp {
                     ),
             );
         }
-        view
+        view.child(form::checkbox_group("场景内容字段", fields))
     }
 }

@@ -8,6 +8,7 @@ pub struct SettingResult {
     component: Option<studyapp_core::NoticeStyle>,
     category: Option<studyapp_core::NoticeCategory>,
     scenario_field: Option<studyapp_core::NoticeField>,
+    list_level: Option<usize>,
     pub section: SettingsSection,
     pub label: &'static str,
     pub keywords: &'static str,
@@ -25,6 +26,7 @@ impl SettingResult {
             component: None,
             category: None,
             scenario_field: None,
+            list_level: None,
             section,
             label,
             keywords,
@@ -45,6 +47,27 @@ impl SettingResult {
     fn owned_anchor(mut self, anchor: String) -> Self {
         self.anchor = Some(std::borrow::Cow::Owned(anchor));
         self
+    }
+    fn reveals_image_cloud(&self) -> bool {
+        self.target_id() == "storage.images"
+            && matches!(
+                self.label,
+                "云端服务"
+                    | "寻址方式"
+                    | "Endpoint"
+                    | "Bucket"
+                    | "Region"
+                    | "Access Key ID"
+                    | "对象前缀"
+                    | "图片云端凭据"
+            )
+    }
+    fn reveals_sync_details(&self) -> bool {
+        self.target_id() == "sync"
+            && matches!(
+                self.label,
+                "同步文件夹" | "WebDAV 地址" | "账户" | "凭据" | "同步凭据"
+            )
     }
     fn target_id(&self) -> String {
         if let Some(target) = self.target {
@@ -397,6 +420,12 @@ impl StudyApp {
                             .disabled(self.preferences_ui.busy)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.select_settings_target(&result.target_id(), cx);
+                                this.preferences_ui.image_cloud_search_reveal =
+                                    result.reveals_image_cloud();
+                                this.sync_panel.update(cx, |panel, cx| {
+                                    panel.search_reveal = result.reveals_sync_details();
+                                    cx.notify();
+                                });
                                 if result.section == SettingsSection::Shortcuts
                                     && let Some(input) = &this.preferences_ui.shortcut_search
                                 {
@@ -425,6 +454,9 @@ impl StudyApp {
                                         });
                                 if result.target_id() == "appearance.selection" {
                                     this.preferences_ui.selection_target = None;
+                                }
+                                if let Some(level) = result.list_level {
+                                    this.preferences_ui.list_levels_page = level / 4;
                                 }
                                 this.preferences_ui.appearance_group = result.markdown_group;
                                 let scroll = match this.preferences_ui.section {
@@ -545,7 +577,20 @@ fn extra_settings() -> Vec<SettingResult> {
     ]
     .into_iter()
     .map(|(section, target, label, keywords)| {
-        SettingResult::new(section, label, keywords).target(target, 0)
+        let entry = SettingResult::new(section, label, keywords).target(target, 0);
+        match label {
+            "快照模式" => entry.anchor("保存方式"),
+            "扫描变化与选择保存快照" => entry.anchor("笔记快照"),
+            "全局与分类选中样式" => entry.anchor("选中项与未选中项"),
+            "计时小组件" => entry.anchor("布局与显示"),
+            "通知分区与堆叠" => entry.anchor("分区与堆叠"),
+            "免打扰时间" => entry.anchor("启用定时免打扰"),
+            "提示动效与默认外观" => entry.anchor("通知外观"),
+            "图片云端凭据" => entry.anchor("图片云端凭据"),
+            "同步凭据" => entry.anchor("凭据"),
+            "资料库备份与迁移" => entry.anchor("资料库位置"),
+            _ => entry,
+        }
     })
     .collect();
     entries.extend(studyapp_core::NoticeStyle::ALL.into_iter().map(|style| {
@@ -822,6 +867,12 @@ fn field_settings() -> Vec<SettingResult> {
             "表格 源文 左对齐 居中 右对齐",
             0,
         ),
+        (
+            "appearance.theme",
+            "内置主题",
+            "主题 预设 暖纸 松林 晴海 雾紫 深海 石墨",
+            0,
+        ),
         ("appearance.theme", "主题名称", "自定义 主题 命名", 0),
         ("appearance.theme", "强调色", "主题 颜色 RGBA", 0),
         ("appearance.theme", "窗口背景", "主题 颜色 RGBA", 0),
@@ -962,6 +1013,11 @@ fn field_settings() -> Vec<SettingResult> {
         );
     }
     fields.push(
+        SettingResult::new(S::Sync, "自动同步间隔", "自动同步 分钟 周期 时间 定时")
+            .target("sync", 0)
+            .anchor("自动同步间隔"),
+    );
+    fields.push(
         SettingResult::new(S::Sync, "同步目标", "关闭 文件夹 NAS WebDAV 同步目标")
             .target("sync", 0)
             .anchor("同步目标"),
@@ -986,6 +1042,39 @@ fn field_settings() -> Vec<SettingResult> {
             entry.component = Some(style);
             fields.push(entry);
         }
+    }
+    fields.push(
+        SettingResult::new(
+            S::Appearance,
+            "标记预设",
+            "多级 无序 列表 几何 经典 菱形 箭头 简约 默认",
+        )
+        .target("appearance.overview", 0)
+        .anchor("标记预设"),
+    );
+    for (level, label) in [
+        "第 1 级",
+        "第 2 级",
+        "第 3 级",
+        "第 4 级",
+        "第 5 级",
+        "第 6 级",
+        "第 7 级",
+        "第 8 级",
+    ]
+    .into_iter()
+    .enumerate()
+    .take(studyapp_core::LIST_LEVELS)
+    {
+        let mut entry = SettingResult::new(
+            S::Appearance,
+            label,
+            "多级 无序 列表 层级 标记 继承 预设 自定义",
+        )
+        .target("appearance.overview", 0)
+        .anchor(label);
+        entry.list_level = Some(level);
+        fields.push(entry);
     }
     for style in studyapp_core::NoticeStyle::ALL {
         for field in style.configurable_fields() {
@@ -1183,6 +1272,66 @@ mod tests {
                     .any(|entry| entry.target_id() == "shortcuts"
                         && entry.row == index
                         && entry.anchor.as_deref() == Some(action.label))
+            );
+        }
+    }
+
+    #[test]
+    fn list_marker_search_preserves_the_exact_paginated_level() {
+        let entries = search("列表 层级");
+        for level in 0..studyapp_core::LIST_LEVELS {
+            let entry = entries
+                .iter()
+                .find(|entry| entry.list_level == Some(level))
+                .unwrap();
+            assert_eq!(entry.target_id(), "appearance.overview");
+            assert_eq!(entry.row, 0);
+            assert_eq!(
+                entry.anchor.as_deref(),
+                Some(format!("第 {} 级", level + 1).as_str())
+            );
+        }
+        assert!(
+            search("标记预设")
+                .iter()
+                .any(|entry| entry.anchor.as_deref() == Some("标记预设"))
+        );
+    }
+
+    #[test]
+    fn conditional_image_field_results_only_request_display_not_configuration_changes() {
+        for label in [
+            "Endpoint",
+            "Bucket",
+            "Region",
+            "云端服务",
+            "寻址方式",
+            "图片云端凭据",
+        ] {
+            assert!(
+                search(label)
+                    .iter()
+                    .any(|entry| entry.label == label && entry.reveals_image_cloud())
+            );
+        }
+        for label in ["同步文件夹", "WebDAV 地址", "账户", "凭据", "同步凭据"] {
+            assert!(
+                search(label)
+                    .iter()
+                    .any(|entry| entry.label == label && entry.reveals_sync_details())
+            );
+        }
+        assert!(
+            search("同步凭据")
+                .iter()
+                .any(|entry| entry.label == "同步凭据" && entry.anchor.as_deref() == Some("凭据"))
+        );
+        for label in ["本地图片", "保存方式"] {
+            assert!(
+                search(label)
+                    .iter()
+                    .filter(|entry| entry.label == label)
+                    .all(|entry| !entry.reveals_image_cloud())
             );
         }
     }

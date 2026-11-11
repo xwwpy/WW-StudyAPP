@@ -309,6 +309,7 @@ pub struct PreferencesUi {
     pub appearance_group: u8,
     pub image_root: Option<Entity<InputState>>,
     pub image_cloud: Option<crate::image_cloud::ImageCloudDraft>,
+    pub(crate) image_cloud_search_reveal: bool,
     pub busy: bool,
     pub replacing: bool,
     pub leave: Option<SettingsContinuation>,
@@ -2560,7 +2561,11 @@ impl StudyApp {
                             div()
                                 .py_2()
                                 .track_focus(&owner.preferences_ui.appearance_focus[part])
-                                .child(owner.appearance_part(part, cx))
+                                .child(owner.appearance_part(
+                                    part,
+                                    (available.width - px(32.)).max(px(0.)),
+                                    cx,
+                                ))
                         })
                         .into_any_element()
                 },
@@ -2580,11 +2585,13 @@ impl StudyApp {
                         .min_h_0()
                         .gap_0()
                         .px_4()
-                        .children(
-                            parts
-                                .iter()
-                                .map(|&part| div().py_2().child(self.appearance_part(part, cx))),
-                        ),
+                        .children(parts.iter().map(|&part| {
+                            div().py_2().child(self.appearance_part(
+                                part,
+                                (available.width - px(32.)).max(px(0.)),
+                                cx,
+                            ))
+                        })),
                 )
         } else {
             parameters
@@ -2656,7 +2663,7 @@ impl StudyApp {
         )
     }
 
-    fn appearance_part(&self, part: usize, cx: &mut Context<Self>) -> Div {
+    fn appearance_part(&self, part: usize, width: Pixels, cx: &mut Context<Self>) -> Div {
         #[cfg(feature = "ui-test")]
         {
             self.preferences_ui
@@ -2677,8 +2684,8 @@ impl StudyApp {
         };
         let appearance = &draft.appearance;
         if part == 0 {
-            return column().gap_3().child(
-                form::section("主题与阅读")
+            return form::card_grid(width).child(
+                form::section("主题与阅读").id("appearance-general-card").test_support()
                     .child(
                         studyapp_ui::settings_switch::SettingSwitch::new("markdown-render-html").default_value(true)
                             .label("渲染 Markdown 中的安全 HTML 与行内样式")
@@ -2695,7 +2702,8 @@ impl StudyApp {
                     .child(muted("仅支持安全排版，不执行脚本或加载 HTML 资源。关闭后显示原文；围栏中的 HTML 始终为代码。"))
                     .child(form::settings_row("界面主题", form::choice_with_default(
                         "theme-mode", (appearance.mode, ThemeMode::System),
-                        vec![(ThemeMode::System, "跟随系统".into()), (ThemeMode::Light, "浅色".into()), (ThemeMode::Dark, "深色".into())],
+                        [(ThemeMode::System, "跟随系统".into()), (ThemeMode::Light, "浅色".into()), (ThemeMode::Dark, "深色".into())]
+                            .into_iter().chain((appearance.mode == ThemeMode::Custom || appearance.active_palette().is_some()).then_some((ThemeMode::Custom, "自定义主题".into()))).collect(),
                         busy, cx.weak_entity(), |this, mode, window, cx| {
                             if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.mode = mode; }
                             this.refresh_appearance(window, cx); cx.notify();
@@ -2705,7 +2713,7 @@ impl StudyApp {
                         |this, value| { if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.font_size = value as u16; } }, cx))
                     .child(self.setting_number("appearance-spacing".into(), "内容间距", "px", (appearance.spacing.into(), 8, 4, 16, busy),
                         |this, value| { if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.spacing = value as u16; } }, cx))
-                    .child(heading("Markdown 表格默认显示"))
+            ).child(form::section("Markdown 表格默认显示").id("appearance-table-card").test_support()
                     .child(form::settings_row("列宽", form::choice_with_default(
                         "table-default", (appearance.table_defaults.sizing, studyapp_core::TableDefaults::default().sizing),
                         vec![(studyapp_core::TableSizing::Equal, "等宽".into()), (studyapp_core::TableSizing::Adaptive, "按内容自适应".into())],
@@ -2725,7 +2733,7 @@ impl StudyApp {
                     )))
                     .child(muted("适用于所有主题；正文中可为单张表格调整列宽与对齐，恢复默认后重新跟随此处。不会改写 Markdown。"))
                     .child(muted("修改可即时预览；保存全部设置后才会写入资料库。")),
-            ).child(self.list_style_settings(cx));
+            ).child(div().col_span_full().id("appearance-list-card").test_support().child(self.list_style_settings(cx)));
         }
         if part == 1 {
             let mut custom = card().gap_3().child(
@@ -2768,46 +2776,59 @@ impl StudyApp {
             ));
             custom = custom.child(self.inline_reading_preview(cx));
             let mut presets = column().gap_3().child(heading("主题预设"));
-            let mut builtins = row().flex_wrap();
-            for preset in studyapp_core::builtin_theme_presets() {
-                let id = preset.id.clone();
-                builtins = builtins.child(
-                    Button::new(SharedString::from(format!("builtin-theme-{id}")))
-                        .small()
-                        .label(preset.name.clone())
-                        .disabled(busy)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            if this.preferences_ui.appearance_touched
-                                && !this.stage_custom_appearance(cx)
+            let builtins = form::settings_row(
+                "内置主题",
+                form::choice(
+                    "builtin-theme-preset",
+                    appearance.active_preset.clone().unwrap_or_default(),
+                    studyapp_core::builtin_theme_presets()
+                        .into_iter()
+                        .map(|preset| (preset.id, preset.name))
+                        .collect(),
+                    busy,
+                    cx.weak_entity(),
+                    |this, id, window, cx| {
+                        if this.preferences_ui.busy
+                            || this.preferences_ui.replacing
+                            || this.storage_busy
+                        {
+                            return;
+                        }
+                        let Some(preset) = studyapp_core::builtin_theme_presets()
+                            .into_iter()
+                            .find(|preset| preset.id == id)
+                        else {
+                            return;
+                        };
+                        if this.preferences_ui.appearance_touched
+                            && !this.stage_custom_appearance(cx)
+                        {
+                            return;
+                        }
+                        let settings = if let Some(draft) = &mut this.preferences_ui.draft {
+                            if let Err(error) =
+                                select_custom_preset(&mut draft.appearance, Some(preset), &id)
                             {
+                                this.preferences_ui.error = Some(error.to_string());
+                                this.settings_validation_notice(error.to_string(), cx);
+                                cx.notify();
                                 return;
                             }
-                            let settings = if let Some(draft) = &mut this.preferences_ui.draft {
-                                if let Err(error) = select_custom_preset(
-                                    &mut draft.appearance,
-                                    Some(preset.clone()),
-                                    &id,
-                                ) {
-                                    this.preferences_ui.error = Some(error.to_string());
-                                    this.settings_validation_notice(error.to_string(), cx);
-                                    cx.notify();
-                                    return;
-                                }
-                                Some(draft.appearance.clone())
-                            } else {
-                                None
-                            };
-                            if let Some(settings) = settings {
-                                this.fill_appearance_fields(&settings, window, cx);
-                            }
-                            this.refresh_appearance(window, cx);
-                            cx.notify();
-                        })),
-                );
-            }
+                            Some(draft.appearance.clone())
+                        } else {
+                            None
+                        };
+                        if let Some(settings) = settings {
+                            this.fill_appearance_fields(&settings, window, cx);
+                        }
+                        this.refresh_appearance(window, cx);
+                        cx.notify();
+                    },
+                ),
+            );
             presets = presets
                 .child(builtins)
-                .child(muted("点击应用后可继续自定义；保存全部设置后生效。"));
+                .child(muted("从菜单选择后可继续自定义；保存全部设置后生效。"));
             for preset in &appearance.custom_presets {
                 let id = preset.id.clone();
                 let delete_id = id.clone();
@@ -3097,7 +3118,9 @@ impl StudyApp {
         panel = panel.child(muted(
             "留空使用当前资料库 images 目录。选择目录只修改草稿，不迁移或删除已有图片。",
         ));
-        if draft.images.storage != ImageStorage::Local
+        let cloud_enabled = draft.images.storage != ImageStorage::Local;
+        let reveal_cloud = self.preferences_ui.image_cloud_search_reveal;
+        if (cloud_enabled || reveal_cloud)
             && let Some(cloud) = &self.preferences_ui.image_cloud
         {
             panel = panel
@@ -3111,7 +3134,7 @@ impl StudyApp {
                             (0u8, "通用对象存储（S3 兼容）".into()),
                             (1u8, "复用笔记同步（WebDAV / NAS）".into()),
                         ],
-                        busy,
+                        busy || !cloud_enabled,
                         cx.weak_entity(),
                         |this, kind, _, cx| {
                             if let Some(cloud) = &mut this.preferences_ui.image_cloud {
@@ -3121,7 +3144,14 @@ impl StudyApp {
                         },
                     ),
                 ));
-            if cloud.kind == 0 {
+            if !cloud_enabled {
+                panel = panel.child(muted("当前使用本地图片存储。搜索仅展开相关字段，未改变保存方式；选择云端或本地与云端后才能编辑云端配置。"));
+            }
+            if cloud.kind == 0 || reveal_cloud {
+                let s3_disabled = busy || !cloud_enabled || cloud.kind != 0;
+                if cloud.kind != 0 {
+                    panel = panel.child(muted("以下为 S3 专用字段；当前服务不是 S3，因此仅供查看。搜索不会切换服务或修改草稿。"));
+                }
                 panel = panel.child(muted("兼容协议：S3 · AWS Signature V4。请填写服务商的 S3 兼容入口，不是控制台登录地址。"));
                 for (key, label) in [
                     ("endpoint", "Endpoint"),
@@ -3136,20 +3166,21 @@ impl StudyApp {
                             .id(SharedString::from(format!("image-cloud-field-{key}")))
                             .test_support()
                             .min_w_0()
-                            .child(form::input(&cloud.fields[key], busy)),
+                            .child(form::input(&cloud.fields[key], s3_disabled)),
                     ));
                 }
                 panel = panel.child(form::settings_row("寻址方式", form::choice_with_default(
                     "image-addressing", (cloud.addressing, studyapp_core::media_settings::ObjectAddressing::default()),
                     vec![(studyapp_core::media_settings::ObjectAddressing::VirtualHosted, "虚拟主机".into()), (studyapp_core::media_settings::ObjectAddressing::Path, "路径".into())],
-                    busy, cx.weak_entity(), |this, style, _, cx| {
+                    s3_disabled, cx.weak_entity(), |this, style, _, cx| {
                         if let Some(cloud) = &mut this.preferences_ui.image_cloud { cloud.addressing = style; }
                         cx.notify();
                     },
                 )))
                     .child(muted("虚拟主机：bucket.endpoint/key；路径：endpoint/bucket/key。不同服务的兼容范围与要求不同，请按服务商文档选择。"))
-                    .child({ cloud.credential.update(cx, |secret, cx| secret.configure(cloud.secret_saved, busy, cx)); cloud.credential.clone() });
-            } else {
+                    .child(form::settings_row("图片云端凭据", { cloud.credential.update(cx, |secret, cx| secret.configure(cloud.secret_saved, s3_disabled, cx)); cloud.credential.clone() }));
+            }
+            if cloud.kind != 0 {
                 let target = match &self.sync_panel.read(cx).status.settings.target {
                     crate::sync_runtime::SyncTarget::Disabled => {
                         "笔记同步尚未配置；请先在同步分类配置 WebDAV 或文件夹 / NAS".to_owned()
@@ -3172,7 +3203,7 @@ impl StudyApp {
                 );
             }
             let dirty = self.settings_dirty(cx);
-            let running = busy || self.image_cloud_busy;
+            let running = busy || self.image_cloud_busy || !cloud_enabled;
             panel = panel
                 .child(
                     row()
@@ -3215,7 +3246,9 @@ impl StudyApp {
                                 })),
                         ),
                 )
-                .child(muted(if dirty {
+                .child(muted(if !cloud_enabled {
+                    "云端动作未启用；请先选择并保存云端存储方式。"
+                } else if dirty {
                     "请先保存全部设置，再测试连接或上传已有图片。"
                 } else if self.image_cloud_busy {
                     "正在处理图片云端任务…"
@@ -4231,10 +4264,113 @@ mod scoped_tests {
         app: Entity<StudyApp>,
     }
     impl Render for HtmlPreferenceFixture {
-        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            self.app.update(cx, |app, cx| app.appearance_part(0, cx))
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                app.appearance_part(0, window.viewport_size().width, cx)
+            })
         }
     }
+    #[gpui_kit::test]
+    fn ordinary_appearance_cards_wrap_at_the_content_width_without_losing_raw_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1100.), gpui_kit::px(1800.)));
+        visual.replace_root_view(|_, _| HtmlPreferenceFixture { app: app.clone() });
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let general = window.find("appearance-general-card").bounds();
+            let table = window.find("appearance-table-card").bounds();
+            let list = window.find("appearance-list-card").bounds();
+            assert_eq!(general.origin.y, table.origin.y);
+            assert!(table.origin.x > general.origin.x);
+            assert!(list.size.width > general.size.width);
+            let input = app.read(cx).preferences_ui.number_fields.borrow()["appearance-font-size"]
+                .input
+                .clone();
+            input.update(cx, |input, cx| input.set_value("-", window, cx));
+        });
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(700.), gpui_kit::px(1800.)));
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let general = window.find("appearance-general-card").bounds();
+            let table = window.find("appearance-table-card").bounds();
+            assert!(table.origin.y > general.origin.y);
+            assert_eq!(general.origin.x, table.origin.x);
+            assert_eq!(
+                app.read(cx).preferences_ui.number_fields.borrow()["appearance-font-size"]
+                    .input
+                    .read(cx)
+                    .value(),
+                "-"
+            );
+        });
+    }
+
+    struct ImageSearchFixture {
+        app: Entity<StudyApp>,
+    }
+    impl Render for ImageSearchFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                if app.preferences_ui.settings_search_open {
+                    app.settings_search_results(cx)
+                } else {
+                    app.image_settings_controls(cx)
+                }
+            })
+        }
+    }
+    #[gpui_kit::test]
+    fn searching_hidden_cloud_fields_reveals_disabled_controls_without_changing_the_draft(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1100.), gpui_kit::px(1800.)));
+        let (images, kind, dirty) = visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let before = (
+                    app.preferences_ui.draft.as_ref().unwrap().images.clone(),
+                    app.preferences_ui.image_cloud.as_ref().unwrap().kind,
+                    app.settings_dirty(cx),
+                );
+                app.preferences_ui
+                    .search
+                    .as_ref()
+                    .unwrap()
+                    .update(cx, |input, cx| input.set_value("Endpoint", window, cx));
+                app.preferences_ui.settings_search_open = true;
+                cx.notify();
+                before
+            })
+        });
+        visual.replace_root_view(|_, _| ImageSearchFixture { app: app.clone() });
+        let index = crate::settings_search::search("Endpoint")
+            .iter()
+            .position(|entry| entry.label == "Endpoint")
+            .unwrap();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click(("settings-search-result", index), cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.try_find("image-cloud-field-endpoint").is_some());
+            window.click("image-provider", cx);
+            assert!(window.try_find("popup-menu").is_none());
+            app.update(cx, |app, cx| {
+                assert_eq!(app.preferences_ui.draft.as_ref().unwrap().images, images);
+                assert_eq!(app.preferences_ui.image_cloud.as_ref().unwrap().kind, kind);
+                assert_eq!(app.settings_dirty(cx), dirty);
+                assert!(app.preferences_ui.image_cloud_search_reveal);
+                app.select_settings_target("storage.images", cx);
+                assert!(!app.preferences_ui.image_cloud_search_reveal);
+            });
+        });
+    }
+
     #[gpui_kit::test]
     fn html_preference_is_a_live_discardable_draft_and_reset_preserves_other_pages(
         cx: &mut TestAppContext,
@@ -5759,7 +5895,7 @@ mod scoped_tests {
         visual.replace_root_view(|_, _| ListPreferenceFixture { app: app.clone() });
         visual.update(|window, cx| {
             window.draw(cx).clear(cx);
-            window.click(("list-preset", 1usize), cx);
+            studyapp_ui::settings_components::select_choice(window, "list-preset", 1, cx);
             app.update(cx, |app, cx| {
                 assert_eq!(
                     app.preferences_ui
@@ -5815,6 +5951,131 @@ mod scoped_tests {
             });
         });
     }
+    #[gpui_kit::test]
+    fn list_marker_inheritance_survives_pagination_and_resets_without_touching_editor_rules(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(1600.)));
+        app.update(visual, |app, cx| {
+            let draft = app.preferences_ui.draft.as_mut().unwrap();
+            draft.appearance.list_style.indent_subtree = true;
+            draft.notifications.do_not_disturb = true;
+            cx.notify();
+        });
+        visual.replace_root_view(|_, _| ListPreferenceFixture { app: app.clone() });
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(
+                app.read(cx)
+                    .preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .appearance
+                    .list_style
+                    .levels
+                    .iter()
+                    .all(Option::is_none)
+            );
+            window.click(
+                (
+                    gpui_kit::ElementId::from(("list-level", 0usize)),
+                    "customize",
+                ),
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let style = app
+                .read(cx)
+                .preferences_ui
+                .draft
+                .as_ref()
+                .unwrap()
+                .appearance
+                .list_style;
+            assert_eq!(style.levels[0], Some(style.preset.markers()[0]));
+            window.click("list-levels-next", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click(
+                (
+                    gpui_kit::ElementId::from(("list-level", 4usize)),
+                    "customize",
+                ),
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let style = app
+                .read(cx)
+                .preferences_ui
+                .draft
+                .as_ref()
+                .unwrap()
+                .appearance
+                .list_style;
+            assert_eq!(style.levels[4], Some(style.preset.markers()[4]));
+            window.click("list-levels-previous", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click(
+                (gpui_kit::ElementId::from(("list-level", 0usize)), "inherit"),
+                cx,
+            );
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let style = app
+                .read(cx)
+                .preferences_ui
+                .draft
+                .as_ref()
+                .unwrap()
+                .appearance
+                .list_style;
+            assert_eq!(style.levels[0], None);
+            assert_eq!(style.levels[4], Some(style.preset.markers()[4]));
+            window.click("list-preset-reset", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let app = app.read(cx);
+            let draft = app.preferences_ui.draft.as_ref().unwrap();
+            assert!(
+                draft
+                    .appearance
+                    .list_style
+                    .levels
+                    .iter()
+                    .all(Option::is_none)
+            );
+            assert!(draft.appearance.list_style.indent_subtree);
+            assert!(draft.notifications.do_not_disturb);
+            assert_eq!(
+                app.preferences_ui
+                    .saved
+                    .as_ref()
+                    .unwrap()
+                    .settings
+                    .appearance
+                    .list_style,
+                studyapp_core::ListStyle::default()
+            );
+        });
+    }
+
     struct TypedControlFixture {
         app: Entity<StudyApp>,
         selection: bool,

@@ -135,38 +135,32 @@ impl StudyApp {
                 .get(&category)
                 .cloned()
                 .unwrap_or_default();
-            view = view.child(form::settings_row(
+            view = view.child(studyapp_ui::settings_switch::inherited_switch(
+                "selection-indicator-override",
                 "选中标记",
-                form::choice(
-                    "selection-indicator-override",
-                    patch.indicator,
-                    vec![
-                        (
-                            None,
-                            format!(
-                                "继承全局：{}",
-                                if style.indicator { "显示" } else { "隐藏" }
-                            ),
-                        ),
-                        (Some(true), "自定义：显示".into()),
-                        (Some(false), "自定义：隐藏".into()),
-                    ],
-                    busy,
-                    cx.weak_entity(),
-                    move |this, value, window, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            draft
-                                .appearance
-                                .selection
-                                .categories
-                                .entry(category)
-                                .or_default()
-                                .indicator = value;
-                        }
-                        this.refresh_appearance(window, cx);
-                        cx.notify();
-                    },
+                patch.indicator,
+                (
+                    global.indicator,
+                    format!(
+                        "继承全局 · 当前有效值：{}",
+                        if global.indicator { "显示" } else { "隐藏" }
+                    ),
                 ),
+                busy,
+                cx.weak_entity(),
+                move |this, value, window, cx| {
+                    if let Some(draft) = &mut this.preferences_ui.draft {
+                        draft
+                            .appearance
+                            .selection
+                            .categories
+                            .entry(category)
+                            .or_default()
+                            .indicator = value;
+                    }
+                    this.refresh_appearance(window, cx);
+                    cx.notify();
+                },
             ));
             if let Some(radius) = patch.radius {
                 view = view.child(self.setting_number(
@@ -351,7 +345,7 @@ impl StudyApp {
                             })),
                     );
                 }
-                view = view.child(form::field(label, content));
+                view = view.child(form::settings_row(label, content));
             }
         }
         view
