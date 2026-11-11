@@ -845,3 +845,31 @@ mod viewport_tests {
         assert!(!usable_viewport(&state, CaptureScope::Editor));
     }
 }
+
+/// Real wheels only in the isolated GitHub Windows desktop.
+pub(crate) async fn wheel(
+    window: AnyWindowHandle,
+    editor: &Entity<MarkdownEditor>,
+    delta: i32,
+    cx: &mut AsyncApp,
+) {
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let state = visible(window, editor, cx).await;
+    let bounds = &state["bounds"];
+    let x = bounds["x"].as_i64().unwrap() as i32 + bounds["width"].as_i64().unwrap() as i32 * 3 / 4;
+    let y = bounds["y"].as_i64().unwrap() as i32 + bounds["height"].as_i64().unwrap() as i32 / 2;
+    unsafe { SetCursorPos(x, y).unwrap() };
+    send(
+        &state,
+        &[INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    mouseData: delta as u32,
+                    dwFlags: MOUSEEVENTF_WHEEL,
+                    ..Default::default()
+                },
+            },
+        }],
+    );
+}

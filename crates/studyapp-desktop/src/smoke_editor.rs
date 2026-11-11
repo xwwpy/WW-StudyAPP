@@ -724,6 +724,8 @@ pub async fn exercise(
         }
         assert!(attempt < 399, "native WebView initialization timed out");
     }
+    #[cfg(windows)]
+    exercise_long_code_scroll(window, &editor, database, cx).await;
     let first = "# 连续编辑测试\n\n第一次保存，**加粗知识点**与中文 🧠。\n\n```rust\nfn main() { println!(\"StudyApp\"); }\n```\n";
     bridge(
         window,
@@ -1965,5 +1967,82 @@ pub async fn original_documents(
     assert_eq!(std::fs::read(pdf).unwrap(), pdf_bytes);
     assert_eq!(std::fs::read(docx).unwrap(), docx_bytes);
     std::fs::write(database.with_file_name("native-documents-result.txt"),"PASS: real PDF/DOCX import, native IPC rasterization, rotated page metadata, styled DOCX pagination, zoom, repeated switching, readonly state, Markdown restoration and exact original source bytes.
+").unwrap();
+}
+
+#[cfg(windows)]
+async fn exercise_long_code_scroll(
+    window: AnyWindowHandle,
+    editor: &Entity<MarkdownEditor>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let mut text = String::new();
+    for block in 0..24 {
+        text.push_str(&format!(
+            "## Code {block}
+
+```cpp
+"
+        ));
+        for line in 0..90 {
+            text.push_str(&format!(
+                "  std::string value_{line} = \"中文 {block}\"; // line
+"
+            ));
+        }
+        text.push_str(
+            "```
+
+after code
+
+",
+        );
+    }
+    window
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.set_value_with_readonly(text.clone(), true, window, cx)
+            })
+        })
+        .unwrap();
+    for (index, delta) in [-960, -1440, -1680, 720, 1200, -960]
+        .into_iter()
+        .enumerate()
+    {
+        crate::smoke_visibility::wheel(window, editor, delta, cx).await;
+        for _ in 0..6 {
+            pause(cx).await;
+        }
+        crate::smoke_visibility::capture(
+            window,
+            editor,
+            &database.with_file_name(format!("native-code-scroll-{index}.bmp")),
+            cx,
+        )
+        .await;
+        let before = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        for _ in 0..6 {
+            pause(cx).await;
+        }
+        let after = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        assert!(
+            after["scrollTop"].as_f64().unwrap() > 100.,
+            "native wheels did not scroll: {after}"
+        );
+        assert!(
+            (before["scrollTop"].as_f64().unwrap() - after["scrollTop"].as_f64().unwrap()).abs()
+                < 3.,
+            "native preview kept jumping: {before} -> {after}"
+        );
+        assert_eq!(after["text"], text);
+    }
+    window
+        .update(cx, |_, window, cx| {
+            editor.update(cx, |editor, cx| editor.set_value(String::new(), window, cx))
+        })
+        .unwrap();
+    std::fs::write(database.with_file_name("native-code-scroll-result.txt"),"PASS: real bidirectional wheels preserve highlighted native pixels and stable scroll positions.
 ").unwrap();
 }

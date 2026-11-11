@@ -734,6 +734,20 @@ impl Document {
                 Event::TaskListMarker(checked) => {
                     Event::Text(if checked { "☑ " } else { "☐ " }.into())
                 }
+                Event::Start(Tag::Link { .. }) if theme.is_some() => {
+                    // Preserve link appearance as an inert styled span. The
+                    // native safe tree deliberately has no navigation targets.
+                    Event::InlineHtml(
+                        format!(
+                            "<span style='color:{};text-decoration:underline'>",
+                            theme.unwrap().markdown_rgba[2].to_hex()
+                        )
+                        .into(),
+                    )
+                }
+                Event::End(pulldown_cmark::TagEnd::Link) if theme.is_some() => {
+                    Event::InlineHtml("</span>".into())
+                }
                 _ => event,
             }),
         );

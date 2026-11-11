@@ -364,3 +364,53 @@ mod code_control_tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "ui-test"))]
+mod selection_guard_tests {
+    use super::*;
+    use gpui_kit::{base::Root, test::TestWindowExt};
+    struct Fixture;
+    impl Render for Fixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .p_4()
+                .w(px(500.))
+                .child(summary(
+                    "guard-selection",
+                    "Selectable words across a paragraph\n\nAnother paragraph below",
+                ))
+                .child(selection_gesture_guard())
+        }
+    }
+    #[gpui_kit::test]
+    fn hover_without_left_button_ends_a_lost_release_without_clearing_selection(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        let (_, visual) = cx.add_window_view(|window, cx| {
+            let fixture = cx.new(|_| Fixture);
+            Root::new(fixture, window, cx)
+        });
+        visual.update(|window, cx| window.render_frame(cx));
+        visual.simulate_mouse_down(
+            point(px(18.), px(24.)),
+            MouseButton::Left,
+            Default::default(),
+        );
+        visual.simulate_mouse_move(
+            point(px(120.), px(24.)),
+            Some(MouseButton::Left),
+            Default::default(),
+        );
+        visual.update(|window, cx| window.render_frame(cx));
+        let before = visual.update(TextSelection::selected_text);
+        assert!(!before.is_empty());
+        // Intentionally omit mouseup: it occurred outside the native window.
+        visual.simulate_mouse_move(point(px(300.), px(70.)), None, Default::default());
+        visual.update(|window, cx| window.render_frame(cx));
+        assert_eq!(visual.update(TextSelection::selected_text), before);
+    }
+}

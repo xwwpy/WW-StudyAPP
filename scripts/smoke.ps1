@@ -51,6 +51,12 @@ foreach ($nativeImage in @('native-first-reader.bmp', 'native-first-editor.bmp',
         throw "Native screen capture missing or empty: $nativeImage"
     }
 }
+$codeScrollReport = Join-Path $data 'native-code-scroll-result.txt'
+if ((Get-Content -LiteralPath $codeScrollReport -Raw) -notmatch '^PASS:') { throw 'Native Markdown code scrolling did not pass' }
+foreach ($index in 0..5) {
+    $image = Join-Path $data "native-code-scroll-$index.bmp"
+    if (-not (Test-Path -LiteralPath $image) -or (Get-Item -LiteralPath $image).Length -lt 1000) { throw "Native scrolling pixels missing: $image" }
+}
 $closeDraftId = (Get-Content -LiteralPath (Join-Path $data 'native-close-draft-id.txt') -Raw).Trim()
 if ($closeDraftId -cnotmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') { throw 'Close draft identity is invalid' }
 $draft = Get-Content -LiteralPath (Join-Path $data ('drafts/' + $closeDraftId + '.json')) -Raw | ConvertFrom-Json
