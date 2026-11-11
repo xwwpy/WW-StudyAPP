@@ -1086,6 +1086,14 @@ fn field_settings() -> Vec<SettingResult> {
             fields.push(entry);
         }
     }
+    let mut tooltip_position = SettingResult::new(
+        S::Appearance,
+        "说明定位",
+        "Tooltip 控件说明 悬停 定位 跟随鼠标 固定在控件旁 鼠标位置",
+    )
+    .anchor("说明定位");
+    tooltip_position.component = Some(studyapp_core::NoticeStyle::Tooltip);
+    fields.push(tooltip_position);
     fields.push(
         SettingResult::new(
             S::Appearance,
@@ -1383,6 +1391,28 @@ mod tests {
     fn empty_and_unmatched_queries_do_not_create_results() {
         assert!(search(" \t ").is_empty());
         assert!(search("absolutely-not-a-setting").is_empty());
+    }
+    #[test]
+    fn tooltip_position_label_and_descriptions_reveal_the_exact_field() {
+        for query in ["说明定位", "跟随鼠标", "固定在控件旁", "Tooltip 定位"] {
+            let entries = search(query);
+            let entry = entries
+                .iter()
+                .find(|entry| entry.label == "说明定位")
+                .unwrap();
+            assert_eq!(entry.component, Some(studyapp_core::NoticeStyle::Tooltip));
+            assert_eq!(entry.anchor.as_deref(), Some("说明定位"));
+            assert_eq!(
+                entry.target_id(),
+                format!(
+                    "notices.component.{}",
+                    studyapp_core::NoticeStyle::ALL
+                        .iter()
+                        .position(|style| *style == studyapp_core::NoticeStyle::Tooltip)
+                        .unwrap()
+                )
+            );
+        }
     }
     #[test]
     fn density_search_only_targets_components_with_effective_spacing_controls() {

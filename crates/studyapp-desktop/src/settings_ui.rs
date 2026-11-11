@@ -6914,6 +6914,84 @@ mod scoped_tests {
         }
     }
 
+    struct TooltipSearchFixture(Entity<StudyApp>);
+    impl Render for TooltipSearchFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.0.update(cx, |app, cx| {
+                column()
+                    .w(gpui_kit::px(650.))
+                    .child(app.settings_search_results(cx))
+                    .child(app.notice_surface_controls(cx))
+            })
+        }
+    }
+    #[gpui_kit::test]
+    fn tooltip_position_search_navigates_without_editing_then_choice_is_discardable(
+        cx: &mut TestAppContext,
+    ) {
+        use studyapp_core::{NoticeStyle, TooltipPosition};
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(1800.)));
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.preferences_ui.notice_component = Some(NoticeStyle::Bubble);
+                app.preferences_ui
+                    .search
+                    .as_ref()
+                    .unwrap()
+                    .update(cx, |input, cx| input.set_value("说明定位", window, cx));
+            })
+        });
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            TooltipSearchFixture(app.clone())
+        });
+        let index = crate::settings_search::search("说明定位")
+            .iter()
+            .position(|entry| entry.label == "说明定位")
+            .unwrap();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("tooltip-position").is_none());
+            window.click(("settings-search-result", index), cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx).preferences_ui.notice_component,
+                Some(NoticeStyle::Tooltip)
+            );
+            assert!(!app.read(cx).settings_dirty(cx));
+            crate::settings_components::select_choice(window, "tooltip-position", 1, cx);
+            assert_eq!(
+                app.read(cx)
+                    .preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .appearance
+                    .notifications
+                    .tooltip_position,
+                TooltipPosition::BesideControl
+            );
+            assert_eq!(
+                app.read(cx)
+                    .preferences_ui
+                    .saved
+                    .as_ref()
+                    .unwrap()
+                    .settings
+                    .appearance
+                    .notifications
+                    .tooltip_position,
+                TooltipPosition::FollowPointer
+            );
+            app.update(cx, |app, cx| app.discard_settings(window, cx));
+            assert!(!app.read(cx).settings_dirty(cx));
+        });
+    }
+
     struct NoticeFieldsFixture(Entity<StudyApp>);
     impl Render for NoticeFieldsFixture {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
