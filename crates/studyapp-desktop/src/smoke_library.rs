@@ -77,9 +77,20 @@ pub(crate) fn editor_action(
 
 pub(crate) fn library_recovery(window: &mut Window, delete: bool, cx: &mut App) {
     window.click("library-more-menu", cx);
-    for _ in 0..2 + usize::from(delete) {
+    // Snapshot preview precedes recovery; separators do not take keyboard focus.
+    for _ in 0..3 + usize::from(delete) {
         window.press("down", cx);
     }
+    let target = window.within("popup-menu").find(3 + usize::from(delete));
+    assert_eq!(target.selected(), Some(true));
+    assert_eq!(
+        target.label(),
+        Some(if delete {
+            "删除最近草稿…"
+        } else {
+            "恢复最近草稿"
+        })
+    );
     window.press("enter", cx);
 }
 

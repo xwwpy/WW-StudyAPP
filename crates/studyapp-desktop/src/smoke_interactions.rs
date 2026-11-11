@@ -431,7 +431,9 @@ pub(crate) async fn exercise_pointer_bubble(
         .unwrap();
     let positions = [
         point(bounds.center().x, bounds.top() + bounds.size.height * 0.25),
-        point(bounds.center().x, bounds.bottom() - px(12.)),
+        // Embedded previews end well above the window edge. Tooltip flipping
+        // is viewport-relative, not relative to the native child's bottom.
+        point(bounds.center().x, original_size.height - px(12.)),
         point(
             bounds.right() - px(8.),
             bounds.top() + bounds.size.height * 0.25,
@@ -509,21 +511,30 @@ pub(crate) async fn exercise_pointer_bubble(
                     arrow[0].x + px(1.),
                     arrow[1].y + (arrow[0].y - arrow[1].y) * 0.15,
                 );
-                assert!(
-                    bounds.contains(&body_sample)
-                        && bounds.contains(&arrow_sample)
-                        && bounds.contains(&beside)
-                );
+                // Three positions must actually overlap the native child.
+                // The viewport-edge position separately proves flipping even
+                // when the bounded preview does not extend to that edge.
+                if index != 1 {
+                    assert!(
+                        bounds.contains(&body_sample)
+                            && bounds.contains(&arrow_sample)
+                            && bounds.contains(&beside)
+                    );
+                }
+                let viewport = Bounds::new(Point::default(), window.viewport_size());
+                assert!(viewport.contains(&body_sample) && viewport.contains(&arrow_sample));
                 assert_overlay_hit(&native, body_sample, true);
                 assert_overlay_hit(&native, arrow_sample, true);
                 assert!(
                     !raster_arrow_contains(&native, beside),
                     "adjacent sample entered the bounded physical arrow outline"
                 );
-                assert_overlay_hit(&native, beside, false);
+                // Outside the native child's bounds, even unpainted space
+                // belongs to the GPUI parent. Inside it must remain native.
+                assert_overlay_hit(&native, beside, !bounds.contains(&beside));
                 for sample in &restored_samples {
                     if !body.contains(sample) && !raster_arrow_contains(&native, *sample) {
-                        assert_overlay_hit(&native, *sample, false);
+                        assert_overlay_hit(&native, *sample, !bounds.contains(sample));
                     }
                 }
                 restored_samples.extend([body_sample, arrow_sample]);

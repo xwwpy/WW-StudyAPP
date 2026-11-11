@@ -8,8 +8,9 @@ permissions:
 
 jobs:
   editor:
-    # Keep browser system dependencies on a stable, explicitly supported LTS.
-    runs-on: ubuntu-24.04
+    # Use the existing Windows runner/browser environment; keep full browser
+    # installation and the complete headless suite without Ubuntu mirror DNS.
+    runs-on: windows-latest
     timeout-minutes: 15
     defaults:
       run:
