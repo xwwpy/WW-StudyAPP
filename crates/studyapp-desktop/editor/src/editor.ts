@@ -1,3 +1,4 @@
+import { markdownBlockLayout } from "./block-layout";
 import { ReadingPositions } from "./reading-position";
 import { codeBlockFolding } from "./code-blocks";
 import { actionbarUpdates, installActionbar } from "./actionbar";
@@ -320,7 +321,7 @@ function setShortcuts(values: Record<string, string>): void {
 }
 function extensions(readonly: boolean, rawText = ""): Extension[] {
   return [
-    tableHistory, tableUpdates, outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : [codeBlockFolding, renderedMarkdown, htmlRendering]),
+    tableHistory, tableUpdates, outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : [codeBlockFolding, markdownBlockLayout, renderedMarkdown, htmlRendering]),
     themeMode.of([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)]), rawUrlWrapping,
     documentLimits(rawText, warning, clearWarning),
     markdown({ extensions: [listParagraphBoundaries], base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
@@ -418,7 +419,7 @@ function setSource(value: boolean): void {
   hideTableControls();
   source = Boolean(value);
   document.documentElement.dataset.source = String(source);
-  view.dispatch({ effects: renderingMode.reconfigure(source ? [] : [codeBlockFolding, renderedMarkdown, htmlRendering]) });
+  view.dispatch({ effects: renderingMode.reconfigure(source ? [] : [codeBlockFolding, markdownBlockLayout, renderedMarkdown, htmlRendering]) });
   updateToolbar();
 }
 function load(value: Load): void {

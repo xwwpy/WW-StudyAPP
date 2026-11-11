@@ -325,7 +325,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
           const node = cursor.node;
           const parent = node.parent;
           if (/^(ATXHeading|SetextHeading)[1-6]$/.test(name)) {
-            line(from, `md-heading md-heading-${name.at(-1)}`);
+            // Stable line geometry is owned by markdownBlockLayout.
           } else if (name === "StrongEmphasis") {
             mark(from, to, "md-strong");
           } else if (name === "Emphasis") {
@@ -335,9 +335,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
           } else if (name === "InlineCode") {
             mark(from, to, "md-inline-code");
           } else if (name === "Blockquote") {
-            const first = state.doc.lineAt(Math.max(from, visible.from)).number;
-            const last = state.doc.lineAt(Math.min(to, visible.to)).number;
-            for (let i = first; i <= last; i++) line(state.doc.line(i).from, "md-quote");
+            // Quotation geometry is independent of viewport decoration passes.
           } else if (name === "FencedCode" || name === "CodeBlock") {
             const first = state.doc.lineAt(Math.max(from, visible.from)).number;
             const last = state.doc.lineAt(Math.min(to, visible.to)).number;
@@ -354,10 +352,9 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
             for (let i = first; i <= last; i++) {
               const position=state.doc.line(i).from;
               codePrefixes.set(position,structural);
-              line(position,"md-code-line");
+
             }
-            line(from,"md-code-start");
-            line(to,"md-code-end");
+
             if (name === "FencedCode") {
               const opening = state.doc.lineAt(from);
               const fence = node.getChild("CodeMark");
@@ -379,7 +376,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
             hide(from, Math.min(end, to + (state.sliceDoc(to, to + 1) === " " ? 1 : 0)));
           } else if (["EmphasisMark", "StrikethroughMark", "CodeMark"].includes(name) && parent && !active(parent.from, parent.to)) {
             hide(from, to);
-            if (parent.name === "FencedCode") line(from, "md-code-fence");
+
           } else if (name === "CodeInfo" && parent && !active(parent.from, parent.to)) {
             mark(from, to, "md-code-language");
           } else if (name === "ListItem") {

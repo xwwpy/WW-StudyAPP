@@ -3359,6 +3359,26 @@ test("reading position follows each library and note across page reload", async 
   assert.deepEqual(errors,[]); await page.close();
 });
 
+test("long highlighted code remains visible and settles after bidirectional wheel scrolling", async () => {
+  const text=Array.from({length:24},(_,block)=>`## Section ${block}\n\n\`\`\`cpp\n${Array.from({length:90},(_,line)=>`  std::string value_${line} = "block ${block} 中文"; // comment`).join('\n')}\n\`\`\`\n\nafter ${block}\n\n`).join('');
+  const {page, errors}=await setup(text);
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  await page.mouse.move(750,400);
+  for (const delta of [1900,2200,3600,-900,4000,-3200,5000,-6100]) {
+    await page.mouse.wheel(0,delta); await page.waitForTimeout(180);
+    const visible=await page.locator('.cm-scroller').evaluate(node=>{
+      const bounds=node.getBoundingClientRect();
+      return [...node.querySelectorAll('.cm-line')].filter(line=>{
+        const r=line.getBoundingClientRect(); return r.bottom>bounds.top && r.top<bounds.bottom && line.textContent.trim();
+      }).length;
+    });
+    assert.ok(visible>2,`blank viewport after wheel ${delta}: ${visible}`);
+  }
+  const a=await state(page); await page.waitForTimeout(500); const b=await state(page);
+  assert.ok(Math.abs(a.scrollTop-b.scrollTop)<2,`scroll did not settle: ${a.scrollTop} -> ${b.scrollTop}`);
+  assert.deepEqual(errors,[]); await page.close();
+});
+
 test("lost mouse release and non-left hover never extend text selection", async () => {
   const {page, errors}=await setup('first paragraph selectable words\n\nsecond paragraph selectable words\n\nthird paragraph');
   await page.evaluate(()=>window.studyappEditor.setReadonly(true));
