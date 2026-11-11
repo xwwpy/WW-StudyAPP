@@ -67,13 +67,17 @@ pub fn probe(label: impl Into<SharedString>) -> impl IntoElement {
 
 #[cfg(all(test, feature = "ui-test"))]
 mod tests {
-    use super::{SettingScroll, seek};
+    use super::{Requests, SettingScroll, seek};
+    use gpui_kit::component::input::InputState;
+    use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
-        Context, InteractiveElement, IntoElement, ParentElement, Render, ScrollHandle, Styled,
-        TestAppContext, TestSupportExt, Window, div, px,
+        AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, ParentElement,
+        Render, ScrollHandle, Styled, TestAppContext, TestSupportExt, VisualTestContext, Window,
+        div, point, px,
     };
     struct Fixture {
         scroll: ScrollHandle,
+        inputs: Vec<Entity<InputState>>,
         width: f32,
     }
     impl Render for Fixture {
@@ -81,64 +85,100 @@ mod tests {
             crate::components::scroll_body("anchor-fixture", &self.scroll)
                 .w(px(self.width))
                 .h(px(180.))
-                .child(
-                    crate::components::column()
-                        .flex_shrink_0()
-                        .children((0_usize..20).map(|index| {
-                            crate::settings_components::settings_row(
-                                format!("field-{index}"),
-                                div()
-                                    .id(("anchor-value", index))
-                                    .test_support()
-                                    .h(px(42.))
-                                    .child("unchanged"),
-                            )
-                        })),
-                )
+                .child(crate::components::column().flex_shrink_0().children(
+                    self.inputs.iter().enumerate().map(|(index, input)| {
+                        crate::settings_components::settings_row(
+                            format!("field-{index}"),
+                            div()
+                                .id(("anchor-value", index))
+                                .test_support()
+                                .h(px(42.))
+                                .child(crate::settings_components::input(input, false)),
+                        )
+                    }),
+                ))
         }
     }
+
+    fn deliver_frame(visual: &mut VisualTestContext) {
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            // Drawing and parking tasks do not deliver platform animation frames.
+            // Run the callback that seek's probe schedules after its layout pass.
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        visual.run_until_parked();
+    }
+
     #[gpui_kit::test]
     fn locating_a_field_scrolls_without_focusing_or_changing_values(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
-        let (view, visual) = cx.add_window_view(|_, _| Fixture {
+        let (view, visual) = cx.add_window_view(|window, cx| Fixture {
             scroll: ScrollHandle::new(),
+            inputs: (0..20)
+                .map(|index| {
+                    cx.new(|cx| {
+                        InputState::new(window, cx).default_value(format!("unchanged-{index}"))
+                    })
+                })
+                .collect(),
             width: 600.,
         });
-        visual.update(|window, cx| {
-            window.draw(cx).clear(cx);
-        });
-        visual.update(|window, cx| {
-            let scroll = view.read(cx).scroll.clone();
-            assert!(
-                scroll.max_offset().y > px(500.),
-                "fixture must contain genuinely overflowing settings rows"
-            );
-            seek("field-17", SettingScroll::Normal(scroll), window, cx);
-            window.refresh();
-        });
-        for _ in 0..3 {
-            visual.run_until_parked();
-            visual.update(|window, cx| {
-                window.draw(cx).clear(cx);
+        for width in [600., 340.] {
+            view.update(visual, |view, cx| {
+                view.width = width;
+                view.scroll.set_offset(point(px(0.), px(0.)));
+                cx.notify();
             });
-        }
-        visual.update(|_, cx| assert!(view.read(cx).scroll.offset().y < px(-500.)));
-        // A second seek is independent and brings an earlier field back.
-        visual.update(|window, cx| {
-            seek(
-                "field-1",
-                SettingScroll::Normal(view.read(cx).scroll.clone()),
-                window,
-                cx,
-            );
-            window.refresh();
-        });
-        for _ in 0..3 {
-            visual.run_until_parked();
-            visual.update(|window, cx| {
-                window.draw(cx).clear(cx);
+            deliver_frame(visual);
+            let focus = visual.update(|window, cx| {
+                let fixture = view.read(cx);
+                let focus = fixture.inputs[0].read(cx).focus_handle(cx);
+                assert!(
+                    fixture.scroll.max_offset().y > px(500.),
+                    "fixture must contain genuinely overflowing settings rows"
+                );
+                let scroll = fixture.scroll.clone();
+                focus.focus(window, cx);
+                seek("field-17", SettingScroll::Normal(scroll), window, cx);
+                window.refresh();
+                focus
             });
+            deliver_frame(visual);
+            visual.update(|window, cx| {
+                let fixture = view.read(cx);
+                assert!(fixture.scroll.offset().y < px(-500.));
+                let target = window.find(("anchor-value", 17_usize)).bounds();
+                assert!(target.top() >= fixture.scroll.bounds().top());
+                assert!(target.bottom() <= fixture.scroll.bounds().bottom());
+                assert_eq!(window.focused(cx), Some(focus.clone()));
+                let scroll = fixture.scroll.clone();
+                assert!(cx.default_global::<Requests>().0.is_empty());
+                // A second seek is independent and brings an earlier field back.
+                seek("field-1", SettingScroll::Normal(scroll), window, cx);
+                window.refresh();
+            });
+            deliver_frame(visual);
+            visual.update(|window, cx| {
+                let fixture = view.read(cx);
+                assert!(fixture.scroll.offset().y > px(-300.));
+                let target = window.find(("anchor-value", 1_usize)).bounds();
+                assert!(target.top() >= fixture.scroll.bounds().top());
+                assert!(target.bottom() <= fixture.scroll.bounds().bottom());
+                assert_eq!(window.focused(cx), Some(focus.clone()));
+                for (index, input) in fixture.inputs.iter().enumerate() {
+                    assert_eq!(
+                        input.read(cx).value().as_str(),
+                        format!("unchanged-{index}")
+                    );
+                }
+                // Consumed requests must not reapply after manual scrolling.
+                fixture.scroll.set_offset(point(px(0.), px(0.)));
+                window.refresh();
+            });
+            deliver_frame(visual);
+            visual.update(|_, cx| assert_eq!(view.read(cx).scroll.offset().y, px(0.)));
         }
-        visual.update(|_, cx| assert!(view.read(cx).scroll.offset().y > px(-300.)));
     }
 }
