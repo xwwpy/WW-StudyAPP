@@ -18,29 +18,6 @@ impl RecordPage {
         }
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::RecordPage;
-    #[test]
-    fn pages_are_disjoint_complete_and_clamped_after_filtering() {
-        let mut rows = vec![];
-        for page in 0..3 {
-            rows.extend(RecordPage::new(125, page, 50).range);
-        }
-        assert_eq!(rows, (0..125).collect::<Vec<_>>());
-        assert_eq!(
-            RecordPage::new(12, 8, 50),
-            RecordPage {
-                index: 0,
-                pages: 1,
-                range: 0..12
-            }
-        );
-        assert_eq!(RecordPage::new(0, usize::MAX, 0).range, 0..0);
-        assert_eq!(RecordPage::new(100, 1, 50).range, 50..100);
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RecordGrouping {
     #[default]
@@ -89,5 +66,27 @@ mod grouping_tests {
         }
         seen.sort_unstable();
         assert_eq!(seen, [0, 1, 2, 3]);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::RecordPage;
+    #[test]
+    fn pages_are_disjoint_complete_and_clamped_after_filtering() {
+        let mut rows = vec![];
+        for page in 0..3 {
+            rows.extend(RecordPage::new(125, page, 50).range);
+        }
+        assert_eq!(rows, (0..125).collect::<Vec<_>>());
+        assert_eq!(
+            RecordPage::new(12, 8, 50),
+            RecordPage {
+                index: 0,
+                pages: 1,
+                range: 0..12
+            }
+        );
+        assert_eq!(RecordPage::new(0, usize::MAX, 0).range, 0..0);
+        assert_eq!(RecordPage::new(100, 1, 50).range, 50..100);
     }
 }

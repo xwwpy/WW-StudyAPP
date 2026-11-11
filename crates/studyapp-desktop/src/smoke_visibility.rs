@@ -819,33 +819,6 @@ pub(crate) async fn managed_body_edit(
     assert_click_focused(window, editor, cx).await;
 }
 
-#[cfg(test)]
-mod viewport_tests {
-    use super::{CaptureScope, usable_viewport};
-    use serde_json::json;
-
-    #[test]
-    fn window_capture_accepts_own_notification_but_rejects_foreign_occlusion() {
-        // Native CI state with two notification cards clipping the editor's
-        // center. Its remaining pixels and the application window are visible.
-        let mut state = json!({
-            "visible": true, "controllerVisible": true, "insideParent": true,
-            "hitIsEditor": false, "hitRootHwnd": 196950, "parentHwnd": 196950,
-            "bounds": {"width": 548, "height": 629}
-        });
-        assert!(usable_viewport(&state, CaptureScope::Window));
-        assert!(!usable_viewport(&state, CaptureScope::Editor));
-        state["hitRootHwnd"] = json!(42);
-        assert!(!usable_viewport(&state, CaptureScope::Window));
-        state["hitRootHwnd"] = state["parentHwnd"].clone();
-        state["hitIsEditor"] = json!(true);
-        assert!(usable_viewport(&state, CaptureScope::Editor));
-        state["controllerVisible"] = json!(false);
-        assert!(!usable_viewport(&state, CaptureScope::Window));
-        assert!(!usable_viewport(&state, CaptureScope::Editor));
-    }
-}
-
 /// Real wheels only in the isolated GitHub Windows desktop.
 pub(crate) async fn wheel(
     window: AnyWindowHandle,
@@ -872,4 +845,31 @@ pub(crate) async fn wheel(
             },
         }],
     );
+}
+
+#[cfg(test)]
+mod viewport_tests {
+    use super::{CaptureScope, usable_viewport};
+    use serde_json::json;
+
+    #[test]
+    fn window_capture_accepts_own_notification_but_rejects_foreign_occlusion() {
+        // Native CI state with two notification cards clipping the editor's
+        // center. Its remaining pixels and the application window are visible.
+        let mut state = json!({
+            "visible": true, "controllerVisible": true, "insideParent": true,
+            "hitIsEditor": false, "hitRootHwnd": 196950, "parentHwnd": 196950,
+            "bounds": {"width": 548, "height": 629}
+        });
+        assert!(usable_viewport(&state, CaptureScope::Window));
+        assert!(!usable_viewport(&state, CaptureScope::Editor));
+        state["hitRootHwnd"] = json!(42);
+        assert!(!usable_viewport(&state, CaptureScope::Window));
+        state["hitRootHwnd"] = state["parentHwnd"].clone();
+        state["hitIsEditor"] = json!(true);
+        assert!(usable_viewport(&state, CaptureScope::Editor));
+        state["controllerVisible"] = json!(false);
+        assert!(!usable_viewport(&state, CaptureScope::Window));
+        assert!(!usable_viewport(&state, CaptureScope::Editor));
+    }
 }

@@ -55,6 +55,15 @@ pub fn diff_rows(diff: &str, columns: usize) -> Vec<(String, char)> {
     rows
 }
 
+/// A reader header names the file, not the first Markdown heading.
+pub fn document_filename(path: &str, fallback: &str) -> String {
+    path.rsplit(['/', char::from(92)])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
 #[cfg(test)]
 mod path_and_diff_tests {
     use super::*;
@@ -274,14 +283,6 @@ mod tests {
     }
 }
 
-/// A reader header names the file, not the first Markdown heading.
-pub fn document_filename(path: &str, fallback: &str) -> String {
-    path.rsplit(['/', char::from(92)])
-        .next()
-        .filter(|name| !name.is_empty())
-        .unwrap_or(fallback)
-        .to_owned()
-}
 #[cfg(test)]
 mod filename_tests {
     #[test]

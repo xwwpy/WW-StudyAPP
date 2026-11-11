@@ -323,8 +323,11 @@ mod tests {
 
 #[cfg(all(test, feature = "ui-test"))]
 mod code_control_tests {
-    use super::*;
-    use gpui_kit::{base::Root, test::TestWindowExt};
+    use super::{selection_gesture_guard, summary};
+    use gpui_kit::{
+        AppContext, Context, IntoElement, ParentElement, Render, Styled, TestAppContext, Window,
+        base::Root, div, px, test::TestWindowExt,
+    };
     struct Fixture;
     impl Render for Fixture {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -346,19 +349,19 @@ mod code_control_tests {
         });
         visual.update(|window, cx| {
             window.render_frame(cx);
-            let expanded = window.find(("summary-code", 0)).bounds().size.height;
-            window.click(("summary-code-toggle", 0), cx);
+            let expanded = window.find(("summary-code", 0usize)).bounds().size.height;
+            window.click(("summary-code-toggle", 0usize), cx);
             window.render_frame(cx);
-            assert!(window.find(("summary-code", 0)).bounds().size.height < expanded);
-            window.click(("summary-code-copy", 0), cx);
+            assert!(window.find(("summary-code", 0usize)).bounds().size.height < expanded);
+            window.click(("summary-code-copy", 0usize), cx);
             assert_eq!(
                 cx.read_from_clipboard().and_then(|item| item.text()),
                 Some("let value = 1;\n".into())
             );
-            window.click(("summary-code-toggle", 0), cx);
+            window.click(("summary-code-toggle", 0usize), cx);
             window.render_frame(cx);
             assert_eq!(
-                window.find(("summary-code", 0)).bounds().size.height,
+                window.find(("summary-code", 0usize)).bounds().size.height,
                 expanded
             );
         });
@@ -367,8 +370,14 @@ mod code_control_tests {
 
 #[cfg(all(test, feature = "ui-test"))]
 mod selection_guard_tests {
-    use super::*;
-    use gpui_kit::{base::Root, test::TestWindowExt};
+    use super::{selection_gesture_guard, summary};
+    use gpui_kit::{
+        AppContext, Context, IntoElement, MouseButton, ParentElement, Render, Styled,
+        TestAppContext, Window,
+        base::{Root, TextSelection},
+        div, point, px,
+        test::TestWindowExt,
+    };
     struct Fixture;
     impl Render for Fixture {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

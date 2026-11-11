@@ -569,6 +569,19 @@ pub fn metric(label: &str, value: String, detail: &str) -> Div {
         .child(muted(detail.to_owned()))
 }
 
+/// Always reserves the same footer geometry in reading and draft modes.
+pub fn document_status_bar(content: impl IntoElement) -> Div {
+    row()
+        .h(px(30.))
+        .flex_shrink_0()
+        .min_w_0()
+        .overflow_hidden()
+        .px_3()
+        .border_t_1()
+        .border_color(crate::theme::color(BORDER))
+        .child(content)
+}
+
 #[cfg(all(test, feature = "ui-test"))]
 mod tests {
     use super::{card, column, scroll_body};
@@ -1045,17 +1058,4 @@ mod tests {
             });
         }
     }
-}
-
-/// Always reserves the same footer geometry in reading and draft modes.
-pub fn document_status_bar(content: impl IntoElement) -> Div {
-    row()
-        .h(px(30.))
-        .flex_shrink_0()
-        .min_w_0()
-        .overflow_hidden()
-        .px_3()
-        .border_t_1()
-        .border_color(crate::theme::color(BORDER))
-        .child(content)
 }
