@@ -1,12 +1,6 @@
 //! Selection-preserving, explicit copy for offline Markdown surfaces.
-use gpui_kit::{
-    base::TextSelection,
-    component::{
-        menu::{ContextMenuExt, PopupMenuItem},
-        text::TextView,
-    },
-    *,
-};
+use crate::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::{base::TextSelection, component::text::TextView, *};
 
 pub fn copyable(id: impl Into<ElementId>, content: impl IntoElement) -> impl IntoElement {
     div()

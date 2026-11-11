@@ -9,7 +9,6 @@ use gpui_kit::{
         Disableable, Icon, IconName, Selectable, Sizable,
         button::ButtonVariants,
         input::{InputEvent, InputState},
-        menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
     },
     *,
 };
@@ -18,6 +17,7 @@ use std::{
     sync::Arc,
 };
 use studyapp_core::{Command, MAX_FOLDER_DEPTH, Note, NoteFolder, Snapshot};
+use studyapp_ui::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum FolderFilter {
@@ -895,15 +895,13 @@ impl FolderPanel {
             return menu;
         };
         let layout_owner = owner.clone();
-        cx.subscribe_self(
-            move |_, event: &gpui_kit::component::menu::PopupMenuLayout, cx| {
-                let _ = layout_owner.update(cx, |this, cx| {
-                    if this.active_menu == Some(token) {
-                        cx.emit(FolderEvent::MenuRegions(event.0.clone()));
-                    }
-                });
-            },
-        )
+        cx.subscribe_self(move |_, event: &studyapp_ui::menu::PopupMenuLayout, cx| {
+            let _ = layout_owner.update(cx, |this, cx| {
+                if this.active_menu == Some(token) {
+                    cx.emit(FolderEvent::MenuRegions(event.0.clone()));
+                }
+            });
+        })
         .detach();
         let dismissed = owner.clone();
         cx.subscribe_self(move |_, _: &DismissEvent, cx| {

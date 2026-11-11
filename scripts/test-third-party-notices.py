@@ -17,6 +17,10 @@ class NoticeTests(unittest.TestCase):
         editor = self.root / 'crates/studyapp-desktop/editor/dist/THIRD_PARTY_LICENSES.txt'
         editor.parent.mkdir(parents=True)
         editor.write_text('Editor and ZIP licenses', encoding='utf-8')
+        for relative in notices.PROJECT_NOTICES:
+            license_path = self.root / relative
+            license_path.parent.mkdir(parents=True, exist_ok=True)
+            license_path.write_text('Copyright Longbridge — Apache-2.0 menu adaptation', encoding='utf-8')
 
     def fixture(self, name, relative):
         directory = self.root / name
@@ -34,6 +38,12 @@ class NoticeTests(unittest.TestCase):
             self.assertIn('Copyright embedded data ' + name, text)
         self.assertIn('Editor and ZIP licenses', text)
         self.assertIn('MIT main crate license', text)
+
+    def test_adapted_menu_notices_are_included_without_registry_dependencies(self):
+        text = notices.collect(dict(packages=[], workspace_members=[]), self.root, '0.4.0')
+        self.assertIn('Copyright Longbridge', text)
+        self.assertIn('Modified from gpui-component 0.7.3', text)
+        self.assertIn('/tree/v0.4.0/crates/studyapp-ui/src/menu', text)
 
     def test_missing_required_resource_notice_fails_packaging(self):
         package = self.fixture('hayro-font', 'assets/incorrect-license')

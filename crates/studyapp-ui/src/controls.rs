@@ -30,7 +30,7 @@ pub struct AppButton {
 
 pub use AppButton as Button;
 
-impl gpui_kit::component::menu::DropdownMenu for AppButton {}
+impl crate::menu::DropdownMenu for AppButton {}
 
 impl AppButton {
     pub fn new(id: impl Into<ElementId>) -> Self {
@@ -720,11 +720,8 @@ mod tests {
     #[cfg(feature = "ui-test")]
     #[gpui_kit::test]
     fn button_drag_preserves_click_and_context_menu_routing(cx: &mut TestAppContext) {
-        use gpui_kit::{
-            AppContext, MouseButton,
-            component::menu::{ContextMenuExt, PopupMenuItem},
-            point, px,
-        };
+        use crate::menu::{ContextMenuExt, PopupMenuItem};
+        use gpui_kit::{AppContext, MouseButton, point, px};
         use std::{cell::Cell, rc::Rc};
 
         struct Preview;

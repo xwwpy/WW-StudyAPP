@@ -5,16 +5,13 @@ use crate::{
     workspace_layout::Pane,
 };
 use gpui_kit::{
-    component::{
-        Disableable, Icon, IconName, Selectable, Sizable,
-        button::ButtonVariants,
-        menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem},
-    },
+    component::{Disableable, Icon, IconName, Selectable, Sizable, button::ButtonVariants},
     prelude::FluentBuilder,
     *,
 };
 use studyapp_core::Snapshot;
 use studyapp_desktop::presentation::{display_path, stamp};
+use studyapp_ui::menu::{ContextMenuExt, DropdownMenu, PopupMenu, PopupMenuItem};
 
 #[derive(Clone, Copy)]
 enum ReaderAction {
@@ -184,17 +181,15 @@ impl StudyApp {
     }
 
     fn track_menu_surface(owner: WeakEntity<Self>, token: u64, cx: &mut Context<PopupMenu>) {
-        cx.subscribe_self(
-            move |_, event: &gpui_kit::component::menu::PopupMenuLayout, cx| {
-                let _ = owner.update(cx, |this, cx| {
-                    if this.active_note_menu == Some(token) {
-                        this.note_content.update(cx, |editor, cx| {
-                            editor.set_overlay_regions("note-menu", event.0.clone(), cx);
-                        });
-                    }
-                });
-            },
-        )
+        cx.subscribe_self(move |_, event: &studyapp_ui::menu::PopupMenuLayout, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                if this.active_note_menu == Some(token) {
+                    this.note_content.update(cx, |editor, cx| {
+                        editor.set_overlay_regions("note-menu", event.0.clone(), cx);
+                    });
+                }
+            });
+        })
         .detach();
     }
 

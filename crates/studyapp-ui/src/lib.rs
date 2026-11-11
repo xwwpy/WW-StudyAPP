@@ -14,6 +14,7 @@ pub mod markdown_content;
 pub mod markdown_format;
 mod markdown_parser;
 pub mod markdown_view;
+pub mod menu;
 pub mod modal_frame;
 mod notice_placement;
 pub mod notice_preview;

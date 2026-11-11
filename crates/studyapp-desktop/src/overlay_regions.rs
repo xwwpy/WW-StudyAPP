@@ -85,12 +85,12 @@ mod tests {
 }
 #[cfg(all(test, feature = "ui-test"))]
 mod popup_tests {
-    use gpui_kit::component::menu::{PopupMenu, PopupMenuLayout};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         Context, Entity, Focusable, IntoElement, ParentElement, Render, TestAppContext, Window, div,
     };
     use std::{cell::RefCell, rc::Rc};
+    use studyapp_ui::menu::{PopupMenu, PopupMenuLayout};
 
     struct MenuSurface(Entity<PopupMenu>);
     impl Render for MenuSurface {

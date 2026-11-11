@@ -6,6 +6,7 @@ import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
+PROJECT_NOTICES = ('crates/studyapp-ui/src/menu/LICENSE-APACHE',)
 # These embedded data sets have notices separate from their Rust crate licenses.
 ASSET_NOTICES = {
     'hayro-font': ('assets/LICENSE_FOXIT',),
@@ -17,6 +18,12 @@ ASSET_NOTICES = {
 def collect(metadata, root, version):
     notices = ['WW-StudyApp — Third-party notices\n\nOriginal licenses and copyright notices follow.\n',
                (root / 'crates/studyapp-desktop/editor/dist/THIRD_PARTY_LICENSES.txt').read_text(encoding='utf-8')]
+    for relative in PROJECT_NOTICES:
+        notices.append(f'''## Adapted project menu components
+Source: https://github.com/xwwpy/WW-StudyAPP/tree/v{version}/crates/studyapp-ui/src/menu
+Modified from gpui-component 0.7.3 for independent menu presentation.
+''')
+        notices.append((root / relative).read_text(encoding='utf-8'))
     members = set(metadata['workspace_members'])
     dependencies = sorted((p for p in metadata['packages'] if p['id'] not in members),
                           key=lambda p: (p['name'], p['version']))

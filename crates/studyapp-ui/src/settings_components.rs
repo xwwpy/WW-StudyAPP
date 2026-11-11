@@ -1,5 +1,6 @@
 //! Shared neutral form surfaces, labels and inputs for the settings workspace.
 use crate::components::*;
+use crate::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
@@ -1015,10 +1016,7 @@ pub fn choice<T: 'static, V: Clone + PartialEq + 'static>(
     owner: WeakEntity<T>,
     change: impl Fn(&mut T, V, &mut Window, &mut Context<T>) + Clone + 'static,
 ) -> impl IntoElement {
-    use gpui_kit::component::{
-        Disableable, Selectable,
-        menu::{DropdownMenu, PopupMenuItem},
-    };
+    use gpui_kit::component::{Disableable, Selectable};
     let id = id.into();
     let short = (2..=3).contains(&options.len())
         && options.iter().all(|(_, label)| label.chars().count() <= 8);

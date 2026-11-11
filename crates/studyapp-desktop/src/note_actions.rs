@@ -1,13 +1,8 @@
 use crate::{components::*, folders_ui::note_destinations};
-use gpui_kit::{
-    component::{
-        Sizable,
-        menu::{PopupMenu, PopupMenuItem},
-    },
-    *,
-};
+use gpui_kit::{component::Sizable, *};
 use std::rc::Rc;
 use studyapp_core::{Note, Snapshot};
+use studyapp_ui::menu::{PopupMenu, PopupMenuItem};
 
 pub const LIBRARY_SORT_OPTIONS: [(studyapp_core::LibrarySort, &str); 4] = [
     (studyapp_core::LibrarySort::NameAscending, "名称 · A → Z"),

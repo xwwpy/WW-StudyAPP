@@ -5,14 +5,11 @@ use crate::{
     drafts::{DraftRecord, DraftStatus, DraftUpdate, NoteDraft},
 };
 use gpui_kit::{
-    component::{
-        Disableable, Sizable,
-        button::ButtonVariants,
-        menu::{DropdownMenu, PopupMenuItem},
-    },
+    component::{Disableable, Sizable, button::ButtonVariants},
     *,
 };
 use studyapp_core::Command;
+use studyapp_ui::menu::{DropdownMenu, PopupMenuItem};
 
 impl StudyApp {
     pub(crate) fn refresh_draft_library(&mut self) {

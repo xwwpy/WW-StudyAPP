@@ -1,15 +1,12 @@
 //! Preview real components with explicitly labelled examples and inert actions.
+use crate::menu::{PopupMenu, PopupMenuItem};
 use crate::{
     components::*,
     controls::Button,
     modal_frame::{ModalFrame, ModalTone, ModalWidth},
 };
 use gpui_kit::{
-    component::{
-        Disableable, Sizable,
-        menu::{PopupMenu, PopupMenuItem},
-        popover::Popover,
-    },
+    component::{Disableable, Sizable, popover::Popover},
     *,
 };
 use studyapp_core::{NoticeLayout, NoticeStyle, NotificationAppearance};
@@ -198,7 +195,9 @@ pub fn component_preview(
                         .item(PopupMenuItem::new("另一项命令").disabled(true))
                 })
             });
-            state.read(cx).clone().into_any_element()
+            let menu = state.read(cx).clone();
+            menu.update(cx, |menu, cx| menu.set_appearance(appearance.clone(), cx));
+            menu.into_any_element()
         }
         NoticeStyle::Tooltip => Button::new("preview-tooltip-trigger")
             .small()
