@@ -2716,50 +2716,83 @@ mod ui_tests {
             CompactHost { panel }
         });
         let panel = cx.read(|cx| host.read(cx).panel.clone());
-        draw(cx);
-        let before = cx
-            .debug_bounds("folder-drop-existing")
-            .expect("Directory row is mounted");
-        panel.update(cx, |panel, cx| {
-            panel.set_filter(FolderFilter::Folder("existing".into()), cx)
-        });
-        draw(cx);
-        let after = cx.debug_bounds("folder-drop-existing").unwrap();
-        assert_eq!(
-            before, after,
-            "Selecting must not change directory dimensions"
-        );
-        let (bounds, surfaces) = cx.update(|window, _| {
-            // Painted quads use pixel-snapped bounds. Bounds::contains is
-            // half-open, so it deliberately excludes an identical bottom/right
-            // edge; use closed interval comparisons for rectangle containment.
-            let bounds = window.pixel_snap_bounds(after).scale(window.scale_factor());
-            let surfaces = window
-                .painted_quads()
-                .into_iter()
-                .filter(|quad| {
-                    !quad.background.is_transparent()
-                        && quad.bounds.left() >= bounds.left()
-                        && quad.bounds.top() >= bounds.top()
-                        && quad.bounds.right() <= bounds.right()
-                        && quad.bounds.bottom() <= bounds.bottom()
-                })
+        for indicator in [false, true] {
+            cx.update(|_, cx| {
+                let mut appearance = studyapp_core::AppearanceSettings::default();
+                appearance.selection.indicator = indicator;
+                crate::theme::apply(&appearance, false, cx);
+                panel.update(cx, |panel, cx| panel.set_filter(FolderFilter::All, cx));
+            });
+            draw(cx);
+            let before = cx
+                .debug_bounds("folder-drop-existing")
+                .expect("Directory row is mounted");
+            panel.update(cx, |panel, cx| {
+                panel.set_filter(FolderFilter::Folder("existing".into()), cx)
+            });
+            draw(cx);
+            let after = cx.debug_bounds("folder-drop-existing").unwrap();
+            assert_eq!(
+                before, after,
+                "Selecting must not change directory dimensions"
+            );
+            let (bounds, marker_width, surfaces) = cx.update(|window, _| {
+                // Use closed containment for pixel-snapped painting: Bounds::contains
+                // intentionally excludes an identical right/bottom edge.
+                let bounds = window.pixel_snap_bounds(after).scale(window.scale_factor());
+                let marker_width = window
+                    .pixel_snap_bounds(gpui_kit::Bounds::new(
+                        after.origin,
+                        gpui_kit::size(px(3.), after.size.height),
+                    ))
+                    .scale(window.scale_factor())
+                    .size
+                    .width;
+                let surfaces = window
+                    .painted_quads()
+                    .into_iter()
+                    .filter(|quad| {
+                        !quad.background.is_transparent()
+                            && quad.bounds.left() >= bounds.left()
+                            && quad.bounds.top() >= bounds.top()
+                            && quad.bounds.right() <= bounds.right()
+                            && quad.bounds.bottom() <= bounds.bottom()
+                    })
+                    .collect::<Vec<_>>();
+                (bounds, marker_width, surfaces)
+            });
+            let selection = crate::theme::selection(studyapp_core::SelectionCategory::Directory);
+            assert_eq!(
+                surfaces.len(),
+                1 + usize::from(indicator),
+                "Only one row background plus the explicitly enabled narrow marker may paint"
+            );
+            let backgrounds = surfaces
+                .iter()
+                .filter(|quad| quad.bounds == bounds)
                 .collect::<Vec<_>>();
-            (bounds, surfaces)
-        });
-        assert_eq!(
-            surfaces.len(),
-            1,
-            "Only the outer directory row paints the selected background"
-        );
-        assert_eq!(
-            surfaces[0].bounds, bounds,
-            "The selected surface covers the whole row"
-        );
-        assert_eq!(
-            surfaces[0].background,
-            crate::theme::selection_color().into()
-        );
+            assert_eq!(
+                backgrounds.len(),
+                1,
+                "Exactly one background covers the whole directory row"
+            );
+            assert_eq!(
+                backgrounds[0].background,
+                gpui_kit::rgb(selection.selected_background).into()
+            );
+            if indicator {
+                let marker = surfaces.iter().find(|quad| quad.bounds != bounds).unwrap();
+                assert_eq!(
+                    marker.bounds.size.width, marker_width,
+                    "Selection marker must not become another command background"
+                );
+                assert!(marker.bounds.size.height < bounds.size.height);
+                assert_eq!(
+                    marker.background,
+                    gpui_kit::rgb(selection.selected_border).into()
+                );
+            }
+        }
     }
 
     #[gpui_kit::test]
