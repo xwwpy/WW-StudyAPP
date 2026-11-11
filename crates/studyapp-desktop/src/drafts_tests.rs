@@ -55,9 +55,27 @@ fn library(root: &Path) -> String {
 }
 
 fn catalog(store: &DraftStore, library: &str) -> (Vec<DraftRecord>, Vec<String>) {
+    catalog_with_budget(store, library, Duration::from_secs(5))
+}
+
+fn catalog_with_budget(
+    store: &DraftStore,
+    library: &str,
+    budget: Duration,
+) -> (Vec<DraftRecord>, Vec<String>) {
+    let started = Instant::now();
+    let deadline = started + budget;
     store.load(library);
     loop {
-        match store.receiver.recv_timeout(Duration::from_secs(5)).unwrap() {
+        match store
+            .receiver
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_else(|error| {
+                panic!(
+                    "draft catalog exceeded {budget:?} budget after {:?}: {error}",
+                    started.elapsed()
+                )
+            }) {
             DraftUpdate::Catalog {
                 records, errors, ..
             } => return (records, errors),
@@ -264,20 +282,39 @@ fn large_record_roundtrips_escaped_content_without_a_byte_ceiling() {
     let content = "\u{0001}".repeat(11 * 1024 * 1024);
     let record = DraftRecord::new(draft(&content), 1);
     let store = DraftStore::new();
+    // This is a size/escaping durability test, not a throughput benchmark.
+    // Its >64 MiB JSON write + sync and debug decode need independent bounded
+    // completion budgets on shared Windows runners, unlike tiny record tests.
+    let budget = Duration::from_secs(120);
+    let started = Instant::now();
     store.persist_record(&library, record.clone(), 1);
-    loop {
-        match store
-            .receiver
-            .recv_timeout(Duration::from_secs(30))
-            .unwrap()
-        {
-            DraftUpdate::Written { token: Some(1), .. } => break,
-            DraftUpdate::Error { message, .. } => panic!("{message}"),
-            _ => {}
+    match store.receiver.recv_timeout(budget).unwrap_or_else(|error| {
+        panic!(
+            "large draft write exceeded {budget:?} budget after {:?}: {error}",
+            started.elapsed()
+        )
+    }) {
+        DraftUpdate::Written {
+            library: written_library,
+            id,
+            revision,
+            token,
+        } => {
+            assert_eq!(written_library, library);
+            assert_eq!(id, record.id);
+            assert_eq!(revision, record.revision);
+            assert_eq!(token, Some(1));
         }
+        DraftUpdate::Error { message, .. } => panic!("{message}"),
+        _ => panic!("expected exact persisted draft acknowledgement"),
     }
+    eprintln!("large draft persisted in {:?}", started.elapsed());
+    let path = DraftStore::record_path(&library, &record.id).unwrap();
+    assert!(std::fs::metadata(path).unwrap().len() > 64 * 1024 * 1024);
     drop(store);
-    let (records, errors) = catalog(&DraftStore::new(), &library);
+    let started = Instant::now();
+    let (records, errors) = catalog_with_budget(&DraftStore::new(), &library, budget);
+    eprintln!("large draft reloaded in {:?}", started.elapsed());
     assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(records, vec![record]);
 }

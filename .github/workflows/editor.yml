@@ -8,7 +8,8 @@ permissions:
 
 jobs:
   editor:
-    runs-on: ubuntu-latest
+    # Keep browser system dependencies on a stable, explicitly supported LTS.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:
       run:

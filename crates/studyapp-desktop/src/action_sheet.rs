@@ -161,11 +161,7 @@ mod tests {
                     "sheet-import-file",
                     "sheet-import-folder",
                 ] {
-                    assert_ne!(
-                        window.find(id).disabled(),
-                        Some(true),
-                        "sheet disabled its own {id}"
-                    );
+                    assert_eq!(window.find(id).role(), Some(gpui_kit::Role::Button));
                 }
                 let cancel = window.find("sheet-cancel").bounds();
                 let body = window.find("modal-content-scroll").bounds();
@@ -191,10 +187,21 @@ mod tests {
                 });
                 visual.update(|window, cx| {
                     window.render_frame(cx);
-                    assert_eq!(window.find("sheet-new-note").disabled(), Some(true));
-                    window.click("sheet-new-note", cx);
-                    assert!(app.read(cx).action_sheet_open);
-                    assert!(app.read(cx).note_editor.is_none());
+                    assert!(app.read(cx).library_tasks_busy());
+                    // GPUI does not expose an aria-disabled flag for these buttons.
+                    // Verify real pointer inertia instead of treating missing
+                    // accessibility metadata as evidence of enabled/disabled state.
+                    for id in [
+                        "sheet-new-note",
+                        "sheet-new-folder",
+                        "sheet-import-file",
+                        "sheet-import-folder",
+                    ] {
+                        window.click(id, cx);
+                        assert!(app.read(cx).action_sheet_open, "busy action ran: {id}");
+                        assert!(app.read(cx).note_editor.is_none());
+                        assert!(!app.read(cx).folders.read(cx).modal_open());
+                    }
                 });
             }
             visual.update(|window, cx| {
