@@ -1073,7 +1073,56 @@ impl StudyApp {
         let sessions = self
             .read_models
             .record_positions(record_date, self.record_filter);
-        let page = studyapp_desktop::record_pagination::RecordPage::new(sessions.len(), self.record_page, self.record_page_size);
+        use studyapp_desktop::record_pagination::{RecordGrouping, grouped_records};
+        let grouped = grouped_records(sessions, self.record_grouping, |position| {
+            let session = &snapshot.sessions[position];
+            match self.record_grouping {
+                RecordGrouping::None => String::new(),
+                RecordGrouping::Date => day_of(session.started_at),
+                RecordGrouping::Status => match session.status {
+                    SessionStatus::Learned => "已学习",
+                    SessionStatus::Missed => "未学习",
+                    SessionStatus::Pending => "待回答",
+                }
+                .into(),
+                RecordGrouping::Note => {
+                    let mut names: Vec<_> = session
+                        .note_ids
+                        .iter()
+                        .map(|id| {
+                            self.read_models
+                                .note_position(id)
+                                .and_then(|i| snapshot.notes.get(i))
+                                .map_or("已移除的笔记", |note| note.title.as_str())
+                        })
+                        .collect();
+                    names.sort_unstable();
+                    names.dedup();
+                    if names.is_empty() {
+                        "未关联笔记".into()
+                    } else {
+                        names.join(" · ")
+                    }
+                }
+            }
+        });
+        let page = studyapp_desktop::record_pagination::RecordPage::new(
+            sessions.len(),
+            self.record_page,
+            self.record_page_size,
+        );
+        let mut record_rows = Vec::new();
+        let mut previous = None;
+        for (category, position) in &grouped[page.range.clone()] {
+            if self.record_grouping != RecordGrouping::None && previous != Some(category) {
+                record_rows.push(heading(category.clone()).mt_3().into_any_element());
+                previous = Some(category);
+            }
+            record_rows.push(
+                self.session_row(&snapshot.sessions[*position], cx)
+                    .into_any_element(),
+            );
+        }
         content.child(
             card()
                 .child(
@@ -1108,33 +1157,95 @@ impl StudyApp {
                 .when(sessions.is_empty(), |c| {
                     c.child(muted("当前筛选下还没有记录。"))
                 })
-                .children(
-                    sessions
-                        .iter()
-                        .skip(page.range.start)
-                        .take(page.range.len())
-                        .map(|&position| self.session_row(&snapshot.sessions[position], cx)),
-                )
                 .child(
-                    row().id("record-pagination").test_support().flex_wrap()
-                        .child(muted(if sessions.is_empty() { "0 条".into() } else {
-                            format!("第 {} / {} 页 · {}–{} / {} 条", page.index + 1, page.pages, page.range.start + 1, page.range.end, sessions.len())
+                    row().flex_wrap().child(muted("分类显示")).children(
+                        [
+                            (RecordGrouping::None, "不分组"),
+                            (RecordGrouping::Date, "按日期"),
+                            (RecordGrouping::Note, "按笔记"),
+                            (RecordGrouping::Status, "按学习状态"),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, (grouping, label))| {
+                            Button::new(("record-grouping", index))
+                                .ghost()
+                                .small()
+                                .label(label)
+                                .selected(self.record_grouping == grouping)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.record_grouping = grouping;
+                                    this.record_page = 0;
+                                    cx.notify();
+                                }))
+                        }),
+                    ),
+                )
+                .children(record_rows)
+                .child(
+                    row()
+                        .id("record-pagination")
+                        .test_support()
+                        .flex_wrap()
+                        .child(muted(if sessions.is_empty() {
+                            "0 条".into()
+                        } else {
+                            format!(
+                                "第 {} / {} 页 · {}–{} / {} 条",
+                                page.index + 1,
+                                page.pages,
+                                page.range.start + 1,
+                                page.range.end,
+                                sessions.len()
+                            )
                         }))
                         .child(div().flex_1())
                         .children([20_usize, 50, 100].into_iter().map(|size| {
-                            Button::new(("record-page-size", size)).ghost().small()
-                                .label(format!("{size} 条 / 页")).selected(self.record_page_size == size)
-                                .on_click(cx.listener(move |this, _, _, cx| { this.record_page_size = size; this.record_page = 0; cx.notify(); }))
+                            Button::new(("record-page-size", size))
+                                .ghost()
+                                .small()
+                                .label(format!("{size} 条 / 页"))
+                                .selected(self.record_page_size == size)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.record_page_size = size;
+                                    this.record_page = 0;
+                                    cx.notify();
+                                }))
                         }))
-                        .children([
-                            ("record-first", "首页", 0, page.index == 0),
-                            ("record-previous", "上一页", page.index.saturating_sub(1), page.index == 0),
-                            ("record-next", "下一页", (page.index + 1).min(page.pages - 1), page.index + 1 >= page.pages),
-                            ("record-last", "末页", page.pages - 1, page.index + 1 >= page.pages),
-                        ].into_iter().map(|(id,label,target,disabled)| {
-                            Button::new(id).small().label(label).disabled(disabled)
-                                .on_click(cx.listener(move |this, _, _, cx| { this.record_page = target; cx.notify(); }))
-                        })),
+                        .children(
+                            [
+                                ("record-first", "首页", 0, page.index == 0),
+                                (
+                                    "record-previous",
+                                    "上一页",
+                                    page.index.saturating_sub(1),
+                                    page.index == 0,
+                                ),
+                                (
+                                    "record-next",
+                                    "下一页",
+                                    (page.index + 1).min(page.pages - 1),
+                                    page.index + 1 >= page.pages,
+                                ),
+                                (
+                                    "record-last",
+                                    "末页",
+                                    page.pages - 1,
+                                    page.index + 1 >= page.pages,
+                                ),
+                            ]
+                            .into_iter()
+                            .map(|(id, label, target, disabled)| {
+                                Button::new(id)
+                                    .small()
+                                    .label(label)
+                                    .disabled(disabled)
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.record_page = target;
+                                        cx.notify();
+                                    }))
+                            }),
+                        ),
                 ),
         )
     }
