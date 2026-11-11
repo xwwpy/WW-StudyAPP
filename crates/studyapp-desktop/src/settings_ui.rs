@@ -1777,73 +1777,92 @@ impl StudyApp {
     pub fn settings_footer(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let dirty = self.settings_dirty(cx);
-        column().min_w_0().gap_2().px_2().py_2().child(
-            row()
-                .flex_wrap()
-                .child(heading("偏好设置").text_base())
-                .child(div().flex_1())
-                .child(muted(if dirty {
-                    "有未保存的修改"
-                } else {
-                    "已保存"
-                }))
-                .child(
-                    Button::new("discard-settings")
-                        .small()
-                        .ghost()
-                        .label("放弃修改")
-                        .disabled(busy || !dirty)
-                        .on_click(
-                            cx.listener(|this, _, window, cx| this.discard_settings(window, cx)),
-                        ),
-                )
-                .children(self.settings_reset_scope().map(|_| {
-                    Button::new("reset-settings")
-                        .small()
-                        .action("恢复本页默认")
-                        .disabled(busy || self.sync_panel.read(cx).status.busy)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.preferences_ui.recording = None;
-                            this.preferences_ui.reset_all = false;
-                            this.preferences_ui.reset_confirmation = true;
-                            cx.notify();
-                        }))
-                }))
-                .child(
-                    Button::new("reset-all-settings")
-                        .small()
-                        .ghost()
-                        .label("恢复全部默认…")
-                        .disabled(busy || self.sync_panel.read(cx).status.busy)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.preferences_ui.reset_all = true;
-                            this.preferences_ui.reset_confirmation = true;
-                            cx.notify();
-                        })),
-                )
-                .child(studyapp_ui::notification_anchor::NotificationAnchor::new(
-                    "settings-save",
-                    self.notifications.clone(),
-                    Button::new("save-settings")
-                        .primary()
-                        .small()
-                        .icon_action(
-                            gpui_kit::assets::IconName::Save,
-                            if self.preferences_ui.busy {
+        row()
+            .w_full()
+            .min_w_0()
+            .items_end()
+            .justify_between()
+            .flex_wrap()
+            .gap_3()
+            .px_1()
+            .py_3()
+            .child(
+                column()
+                    .min_w_0()
+                    .gap_1()
+                    .child(muted(if dirty {
+                        "有未保存的修改 · 保存后应用到所有分类"
+                    } else {
+                        "所有修改已保存"
+                    }))
+                    .child(
+                        row()
+                            .flex_wrap()
+                            .gap_1()
+                            .children(self.settings_reset_scope().map(|_| {
+                                Button::new("reset-settings")
+                                    .small()
+                                    .ghost()
+                                    .label("恢复本页默认…")
+                                    .disabled(busy || self.sync_panel.read(cx).status.busy)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.preferences_ui.recording = None;
+                                        this.preferences_ui.reset_all = false;
+                                        this.preferences_ui.reset_confirmation = true;
+                                        cx.notify();
+                                    }))
+                            }))
+                            .child(
+                                Button::new("reset-all-settings")
+                                    .small()
+                                    .ghost()
+                                    .label("恢复全部默认…")
+                                    .disabled(busy || self.sync_panel.read(cx).status.busy)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.preferences_ui.reset_all = true;
+                                        this.preferences_ui.reset_confirmation = true;
+                                        cx.notify();
+                                    })),
+                            ),
+                    ),
+            )
+            .child(
+                row()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(
+                        Button::new("discard-settings")
+                            .small()
+                            .ghost()
+                            .label("放弃修改")
+                            .disabled(busy || !dirty)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    this.discard_settings(window, cx)
+                                }),
+                            ),
+                    )
+                    .child(studyapp_ui::notification_anchor::NotificationAnchor::new(
+                        "settings-save",
+                        self.notifications.clone(),
+                        Button::new("save-settings")
+                            .primary()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Save)
+                            .label(if self.preferences_ui.busy {
                                 "正在保存…"
                             } else {
                                 "保存全部设置"
-                            },
-                        )
-                        .disabled(
-                            !dirty
-                                || busy
-                                || self.preferences_ui.saved.is_none()
-                                || self.preferences_ui.recording.is_some(),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.save_preferences(cx))),
-                )),
-        )
+                            })
+                            .disabled(
+                                !dirty
+                                    || busy
+                                    || self.preferences_ui.saved.is_none()
+                                    || self.preferences_ui.recording.is_some(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.save_preferences(cx))),
+                    )),
+            )
     }
 
     pub fn select_appearance_page(&mut self, page: AppearancePage, cx: &mut Context<Self>) {

@@ -24,6 +24,7 @@ pub struct AppButton {
     has_children: bool,
     target_scale: f32,
     selection_state: Option<bool>,
+    framed_selection: bool,
     selection_category: Option<studyapp_core::SelectionCategory>,
     surface_colors: Option<(gpui_kit::Hsla, gpui_kit::Hsla, gpui_kit::Hsla)>,
 }
@@ -45,6 +46,7 @@ impl AppButton {
             has_children: false,
             target_scale: 1.,
             selection_state: None,
+            framed_selection: true,
             selection_category: Some(studyapp_core::SelectionCategory::Options),
             surface_colors: None,
         }
@@ -52,6 +54,13 @@ impl AppButton {
 
     pub fn selection_category(mut self, category: studyapp_core::SelectionCategory) -> Self {
         self.selection_category = Some(category);
+        self
+    }
+
+    /// Flat navigation keeps semantic selection and inherited colors without
+    /// adding the ordinary option-button outline or trailing selection dot.
+    pub fn flat_selection(mut self) -> Self {
+        self.framed_selection = false;
         self
     }
 
@@ -307,10 +316,16 @@ impl RenderOnce for AppButton {
             );
             self.inner = self
                 .inner
-                .rounded(gpui_kit::px(f32::from(p.selection_radius)))
-                .border_1()
-                .border_color(gpui_kit::rgb(if selected { p.selected_border } else { bg }));
-            if selected && p.selection_indicator {
+                .rounded(gpui_kit::px(f32::from(p.selection_radius)));
+            if self.framed_selection {
+                self.inner = self
+                    .inner
+                    .border_1()
+                    .border_color(gpui_kit::rgb(if selected { p.selected_border } else { bg }));
+            } else {
+                self.inner = self.inner.border_0();
+            }
+            if self.framed_selection && selected && p.selection_indicator {
                 self.inner = self.inner.child(
                     gpui_kit::div()
                         .size(gpui_kit::px(4.))

@@ -943,18 +943,33 @@ pub async fn exercise(
                     .kind,
                 0
             );
-            for key in [
-                "endpoint",
-                "bucket",
-                "region",
-                "access_key_id",
-                "secret",
-                "prefix",
-            ] {
+            for key in ["endpoint", "bucket", "region", "access_key_id", "prefix"] {
                 let id = SharedString::from(format!("image-cloud-field-{key}"));
                 reveal_scrolled(window, id.clone(), "settings-section-scroll", cx);
                 assert!(window.find(id).bounds().size.height > px(0.));
             }
+            // Credentials are deliberately not a permanently rendered text
+            // field: the saved value is never loaded into the input. Exercise
+            // the actual guarded editor instead of looking for the old ID.
+            click_scrolled(
+                window,
+                "secret-replace".into(),
+                "settings-section-scroll",
+                cx,
+            );
+            assert!(window.try_find("secret-show-new").is_some());
+            assert!(
+                view.read(cx)
+                    .preferences_ui
+                    .image_cloud
+                    .as_ref()
+                    .unwrap()
+                    .fields["secret"]
+                    .read(cx)
+                    .value()
+                    .is_empty(),
+                "opening the credential editor backfilled a secret"
+            );
             assert_eq!(
                 settings_files(&files_root),
                 files,

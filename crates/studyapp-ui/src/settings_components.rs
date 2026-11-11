@@ -137,10 +137,8 @@ pub fn virtual_rows(
         .min_h_0()
         .min_w_0()
         .overflow_hidden()
-        .rounded(px(crate::design::CARD_RADIUS))
-        .border_1()
-        .border_color(crate::theme::color(BORDER))
-        .bg(crate::theme::color(0xFFFFFF))
+        // The viewport is layout only: the actual setting groups own their
+        // surfaces. An extra card here would put every group inside a card.
         // The list owns this complete viewport, including its left padding,
         // so wheels over the gutter do not escape to an outer scroll surface.
         .child(
@@ -148,7 +146,7 @@ pub fn virtual_rows(
                 div()
                     .w_full()
                     .min_w_0()
-                    .px_4()
+                    .pr_2()
                     .child(render(row, window, cx))
                     .into_any_element()
             })
@@ -160,6 +158,25 @@ pub fn virtual_rows(
             state,
             px(0.),
         ))
+}
+
+pub fn navigation_button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    selected: bool,
+) -> crate::controls::Button {
+    use gpui_kit::component::{Selectable, button::ButtonVariants};
+    crate::controls::Button::new(id)
+        .small()
+        .ghost()
+        .flat_selection()
+        .selection_category(studyapp_core::SelectionCategory::Navigation)
+        .selected(selected)
+        .label(label)
+        .w_full()
+        .min_h(px(36.))
+        .px_3()
+        .justify_start()
 }
 
 pub fn card_grid(width: Pixels) -> Div {
@@ -180,12 +197,12 @@ pub fn section(title: impl Into<SharedString>) -> Div {
         .min_w_0()
         .flex_shrink_0()
         .gap_3()
-        .p_4()
+        .p(px(20.))
         .rounded(px(crate::design::CARD_RADIUS))
         .border_1()
         .border_color(crate::theme::color(BORDER))
         .bg(crate::theme::color(0xFFFFFF))
-        .child(heading(title))
+        .child(heading(title).pb_2())
 }
 
 pub fn field(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
@@ -215,16 +232,14 @@ pub fn settings_row(label: impl Into<SharedString>, control: impl IntoElement) -
         .flex_wrap()
         .items_start()
         .gap_3()
-        .py_2()
-        .border_b_1()
-        .border_color(crate::theme::color(BORDER))
+        .py_3()
         .child(
             div()
                 .flex_basis(px(180.))
                 .flex_grow(0.7)
                 .min_w_0()
                 .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
+                .font_weight(FontWeight::MEDIUM)
                 .child(label),
         )
         .child(
@@ -427,6 +442,92 @@ mod tests {
     use gpui_kit::{TestSupportExt, component::input::InputState};
     use std::cell::RefCell;
     use std::{cell::Cell, collections::BTreeSet, rc::Rc};
+
+    #[gpui_kit::test]
+    fn flat_navigation_keeps_selection_inheritance_single_marker_and_disabled_inertia(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::{component::Disableable, rgb};
+        use studyapp_core::{AppearanceSettings, SelectionCategory, SelectionOverride};
+        struct NavigationFixture(Rc<Cell<usize>>);
+        impl Render for NavigationFixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let calls = self.0.clone();
+                let disabled_calls = self.0.clone();
+                super::column()
+                    .w(px(224.))
+                    .child(crate::components::navigation_item(
+                        super::navigation_button("flat-current", "主题与阅读", true)
+                            .on_click(move |_, _, _| calls.set(calls.get() + 1)),
+                        true,
+                    ))
+                    .child(
+                        super::navigation_button("flat-disabled", "快照策略", false)
+                            .disabled(true)
+                            .on_click(move |_, _, _| disabled_calls.set(disabled_calls.get() + 1)),
+                    )
+            }
+        }
+        cx.update(gpui_kit::init);
+        let calls = Rc::new(Cell::new(0));
+        let (_, visual) = cx.add_window_view({
+            let calls = calls.clone();
+            move |_, _| NavigationFixture(calls)
+        });
+        for (override_category, indicator) in [(false, true), (true, true), (true, false)] {
+            visual.update(|window, cx| {
+                let mut appearance = AppearanceSettings::default();
+                appearance.selection.selected_background = Some("#13579B".into());
+                appearance.selection.selected_border = Some("#AD2468".into());
+                appearance.selection.indicator = indicator;
+                if override_category {
+                    appearance.selection.categories.insert(
+                        SelectionCategory::Navigation,
+                        SelectionOverride {
+                            selected_background: Some("#2468AC".into()),
+                            ..Default::default()
+                        },
+                    );
+                }
+                crate::theme::apply(&appearance, false, cx);
+                window.render_frame(cx);
+                let current = window.find("flat-current");
+                assert_eq!(current.selected(), Some(true));
+                assert_eq!(current.label(), Some("主题与阅读"));
+                assert!(current.bounds().size.height >= px(36.));
+                let color = rgb(if override_category {
+                    0x2468AC
+                } else {
+                    0x13579B
+                })
+                .into();
+                let quads = window.painted_quads();
+                let surface = quads
+                    .iter()
+                    .find(|quad| quad.background.as_solid() == Some(color))
+                    .expect("inherited navigation background was not painted");
+                assert_eq!(surface.border_widths.top, gpui_kit::ScaledPixels(0.));
+                assert_eq!(surface.border_widths.left, gpui_kit::ScaledPixels(0.));
+                let markers: Vec<_> = quads
+                    .iter()
+                    .filter(|quad| quad.background.as_solid() == Some(rgb(0xAD2468).into()))
+                    .collect();
+                assert_eq!(
+                    markers.len(),
+                    usize::from(indicator),
+                    "flat navigation must not duplicate its marker as a trailing dot"
+                );
+                if indicator {
+                    assert!(
+                        (markers[0].bounds.size.width.0 - 3. * window.scale_factor()).abs() < 0.1
+                    );
+                }
+                window.click("flat-current", cx);
+                window.click("flat-disabled", cx);
+            });
+        }
+        assert_eq!(calls.get(), 3);
+    }
 
     struct NumberEventFixture {
         source: Entity<InputState>,

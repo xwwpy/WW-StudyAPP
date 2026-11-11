@@ -6,7 +6,7 @@ use crate::{
     settings_ui::{AppearancePage, SettingsSection, StoragePage},
 };
 use gpui_kit::{
-    component::{Disableable, Selectable, Sizable, button::ButtonVariants},
+    component::{Disableable, Sizable, button::ButtonVariants},
     prelude::FluentBuilder,
     *,
 };
@@ -329,19 +329,22 @@ impl StudyApp {
         }
     }
     pub(crate) fn settings_tree(&self, cx: &mut Context<Self>) -> Div {
+        use gpui_kit::{assets::IconName, component::Icon};
+        use studyapp_ui::settings_components::navigation_button;
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let state = &self.preferences_ui.browsing;
-        let mut tree = column().gap_1().w_full().min_w_0().flex_shrink_0();
-        for (group, label) in [
-            ("learning", "学习与复习"),
-            ("notes", "笔记与编辑"),
-            ("appearance", "外观"),
-            ("notices", "通知与浮层"),
-            ("shortcuts", "快捷键"),
-            ("storage", "存储与备份"),
-            ("sync", "同步"),
-            ("logging", "日志"),
-            ("about", "关于与账户"),
+        let colors = crate::theme::selection(SelectionCategory::Navigation);
+        let mut tree = column().gap_2().w_full().min_w_0().flex_shrink_0();
+        for (group, label, icon) in [
+            ("learning", "学习与复习", IconName::BookOpen),
+            ("notes", "笔记与编辑", IconName::FileText),
+            ("appearance", "外观", IconName::Palette),
+            ("notices", "通知与浮层", IconName::Bell),
+            ("shortcuts", "快捷键", IconName::Keyboard),
+            ("storage", "存储与备份", IconName::HardDrive),
+            ("sync", "同步", IconName::RefreshCw),
+            ("logging", "日志", IconName::ScrollText),
+            ("about", "关于与账户", IconName::Info),
         ] {
             let children: Vec<_> = targets()
                 .into_iter()
@@ -350,67 +353,89 @@ impl StudyApp {
             let expandable = children.len() > 1;
             let expanded = state.expanded.contains(group);
             let selected = children.iter().any(|target| target.id == state.selected);
-            tree = tree.child(
-                Button::new(SharedString::from(format!("settings-group-{group}")))
-                    .selection_category(SelectionCategory::Navigation)
-                    .small()
-                    .ghost()
-                    .w_full()
-                    .justify_start()
-                    .selected(selected && !expandable)
-                    .label(format!(
-                        "{}{}",
-                        if expandable {
-                            if expanded { "▾ " } else { "▸ " }
-                        } else {
-                            ""
-                        },
-                        label
-                    ))
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if expandable {
-                            if !this.preferences_ui.browsing.expanded.remove(group) {
-                                this.preferences_ui.browsing.expanded.insert(group.into());
-                            }
-                            this.persist_settings_browsing();
-                        } else {
-                            this.select_settings_target(group, cx);
-                        }
-                        cx.notify();
-                    })),
-            );
-            if expandable && expanded {
-                for target in children {
-                    let id = target.id.clone();
-                    tree = tree.child(
-                        div().pl_3().child(
-                            Button::new(SharedString::from(format!(
-                                "settings-target-{}",
-                                target.id
-                            )))
-                            .selection_category(SelectionCategory::Navigation)
-                            .small()
-                            .ghost()
-                            .w_full()
-                            .justify_start()
-                            .selected(target.id == state.selected)
-                            .label(target.label)
-                            .disabled(busy)
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.select_settings_target(&id, cx),
-                            )),
-                        ),
-                    );
+            let mut group_button = navigation_button(
+                SharedString::from(format!("settings-group-{group}")),
+                label,
+                selected && !expandable,
+            )
+            .icon(Icon::new(icon).with_size(px(16.)))
+            .font_weight(if selected {
+                FontWeight::SEMIBOLD
+            } else {
+                FontWeight::MEDIUM
+            })
+            .disabled(busy)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                if expandable {
+                    if !this.preferences_ui.browsing.expanded.remove(group) {
+                        this.preferences_ui.browsing.expanded.insert(group.into());
+                    }
+                    this.persist_settings_browsing();
+                } else {
+                    this.select_settings_target(group, cx);
                 }
+                cx.notify();
+            }));
+            if expandable {
+                group_button = group_button.child(div().flex_1()).child(
+                    Icon::new(if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .with_size(px(14.))
+                    .text_color(rgb(colors.idle_text)),
+                );
             }
+            let mut group_view = column()
+                .gap_1()
+                .child(navigation_item(group_button, selected && !expandable));
+            if expandable && expanded {
+                let mut branch = column()
+                    .gap_1()
+                    .ml(px(19.))
+                    .pl_3()
+                    .border_l_1()
+                    .border_color(crate::theme::color(BORDER));
+                for target in children {
+                    if target.id == "notices.component.0" {
+                        branch = branch.child(muted("组件外观").text_xs().px_3().pt_3().pb_1());
+                    }
+                    let id = target.id.clone();
+                    let current = target.id == state.selected;
+                    branch = branch.child(navigation_item(
+                        navigation_button(
+                            SharedString::from(format!("settings-target-{}", target.id)),
+                            target.label,
+                            current,
+                        )
+                        .disabled(busy)
+                        .on_click(
+                            cx.listener(move |this, _, _, cx| this.select_settings_target(&id, cx)),
+                        ),
+                        current,
+                    ));
+                }
+                group_view = group_view.child(branch);
+            }
+            tree = tree.child(group_view);
         }
         column()
             .w(px(f32::from(state.width)))
             .h_full()
             .min_h_0()
             .flex_shrink_0()
-            .gap_2()
+            .gap_3()
+            .bg(rgb(colors.idle_background))
+            .child(
+                column()
+                    .gap_1()
+                    .px_3()
+                    .pt_3()
+                    .pb_2()
+                    .child(heading("偏好设置"))
+                    .child(muted("按分类调整你的使用体验")),
+            )
             .child(
                 scroll_body(
                     "settings-tree-scroll",
@@ -419,18 +444,27 @@ impl StudyApp {
                 .test_support()
                 .flex_1()
                 .min_h_0()
+                .px_1()
                 .child(tree),
             )
             .child(
-                Button::new("settings-tree-width-reset")
-                    .small()
-                    .ghost()
-                    .label("恢复分类树宽度")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.preferences_ui.browsing.width = 224;
-                        this.persist_settings_browsing();
-                        cx.notify();
-                    })),
+                div()
+                    .px_2()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(crate::theme::color(BORDER))
+                    .child(
+                        Button::new("settings-tree-width-reset")
+                            .small()
+                            .ghost()
+                            .label("恢复默认宽度")
+                            .w_full()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.preferences_ui.browsing.width = 224;
+                                this.persist_settings_browsing();
+                                cx.notify();
+                            })),
+                    ),
             )
     }
     pub(crate) fn settings_tree_separator(&self, cx: &Context<Self>) -> Div {
@@ -440,7 +474,13 @@ impl StudyApp {
             .w(px(6.))
             .h_full()
             .cursor_col_resize()
-            .bg(crate::theme::color(BORDER))
+            .child(
+                div()
+                    .h_full()
+                    .w(px(1.))
+                    .mx_auto()
+                    .bg(crate::theme::color(BORDER)),
+            )
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, event: &MouseDownEvent, _, cx| {
@@ -498,31 +538,63 @@ impl StudyApp {
 
 impl StudyApp {
     pub(crate) fn settings_header(&self, compact: bool, cx: &mut Context<Self>) -> Div {
-        row()
+        let category = match self
+            .preferences_ui
+            .browsing
+            .selected
+            .split('.')
+            .next()
+            .unwrap_or("")
+        {
+            "learning" => "学习与复习",
+            "notes" => "笔记与编辑",
+            "appearance" => "外观",
+            "notices" => "通知与浮层",
+            "shortcuts" => "快捷键",
+            "storage" => "存储与备份",
+            "sync" => "同步",
+            "logging" => "日志",
+            _ => "关于与账户",
+        };
+        column()
             .w_full()
             .gap_2()
-            .flex_wrap()
             .flex_shrink_0()
-            .py_2()
-            .children(compact.then(|| {
-                Button::new("settings-drawer-toggle")
-                    .small()
-                    .ghost()
-                    .label("设置分类")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.preferences_ui.settings_drawer = !this.preferences_ui.settings_drawer;
-                        cx.notify();
-                    }))
-            }))
-            .child(heading(self.settings_target_title()))
-            .child(div().flex_1())
+            .px_1()
+            .py_3()
+            .child(muted(format!("偏好设置  /  {category}")))
             .child(
-                Button::new("settings-show-search")
-                    .small()
-                    .ghost()
-                    .label("搜索 · Ctrl+F")
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.open_settings_search(window, cx)),
+                row()
+                    .w_full()
+                    .gap_3()
+                    .flex_wrap()
+                    .children(compact.then(|| {
+                        Button::new("settings-drawer-toggle")
+                            .small()
+                            .ghost()
+                            .icon(gpui_kit::assets::IconName::PanelLeft)
+                            .label("分类")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.preferences_ui.settings_drawer =
+                                    !this.preferences_ui.settings_drawer;
+                                cx.notify();
+                            }))
+                    }))
+                    .child(
+                        typography(studyapp_ui::design::TypeRole::Title)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(self.settings_target_title()),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("settings-show-search")
+                            .small()
+                            .ghost()
+                            .icon(gpui_kit::assets::IconName::Search)
+                            .label("搜索 · Ctrl+F")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_settings_search(window, cx)
+                            })),
                     ),
             )
     }
