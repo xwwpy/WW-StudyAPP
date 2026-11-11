@@ -79,6 +79,35 @@ const COLORS: [(NoticeStyle, &str, &str); 14] = [
         "surface-tooltip-border",
     ),
 ];
+/// Structural layouts own these dimensions; keep dormant overrides visible but
+/// do not offer edits which the active renderer cannot apply.
+fn dimension_constraint(
+    style: NoticeStyle,
+    layout: studyapp_core::NoticeLayout,
+    key: &str,
+) -> Option<&'static str> {
+    use studyapp_core::NoticeLayout::Alternative;
+    match (style, layout, key) {
+        (NoticeStyle::Bubble, _, "surface-radius") => Some("胶囊使用完整圆角，不使用自定义圆角。"),
+        (NoticeStyle::Bubble, _, "surface-height") => {
+            Some("单行胶囊由文字行高决定高度，不使用内容最大高度。")
+        }
+        (NoticeStyle::Banner, _, "surface-width" | "surface-radius") => {
+            Some("全宽横幅随内容区域展开并使用直角，不使用自定义宽度或圆角。")
+        }
+        (NoticeStyle::Banner | NoticeStyle::Snackbar, _, "surface-height") => {
+            Some("反馈条随文字与操作换行，不使用独立正文滚动高度。")
+        }
+        (NoticeStyle::Snackbar, Alternative, "surface-width" | "surface-radius") => {
+            Some("贴底全宽布局随窗口展开并使用直角；切回悬浮条可调整宽度和圆角。")
+        }
+        (NoticeStyle::Dialog, Alternative, "surface-width" | "surface-height") => {
+            Some("近全屏布局随窗口调整尺寸；切回居中面板可调整宽度和内容高度。")
+        }
+        _ => None,
+    }
+}
+
 impl StudyApp {
     pub(crate) fn fill_surface_fields(
         &mut self,
@@ -160,6 +189,8 @@ impl StudyApp {
             .as_ref()
             .map(|d| d.appearance.notifications.clone())
             .unwrap_or_default();
+        let constraint = dimension_constraint(style, appearance.layout(style), key);
+        let disabled = busy || constraint.is_some();
         let overridden = appearance.surfaces.contains_key(&style)
             || appearance
                 .surface_patches
@@ -178,7 +209,12 @@ impl StudyApp {
             .gap_1();
         if inherited {
             row = row.child(muted(format!(
-                "{label}：继承全局／组件默认 · 当前有效值 {value}{}",
+                "{label}：{} {value}{}",
+                if constraint.is_some() {
+                    "保留的默认值"
+                } else {
+                    "继承全局／组件默认 · 当前有效值"
+                },
                 if key == "surface-opacity" { "%" } else { " px" }
             )));
         } else {
@@ -186,7 +222,7 @@ impl StudyApp {
                 format!("{key}-{style:?}"),
                 label,
                 if key == "surface-opacity" { "%" } else { "px" },
-                (value.into(), default.into(), min, max, busy),
+                (value.into(), default.into(), min, max, disabled),
                 move |this, value| {
                     if let Some(draft) = &mut this.preferences_ui.draft {
                         set(
@@ -198,14 +234,14 @@ impl StudyApp {
                 cx,
             ));
         }
-        row.child(
+        row.children(constraint.map(muted)).child(
             Button::new(SharedString::from(format!("{key}-{style:?}-inherit")))
                 .label(if inherited {
                     "自定义"
                 } else {
                     "恢复继承"
                 })
-                .disabled(busy)
+                .disabled(disabled)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if let Some(draft) = &mut this.preferences_ui.draft {
                         let appearance = &mut draft.appearance.notifications;
@@ -931,5 +967,41 @@ impl StudyApp {
             );
         }
         view.child(form::checkbox_group("场景内容字段", fields))
+    }
+}
+
+#[cfg(test)]
+mod constraint_tests {
+    use super::dimension_constraint;
+    use studyapp_core::{NoticeLayout, NoticeStyle};
+    #[test]
+    fn only_structurally_fixed_dimensions_are_disabled_and_switching_unlocks_them() {
+        for (style, key) in [
+            (NoticeStyle::Snackbar, "surface-width"),
+            (NoticeStyle::Snackbar, "surface-radius"),
+            (NoticeStyle::Dialog, "surface-width"),
+            (NoticeStyle::Dialog, "surface-height"),
+        ] {
+            assert!(dimension_constraint(style, NoticeLayout::Primary, key).is_none());
+            assert!(dimension_constraint(style, NoticeLayout::Alternative, key).is_some());
+        }
+        for style in NoticeStyle::ALL {
+            for layout in [NoticeLayout::Primary, NoticeLayout::Alternative] {
+                assert!(dimension_constraint(style, layout, "surface-opacity").is_none());
+                assert!(dimension_constraint(style, layout, "surface-border").is_none());
+            }
+        }
+        assert!(
+            dimension_constraint(
+                NoticeStyle::CornerCard,
+                NoticeLayout::Primary,
+                "surface-height"
+            )
+            .is_none()
+        );
+        assert!(
+            dimension_constraint(NoticeStyle::Bubble, NoticeLayout::Primary, "surface-height")
+                .is_some()
+        );
     }
 }

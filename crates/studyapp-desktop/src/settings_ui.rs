@@ -6528,6 +6528,89 @@ mod scoped_tests {
         }
     }
     #[gpui_kit::test]
+    fn fixed_layout_dimensions_disable_edits_but_preserve_custom_and_invalid_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        use studyapp_core::{NoticeLayout, NoticeStyle};
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(1600.)));
+        visual.update(|_, cx| {
+            app.update(cx, |app, _| {
+                app.preferences_ui.notice_component = Some(NoticeStyle::Snackbar);
+            })
+        });
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            TypedControlFixture {
+                app: app.clone(),
+                selection: false,
+            }
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("surface-width-Snackbar-inherit", cx);
+            window.render_frame(cx);
+            window.click("surface-width-Snackbar-increase", cx);
+            let input =
+                app.read(cx).preferences_ui.number_fields.borrow()["surface-width-Snackbar"]
+                    .input
+                    .clone();
+            input.update(cx, |input, cx| input.set_value("-", window, cx));
+            let before = app
+                .read(cx)
+                .preferences_ui
+                .draft
+                .as_ref()
+                .unwrap()
+                .appearance
+                .notifications
+                .surface(NoticeStyle::Snackbar)
+                .width;
+            app.update(cx, |app, cx| {
+                app.preferences_ui
+                    .draft
+                    .as_mut()
+                    .unwrap()
+                    .appearance
+                    .notifications
+                    .layouts
+                    .insert(NoticeStyle::Snackbar, NoticeLayout::Alternative);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("surface-width-Snackbar-increase", cx);
+            window.click("surface-width-Snackbar-inherit", cx);
+            assert_eq!(input.read(cx).value(), "-");
+            assert_eq!(
+                app.read(cx)
+                    .preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .appearance
+                    .notifications
+                    .surface(NoticeStyle::Snackbar)
+                    .width,
+                before
+            );
+            app.update(cx, |app, cx| {
+                app.preferences_ui
+                    .draft
+                    .as_mut()
+                    .unwrap()
+                    .appearance
+                    .notifications
+                    .layouts
+                    .insert(NoticeStyle::Snackbar, NoticeLayout::Primary);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(input.read(cx).value(), "-");
+            app.update(cx, |app, cx| app.discard_settings(window, cx));
+            assert!(!app.read(cx).settings_dirty(cx));
+        });
+    }
+    #[gpui_kit::test]
     fn component_density_customization_inherits_and_discards_without_persisting(
         cx: &mut TestAppContext,
     ) {
@@ -6918,7 +7001,7 @@ mod scoped_tests {
     impl Render for TooltipSearchFixture {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             self.0.update(cx, |app, cx| {
-                column()
+                crate::components::column()
                     .w(gpui_kit::px(650.))
                     .child(app.settings_search_results(cx))
                     .child(app.notice_surface_controls(cx))
