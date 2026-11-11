@@ -6,7 +6,7 @@ use crate::{
     settings_components as form,
 };
 use gpui_kit::{
-    component::{Disableable, Selectable, Sizable, button::ButtonVariants, input::InputState},
+    component::{Disableable, Sizable, button::ButtonVariants, input::InputState},
     prelude::FluentBuilder,
     *,
 };
@@ -313,6 +313,10 @@ impl StudyApp {
             ] {
                 channels = channels.child(
                     Checkbox::new(SharedString::from(format!("{key}-{suffix}")))
+                        .relative()
+                        .child(studyapp_ui::settings_anchor::probe(format!(
+                            "{key}-{suffix}"
+                        )))
                         .label(label)
                         .checked(checked)
                         .disabled(busy || !rule.enabled)
@@ -370,7 +374,12 @@ impl StudyApp {
             );
             item = item
                 .child(form::checkbox_group("通知投递渠道", channels))
-                .child(form::settings_row("前台样式", styles))
+                .child(
+                    div()
+                        .relative()
+                        .child(studyapp_ui::settings_anchor::probe(format!("{key}-style")))
+                        .child(form::settings_row("前台样式", styles)),
+                )
                 .when(!rule.enabled, |item| {
                     item.child(muted(
                         "启用此通知分类后可调整投递渠道、前台样式与内容字段；当前草稿保留。",
@@ -516,32 +525,26 @@ impl StudyApp {
         let appearance = self.preview_notification_appearance(cx);
         let busy = self.notification_busy();
         if part == 0 {
-            let mut positions = row().flex_wrap().gap_1();
-            for (value, label) in [
-                (NoticePosition::TopLeft, "左上"),
-                (NoticePosition::TopRight, "右上"),
-                (NoticePosition::BottomLeft, "左下"),
-                (NoticePosition::BottomRight, "右下"),
-            ] {
-                positions = positions.child(
-                    Button::new(SharedString::from(format!(
-                        "notification-position-{value:?}"
-                    )))
-                    .small()
-                    .ghost()
-                    .label(label)
-                    .disabled(busy)
-                    .selected(appearance.position == value)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            draft.appearance.notifications.position = value;
-                        }
-                        cx.notify();
-                    })),
-                );
-            }
+            let positions = form::choice_with_default(
+                "notification-position",
+                (appearance.position, NoticePosition::default()),
+                vec![
+                    (NoticePosition::TopLeft, "左上".into()),
+                    (NoticePosition::TopRight, "右上".into()),
+                    (NoticePosition::BottomLeft, "左下".into()),
+                    (NoticePosition::BottomRight, "右下".into()),
+                ],
+                busy,
+                cx.weak_entity(),
+                |this, position, _, cx| {
+                    if let Some(draft) = &mut this.preferences_ui.draft {
+                        draft.appearance.notifications.position = position;
+                    }
+                    cx.notify();
+                },
+            );
             let controls=form::section("通知外观").child(muted("沿用应用字体、按钮和明暗风格。组件按真实业务匹配；在通知场景中仅可选择适用的替代组件。"))
-            .child(form::field("角落卡片位置",positions))
+            .child(form::settings_row("角落卡片位置",positions))
             .child(self.notification_number("notification-duration","普通提示停留（秒）",appearance.duration_seconds.into(),(2,30,1),|s,v|s.duration_seconds=v as u8,cx))
             .child(self.notification_number("notification-visible","最多叠放",appearance.max_visible.into(),(1,4,1),|s,v|s.max_visible=v as u8,cx))
             .child(self.notification_number("notification-width","卡片宽度",appearance.width,(240,480,20),|s,v|s.width=v,cx))

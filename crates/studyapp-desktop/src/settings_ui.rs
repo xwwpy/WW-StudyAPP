@@ -3464,6 +3464,8 @@ impl StudyApp {
             }
         }
         let mut entry = column()
+            .relative()
+            .child(studyapp_ui::settings_anchor::probe(action.label))
             .id(SharedString::from(format!("shortcut-row-{id}")))
             .test_support()
             .gap_1()
@@ -4620,7 +4622,7 @@ mod scoped_tests {
                 assert!(
                     window
                         .try_find(if appearance {
-                            "notification-width-more"
+                            "notification-width-increase"
                         } else {
                             "notification-update-badge"
                         })
@@ -4789,20 +4791,19 @@ mod scoped_tests {
         visual.run_until_parked();
         visual.update(|window, cx| {
             window.draw(cx).clear(cx);
-            window.click("notification-style-Banner", cx);
-            window.click("notification-position-TopLeft", cx);
-            window.click("notification-width-more", cx);
+            studyapp_ui::settings_components::select_choice(window, "notification-position", 0, cx);
+            window.click("notification-width-increase", cx);
             app.update(cx, |app, cx| {
                 let settings = app.preferences_ui.draft.as_ref().unwrap();
                 assert_eq!(
                     settings.appearance.notifications.style,
-                    studyapp_core::NoticeStyle::Banner
+                    studyapp_core::NotificationAppearance::default().style
                 );
                 assert_eq!(
                     settings.appearance.notifications.position,
                     studyapp_core::NoticePosition::TopLeft
                 );
-                assert_eq!(settings.appearance.notifications.width, 380);
+                assert_eq!(settings.appearance.notifications.width, 361);
                 settings.validate().unwrap();
                 assert!(!app.preferences_ui.appearance_touched);
                 assert_eq!(app.notifications.read(cx).visible_count(), 0);

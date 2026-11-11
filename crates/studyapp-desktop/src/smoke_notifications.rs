@@ -197,7 +197,7 @@ async fn measure_notification_cache(
                         },
                         window
                             .try_find(if appearance {
-                                "notification-width-more"
+                                "notification-width-increase"
                             } else {
                                 "notification-update-badge"
                             })
@@ -241,7 +241,7 @@ async fn measure_notification_cache(
                     "notification page never built controls; appearance={appearance}"
                 );
                 let control = if appearance {
-                    "notification-width-more"
+                    "notification-width-increase"
                 } else {
                     "notification-update-badge"
                 };
@@ -319,7 +319,7 @@ async fn measure_notification_cache(
                         },
                         window
                             .try_find(if appearance {
-                                "notification-width-more"
+                                "notification-width-increase"
                             } else {
                                 "notification-dnd"
                             })

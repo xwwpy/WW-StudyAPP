@@ -4,9 +4,10 @@ use crate::settings_ui::{AppearancePage, SettingsSection, StoragePage};
 pub struct SettingResult {
     target: Option<&'static str>,
     row: usize,
-    anchor: Option<&'static str>,
+    anchor: Option<std::borrow::Cow<'static, str>>,
     component: Option<studyapp_core::NoticeStyle>,
     category: Option<studyapp_core::NoticeCategory>,
+    scenario_field: Option<studyapp_core::NoticeField>,
     pub section: SettingsSection,
     pub label: &'static str,
     pub keywords: &'static str,
@@ -23,6 +24,7 @@ impl SettingResult {
             anchor: None,
             component: None,
             category: None,
+            scenario_field: None,
             section,
             label,
             keywords,
@@ -36,8 +38,12 @@ impl SettingResult {
         self.row = row;
         self
     }
-    const fn anchor(mut self, anchor: &'static str) -> Self {
-        self.anchor = Some(anchor);
+    fn anchor(mut self, anchor: &'static str) -> Self {
+        self.anchor = Some(std::borrow::Cow::Borrowed(anchor));
+        self
+    }
+    fn owned_anchor(mut self, anchor: String) -> Self {
+        self.anchor = Some(std::borrow::Cow::Owned(anchor));
         self
     }
     fn target_id(&self) -> String {
@@ -216,13 +222,16 @@ pub fn search(query: &str) -> Vec<SettingResult> {
         .into_iter()
         .filter(|item| {
             let text = format!(
-                "{} {} {} {}",
+                "{} {} {} {} {}",
                 item.label,
                 item.keywords,
                 item.component
                     .map(|style| style.label())
                     .unwrap_or_default(),
-                crate::settings_navigation::target_title(&item.target_id())
+                crate::settings_navigation::target_title(&item.target_id()),
+                item.category
+                    .map(|category| category.label())
+                    .unwrap_or_default(),
             )
             .to_lowercase();
             query.split_whitespace().all(|word| text.contains(word))
@@ -335,7 +344,23 @@ impl StudyApp {
             .as_ref()
             .map(|input| input.read(cx).value())
             .unwrap_or_default();
-        let results = search(&query);
+        let results: Vec<_> = search(&query)
+            .into_iter()
+            .filter(|entry| match (entry.category, entry.scenario_field) {
+                (Some(category), Some(field)) => {
+                    let style = self
+                        .preferences_ui
+                        .draft
+                        .as_ref()
+                        .and_then(|draft| draft.notifications.rule(category).style)
+                        .unwrap_or_else(|| {
+                            category.default_style(studyapp_core::NoticeSeverity::Information)
+                        });
+                    style.configurable_fields().contains(&field)
+                }
+                _ => true,
+            })
+            .collect();
         let mut content = column()
             .gap_2()
             .child(muted(format!("找到 {} 项设置", results.len())));
@@ -372,6 +397,11 @@ impl StudyApp {
                             .disabled(self.preferences_ui.busy)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.select_settings_target(&result.target_id(), cx);
+                                if result.section == SettingsSection::Shortcuts
+                                    && let Some(input) = &this.preferences_ui.shortcut_search
+                                {
+                                    input.update(cx, |input, cx| input.set_value("", window, cx));
+                                }
                                 this.preferences_ui.notification_category = result.category;
                                 let category_index = result.category.and_then(|category| {
                                     studyapp_core::NoticeCategory::ALL
@@ -424,7 +454,7 @@ impl StudyApp {
                                     ),
                                 };
                                 studyapp_ui::settings_anchor::seek(
-                                    result.anchor.unwrap_or(result.label),
+                                    result.anchor.as_deref().unwrap_or(result.label),
                                     scroll,
                                     window,
                                     cx,
@@ -957,6 +987,95 @@ fn field_settings() -> Vec<SettingResult> {
             fields.push(entry);
         }
     }
+    for style in studyapp_core::NoticeStyle::ALL {
+        for field in style.configurable_fields() {
+            let mut entry = SettingResult::new(
+                S::Appearance,
+                field.label(),
+                "组件 默认 内容 字段 简略 详细 继承 显示 隐藏",
+            )
+            .anchor(field.label());
+            entry.component = Some(style);
+            fields.push(entry);
+        }
+    }
+    for category in studyapp_core::NoticeCategory::ALL {
+        for (label, suffix) in [
+            ("应用内", "foreground"),
+            ("后台桌面卡片", "background"),
+            ("前台样式", "style"),
+        ] {
+            let mut entry = SettingResult::new(
+                S::Notifications,
+                label,
+                "通知 场景 渠道 开关 组件 继承 自定义",
+            )
+            .owned_anchor(format!("notification-rule-{category:?}-{suffix}"));
+            entry.category = Some(category);
+            fields.push(entry);
+        }
+        let mut available = Vec::new();
+        for style in category.notification_styles() {
+            for field in style.configurable_fields() {
+                if !available.contains(field) {
+                    available.push(*field);
+                }
+            }
+        }
+        for field in available {
+            let mut entry = SettingResult::new(
+                S::Notifications,
+                field.label(),
+                "通知 场景 字段 内容 覆盖 继承 简略 详细 显示 隐藏",
+            )
+            .owned_anchor(format!("scenario-{category:?}-{field:?}"));
+            entry.category = Some(category);
+            entry.scenario_field = Some(field);
+            fields.push(entry);
+        }
+    }
+    for (label, keywords) in [
+        ("角落卡片位置", "左上 右上 左下 右下 定位"),
+        ("普通提示停留（秒）", "自动 消失 时长 秒 倒计时"),
+        ("最多叠放", "数量 可见 上限 排队"),
+        ("卡片宽度", "宽度 像素 尺寸"),
+        ("卡片圆角", "圆角 像素 边框"),
+        ("启用过渡动画", "动画 过渡 动效"),
+        ("减少动态效果", "动画 无障碍 减少动态"),
+        ("显示卡片阴影", "卡片 阴影 外观"),
+        ("紧凑间距", "间距 紧凑 密度"),
+        ("卡片背景（自动 / RGBA）", "颜色 背景 透明度 RGBA"),
+        ("强调色（自动 / RGBA）", "颜色 强调 透明度 RGBA"),
+        ("笔记来源", "悬停 元数据 来源"),
+        ("记录状态", "悬停 元数据 状态"),
+        ("学习时间", "悬停 元数据 学习"),
+        ("上次复习", "悬停 元数据 复习"),
+        ("下次复习", "悬停 元数据 复习"),
+    ] {
+        fields.push(
+            SettingResult::new(S::Appearance, label, keywords)
+                .target("notices.general", 0)
+                .anchor(label),
+        );
+    }
+    for region in studyapp_core::NoticeRegion::ALL {
+        fields.push(
+            SettingResult::new(
+                S::Notifications,
+                region.label(),
+                "分区 排列 堆叠 可见数量 数量 排队 新到靠前 新到靠后 阶梯",
+            )
+            .target("notices.regions", 0)
+            .anchor(region.label()),
+        );
+    }
+    for (index, action) in crate::shortcuts::SHORTCUT_ACTIONS.iter().enumerate() {
+        fields.push(
+            SettingResult::new(S::Shortcuts, action.label, action.group)
+                .target("shortcuts", index)
+                .anchor(action.label),
+        );
+    }
     fields
 }
 
@@ -1010,7 +1129,8 @@ mod tests {
         assert!(
             search("日志目录")
                 .iter()
-                .any(|entry| entry.target_id() == "logging" && entry.anchor == Some("日志目录"))
+                .any(|entry| entry.target_id() == "logging"
+                    && entry.anchor.as_deref() == Some("日志目录"))
         );
     }
 
@@ -1032,7 +1152,38 @@ mod tests {
             assert_eq!(entry.target_id(), target);
             assert_eq!(entry.row, row);
             assert_eq!(entry.markdown_group, group);
-            assert_eq!(entry.anchor, Some(label));
+            assert_eq!(entry.anchor.as_deref(), Some(label));
+        }
+    }
+
+    #[test]
+    fn dynamic_notice_fields_and_shortcuts_are_registered_from_the_real_allowlists() {
+        for style in studyapp_core::NoticeStyle::ALL {
+            for field in style.configurable_fields() {
+                assert!(
+                    search(field.label())
+                        .iter()
+                        .any(|entry| entry.component == Some(style)
+                            && entry.label == field.label()
+                            && entry.anchor.as_deref() == Some(field.label()))
+                );
+            }
+        }
+        // Category names are derived, so use the actual public label rather than
+        // assuming the wording of a particular localized scene.
+        let label = studyapp_core::NoticeCategory::StartupRecovery.label();
+        let result = search(&format!("{label} 前台样式"));
+        assert!(result.iter().any(|entry| entry.category
+            == Some(studyapp_core::NoticeCategory::StartupRecovery)
+            && entry.anchor.as_deref() == Some("notification-rule-StartupRecovery-style")));
+        for (index, action) in crate::shortcuts::SHORTCUT_ACTIONS.iter().enumerate() {
+            assert!(
+                search(action.label)
+                    .iter()
+                    .any(|entry| entry.target_id() == "shortcuts"
+                        && entry.row == index
+                        && entry.anchor.as_deref() == Some(action.label))
+            );
         }
     }
 

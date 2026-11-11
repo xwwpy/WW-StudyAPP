@@ -478,6 +478,8 @@ impl StudyApp {
                 Checkbox::new(SharedString::from(format!(
                     "notice-field-{style:?}-{field:?}"
                 )))
+                .relative()
+                .child(studyapp_ui::settings_anchor::probe(field.label()))
                 .label(field.label())
                 .checked(checked)
                 .disabled(busy)
@@ -581,6 +583,8 @@ impl StudyApp {
             let mut displayed = content;
             controls = controls.child(
                 Checkbox::new(id)
+                    .relative()
+                    .child(studyapp_ui::settings_anchor::probe(label))
                     .label(label)
                     .checked(*field(&mut displayed))
                     .disabled(busy)
@@ -619,6 +623,8 @@ impl StudyApp {
             let settings = appearance.region_settings(region);
             view = view.child(
                 column()
+                    .relative()
+                    .child(studyapp_ui::settings_anchor::probe(region.label()))
                     .gap_2()
                     .py_2()
                     .child(heading(region.label()))
@@ -830,34 +836,39 @@ impl StudyApp {
                 )))
             };
             view = view.child(
-                control.child(
-                    Button::new(SharedString::from(format!(
-                        "scenario-inherit-{category:?}-{field:?}"
+                control
+                    .relative()
+                    .child(studyapp_ui::settings_anchor::probe(format!(
+                        "scenario-{category:?}-{field:?}"
                     )))
-                    .label(if stored.is_some() {
-                        "恢复继承"
-                    } else {
-                        "自定义"
-                    })
-                    .disabled(busy || locked)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            *field.patch(
-                                draft
-                                    .appearance
-                                    .notifications
-                                    .scenario_fields
-                                    .entry(category)
-                                    .or_default(),
-                            ) = if stored.is_some() {
-                                None
-                            } else {
-                                Some(checked)
-                            };
-                        }
-                        cx.notify();
-                    })),
-                ),
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "scenario-inherit-{category:?}-{field:?}"
+                        )))
+                        .label(if stored.is_some() {
+                            "恢复继承"
+                        } else {
+                            "自定义"
+                        })
+                        .disabled(busy || locked)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if let Some(draft) = &mut this.preferences_ui.draft {
+                                *field.patch(
+                                    draft
+                                        .appearance
+                                        .notifications
+                                        .scenario_fields
+                                        .entry(category)
+                                        .or_default(),
+                                ) = if stored.is_some() {
+                                    None
+                                } else {
+                                    Some(checked)
+                                };
+                            }
+                            cx.notify();
+                        })),
+                    ),
             );
         }
         view
