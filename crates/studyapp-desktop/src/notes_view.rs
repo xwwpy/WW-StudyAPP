@@ -996,7 +996,7 @@ impl StudyApp {
             let mut reader = document_surface()
                 .overflow_hidden()
                 .child(reader_document_header(
-                    note.title.clone(),
+                    studyapp_desktop::presentation::document_filename(&note.path, &note.title),
                     summary,
                     row()
                         .gap_1()
@@ -1157,7 +1157,9 @@ impl StudyApp {
             } else {
                 reader = reader.child(self.note_content.clone());
             }
-            reader
+            reader.child(studyapp_ui::components::document_status_bar(
+                muted("只读 · 点击正文进入编辑").truncate(),
+            ))
         } else {
             let palette = crate::theme::palette();
             let library = self.folders.read(cx).library_index();
