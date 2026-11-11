@@ -59,7 +59,20 @@ impl StudyApp {
         let pages = stages.len().div_ceil(PAGE_SIZE).max(1);
         let page = self.preferences_ui.review_page.min(pages - 1);
         let defaults = studyapp_core::Settings::default().review_days;
-        let mut view = form::section("复习间隔").child(muted("每个阶段直接填写天数。1–20 个阶段，每阶段 1–3650 天；跨页保留全部草稿，只影响新建复习计划。"));
+        let reset = Button::new("review-reset-stages")
+            .small()
+            .ghost()
+            .label("重置复习间隔")
+            .disabled(busy)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.fill_review_stages(
+                    &studyapp_core::Settings::default().review_days,
+                    window,
+                    cx,
+                );
+                this.sync_review_stage_list(window, cx);
+            }));
+        let mut view = form::section_with_actions("复习间隔", reset).child(muted("每个阶段直接填写天数。1–20 个阶段，每阶段 1–3650 天；跨页保留全部草稿，只影响新建复习计划。"));
         for (index, input) in stages
             .iter()
             .enumerate()
@@ -97,37 +110,20 @@ impl StudyApp {
             ));
         }
         view = view.child(
-            row()
-                .flex_wrap()
-                .child(
-                    Button::new("review-add-stage")
-                        .small()
-                        .label("添加阶段")
-                        .disabled(busy || stages.len() >= 20)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if this.preferences_ui.review_stages.len() < 20 {
-                                this.add_review_input(1, window, cx);
-                                this.preferences_ui.review_page =
-                                    (this.preferences_ui.review_stages.len() - 1) / PAGE_SIZE;
-                                this.sync_review_stage_list(window, cx);
-                            }
-                        })),
-                )
-                .child(
-                    Button::new("review-reset-stages")
-                        .small()
-                        .ghost()
-                        .label("重置复习间隔")
-                        .disabled(busy)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.fill_review_stages(
-                                &studyapp_core::Settings::default().review_days,
-                                window,
-                                cx,
-                            );
+            row().flex_wrap().child(
+                Button::new("review-add-stage")
+                    .small()
+                    .label("添加阶段")
+                    .disabled(busy || stages.len() >= 20)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.preferences_ui.review_stages.len() < 20 {
+                            this.add_review_input(1, window, cx);
+                            this.preferences_ui.review_page =
+                                (this.preferences_ui.review_stages.len() - 1) / PAGE_SIZE;
                             this.sync_review_stage_list(window, cx);
-                        })),
-                ),
+                        }
+                    })),
+            ),
         );
         if pages > 1 {
             view = view.child(

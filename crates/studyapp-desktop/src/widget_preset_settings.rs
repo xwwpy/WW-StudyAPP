@@ -59,7 +59,20 @@ impl StudyApp {
         let pages = stages.len().div_ceil(PAGE_SIZE).max(1);
         let page = self.preferences_ui.widget_preset_page.min(pages - 1);
         let defaults = studyapp_core::TimerWidgetSettings::default().countdown_presets;
-        let mut view = form::section("倒计时预设").child(muted("每个预设直接填写分钟数。1–8 个不重复预设，每项为正整数分钟；跨页保留全部草稿，保存后用于倒计时选择。"));
+        let reset = Button::new("widget_preset-reset-stages")
+            .small()
+            .ghost()
+            .label("重置倒计时预设")
+            .disabled(busy)
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.fill_widget_preset_stages(
+                    &studyapp_core::TimerWidgetSettings::default().countdown_presets,
+                    window,
+                    cx,
+                );
+                this.sync_widget_preset_stage_list(window, cx);
+            }));
+        let mut view = form::section_with_actions("倒计时预设", reset).child(muted("每个预设直接填写分钟数。1–8 个不重复预设，每项为正整数分钟；跨页保留全部草稿，保存后用于倒计时选择。"));
         for (index, input) in stages
             .iter()
             .enumerate()
@@ -97,16 +110,15 @@ impl StudyApp {
             ));
         }
         view = view.child(
-            row()
-                .flex_wrap()
-                .child(
-                    Button::new("widget_preset-add-stage")
-                        .small()
-                        .label("添加预设")
-                        .disabled(busy || stages.len() >= 8)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if this.preferences_ui.widget_preset_stages.len() < 8 {
-                                let next = (1..=9)
+            row().flex_wrap().child(
+                Button::new("widget_preset-add-stage")
+                    .small()
+                    .label("添加预设")
+                    .disabled(busy || stages.len() >= 8)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.preferences_ui.widget_preset_stages.len() < 8 {
+                            let next =
+                                (1..=9)
                                     .find(|candidate| {
                                         !this.preferences_ui.widget_preset_stages.iter().any(
                                             |input| {
@@ -116,29 +128,13 @@ impl StudyApp {
                                         )
                                     })
                                     .unwrap_or(1);
-                                this.add_widget_preset_input(next, window, cx);
-                                this.preferences_ui.widget_preset_page =
-                                    (this.preferences_ui.widget_preset_stages.len() - 1)
-                                        / PAGE_SIZE;
-                                this.sync_widget_preset_stage_list(window, cx);
-                            }
-                        })),
-                )
-                .child(
-                    Button::new("widget_preset-reset-stages")
-                        .small()
-                        .ghost()
-                        .label("重置倒计时预设")
-                        .disabled(busy)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.fill_widget_preset_stages(
-                                &studyapp_core::TimerWidgetSettings::default().countdown_presets,
-                                window,
-                                cx,
-                            );
+                            this.add_widget_preset_input(next, window, cx);
+                            this.preferences_ui.widget_preset_page =
+                                (this.preferences_ui.widget_preset_stages.len() - 1) / PAGE_SIZE;
                             this.sync_widget_preset_stage_list(window, cx);
-                        })),
-                ),
+                        }
+                    })),
+            ),
         );
         if pages > 1 {
             view = view.child(

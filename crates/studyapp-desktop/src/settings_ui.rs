@@ -6626,6 +6626,88 @@ mod scoped_tests {
             });
         });
     }
+    struct StageSettingsFixture {
+        app: Entity<StudyApp>,
+        widget: bool,
+    }
+    impl Render for StageSettingsFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                if self.widget {
+                    app.widget_preset_stages(cx)
+                } else {
+                    app.review_stages(cx)
+                }
+            })
+        }
+    }
+    #[gpui_kit::test]
+    fn stage_group_reset_stays_in_its_header_on_every_page_and_preserves_other_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        for widget in [false, true] {
+            visual.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.fill_review_stages(&[1, 2, 3, 4, 5, 6, 7], window, cx);
+                    app.fill_widget_preset_stages(&[1, 2, 3, 4, 5, 6, 7, 8], window, cx);
+                    app.preferences_ui.review_page = 1;
+                    app.preferences_ui.widget_preset_page = 1;
+                    app.interval.update(cx, |input, cx| {
+                        input.set_value("unrelated draft", window, cx)
+                    });
+                })
+            });
+            visual.replace_root_view(|_, cx| {
+                cx.observe(&app, |_, _, cx| cx.notify()).detach();
+                StageSettingsFixture {
+                    app: app.clone(),
+                    widget,
+                }
+            });
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let (header, reset) = if widget {
+                    (
+                        "settings-section-header-倒计时预设",
+                        "widget_preset-reset-stages",
+                    )
+                } else {
+                    ("settings-section-header-复习间隔", "review-reset-stages")
+                };
+                let bounds = window.find(header).bounds();
+                let action = window.find(reset).bounds();
+                assert!(action.top() >= bounds.top() && action.bottom() <= bounds.bottom());
+                assert!(action.left() >= bounds.left() && action.right() <= bounds.right());
+                window.click(reset, cx);
+                app.update(cx, |app, cx| {
+                    assert_eq!(app.interval.read(cx).value(), "unrelated draft");
+                    if widget {
+                        assert_eq!(app.preferences_ui.widget_preset_page, 0);
+                        assert_eq!(
+                            app.preferences_ui.widget_preset_stages.len(),
+                            studyapp_core::TimerWidgetSettings::default()
+                                .countdown_presets
+                                .len()
+                        );
+                        assert_eq!(app.preferences_ui.review_stages.len(), 7);
+                    } else {
+                        assert_eq!(app.preferences_ui.review_page, 0);
+                        assert_eq!(
+                            app.preferences_ui.review_stages.len(),
+                            studyapp_core::Settings::default().review_days.len()
+                        );
+                        assert_eq!(app.preferences_ui.widget_preset_stages.len(), 8);
+                    }
+                    assert_eq!(
+                        app.preferences_ui.saved.as_ref().unwrap().settings,
+                        studyapp_core::Settings::default()
+                    );
+                });
+            });
+        }
+    }
+
     struct WorkspaceFixture {
         app: Entity<StudyApp>,
         scroll: gpui_kit::ScrollHandle,

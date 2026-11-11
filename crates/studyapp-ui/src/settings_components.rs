@@ -190,7 +190,27 @@ pub fn card_grid(width: Pixels) -> Div {
 }
 
 pub fn section(title: impl Into<SharedString>) -> Div {
-    let title = title.into();
+    section_frame(title.into(), None)
+}
+
+/// Scope-specific actions remain beside the group title at every page position.
+pub fn section_with_actions(title: impl Into<SharedString>, actions: impl IntoElement) -> Div {
+    section_frame(title.into(), Some(actions.into_any_element()))
+}
+
+fn section_frame(title: SharedString, actions: Option<AnyElement>) -> Div {
+    let header = row()
+        .id(SharedString::from(format!(
+            "settings-section-header-{title}"
+        )))
+        .test_support()
+        .w_full()
+        .min_w_0()
+        .flex_wrap()
+        .gap_2()
+        .pb_2()
+        .child(heading(title.clone()).min_w_0().flex_1())
+        .children(actions);
     column()
         .relative()
         .child(crate::settings_anchor::probe(title.clone()))
@@ -202,7 +222,7 @@ pub fn section(title: impl Into<SharedString>) -> Div {
         .border_1()
         .border_color(crate::theme::color(BORDER))
         .bg(crate::theme::color(0xFFFFFF))
-        .child(heading(title).pb_2())
+        .child(header)
 }
 
 pub fn field(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
