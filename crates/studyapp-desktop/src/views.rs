@@ -1073,6 +1073,7 @@ impl StudyApp {
         let sessions = self
             .read_models
             .record_positions(record_date, self.record_filter);
+        let page = studyapp_desktop::record_pagination::RecordPage::new(sessions.len(), self.record_page, self.record_page_size);
         content.child(
             card()
                 .child(
@@ -1098,7 +1099,7 @@ impl StudyApp {
                                         .label(label)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.record_filter = i;
-                                            this.record_limit = 50;
+                                            this.record_page = 0;
                                             cx.notify();
                                         }))
                                 }),
@@ -1110,17 +1111,31 @@ impl StudyApp {
                 .children(
                     sessions
                         .iter()
-                        .take(self.record_limit)
+                        .skip(page.range.start)
+                        .take(page.range.len())
                         .map(|&position| self.session_row(&snapshot.sessions[position], cx)),
                 )
-                .when(sessions.len() > self.record_limit, |c| {
-                    c.child(Button::new("more-records").action("再显示 50 条").on_click(
-                        cx.listener(|this, _, _, cx| {
-                            this.record_limit += 50;
-                            cx.notify();
-                        }),
-                    ))
-                }),
+                .child(
+                    row().id("record-pagination").test_support().flex_wrap()
+                        .child(muted(if sessions.is_empty() { "0 条".into() } else {
+                            format!("第 {} / {} 页 · {}–{} / {} 条", page.index + 1, page.pages, page.range.start + 1, page.range.end, sessions.len())
+                        }))
+                        .child(div().flex_1())
+                        .children([20_usize, 50, 100].into_iter().map(|size| {
+                            Button::new(("record-page-size", size)).ghost().small()
+                                .label(format!("{size} 条 / 页")).selected(self.record_page_size == size)
+                                .on_click(cx.listener(move |this, _, _, cx| { this.record_page_size = size; this.record_page = 0; cx.notify(); }))
+                        }))
+                        .children([
+                            ("record-first", "首页", 0, page.index == 0),
+                            ("record-previous", "上一页", page.index.saturating_sub(1), page.index == 0),
+                            ("record-next", "下一页", (page.index + 1).min(page.pages - 1), page.index + 1 >= page.pages),
+                            ("record-last", "末页", page.pages - 1, page.index + 1 >= page.pages),
+                        ].into_iter().map(|(id,label,target,disabled)| {
+                            Button::new(id).small().label(label).disabled(disabled)
+                                .on_click(cx.listener(move |this, _, _, cx| { this.record_page = target; cx.notify(); }))
+                        })),
+                ),
         )
     }
 

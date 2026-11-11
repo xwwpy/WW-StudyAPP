@@ -74,7 +74,8 @@ pub struct StudyApp {
     pub show_detached: bool,
     pub stats_days: usize,
     pub record_filter: usize,
-    pub record_limit: usize,
+    pub record_page_size: usize,
+    pub record_page: usize,
     pub review_filter: usize,
     pub last_library: String,
     pub note_title: Entity<InputState>,
@@ -260,7 +261,7 @@ impl StudyApp {
         cx.subscribe(
             &record_date,
             |this, _, _: &gpui_kit::component::input::InputEvent, cx| {
-                this.record_limit = 50;
+                this.record_page = 0;
                 cx.notify();
             },
         )
@@ -696,7 +697,8 @@ impl StudyApp {
             show_detached: false,
             stats_days: 30,
             record_filter: 0,
-            record_limit: 50,
+            record_page_size: 50,
+            record_page: 0,
             review_filter: 0,
             last_library: String::new(),
             notified: HashSet::new(),

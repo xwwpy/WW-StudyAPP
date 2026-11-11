@@ -10,3 +10,5 @@ pub mod update_policy;
 
 pub mod app_paths;
 pub mod library_tree;
+
+pub mod record_pagination;
