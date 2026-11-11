@@ -282,12 +282,100 @@ impl BoxStyle {
             || self.height.is_some()
     }
 }
+fn reading_font(font: studyapp_core::ReadingFont) -> &'static str {
+    match font {
+        studyapp_core::ReadingFont::Sans => "sans-serif",
+        studyapp_core::ReadingFont::Serif => "serif",
+        studyapp_core::ReadingFont::Mono => "monospace",
+    }
+}
+/// The same semantic tokens, scales and fonts as the continuous note renderer.
+fn markdown_css(tag: &str, pre: bool, theme: &crate::theme::ResolvedTheme) -> String {
+    let colors = theme.markdown_rgba;
+    let layout = theme.markdown_layout;
+    let size = if layout.body_size == 0 {
+        theme.font_size
+    } else {
+        layout.body_size
+    } as f32;
+    let code_size = if layout.code_size == 0 {
+        (size - 1.).max(12.)
+    } else {
+        layout.code_size as f32
+    };
+    let ink = |index: usize| colors[index].to_hex();
+    match tag {
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
+            let scale = match tag {
+                "h1" => 1.85,
+                "h2" => 1.5,
+                "h3" => 1.25,
+                _ => 1.08,
+            };
+            format!(
+                "color:{};font-size:{}px;font-weight:650;line-height:1.45;margin:9px 0px 5px 0px",
+                ink(1),
+                size * scale
+            )
+        }
+        "blockquote" => format!(
+            "color:{};background-color:{};padding:0px 16px;border-left-width:3px;border-color:{}",
+            ink(4),
+            ink(5),
+            ink(13)
+        ),
+        "a" => format!("color:{};text-decoration:underline", ink(2)),
+        "del" | "s" => format!("color:{}", ink(3)),
+        "pre" => format!(
+            "color:{};background-color:{};font-family:{};font-size:{code_size}px;padding:16px;border-style:solid;border-width:{}px;border-color:{};border-radius:{}px",
+            ink(6),
+            ink(7),
+            reading_font(layout.mono_font),
+            u8::from(layout.code_border),
+            ink(14),
+            layout.code_radius
+        ),
+        "code" if pre => format!(
+            "color:{};font-family:{};font-size:{code_size}px",
+            ink(6),
+            reading_font(layout.mono_font)
+        ),
+        "code" => format!(
+            "color:{};background-color:{};font-family:{};font-size:{}px",
+            ink(6),
+            ink(7),
+            reading_font(layout.mono_font),
+            size * 0.92
+        ),
+        "table" => format!(
+            "color:{};background-color:{};border-color:{};border-style:solid;border-width:{}px",
+            ink(8),
+            ink(10),
+            ink(13),
+            u8::from(layout.table_grid)
+        ),
+        "th" => format!(
+            "color:{};background-color:{};padding:6px 10px;border-color:{};border-style:solid;border-width:{}px",
+            ink(9),
+            RgbaColor::opaque(theme.surface_raised).to_hex(),
+            ink(13),
+            u8::from(layout.table_grid)
+        ),
+        "td" => format!(
+            "padding:6px 10px;border-color:{};border-style:solid;border-width:{}px",
+            ink(13),
+            u8::from(layout.table_grid)
+        ),
+        _ => String::new(),
+    }
+}
 struct Builder {
     runs: Vec<Run>,
     separator: String,
     last_space: bool,
     markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
     html_document: bool,
+    theme: Option<crate::theme::ResolvedTheme>,
 }
 impl Builder {
     fn boundary(&mut self, separator: &'static str) {
@@ -365,6 +453,7 @@ impl Builder {
     ) -> Option<Vec<Node>> {
         let mut out = Vec::new();
         let mut list_index = list;
+        let mut row_index = 0;
         for node in nodes {
             match node {
                 SafeHtmlNode::Text(value) => out.extend(self.text(value, font, pre)?),
@@ -379,7 +468,21 @@ impl Builder {
                         out.push(Node::Break(font.line_height));
                         continue;
                     }
-                    let (next, mut bx) = styles(tag, style, font);
+                    let themed = self.theme.map(|theme| {
+                        let mut defaults = markdown_css(tag, pre, &theme);
+                        if tag == "tr" {
+                            if theme.markdown_layout.table_stripes && row_index % 2 == 1 {
+                                defaults.push_str(&format!(
+                                    ";background-color:{}",
+                                    theme.markdown_rgba[11].to_hex()
+                                ));
+                            }
+                            row_index += 1;
+                        }
+                        defaults
+                    });
+                    let css = themed.map(|defaults| format!("{defaults};{style}"));
+                    let (next, mut bx) = styles(tag, css.as_deref().unwrap_or(style), font);
                     let kind = match tag.as_str() {
                         "table" | "thead" | "tbody" | "tfoot" | "ul" | "ol" | "dl" => Kind::Column,
                         "tr" => Kind::Row,
@@ -568,12 +671,42 @@ impl Document {
             studyapp_core::ListStyle::default().markers(),
         )
     }
+    #[cfg(test)]
     pub fn from_markdown_with_style(
         source: &str,
         size: f32,
         color: RgbaColor,
         render_html: bool,
         markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
+    ) -> Option<Self> {
+        Self::build(source, size, color, render_html, markers, None)
+    }
+    pub fn from_markdown_with_theme(
+        source: &str,
+        theme: crate::theme::ResolvedTheme,
+    ) -> Option<Self> {
+        let layout = theme.markdown_layout;
+        let size = if layout.body_size == 0 {
+            theme.font_size
+        } else {
+            layout.body_size
+        };
+        Self::build(
+            source,
+            f32::from(size),
+            theme.markdown_rgba[0],
+            theme.render_html,
+            theme.list_markers,
+            Some(theme),
+        )
+    }
+    fn build(
+        source: &str,
+        size: f32,
+        color: RgbaColor,
+        render_html: bool,
+        markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
+        theme: Option<crate::theme::ResolvedTheme>,
     ) -> Option<Self> {
         if source.len() > 65_536 {
             return None;
@@ -586,10 +719,14 @@ impl Document {
             html_document |= matches!(event, Event::Html(_) | Event::InlineHtml(_));
             bullet_list |= matches!(event, Event::Start(Tag::List(_)));
         }
-        if !(bullet_list || html_document && render_html) {
+        if theme.is_none() && !(bullet_list || html_document && render_html) {
             return None;
         }
-        let safe = crate::markdown_content::markdown_preview_with_html(source, render_html);
+        let safe = if theme.is_some() {
+            crate::markdown_content::reading_preview(source, render_html)
+        } else {
+            crate::markdown_content::markdown_preview_with_html(source, render_html)
+        };
         let mut html = String::new();
         pulldown_cmark::html::push_html(
             &mut html,
@@ -607,8 +744,22 @@ impl Document {
             last_space: true,
             markers,
             html_document: html_document && render_html,
+            theme,
         };
-        let children = builder.nodes(&nodes, &Font::base(size, color), false, None, 0)?;
+        let mut base = Font::base(size, color);
+        if let Some(theme) = theme {
+            let layout = theme.markdown_layout;
+            let scale = if layout.line_height == 0 {
+                crate::theme::inherited_line_height(theme.spacing)
+            } else {
+                layout.line_height
+            } as f32
+                / 100.;
+            base.line_height = size * scale;
+            base.line_height_scale = Some(scale);
+            base.family = Some(reading_font(layout.body_font).into());
+        }
+        let children = builder.nodes(&nodes, &base, false, None, 0)?;
         let mut plain = String::new();
         for run in &builder.runs {
             plain.push_str(&run.separator);
@@ -843,5 +994,64 @@ mod list_tests {
             false
         }
         assert!(inspect(&document.root));
+    }
+}
+
+#[cfg(test)]
+mod shared_theme_tests {
+    use super::*;
+    #[test]
+    fn semantic_markdown_uses_note_sizes_colors_fonts_and_live_theme_values() {
+        let mut theme = crate::theme::resolve(&Default::default(), false);
+        theme.markdown_layout.body_size = 20;
+        theme.markdown_layout.code_size = 18;
+        theme.markdown_layout.line_height = 190;
+        theme.markdown_layout.body_font = studyapp_core::ReadingFont::Serif;
+        theme.markdown_rgba[1] = RgbaColor::new(0x123456, 128);
+        theme.markdown_rgba[4] = RgbaColor::opaque(0x345678);
+        theme.markdown_rgba[6] = RgbaColor::opaque(0x456789);
+        let source = "# Heading
+
+body
+
+> quoted
+
+`inline`
+
+[link](https://example.org)";
+        let document = Document::from_markdown_with_theme(source, theme).unwrap();
+        let heading = document
+            .runs
+            .iter()
+            .find(|run| run.text.contains("Heading"))
+            .unwrap();
+        assert_eq!(heading.font.size, 37.);
+        assert_eq!(heading.font.color, theme.markdown_rgba[1]);
+        let body = document
+            .runs
+            .iter()
+            .find(|run| run.text.contains("body"))
+            .unwrap();
+        assert_eq!(body.font.size, 20.);
+        assert_eq!(body.font.line_height, 38.);
+        assert_eq!(body.font.family.as_deref(), Some("serif"));
+        let quote = document
+            .runs
+            .iter()
+            .find(|run| run.text.contains("quoted"))
+            .unwrap();
+        assert_eq!(quote.font.color, theme.markdown_rgba[4]);
+        let code = document
+            .runs
+            .iter()
+            .find(|run| run.text.contains("inline"))
+            .unwrap();
+        assert_eq!(code.font.color, theme.markdown_rgba[6]);
+        let link = document
+            .runs
+            .iter()
+            .find(|run| run.text.contains("link"))
+            .unwrap();
+        assert_eq!(link.font.color, theme.markdown_rgba[2]);
     }
 }

@@ -40,6 +40,11 @@ pub fn markdown_preview_with_html(source: &str, enabled: bool) -> String {
     })
 }
 
+/// Keep safe link semantics for the read-only renderer without enabling IO.
+pub(crate) fn reading_preview(source: &str, render_html: bool) -> String {
+    preview(source, true, render_html)
+}
+
 fn preview(source: &str, safe_links: bool, render_html: bool) -> String {
     use pulldown_cmark::{Event, Tag};
     let mut events = parser(source).into_offset_iter().peekable();

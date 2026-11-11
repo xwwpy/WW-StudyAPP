@@ -70,6 +70,7 @@ fn cached_document(source: &str, size: u16, color: RgbaColor) -> Option<Rc<Docum
         render_html: bool,
         marker_color: RgbaColor,
         markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
+        theme: crate::theme::ResolvedTheme,
         document: Option<Rc<Document>>,
     }
     thread_local! {
@@ -83,6 +84,7 @@ fn cached_document(source: &str, size: u16, color: RgbaColor) -> Option<Rc<Docum
         let mut cache = cache.borrow_mut();
         if let Some(i) = cache.iter().position(|e| {
             e.source == source
+                && e.theme == palette
                 && e.size == size
                 && e.color == color
                 && e.marker_color == palette.markdown_rgba[12]
@@ -94,14 +96,7 @@ fn cached_document(source: &str, size: u16, color: RgbaColor) -> Option<Rc<Docum
             cache.push_back(entry);
             return result;
         }
-        let document = Document::from_markdown_with_style(
-            source,
-            f32::from(size),
-            color,
-            palette.render_html,
-            palette.list_markers,
-        )
-        .map(|mut document| {
+        let document = Document::from_markdown_with_theme(source, palette).map(|mut document| {
             for run in &mut document.runs {
                 if run.marker.is_some() {
                     run.font.color = palette.markdown_rgba[12];
@@ -115,6 +110,7 @@ fn cached_document(source: &str, size: u16, color: RgbaColor) -> Option<Rc<Docum
             }
             cache.push_back(Entry {
                 source: source.into(),
+                theme: palette,
                 size,
                 color,
                 render_html: palette.render_html,
@@ -448,9 +444,9 @@ fn run_style(font: &RunFont, window: &Window) -> TextStyle {
     style.text_overflow = None;
     if let Some(family) = &font.family {
         style.font_family = match family.as_str() {
-            "sans-serif" => ".SystemUIFont",
+            "sans-serif" => crate::design::UI_FONT,
             "serif" if cfg!(target_os = "linux") => "DejaVu Serif",
-            "serif" => "Times New Roman",
+            "serif" => "Georgia",
             _ => crate::design::MONO_FONT,
         }
         .into();

@@ -14,9 +14,95 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 pub fn summary_markdown_style() -> TextViewStyle {
+    use gpui_kit::component::highlighter::{HighlightTheme, ThemeStyle};
+    let palette = crate::theme::palette();
+    let layout = palette.markdown_layout;
+    let body_size = if layout.body_size == 0 {
+        palette.font_size
+    } else {
+        layout.body_size
+    };
+    let code_size = if layout.code_size == 0 {
+        body_size.saturating_sub(1).max(12)
+    } else {
+        layout.code_size
+    };
+    let line_height = if layout.line_height == 0 {
+        crate::theme::inherited_line_height(palette.spacing)
+    } else {
+        layout.line_height
+    } as f32
+        / 100.;
+    let color = |index: usize| Hsla::from(rgba(palette.markdown_rgba[index].packed_rgba()));
+    let mut theme = (if palette.dark {
+        HighlightTheme::default_dark()
+    } else {
+        HighlightTheme::default_light()
+    })
+    .as_ref()
+    .clone();
+    let token = |index| {
+        serde_json::from_value::<ThemeStyle>(
+            serde_json::json!({"color":color(index),"font_style":null,"font_weight":null}),
+        )
+        .expect("semantic highlight token")
+    };
+    let syntax = &mut theme.style.syntax;
+    syntax.keyword = Some(token(15));
+    syntax.string = Some(token(16));
+    syntax.number = Some(token(17));
+    syntax.comment = Some(token(18));
+    syntax.type_ = Some(token(19));
+    syntax.property = Some(token(20));
+    syntax.tag = Some(token(21));
+    syntax.function = Some(token(22));
+    syntax.punctuation = Some(token(23));
+    syntax.boolean = syntax.number;
+    syntax.constant = syntax.number;
+    syntax.operator = syntax.punctuation;
+    syntax.comment_doc = syntax.comment;
+    syntax.constructor = syntax.type_;
+    syntax.string_escape = syntax.string;
+    syntax.string_regex = syntax.string;
+    syntax.punctuation_bracket = syntax.punctuation;
+    syntax.punctuation_delimiter = syntax.punctuation;
+    theme.style.editor_foreground = Some(color(6));
+    theme.style.editor_background = Some(color(7));
     let mut table = StyleRefinement::default();
     table.overflow.x = Some(Overflow::Scroll);
-    TextViewStyle::default().table(table)
+    let code = StyleRefinement::default()
+        .bg(color(7))
+        .text_color(color(6))
+        .text_size(px(code_size as f32))
+        .line_height(px(code_size as f32 * line_height))
+        .font_family(match layout.mono_font {
+            studyapp_core::ReadingFont::Sans => crate::design::UI_FONT,
+            studyapp_core::ReadingFont::Serif => "Georgia",
+            studyapp_core::ReadingFont::Mono => "Cascadia Mono",
+        })
+        .p_3()
+        .border_0()
+        .rounded_none();
+    let mut style = TextViewStyle::default()
+        .table(table)
+        .code_block(code)
+        .heading_font_size(|level, base| {
+            base * match level {
+                1 => 1.85,
+                2 => 1.5,
+                3 => 1.25,
+                _ => 1.08,
+            }
+        })
+        .inline_code(HighlightStyle {
+            color: Some(color(6)),
+            background_color: Some(color(7)),
+            ..Default::default()
+        });
+    style.heading_base_font_size = px(body_size as f32);
+    style.highlight_theme = std::sync::Arc::new(theme);
+    style.is_dark = palette.dark;
+    style
 }
 
 pub struct CompactMarkdown {
