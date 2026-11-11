@@ -126,6 +126,20 @@ fn screen_point(
     }
 }
 
+fn native_logical_bounds(native: &serde_json::Value) -> Bounds<Pixels> {
+    let rect = native["logicalBounds"].as_array().unwrap();
+    Bounds::new(
+        point(
+            px(rect[0].as_f64().unwrap() as f32),
+            px(rect[1].as_f64().unwrap() as f32),
+        ),
+        size(
+            px(rect[2].as_f64().unwrap() as f32),
+            px(rect[3].as_f64().unwrap() as f32),
+        ),
+    )
+}
+
 pub(crate) fn assert_overlay_hit(
     native: &serde_json::Value,
     position: Point<Pixels>,
@@ -413,20 +427,7 @@ pub(crate) async fn exercise_pointer_bubble(
     let before = crate::smoke_visibility::visible(window, editor, cx).await;
     let (bounds, original_size) = window
         .update(cx, |_, window, _| {
-            let logical = before["logicalBounds"].as_array().unwrap();
-            (
-                Bounds::new(
-                    point(
-                        px(logical[0].as_f64().unwrap() as f32),
-                        px(logical[1].as_f64().unwrap() as f32),
-                    ),
-                    size(
-                        px(logical[2].as_f64().unwrap() as f32),
-                        px(logical[3].as_f64().unwrap() as f32),
-                    ),
-                ),
-                window.viewport_size(),
-            )
+            (native_logical_bounds(&before), window.viewport_size())
         })
         .unwrap();
     let positions = [
@@ -666,8 +667,12 @@ pub(crate) async fn exercise_pointer_bubble(
                 before["occlusionArrowPolygons"]
             );
             assert_eq!(native["occlusions"], before["occlusions"]);
+            // Resizing can also reflow an embedded preview. Classify each
+            // restored point against the actual final native rectangle, not
+            // the old child size (or the whole application viewport).
+            let bounds = native_logical_bounds(&native);
             for sample in restored_samples {
-                assert_overlay_hit(&native, sample, false);
+                assert_overlay_hit(&native, sample, !bounds.contains(&sample));
             }
             native
         })

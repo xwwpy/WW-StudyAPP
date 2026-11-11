@@ -1072,13 +1072,10 @@ pub async fn exercise(
                 .snapshot
                 .as_ref()
                 .unwrap()
-                .versions
-                .iter()
-                .rev()
-                .find(|v| v.note_id == note.id)
+                .note_body(&note.id)
                 .unwrap()
-                .hash
-                .clone()
+                .1
+                .to_owned()
         })
         .unwrap();
     send(
@@ -1094,7 +1091,28 @@ pub async fn exercise(
     until(
         window,
         view,
-        "long history version",
+        "long current body saved independently of history",
+        |app, _| {
+            app.snapshot
+                .as_ref()
+                .unwrap()
+                .note_body(&note.id)
+                .is_some_and(|(content, _)| content == long_content)
+        },
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| app.clear_notices(cx));
+            window.render_frame(cx);
+            window.click("library-capture-snapshots", cx);
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "explicit long history snapshot",
         |app, _| {
             app.snapshot
                 .as_ref()
@@ -1365,14 +1383,37 @@ pub async fn exercise(
                     .snapshot
                     .as_ref()
                     .unwrap()
-                    .versions
-                    .iter()
-                    .any(|v| v.note_id == note.id && v.content == saved_content)
+                    .note_body(&note.id)
+                    .is_some_and(|(content, _)| content == saved_content)
         },
         cx,
     )
     .await;
     assert_eq!(std::fs::read_to_string(&note.path).unwrap(), saved_content);
+    // Ctrl+S writes the current body; this later history/migration fixture
+    // explicitly records it through the same snapshot entry users invoke.
+    window
+        .update(cx, |_, window, cx| {
+            view.update(cx, |app, cx| app.clear_notices(cx));
+            window.render_frame(cx);
+            window.click("library-capture-snapshots", cx);
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "explicit snapshot of native input after history",
+        |app, _| {
+            app.snapshot
+                .as_ref()
+                .unwrap()
+                .versions
+                .iter()
+                .any(|version| version.note_id == note.id && version.content == saved_content)
+        },
+        cx,
+    )
+    .await;
     window
         .update(cx, |_, window, cx| {
             crate::smoke_library::resize(window, size(px(1440.), px(1000.)));
