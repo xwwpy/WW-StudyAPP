@@ -263,14 +263,32 @@ impl StudyApp {
                 );
             }
         }
-        general = general.child(times);
-        if let Some(hours) = &settings.quiet_hours
-            && hours.start_minute > hours.end_minute
-        {
-            general = general.child(muted("结束时间为次日，免打扰时段跨天。"));
-        }
-
+        let raw_time = |key| {
+            self.preferences_ui
+                .notification_fields
+                .get(key)
+                .map(|input| input.read(cx).value().to_string())
+                .unwrap_or_default()
+        };
         general
+            .child(times)
+            .child(
+                muted(if enabled {
+                    "已启用定时免打扰；保存全部设置后生效。"
+                } else {
+                    "启用定时免打扰后可调整起止时间；当前时间草稿保留。"
+                })
+                .id("quiet-hours-enabled-hint")
+                .test_support(),
+            )
+            .child(
+                muted(studyapp_ui::settings_time::range_description(
+                    &raw_time("notification-start"),
+                    &raw_time("notification-end"),
+                ))
+                .id("quiet-hours-range-hint")
+                .test_support(),
+            )
     }
     fn notification_category_row(&self, category: NoticeCategory, cx: &mut Context<Self>) -> Div {
         let settings = self.notification_settings();

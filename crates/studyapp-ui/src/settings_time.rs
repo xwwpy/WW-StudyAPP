@@ -19,6 +19,15 @@ pub fn parse_time(text: &str) -> Option<u16> {
 pub fn format_time(minute: u16) -> String {
     format!("{:02}:{:02}", minute / 60, minute % 60)
 }
+/// Describe the displayed draft, including disabled values, without normalizing it.
+pub fn range_description(start: &str, end: &str) -> &'static str {
+    match (parse_time(start), parse_time(end)) {
+        (Some(start), Some(end)) if start > end => "结束时间为次日，免打扰时段跨天。",
+        (Some(start), Some(end)) if start < end => "开始与结束均为同一天，时间精确到分钟。",
+        (Some(_), Some(_)) => "开始与结束时间须不同。",
+        _ => "时间尚未填写完整，请使用 00:00–23:59，精确到分钟。",
+    }
+}
 pub fn time_input(
     id: &'static str,
     source: &Entity<InputState>,
@@ -80,7 +89,7 @@ fn shift_minute(minute: u16, delta: i32) -> u16 {
 }
 #[cfg(test)]
 mod tests {
-    use super::{format_time, parse_time, shift_minute};
+    use super::{format_time, parse_time, range_description, shift_minute};
     #[test]
     fn hour_and_minute_adjustments_keep_minute_precision_across_midnight() {
         assert_eq!(shift_minute(0, -1), 1439);
@@ -97,6 +106,15 @@ mod tests {
         }
         for minute in 0..1440 {
             assert_eq!(parse_time(&format_time(minute)), Some(minute));
+        }
+    }
+    #[test]
+    fn range_annotations_follow_raw_drafts_without_changing_minutes() {
+        assert!(range_description("23:40", "01:15").contains("次日"));
+        assert!(range_description("01:15", "23:40").contains("同一天"));
+        assert!(range_description("08:00", "08:00").contains("须不同"));
+        for (start, end) in [("12:", "13:00"), ("12:00", "24:00")] {
+            assert!(range_description(start, end).contains("尚未填写完整"));
         }
     }
 }

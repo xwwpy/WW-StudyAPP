@@ -6626,6 +6626,115 @@ mod scoped_tests {
             });
         });
     }
+    #[gpui_kit::test]
+    fn quiet_hours_disabled_times_keep_raw_drafts_and_resume_without_saving(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(1400.)));
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            NotificationFixture {
+                app: app.clone(),
+                appearance: false,
+                color_only: false,
+            }
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.find("quiet-hours-enabled-hint").bounds().size.height > gpui_kit::px(0.)
+            );
+            let start =
+                app.read(cx).preferences_ui.notification_fields["notification-start"].clone();
+            let end = app.read(cx).preferences_ui.notification_fields["notification-end"].clone();
+            let initial = start.read(cx).value();
+            window.click("notification-start-hour-up", cx);
+            assert_eq!(start.read(cx).value(), initial);
+            window.click("notification-quiet", cx);
+            window.render_frame(cx);
+            for (input, raw) in [(&start, "23:40"), (&end, "01:15")] {
+                input.update(cx, |input, cx| {
+                    input.set_value(raw, window, cx);
+                    cx.emit(gpui_kit::component::input::InputEvent::Change);
+                });
+            }
+            window.render_frame(cx);
+            let hours = studyapp_core::QuietHours {
+                start_minute: 1420,
+                end_minute: 75,
+            };
+            assert_eq!(
+                app.read(cx)
+                    .preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .notifications
+                    .quiet_hours,
+                Some(hours.clone())
+            );
+            window.click("notification-quiet", cx);
+            window.render_frame(cx);
+            window.click("notification-start-minute-up", cx);
+            assert_eq!(start.read(cx).value(), "23:40");
+            assert_eq!(end.read(cx).value(), "01:15");
+            assert!(
+                app.read(cx)
+                    .preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .notifications
+                    .quiet_hours
+                    .is_none()
+            );
+            assert!(window.find("quiet-hours-range-hint").bounds().size.height > gpui_kit::px(0.));
+            window.click("notification-quiet", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                app.read(cx)
+                    .preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .notifications
+                    .quiet_hours,
+                Some(hours)
+            );
+            start.update(cx, |input, cx| {
+                input.set_value("12:", window, cx);
+                cx.emit(gpui_kit::component::input::InputEvent::Change);
+            });
+            window.render_frame(cx);
+            window.click("notification-quiet", cx);
+            window.render_frame(cx);
+            window.click("notification-quiet", cx);
+            window.render_frame(cx);
+            assert_eq!(start.read(cx).value(), "12:");
+            app.update(cx, |app, cx| {
+                let draft = app.preferences_ui.draft.as_ref().unwrap();
+                assert!(
+                    app.notification_settings_value(draft.notifications.clone(), cx)
+                        .is_err()
+                );
+                assert_eq!(
+                    app.preferences_ui
+                        .saved
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .notifications,
+                    studyapp_core::NotificationSettings::default()
+                );
+                assert_eq!(app.notifications.read(cx).visible_count(), 0);
+                app.discard_settings(window, cx);
+                assert!(!app.settings_dirty(cx));
+            });
+        });
+    }
+
     struct StageSettingsFixture {
         app: Entity<StudyApp>,
         widget: bool,
