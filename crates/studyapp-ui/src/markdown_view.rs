@@ -25,6 +25,24 @@ pub fn copyable(id: impl Into<ElementId>, content: impl IntoElement) -> impl Int
         })
 }
 
+/// A mouse release outside the native child may never reach GPUI's selection
+/// layer. End that gesture before its bubble-phase hover handler extends text.
+pub fn selection_gesture_guard() -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        |_, _, window, _| {
+            window.on_mouse_event(|event: &MouseMoveEvent, phase, window, cx| {
+                if phase.capture() && event.pressed_button != Some(MouseButton::Left) {
+                    TextSelection::end_edge_drag(window, cx);
+                    TextSelection::end(window, cx);
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 /// Shared offline renderer with per-surface, display-only code folding.
 pub fn content(id: impl Into<ElementId>, source: &str) -> AnyElement {
     MarkdownContent {
@@ -313,7 +331,7 @@ mod code_control_tests {
             div()
                 .w(px(500.))
                 .child(summary("code-summary", "```rust\nlet value = 1;\n```"))
-
+                .child(selection_gesture_guard())
         }
     }
     #[gpui_kit::test]

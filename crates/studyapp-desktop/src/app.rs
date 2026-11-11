@@ -2107,6 +2107,7 @@ impl Render for StudyApp {
             .font_family(crate::design::UI_FONT)
             .text_size(px(crate::theme::palette().font_size as f32))
             .child(self.modal_focus.background(background))
+            .child(studyapp_ui::markdown_view::selection_gesture_guard())
             .children(modal)
             .map(|root| {
                 #[cfg(feature = "ui-test")]

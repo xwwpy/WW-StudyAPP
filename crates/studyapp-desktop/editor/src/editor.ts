@@ -8,7 +8,7 @@ import { setListMarkers, listPresentationChanged, leaveList, continueBullet } fr
 import { tableHistory, createTableDialog, setTableDocument, setTableDefaults, tableUpdates, tablePresentationChanged, installTableControls, syncTableAnchors, hideTableControls } from "./tables";
 import { sanitizeHtml, sanitizeStyle } from "./safe-html";
 import { htmlConfiguration, htmlRendering } from "./html-rendering";
-import { previewCaret, previewMouseSelection } from "./preview";
+import { installGestureTermination, previewCaret, previewMouseSelection } from "./preview";
 import { renderedSelection, copyMenuUpdates, installCopyMenu } from "./selection";
 import { installOutline, outlineUpdates, refreshOutline, setOutlineEnabled, setOutlinePreference } from "./outline";
 import { applyEditorTheme } from "./theme";
@@ -801,3 +801,5 @@ installOutline(view, value => { if (loaded) post({type:"outlinePreference", gene
 installCopyMenu(view, warning);
 
 installLinks(view,url=>{if(loaded&&!modalBlocked)post({type:"openLink",generation,url});});
+
+installGestureTermination(view);

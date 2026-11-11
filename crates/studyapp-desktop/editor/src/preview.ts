@@ -80,3 +80,20 @@ export const previewMouseSelection = EditorView.mouseSelectionStyle.of((view, ev
     },
   };
 });
+
+/** Terminate selection on lost native releases, without clearing copied text. */
+export function installGestureTermination(view: EditorView): void {
+  const doc = view.dom.ownerDocument;
+  let selecting = false;
+  const end = () => {
+    if (!selecting) return;
+    selecting = false;
+    doc.dispatchEvent(new MouseEvent("mouseup", {button:0, buttons:0, bubbles:true}));
+  };
+  view.contentDOM.addEventListener("mousedown", event => { selecting = event.button === 0; }, true);
+  doc.addEventListener("mouseup", () => { selecting = false; }, true);
+  doc.addEventListener("mousemove", event => { if (!(event.buttons & 1)) end(); }, true);
+  window.addEventListener("blur", end);
+  doc.addEventListener("visibilitychange", () => { if (doc.hidden) end(); });
+  for (const name of ["pointercancel", "lostpointercapture", "dragend"]) doc.addEventListener(name, end, true);
+}

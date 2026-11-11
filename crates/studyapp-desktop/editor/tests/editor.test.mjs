@@ -3358,3 +3358,19 @@ test("reading position follows each library and note across page reload", async 
   await load('blocked'); assert.ok((await state(page)).scrollTop<20);
   assert.deepEqual(errors,[]); await page.close();
 });
+
+test("lost mouse release and non-left hover never extend text selection", async () => {
+  const {page, errors}=await setup('first paragraph selectable words\n\nsecond paragraph selectable words\n\nthird paragraph');
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  const line=page.locator('.cm-line').first(), box=await line.boundingBox();
+  for (const cancellation of ['blur','pointercancel','lostpointercapture']) {
+    await page.mouse.move(box.x+8,box.y+8); await page.mouse.down();
+    await page.mouse.move(box.x+100,box.y+8);
+    await page.evaluate(type=> (type==='blur'?window:document).dispatchEvent(new Event(type)),cancellation);
+    const before=(await state(page)).selection;
+    await page.mouse.move(box.x+200,box.y+60);
+    assert.deepEqual((await state(page)).selection,before);
+    await page.mouse.up();
+  }
+  assert.deepEqual(errors,[]); await page.close();
+});
