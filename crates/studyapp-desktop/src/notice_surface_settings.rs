@@ -244,13 +244,13 @@ impl StudyApp {
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let mut view = form::section(format!("独立组件样式 · {}", style.label()))
             .child(muted(
-                "选择上方样式以编辑对应组件；每种组件独立保存，颜色留空时跟随主题。",
+                "当前子页仅编辑这一组件；未自定义的属性持续继承全局／组件默认，颜色可单独选择主题自动。",
             ))
             .child(form::settings_row(
                 "组件布局",
-                form::choice(
+                form::choice_with_default(
                     "notice-component-layout",
-                    appearance.layout(style),
+                    (appearance.layout(style), NotificationAppearance::default().layout(style)),
                     [
                         studyapp_core::NoticeLayout::Primary,
                         studyapp_core::NoticeLayout::Alternative,
@@ -311,9 +311,12 @@ impl StudyApp {
         if style == NoticeStyle::Tooltip {
             view = view.child(form::settings_row(
                 "说明定位",
-                form::choice(
+                form::choice_with_default(
                     "tooltip-position",
-                    appearance.tooltip_position,
+                    (
+                        appearance.tooltip_position,
+                        studyapp_core::TooltipPosition::default(),
+                    ),
                     vec![
                         (
                             studyapp_core::TooltipPosition::FollowPointer,
@@ -621,9 +624,14 @@ impl StudyApp {
                     .child(heading(region.label()))
                     .child(form::settings_row(
                         "排列",
-                        form::choice(
+                        form::choice_with_default(
                             SharedString::from(format!("region-stack-{region:?}")),
-                            settings.stack,
+                            (
+                                settings.stack,
+                                NotificationAppearance::default()
+                                    .region_settings(region)
+                                    .stack,
+                            ),
                             studyapp_core::NoticeStack::ALL
                                 .into_iter()
                                 .map(|value| (value, value.label().into()))

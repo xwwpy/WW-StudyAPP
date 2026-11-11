@@ -7,6 +7,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{Disableable, Selectable, Sizable, button::ButtonVariants, input::InputState},
+    prelude::FluentBuilder,
     *,
 };
 use studyapp_core::{
@@ -139,7 +140,7 @@ impl StudyApp {
                     div().py_2().child(match row {
                         0 => app.notification_general(cx),
                         1 => column().gap_2().child(heading("分别管理通知"))
-                            .child(muted("关闭分类会同时关闭该类前台和后台提示。自动保存成功保持静默；主动保存成功默认关闭。展开某一项可覆盖其前台样式。")),
+                            .child(muted("关闭分类会同时关闭该类前台和后台提示。自动保存成功保持静默；主动保存成功默认关闭。各场景可分别覆盖其前台样式。")),
                         _ => app.notification_category_row(NoticeCategory::ALL[row - 2], cx),
                     })
                 }).into_any_element()
@@ -332,33 +333,49 @@ impl StudyApp {
                         })),
                 );
             }
-            let mut styles = row().flex_wrap().gap_1();
-            for style in std::iter::once(None)
-                .chain(category.notification_styles().iter().copied().map(Some))
-            {
-                styles = styles.child(
-                    Button::new(SharedString::from(format!("{key}-style-{style:?}")))
-                        .small()
-                        .ghost()
-                        .label(style.map_or("跟随默认", NoticeStyle::label))
-                        .disabled(busy || !rule.enabled)
-                        .selected(rule.style == style)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(draft) = &mut this.preferences_ui.draft {
-                                draft
-                                    .notifications
-                                    .rules
-                                    .entry(category)
-                                    .or_insert_with(|| category.default_rule())
-                                    .style = style;
-                            }
-                            cx.notify();
-                        })),
-                );
-            }
+            let styles = form::inherited_choice(
+                SharedString::from(format!("{key}-style")),
+                rule.style,
+                (
+                    category.default_style(studyapp_core::NoticeSeverity::Information),
+                    format!(
+                        "继承用途分配 · 普通事件：{}；错误：{}；严重错误保留必要确认。",
+                        category
+                            .default_style(studyapp_core::NoticeSeverity::Information)
+                            .label(),
+                        category
+                            .default_style(studyapp_core::NoticeSeverity::Error)
+                            .label(),
+                    ),
+                ),
+                category
+                    .notification_styles()
+                    .iter()
+                    .copied()
+                    .map(|style| (style, style.label().into()))
+                    .collect(),
+                busy || !rule.enabled,
+                cx.weak_entity(),
+                move |this, style, _, cx| {
+                    if let Some(draft) = &mut this.preferences_ui.draft {
+                        draft
+                            .notifications
+                            .rules
+                            .entry(category)
+                            .or_insert_with(|| category.default_rule())
+                            .style = style;
+                    }
+                    cx.notify();
+                },
+            );
             item = item
                 .child(form::checkbox_group("通知投递渠道", channels))
-                .child(form::field("前台样式", styles))
+                .child(form::settings_row("前台样式", styles))
+                .when(!rule.enabled, |item| {
+                    item.child(muted(
+                        "启用此通知分类后可调整投递渠道、前台样式与内容字段；当前草稿保留。",
+                    ))
+                })
                 .child(self.notice_scenario_fields(category, cx));
         }
         item

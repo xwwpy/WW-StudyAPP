@@ -3,7 +3,7 @@
 use crate::{
     app::{Page, StudyApp},
     components::*,
-    controls::{Button, Checkbox},
+    controls::Button,
     preferences::{PreferenceSnapshot, SavePreferences},
     settings_cache::InputCache,
     settings_components as form,
@@ -11,7 +11,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{
-        Disableable, Selectable, Sizable,
+        Disableable, Sizable,
         button::ButtonVariants,
         input::{InputEvent, InputState},
     },
@@ -1984,7 +1984,9 @@ impl StudyApp {
             .font_family(font(p.body_font))
             .line_height(px(size
                 * if p.line_height == 0 {
-                    1.75
+                    f32::from(crate::theme::inherited_line_height(
+                        self.effective_appearance().spacing,
+                    )) / 100.
                 } else {
                     p.line_height.clamp(130, 240) as f32 / 100.
                 }))
@@ -2125,20 +2127,8 @@ impl StudyApp {
                 let value = input.read(cx).value().trim().to_owned();
                 let invalid =
                     !value.is_empty() && studyapp_core::parse_rgba_color(&value).is_none();
-                let mut field = column()
-                    .relative()
-                    .child(studyapp_ui::settings_anchor::probe(*label))
-                    .gap_1()
-                    .child(
-                        row()
-                            .child(div().w(px(100.)).text_sm().child(*label))
-                            .child(div().flex_1().min_w_0().child(self.color_control(
-                                key,
-                                colors[index],
-                                busy,
-                                cx,
-                            ))),
-                    );
+                let mut field =
+                    form::settings_row(*label, self.color_control(key, colors[index], busy, cx));
                 if invalid {
                     field = field.child(
                         muted("请输入 #RRGGBB 或 #RRGGBBAA，例如 #586D8380")
@@ -2163,85 +2153,122 @@ impl StudyApp {
             }
         }
         let group = self.preferences_ui.appearance_group;
-        for (key, label, min, max, inherit, field_group) in [
-            ("md-body-size", "正文字号 px", 12, 28, true, 0),
-            ("md-line-height", "行高 %", 130, 240, true, 0),
-            ("md-reading-width", "阅读宽度 px", 480, 1600, false, 0),
-            ("md-code-size", "代码字号 px", 12, 26, true, 1),
-            ("md-code-radius", "代码圆角 px", 0, 24, false, 1),
+        let body_size = if p.body_size == 0 {
+            self.effective_appearance().font_size
+        } else {
+            p.body_size.clamp(12, 28)
+        };
+        for (key, label, unit, min, max, default, field_group, inheritance) in [
+            (
+                "md-body-size",
+                "正文字号",
+                "px",
+                12,
+                28,
+                0,
+                0,
+                Some((
+                    u64::from(self.effective_appearance().font_size),
+                    format!(
+                        "继承界面字号 · 当前有效值 {} px",
+                        self.effective_appearance().font_size
+                    ),
+                )),
+            ),
+            (
+                "md-line-height",
+                "行高",
+                "%",
+                130,
+                240,
+                0,
+                0,
+                Some((
+                    u64::from(crate::theme::inherited_line_height(
+                        self.effective_appearance().spacing,
+                    )),
+                    format!(
+                        "继承界面间距换算 · 当前有效值 {}%",
+                        crate::theme::inherited_line_height(self.effective_appearance().spacing)
+                    ),
+                )),
+            ),
+            (
+                "md-reading-width",
+                "阅读宽度",
+                "px",
+                480,
+                1600,
+                0,
+                0,
+                Some((480, "跟随可用宽度 · 自适应剩余空间".into())),
+            ),
+            (
+                "md-code-size",
+                "代码字号",
+                "px",
+                12,
+                26,
+                0,
+                1,
+                Some((
+                    u64::from(body_size.saturating_sub(1).max(12)),
+                    format!(
+                        "继承正文字号减 1 · 当前有效值 {} px",
+                        body_size.saturating_sub(1).max(12)
+                    ),
+                )),
+            ),
+            ("md-code-radius", "代码圆角", "px", 0, 24, 8, 1, None),
         ] {
             if group != field_group {
                 continue;
             }
             if let Some(input) = self.preferences_ui.appearance_fields.get(key) {
-                let number = input.read(cx).value().trim().parse::<u16>().ok();
-                let valid = number.is_some_and(|n| {
-                    (min..=max).contains(&n) || ((inherit || key == "md-reading-width") && n == 0)
-                });
-                panel = panel.child(
-                    row()
-                        .relative()
-                        .child(studyapp_ui::settings_anchor::probe(label))
-                        .child(div().w(px(100.)).text_sm().child(label))
-                        .child(div().flex_1().child(form::input(input, busy))),
-                );
-                panel = panel.child(
-                    muted(format!(
-                        "{min}–{max}{}",
-                        if key == "md-reading-width" {
-                            "；0 表示自适应剩余空间"
-                        } else if inherit {
-                            "；0 表示继承界面设置"
-                        } else {
-                            ""
-                        }
-                    ))
-                    .text_color(crate::theme::color(if valid {
-                        MUTED
-                    } else {
-                        0xBE3434
-                    })),
-                );
+                let mut control =
+                    form::NumericSetting::new(key, input, unit, default, min, max, busy);
+                if let Some((custom, description)) = inheritance {
+                    control = control.inherit_zero(custom, description);
+                }
+                panel = panel.child(form::settings_row(label, control));
             }
         }
         if group <= 1 {
-            panel = panel.child(
-                row()
-                    .child(div().w(px(100.)).child(if group == 0 {
-                        "正文字体"
-                    } else {
-                        "代码字体"
-                    }))
-                    .children(
-                        [
-                            (ReadingFont::Sans, "无衬线"),
-                            (ReadingFont::Serif, "衬线"),
-                            (ReadingFont::Mono, "等宽"),
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, (font, label))| {
-                            let selected = if group == 0 { p.body_font } else { p.mono_font };
-                            Button::new(("markdown-font", index))
-                                .small()
-                                .label(format!(
-                                    "{}{}",
-                                    if selected == font { "✓ " } else { "" },
-                                    label
-                                ))
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if group == 0 {
-                                        this.preferences_ui.appearance_layout.body_font = font;
-                                    } else {
-                                        this.preferences_ui.appearance_layout.mono_font = font;
-                                    }
-                                    this.preferences_ui.appearance_touched = true;
-                                    cx.notify();
-                                }))
-                        }),
+            let selected = if group == 0 { p.body_font } else { p.mono_font };
+            panel = panel.child(form::settings_row(
+                if group == 0 {
+                    "正文字体"
+                } else {
+                    "代码字体"
+                },
+                form::choice_with_default(
+                    "markdown-font",
+                    (
+                        selected,
+                        if group == 0 {
+                            ReadingFont::Sans
+                        } else {
+                            ReadingFont::Mono
+                        },
                     ),
-            );
+                    vec![
+                        (ReadingFont::Sans, "无衬线".into()),
+                        (ReadingFont::Serif, "衬线".into()),
+                        (ReadingFont::Mono, "等宽".into()),
+                    ],
+                    busy,
+                    cx.weak_entity(),
+                    move |this, font, _, cx| {
+                        if group == 0 {
+                            this.preferences_ui.appearance_layout.body_font = font;
+                        } else {
+                            this.preferences_ui.appearance_layout.mono_font = font;
+                        }
+                        this.preferences_ui.appearance_touched = true;
+                        cx.notify();
+                    },
+                ),
+            ));
         }
         for (key, label, checked, field_group) in [
             ("grid", "显示表格网格", p.table_grid, 2),
@@ -2250,20 +2277,23 @@ impl StudyApp {
         ] {
             if group == field_group {
                 panel = panel.child(
-                    Checkbox::new(SharedString::from(format!("markdown-{key}")))
-                        .label(label)
-                        .checked(checked)
-                        .disabled(busy)
-                        .on_click(cx.listener(move |this, value, _, cx| {
-                            let style = &mut this.preferences_ui.appearance_layout;
-                            match key {
-                                "grid" => style.table_grid = *value,
-                                "stripes" => style.table_stripes = *value,
-                                _ => style.code_border = *value,
-                            }
-                            this.preferences_ui.appearance_touched = true;
-                            cx.notify();
-                        })),
+                    studyapp_ui::settings_switch::SettingSwitch::new(SharedString::from(format!(
+                        "markdown-{key}"
+                    )))
+                    .default_value(true)
+                    .label(label)
+                    .checked(checked)
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, value, _, cx| {
+                        let style = &mut this.preferences_ui.appearance_layout;
+                        match key {
+                            "grid" => style.table_grid = *value,
+                            "stripes" => style.table_stripes = *value,
+                            _ => style.code_border = *value,
+                        }
+                        this.preferences_ui.appearance_touched = true;
+                        cx.notify();
+                    })),
                 );
             }
         }
@@ -2663,60 +2693,36 @@ impl StudyApp {
                             })),
                     )
                     .child(muted("仅支持安全排版，不执行脚本或加载 HTML 资源。关闭后显示原文；围栏中的 HTML 始终为代码。"))
-                    .child(
-                        row().flex_wrap().children(
-                            [
-                                (ThemeMode::System, "system", "跟随系统"),
-                                (ThemeMode::Light, "light", "浅色"),
-                                (ThemeMode::Dark, "dark", "深色"),
-                            ]
-                            .into_iter()
-                            .map(|(mode, id, label)| {
-                                let button =
-                                    Button::new(SharedString::from(format!("theme-mode-{id}")))
-                                        .small()
-                                        .label(label)
-                                        .disabled(busy)
-                                        .on_click(cx.listener(move |this, _, window, cx| {
-                                            if let Some(draft) = &mut this.preferences_ui.draft {
-                                                draft.appearance.mode = mode;
-                                            }
-                                            this.refresh_appearance(window, cx);
-                                            cx.notify();
-                                        }));
-                                button.selected(appearance.mode == mode)
-                            }),
-                        ),
-                    )
+                    .child(form::settings_row("界面主题", form::choice_with_default(
+                        "theme-mode", (appearance.mode, ThemeMode::System),
+                        vec![(ThemeMode::System, "跟随系统".into()), (ThemeMode::Light, "浅色".into()), (ThemeMode::Dark, "深色".into())],
+                        busy, cx.weak_entity(), |this, mode, window, cx| {
+                            if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.mode = mode; }
+                            this.refresh_appearance(window, cx); cx.notify();
+                        },
+                    )))
                     .child(self.setting_number("appearance-font-size".into(), "界面字号", "px", (appearance.font_size.into(), 14, 12, 22, busy),
                         |this, value| { if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.font_size = value as u16; } }, cx))
                     .child(self.setting_number("appearance-spacing".into(), "内容间距", "px", (appearance.spacing.into(), 8, 4, 16, busy),
                         |this, value| { if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.spacing = value as u16; } }, cx))
                     .child(heading("Markdown 表格默认显示"))
-                    .child(row().flex_wrap().child("列宽").children([
-                        (studyapp_core::TableSizing::Equal, "equal", "等宽"),
-                        (studyapp_core::TableSizing::Adaptive, "adaptive", "按内容自适应"),
-                    ].into_iter().map(|(value, id, label)| {
-                        let button = Button::new(SharedString::from(format!("table-default-{id}"))).small().label(label).disabled(busy)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.table_defaults.sizing = value; }
-                                this.refresh_appearance(window, cx); cx.notify();
-                            }));
-                        button.selected(appearance.table_defaults.sizing == value)
-                    })))
-                    .child(row().flex_wrap().child("列对齐").children([
-                        (studyapp_core::TableAlignment::Source, "source", "沿用源文"),
-                        (studyapp_core::TableAlignment::Left, "left", "左对齐"),
-                        (studyapp_core::TableAlignment::Center, "center", "居中"),
-                        (studyapp_core::TableAlignment::Right, "right", "右对齐"),
-                    ].into_iter().map(|(value, id, label)| {
-                        let button = Button::new(SharedString::from(format!("table-align-{id}"))).small().label(label).disabled(busy)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.table_defaults.alignment = value; }
-                                this.refresh_appearance(window, cx); cx.notify();
-                            }));
-                        button.selected(appearance.table_defaults.alignment == value)
-                    })))
+                    .child(form::settings_row("列宽", form::choice_with_default(
+                        "table-default", (appearance.table_defaults.sizing, studyapp_core::TableDefaults::default().sizing),
+                        vec![(studyapp_core::TableSizing::Equal, "等宽".into()), (studyapp_core::TableSizing::Adaptive, "按内容自适应".into())],
+                        busy, cx.weak_entity(), |this, value, window, cx| {
+                            if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.table_defaults.sizing = value; }
+                            this.refresh_appearance(window, cx); cx.notify();
+                        },
+                    )))
+                    .child(form::settings_row("列对齐", form::choice_with_default(
+                        "table-align", (appearance.table_defaults.alignment, studyapp_core::TableDefaults::default().alignment),
+                        vec![(studyapp_core::TableAlignment::Source, "沿用源文".into()), (studyapp_core::TableAlignment::Left, "左对齐".into()),
+                            (studyapp_core::TableAlignment::Center, "居中".into()), (studyapp_core::TableAlignment::Right, "右对齐".into())],
+                        busy, cx.weak_entity(), |this, value, window, cx| {
+                            if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.table_defaults.alignment = value; }
+                            this.refresh_appearance(window, cx); cx.notify();
+                        },
+                    )))
                     .child(muted("适用于所有主题；正文中可为单张表格调整列宽与对齐，恢复默认后重新跟随此处。不会改写 Markdown。"))
                     .child(muted("修改可即时预览；保存全部设置后才会写入资料库。")),
             ).child(self.list_style_settings(cx));
@@ -2988,45 +2994,36 @@ impl StudyApp {
         use studyapp_core::ImageStorage;
         let draft = self.preferences_ui.draft.clone().unwrap_or_default();
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
-        let mut panel = form::section("图片存储").child(
-            row()
-                .child(div().w(px(100.)).text_sm().child("保存方式"))
-                .flex_wrap()
-                .children(
-                    [
-                        (ImageStorage::Local, "local", "本地"),
-                        (ImageStorage::Cloud, "cloud", "云端"),
-                        (ImageStorage::Both, "both", "本地与云端"),
-                    ]
-                    .into_iter()
-                    .map(|(storage, id, label)| {
-                        let button =
-                            Button::new(SharedString::from(format!("images-storage-{id}")))
-                                .small()
-                                .label(label)
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(draft) = &mut this.preferences_ui.draft {
-                                        if draft.images.storage == ImageStorage::Local
-                                            && storage != ImageStorage::Local
-                                            && matches!(
-                                        draft.images.cloud,
-                                        studyapp_core::media_settings::ImageCloudTarget::NoteSync
-                                    ) && let Some(cloud) =
-                                            &mut this.preferences_ui.image_cloud
-                                        {
-                                            // A new cloud choice starts with the generic form.
-                                            // Legacy reuse remains an explicit visible option.
-                                            cloud.kind = 0;
-                                        }
-                                        draft.images.storage = storage;
-                                    }
-                                    cx.notify();
-                                }));
-                        button.selected(draft.images.storage == storage)
-                    }),
-                ),
-        );
+        let mut panel = form::section("图片存储").child(form::settings_row(
+            "保存方式",
+            form::choice_with_default(
+                "images-storage",
+                (draft.images.storage, ImageStorage::Local),
+                vec![
+                    (ImageStorage::Local, "本地".into()),
+                    (ImageStorage::Cloud, "云端".into()),
+                    (ImageStorage::Both, "本地与云端".into()),
+                ],
+                busy,
+                cx.weak_entity(),
+                |this, storage, _, cx| {
+                    if let Some(draft) = &mut this.preferences_ui.draft {
+                        if draft.images.storage == ImageStorage::Local
+                            && storage != ImageStorage::Local
+                            && matches!(
+                                draft.images.cloud,
+                                studyapp_core::media_settings::ImageCloudTarget::NoteSync
+                            )
+                            && let Some(cloud) = &mut this.preferences_ui.image_cloud
+                        {
+                            cloud.kind = 0;
+                        }
+                        draft.images.storage = storage;
+                    }
+                    cx.notify();
+                },
+            ),
+        ));
         if let Some(input) = &self.preferences_ui.image_root {
             panel = panel.child(
                 form::DirectoryField::new(
@@ -3046,34 +3043,54 @@ impl StudyApp {
                 .fallback("资料库内的图片文件夹")
                 .editor(form::input(input, busy))
                 .actions(
-                    row().child(
-                        Button::new("pick-image-root")
-                            .small()
-                            .action("选择文件夹")
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                let raw = this
-                                    .preferences_ui
-                                    .image_root
-                                    .as_ref()
-                                    .map(|input| input.read(cx).value().trim().to_owned())
-                                    .unwrap_or_default();
-                                let current = if raw.is_empty() {
-                                    std::path::Path::new(&this.last_library)
-                                        .parent()
-                                        .map(|path| path.join("images"))
-                                } else {
-                                    Some(std::path::PathBuf::from(raw))
-                                };
-                                if let Some(cloud) = &mut this.preferences_ui.image_cloud {
-                                    cloud.picker.choose(
-                                        &this.last_library,
-                                        current,
-                                        "选择本地图片目录",
-                                    );
-                                }
-                            })),
-                    ),
+                    row()
+                        .flex_wrap()
+                        .child(
+                            Button::new("reset-image-root")
+                                .small()
+                                .ghost()
+                                .label("恢复默认")
+                                .disabled(busy || input.read(cx).value().trim().is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if let Some(cloud) = &mut this.preferences_ui.image_cloud {
+                                        cloud.picker.invalidate();
+                                    }
+                                    if let Some(input) = &this.preferences_ui.image_root {
+                                        input.update(cx, |input, cx| {
+                                            input.set_value("", window, cx)
+                                        });
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("pick-image-root")
+                                .small()
+                                .action("选择文件夹")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let raw = this
+                                        .preferences_ui
+                                        .image_root
+                                        .as_ref()
+                                        .map(|input| input.read(cx).value().trim().to_owned())
+                                        .unwrap_or_default();
+                                    let current = if raw.is_empty() {
+                                        std::path::Path::new(&this.last_library)
+                                            .parent()
+                                            .map(|path| path.join("images"))
+                                    } else {
+                                        Some(std::path::PathBuf::from(raw))
+                                    };
+                                    if let Some(cloud) = &mut this.preferences_ui.image_cloud {
+                                        cloud.picker.choose(
+                                            &this.last_library,
+                                            current,
+                                            "选择本地图片目录",
+                                        );
+                                    }
+                                })),
+                        ),
                 ),
             );
         }
@@ -3083,29 +3100,27 @@ impl StudyApp {
         if draft.images.storage != ImageStorage::Local
             && let Some(cloud) = &self.preferences_ui.image_cloud
         {
-            panel = panel.child(heading("图片云端服务")).child(
-                row().flex_wrap().children(
-                    [
-                        (0u8, "s3", "通用对象存储（S3 兼容）"),
-                        (1u8, "note-sync", "复用笔记同步（WebDAV / NAS）"),
-                    ]
-                    .into_iter()
-                    .map(|(kind, id, label)| {
-                        let button =
-                            Button::new(SharedString::from(format!("image-provider-{id}")))
-                                .small()
-                                .label(label)
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(cloud) = &mut this.preferences_ui.image_cloud {
-                                        cloud.kind = kind;
-                                    }
-                                    cx.notify();
-                                }));
-                        button.selected(cloud.kind == kind)
-                    }),
-                ),
-            );
+            panel = panel
+                .child(heading("图片云端服务"))
+                .child(form::settings_row(
+                    "云端服务",
+                    form::choice_with_default(
+                        "image-provider",
+                        (cloud.kind, 0u8),
+                        vec![
+                            (0u8, "通用对象存储（S3 兼容）".into()),
+                            (1u8, "复用笔记同步（WebDAV / NAS）".into()),
+                        ],
+                        busy,
+                        cx.weak_entity(),
+                        |this, kind, _, cx| {
+                            if let Some(cloud) = &mut this.preferences_ui.image_cloud {
+                                cloud.kind = kind;
+                            }
+                            cx.notify();
+                        },
+                    ),
+                ));
             if cloud.kind == 0 {
                 panel = panel.child(muted("兼容协议：S3 · AWS Signature V4。请填写服务商的 S3 兼容入口，不是控制台登录地址。"));
                 for (key, label) in [
@@ -3115,25 +3130,23 @@ impl StudyApp {
                     ("access_key_id", "Access Key ID"),
                     ("prefix", "对象前缀"),
                 ] {
-                    panel = panel.child(
-                        row().child(div().w(px(112.)).text_sm().child(label)).child(
-                            div()
-                                .id(SharedString::from(format!("image-cloud-field-{key}")))
-                                .test_support()
-                                .flex_1()
-                                .child(form::input(&cloud.fields[key], busy)),
-                        ),
-                    );
+                    panel = panel.child(form::settings_row(
+                        label,
+                        div()
+                            .id(SharedString::from(format!("image-cloud-field-{key}")))
+                            .test_support()
+                            .min_w_0()
+                            .child(form::input(&cloud.fields[key], busy)),
+                    ));
                 }
-                panel = panel.child(row().child(div().w(px(112.)).text_sm().child("寻址方式"))
-                    .children([(studyapp_core::media_settings::ObjectAddressing::VirtualHosted, "virtual", "虚拟主机"), (studyapp_core::media_settings::ObjectAddressing::Path, "path", "路径")].into_iter().map(|(style, id, label)| {
-                        let button = Button::new(SharedString::from(format!("image-addressing-{id}"))).small().label(label).disabled(busy)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                if let Some(cloud) = &mut this.preferences_ui.image_cloud { cloud.addressing = style; }
-                                cx.notify();
-                            }));
-                        button.selected(cloud.addressing == style)
-                    })))
+                panel = panel.child(form::settings_row("寻址方式", form::choice_with_default(
+                    "image-addressing", (cloud.addressing, studyapp_core::media_settings::ObjectAddressing::default()),
+                    vec![(studyapp_core::media_settings::ObjectAddressing::VirtualHosted, "虚拟主机".into()), (studyapp_core::media_settings::ObjectAddressing::Path, "路径".into())],
+                    busy, cx.weak_entity(), |this, style, _, cx| {
+                        if let Some(cloud) = &mut this.preferences_ui.image_cloud { cloud.addressing = style; }
+                        cx.notify();
+                    },
+                )))
                     .child(muted("虚拟主机：bucket.endpoint/key；路径：endpoint/bucket/key。不同服务的兼容范围与要求不同，请按服务商文档选择。"))
                     .child({ cloud.credential.update(cx, |secret, cx| secret.configure(cloud.secret_saved, busy, cx)); cloud.credential.clone() });
             } else {
@@ -4301,8 +4314,8 @@ mod scoped_tests {
                 app.select_settings_section(SettingsSection::Logging, cx)
             });
             window.draw(cx).clear(cx);
+            studyapp_ui::settings_components::select_choice(window, "logging-level", 4, cx);
             window.click("logging-enabled", cx);
-            window.click("logging-level-Trace", cx);
         });
         visual.run_until_parked();
         visual.update(|window, cx| {
@@ -4406,6 +4419,53 @@ mod scoped_tests {
         }
     }
 
+    fn reveal_notification_rule(
+        app: &Entity<StudyApp>,
+        visual: &mut VisualTestContext,
+        category: studyapp_core::NoticeCategory,
+    ) {
+        let index = studyapp_core::NoticeCategory::ALL
+            .iter()
+            .position(|value| *value == category)
+            .unwrap();
+        let target = index / 5;
+        loop {
+            visual.run_until_parked();
+            let page = app.read_with(visual, |app, _| app.preferences_ui.notification_page);
+            if page == target {
+                break;
+            }
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                window.click(
+                    if page < target {
+                        "notice-page-next"
+                    } else {
+                        "notice-page-prev"
+                    },
+                    cx,
+                );
+            });
+        }
+        visual.run_until_parked();
+        app.update(visual, |app, cx| {
+            app.preferences_ui
+                .notification_rows
+                .scroll
+                .scroll_to(gpui_kit::ListOffset {
+                    item_ix: index % 5 + 2,
+                    offset_in_item: gpui_kit::px(0.),
+                });
+            app.preferences_ui
+                .notification_view
+                .as_ref()
+                .unwrap()
+                .update(cx, |_, cx| cx.notify());
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.render_frame(cx));
+    }
+
     #[gpui_kit::test]
     fn notification_surfaces_reuse_unchanged_frames_and_rebuild_only_visible_rows(
         cx: &mut TestAppContext,
@@ -4462,25 +4522,11 @@ mod scoped_tests {
                 );
             }
             if !appearance {
-                app.update(visual, |app, cx| {
-                    app.preferences_ui
-                        .notification_rows
-                        .scroll
-                        .scroll_to(gpui_kit::ListOffset {
-                            item_ix: 21,
-                            offset_in_item: gpui_kit::px(0.),
-                        });
-                    app.preferences_ui
-                        .notification_view
-                        .as_ref()
-                        .unwrap()
-                        .update(cx, |_, cx| cx.notify());
-                });
-                visual.update(|window, cx| {
-                    window.render_frame(cx);
-                    window.click("notification-rule-StartupRecovery-options", cx);
-                });
-                visual.run_until_parked();
+                reveal_notification_rule(
+                    &app,
+                    visual,
+                    studyapp_core::NoticeCategory::StartupRecovery,
+                );
                 surface.update(visual, |_, cx| cx.notify());
                 visual.update(|window, cx| {
                     window.render_frame(cx);
@@ -4652,9 +4698,8 @@ mod scoped_tests {
             window.draw(cx).clear(cx);
             window.click("notification-update-badge", cx);
             window.click("notification-dnd", cx);
-            window.click("notification-rule-UpdateAvailable-options", cx);
         });
-        visual.run_until_parked();
+        reveal_notification_rule(&app, visual, studyapp_core::NoticeCategory::UpdateAvailable);
         visual.update(|window, cx| {
             window.draw(cx).clear(cx);
             window.click("notification-rule-UpdateAvailable-foreground", cx);

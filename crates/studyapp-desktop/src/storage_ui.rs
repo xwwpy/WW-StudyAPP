@@ -776,7 +776,7 @@ impl StudyApp {
                             .small()
                             .icon_action(gpui_kit::assets::IconName::Files, "管理托管副本")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.select_storage_page(StoragePage::Copies, cx)
+                                this.select_settings_target("storage.copies", cx)
                             })),
                     )
                     .child(
@@ -785,7 +785,7 @@ impl StudyApp {
                             .ghost()
                             .action("图片存储设置")
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.select_storage_page(StoragePage::Images, cx)
+                                this.select_settings_target("storage.images", cx)
                             })),
                     ),
             );

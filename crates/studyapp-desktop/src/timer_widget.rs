@@ -527,11 +527,7 @@ impl StudyApp {
                 window.activate_window();
                 self.navigate(Page::Settings, window, cx);
                 if self.page == Page::Settings {
-                    self.select_settings_section(
-                        crate::settings_ui::SettingsSection::Appearance,
-                        cx,
-                    );
-                    self.select_appearance_page(crate::settings_ui::AppearancePage::Widget, cx);
+                    self.select_settings_target("appearance.widget", cx);
                 }
             }
             other => {

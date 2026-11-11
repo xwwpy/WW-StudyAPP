@@ -96,8 +96,7 @@ pub async fn exercise(
     window
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
-            window.click("logging-level-Trace", cx);
-            window.click("logging-directory-expand", cx);
+            crate::smoke_settings::select_choice(window, "logging-level", 4, cx);
         })
         .unwrap();
     window

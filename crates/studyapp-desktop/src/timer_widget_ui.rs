@@ -1,13 +1,8 @@
 //! Timer configuration and widget appearance use the existing dialog/settings shell.
-use crate::{
-    app::StudyApp,
-    components::*,
-    controls::{Button, Checkbox},
-    settings_components as form,
-};
+use crate::{app::StudyApp, components::*, controls::Button, settings_components as form};
 use gpui_kit::{
     component::{
-        Disableable, Selectable, Sizable,
+        Disableable, Sizable,
         button::ButtonVariants,
         input::{InputEvent, InputState},
     },
@@ -298,45 +293,43 @@ impl StudyApp {
             .as_ref()
             .map(|s| s.timer.clone())
             .unwrap_or_default();
-        let mut layouts = row().flex_wrap();
-        for (value, label) in [
-            (WidgetLayout::Compact, "紧凑"),
-            (WidgetLayout::Standard, "标准"),
-            (WidgetLayout::Expanded, "展开"),
-        ] {
-            layouts = layouts.child(
-                Button::new(SharedString::from(format!("widget-layout-{value:?}")))
-                    .small()
-                    .label(label)
-                    .selected(settings.layout == value)
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            draft.timer_widget.layout = value;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        let mut backgrounds = row().flex_wrap();
-        for (value, label) in [
-            (WidgetBackground::Follow, "跟随主题"),
-            (WidgetBackground::Solid, "不透明"),
-            (WidgetBackground::Inset, "内嵌面色"),
-        ] {
-            backgrounds = backgrounds.child(
-                Button::new(SharedString::from(format!("widget-background-{value:?}")))
-                    .small()
-                    .label(label)
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            draft.timer_widget.background = value;
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
+        let layouts = form::choice_with_default(
+            "widget-layout",
+            (settings.layout, TimerWidgetSettings::default().layout),
+            vec![
+                (WidgetLayout::Compact, "紧凑".into()),
+                (WidgetLayout::Standard, "标准".into()),
+                (WidgetLayout::Expanded, "展开".into()),
+            ],
+            busy,
+            cx.weak_entity(),
+            |this, value, _, cx| {
+                if let Some(draft) = &mut this.preferences_ui.draft {
+                    draft.timer_widget.layout = value;
+                }
+                cx.notify();
+            },
+        );
+        let backgrounds = form::choice_with_default(
+            "widget-background",
+            (
+                settings.background,
+                TimerWidgetSettings::default().background,
+            ),
+            vec![
+                (WidgetBackground::Follow, "跟随主题".into()),
+                (WidgetBackground::Solid, "不透明".into()),
+                (WidgetBackground::Inset, "内嵌面色".into()),
+            ],
+            busy,
+            cx.weak_entity(),
+            |this, value, _, cx| {
+                if let Some(draft) = &mut this.preferences_ui.draft {
+                    draft.timer_widget.background = value;
+                }
+                cx.notify();
+            },
+        );
         let mut toggles = column().gap_2();
         let mut behavior = column().gap_2();
         type BoolField = fn(&mut TimerWidgetSettings) -> &mut bool;
@@ -370,18 +363,19 @@ impl StudyApp {
             ),
         ];
         for (key, label, checked, field) in fields {
-            let toggle = Checkbox::new(SharedString::from(key.to_owned()))
-                .label(label)
-                .checked(checked)
-                .disabled(
-                    busy || (key == "widget-pinned" && !studyapp_ui::timer_card::PIN_SUPPORTED),
-                )
-                .on_click(cx.listener(move |this, checked, _, cx| {
-                    if let Some(draft) = &mut this.preferences_ui.draft {
-                        *field(&mut draft.timer_widget) = *checked;
-                    }
-                    cx.notify();
-                }));
+            let toggle = studyapp_ui::settings_switch::SettingSwitch::new(SharedString::from(
+                key.to_owned(),
+            ))
+            .default_value(*field(&mut TimerWidgetSettings::default()))
+            .label(label)
+            .checked(checked)
+            .disabled(busy || (key == "widget-pinned" && !studyapp_ui::timer_card::PIN_SUPPORTED))
+            .on_click(cx.listener(move |this, checked, _, cx| {
+                if let Some(draft) = &mut this.preferences_ui.draft {
+                    *field(&mut draft.timer_widget) = *checked;
+                }
+                cx.notify();
+            }));
             if key == "widget-pinned" {
                 behavior = behavior.child(toggle);
             } else {
@@ -409,13 +403,59 @@ impl StudyApp {
             .id("widget-settings-presets")
             .test_support()
             .child(self.widget_preset_stages(cx));
+        let collapsed = self
+            .preferences_ui
+            .collapsed_previews
+            .contains("widget-preview");
+        let preview = column()
+            .gap_2()
+            .child(
+                row().flex_wrap().child(heading("实时预览")).child(
+                    Button::new("toggle-widget-preview")
+                        .small()
+                        .label(if collapsed {
+                            "展开预览"
+                        } else {
+                            "收起预览"
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if !this
+                                .preferences_ui
+                                .collapsed_previews
+                                .remove("widget-preview")
+                            {
+                                this.preferences_ui
+                                    .collapsed_previews
+                                    .insert("widget-preview".into());
+                            }
+                            cx.notify();
+                        })),
+                ),
+            )
+            .when(!collapsed, |view| {
+                view.child(
+                    div()
+                        .id("widget-settings-preview")
+                        .test_support()
+                        .max_w(px(480.))
+                        .child(timer_card(
+                            TimerCardModel::from_timer(&timer, 1),
+                            TimerCardStyle::from_widget_settings(
+                                &settings,
+                                crate::theme::palette(),
+                            ),
+                            TimerCardVariant::Preview,
+                            |_, _, _| {},
+                        )),
+                )
+            });
         form::card_grid(width).flex_shrink_0()
             .child(heading("桌面计时小组件").col_span_full())
             .child(muted("窗口和今日页共享同一计时。外观修改可实时预览，保存后保留；窗口位置仅保存在当前设备。").col_span_full())
             .child(form::section("布局与显示").id("widget-settings-display").test_support()
-                .child(form::field("布局", layouts)).child(toggles))
+                .child(form::settings_row("布局", layouts)).child(toggles).child(preview))
             .child(form::section("尺寸与背景").id("widget-settings-size").test_support()
-                .child(form::field("背景", backgrounds))
+                .child(form::settings_row("背景", backgrounds))
                 .child(self.widget_number("widget-radius", "圆角", settings.corner_radius, (0,28,2), |s| &mut s.corner_radius, cx))
                 .child(self.widget_number("widget-scale", "整体缩放（50–200%）", settings.scale, (50,200,5), |s| &mut s.scale, cx)))
             .child(colors)
@@ -425,8 +465,6 @@ impl StudyApp {
                 .child(Button::new("settings-toggle-timer-widget")
                     .action(if self.timer_widget.is_some() { "隐藏桌面小组件" } else { "显示桌面小组件" }).disabled(busy)
                     .on_click(cx.listener(|this, _, window, cx| this.timer_action(TimerCardAction::ShowOnDesktop, window, cx)))))
-            .child(form::section("实时预览").id("widget-settings-preview").test_support().col_span_full()
-                .child(div().max_w(px(480.)).child(timer_card(TimerCardModel::from_timer(&timer,1), TimerCardStyle::from_widget_settings(&settings, crate::theme::palette()), TimerCardVariant::Preview, |_,_,_|{}))))
             .child(muted("小组件开启时，关闭主窗口只会最小化；需要真正退出，请使用卡片内的退出图标。背景不透明度可调至 0，数字和选中按钮不再带额外实色底；文字、图标与进度保持清晰。整体缩放支持直接输入百分比；不透明背景模式固定使用实色。")
                 .id("widget-settings-end").test_support().flex_shrink_0().col_span_full())
     }

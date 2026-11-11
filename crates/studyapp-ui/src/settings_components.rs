@@ -432,20 +432,26 @@ mod tests {
         clock: Entity<InputState>,
         events: usize,
         clock_events: usize,
+        inherited: Option<u64>,
     }
     impl Render for NumberEventFixture {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let mut control = super::NumericSetting::new(
+                "semantic-number",
+                &self.source,
+                "分钟",
+                if self.inherited.is_some() { 0 } else { 5 },
+                1,
+                10,
+                false,
+            );
+            if let Some(value) = self.inherited {
+                control =
+                    control.inherit_zero(value, format!("继承上级 · 当前有效值 {value} 分钟"));
+            }
             super::column()
                 .w(px(600.))
-                .child(super::NumericSetting::new(
-                    "semantic-number",
-                    &self.source,
-                    "分钟",
-                    5,
-                    1,
-                    10,
-                    false,
-                ))
+                .child(control)
                 .child(crate::settings_time::time_input(
                     "semantic-clock",
                     &self.clock,
@@ -494,6 +500,7 @@ mod tests {
                 clock,
                 events: 0,
                 clock_events: 0,
+                inherited: None,
             }
         });
         draw(visual);
@@ -522,6 +529,133 @@ mod tests {
         visual.update(|_, cx| {
             assert_eq!(view.read(cx).clock.read(cx).value(), "00:00");
             assert_eq!(view.read(cx).clock_events, 1);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn inherited_numbers_only_materialize_on_customization_and_restore_the_sentinel(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (view, visual) = cx.add_window_view(|window, cx| {
+            let source = cx.new(|cx| InputState::new(window, cx).default_value("0"));
+            let clock = cx.new(|cx| InputState::new(window, cx).default_value("00:00"));
+            cx.subscribe(
+                &source,
+                |this: &mut NumberEventFixture,
+                 _,
+                 event: &gpui_kit::component::input::InputEvent,
+                 cx| {
+                    if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                        this.events += 1;
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+            NumberEventFixture {
+                source,
+                clock,
+                events: 0,
+                clock_events: 0,
+                inherited: Some(3),
+            }
+        });
+        draw(visual);
+        view.update(visual, |this, cx| {
+            this.inherited = Some(7);
+            cx.notify();
+        });
+        draw(visual);
+        visual.update(|window, cx| {
+            assert_eq!(view.read(cx).source.read(cx).value(), "0");
+            assert_eq!(view.read(cx).events, 0);
+            assert!(window.try_find("semantic-number-increase").is_none());
+            window.click("semantic-number-customize", cx);
+        });
+        draw(visual);
+        visual.update(|window, cx| {
+            assert_eq!(view.read(cx).source.read(cx).value(), "7");
+            assert_eq!(view.read(cx).events, 1);
+            window.click("semantic-number-reset", cx);
+        });
+        draw(visual);
+        visual.update(|window, cx| {
+            assert_eq!(view.read(cx).source.read(cx).value(), "0");
+            assert_eq!(view.read(cx).events, 2);
+            assert!(window.try_find("semantic-number-customize").is_some());
+        });
+    }
+
+    struct ChoiceFixture {
+        value: usize,
+        changes: usize,
+        width: f32,
+    }
+    impl Render for ChoiceFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            super::column()
+                .w(px(self.width))
+                .child(super::choice_with_default(
+                    "responsive-choice",
+                    (self.value, 0usize),
+                    vec![(0, "默认".into()), (1, "浅色".into()), (2, "深色".into())],
+                    false,
+                    cx.weak_entity(),
+                    |this, value, _, cx| {
+                        this.value = value;
+                        this.changes += 1;
+                        cx.notify();
+                    },
+                ))
+        }
+    }
+    #[gpui_kit::test]
+    fn responsive_choices_keep_value_across_layouts_and_reset_through_real_input(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (view, visual) = cx.add_window_view(|_, _| ChoiceFixture {
+            value: 0,
+            changes: 0,
+            width: 600.,
+        });
+        draw(visual);
+        visual.update(|window, cx| {
+            assert!(
+                window
+                    .try_find((gpui_kit::ElementId::from("responsive-choice"), "option-2"))
+                    .is_some()
+            );
+            super::select_choice(window, "responsive-choice", 2, cx);
+            assert_eq!(view.read(cx).value, 2);
+            assert_eq!(view.read(cx).changes, 1);
+        });
+        view.update(visual, |this, cx| {
+            this.width = 150.;
+            cx.notify();
+        });
+        draw(visual);
+        visual.update(|window, cx| {
+            assert_eq!(view.read(cx).value, 2);
+            assert_eq!(view.read(cx).changes, 1);
+            assert!(
+                window
+                    .try_find((gpui_kit::ElementId::from("responsive-choice"), "option-2"))
+                    .is_none()
+            );
+            super::select_choice(window, "responsive-choice", 1, cx);
+            assert_eq!(view.read(cx).value, 1);
+            assert_eq!(view.read(cx).changes, 2);
+            window.click(
+                (gpui_kit::ElementId::from("responsive-choice"), "reset"),
+                cx,
+            );
+        });
+        draw(visual);
+        visual.update(|_, cx| {
+            assert_eq!(view.read(cx).value, 0);
+            assert_eq!(view.read(cx).changes, 3);
         });
     }
 
@@ -897,13 +1031,14 @@ pub fn choice<T: 'static, V: Clone + PartialEq + 'static>(
             if short && f32::from(available.width) >= needed {
                 return row()
                     .id(id.clone())
+                    .test_support()
                     .min_w_0()
                     .gap_1()
                     .children(options.iter().enumerate().map(|(index, (value, label))| {
                         let owner = owner.clone();
                         let change = change.clone();
                         let value = value.clone();
-                        crate::controls::Button::new(("choice-option", index))
+                        crate::controls::Button::new((id.clone(), format!("option-{index}")))
                             .small()
                             .label(label.clone())
                             .selected(value == current)
@@ -950,6 +1085,123 @@ pub fn choice<T: 'static, V: Clone + PartialEq + 'static>(
     )
 }
 
+/// Runner-only input driver shared by native smoke and portable GPUI fixtures.
+#[cfg(feature = "ui-test")]
+pub fn select_choice(window: &mut Window, id: &'static str, index: usize, cx: &mut App) {
+    use gpui_kit::test::TestWindowExt;
+    let option = (ElementId::from(id), format!("option-{index}"));
+    window.render_frame(cx);
+    if window.try_find(option.clone()).is_some() {
+        window.click(option, cx);
+    } else {
+        window.click(id, cx);
+        window.render_frame(cx);
+        for _ in 0..=index {
+            window.dispatch_keystroke(Keystroke::parse("down").unwrap(), cx);
+        }
+        window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+    }
+    window.render_frame(cx);
+}
+
+/// Ordinary enums reset their own draft value; inherited enums use `choice`
+/// with a None option instead of inventing a default override.
+pub fn choice_with_default<T: 'static, V: Clone + PartialEq + 'static>(
+    id: impl Into<ElementId>,
+    values: (V, V),
+    options: Vec<(V, String)>,
+    disabled: bool,
+    owner: WeakEntity<T>,
+    change: impl Fn(&mut T, V, &mut Window, &mut Context<T>) + Clone + 'static,
+) -> impl IntoElement {
+    use gpui_kit::component::{Disableable, button::ButtonVariants};
+    let id = id.into();
+    let (current, default) = values;
+    let reset_disabled = disabled || current == default;
+    row()
+        .w_full()
+        .min_w_0()
+        .flex_wrap()
+        .gap_2()
+        .child(div().flex_1().min_w_0().child(choice(
+            id.clone(),
+            current,
+            options,
+            disabled,
+            owner.clone(),
+            change.clone(),
+        )))
+        .child(
+            crate::controls::Button::new((id, "reset"))
+                .small()
+                .ghost()
+                .label("恢复默认")
+                .disabled(reset_disabled)
+                .on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| change(this, default.clone(), window, cx));
+                }),
+        )
+}
+
+/// An unset enum remains live inheritance until the user explicitly customizes.
+pub fn inherited_choice<T: 'static, V: Clone + PartialEq + 'static>(
+    id: impl Into<ElementId>,
+    current: Option<V>,
+    effective: (V, String),
+    options: Vec<(V, String)>,
+    disabled: bool,
+    owner: WeakEntity<T>,
+    change: impl Fn(&mut T, Option<V>, &mut Window, &mut Context<T>) + Clone + 'static,
+) -> impl IntoElement {
+    use gpui_kit::component::{Disableable, button::ButtonVariants};
+    let id = id.into();
+    if let Some(current) = current {
+        let choose = change.clone();
+        row()
+            .w_full()
+            .min_w_0()
+            .flex_wrap()
+            .gap_2()
+            .child(div().flex_1().min_w_0().child(choice(
+                id.clone(),
+                current,
+                options,
+                disabled,
+                owner.clone(),
+                move |this, value, window, cx| choose(this, Some(value), window, cx),
+            )))
+            .child(
+                crate::controls::Button::new((id, "inherit"))
+                    .small()
+                    .ghost()
+                    .label("恢复继承")
+                    .disabled(disabled)
+                    .on_click(move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| change(this, None, window, cx));
+                    }),
+            )
+    } else {
+        row()
+            .w_full()
+            .min_w_0()
+            .flex_wrap()
+            .gap_2()
+            .child(muted(effective.1))
+            .child(
+                crate::controls::Button::new((id, "customize"))
+                    .small()
+                    .ghost()
+                    .label("自定义")
+                    .disabled(disabled)
+                    .on_click(move |_, window, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            change(this, Some(effective.0.clone()), window, cx)
+                        });
+                    }),
+            )
+    }
+}
+
 /// Caller-owned numeric draft text is validated on global Save, including
 /// invalid interim input; it never silently falls back to an older value.
 #[derive(IntoElement)]
@@ -961,6 +1213,7 @@ pub struct NumericSetting {
     min: u64,
     max: u64,
     disabled: bool,
+    zero_inheritance: Option<(u64, SharedString)>,
 }
 impl NumericSetting {
     pub fn new(
@@ -980,8 +1233,21 @@ impl NumericSetting {
             min,
             max,
             disabled,
+            zero_inheritance: None,
         }
     }
+    /// Zero remains an inheritance sentinel, not the lower bound of a wider
+    /// numeric range. Customizing is an explicit edit; rendering never freezes
+    /// the effective inherited value into the caller's source.
+    pub fn inherit_zero(mut self, custom: u64, description: impl Into<SharedString>) -> Self {
+        self.zero_inheritance = Some((custom.clamp(self.min, self.max), description.into()));
+        self
+    }
+}
+fn numeric_valid(raw: &str, min: u64, max: u64, inherit_zero: bool) -> bool {
+    raw.trim()
+        .parse::<u64>()
+        .is_ok_and(|value| (min..=max).contains(&value) || (inherit_zero && value == 0))
 }
 fn step_integer(raw: &str, increase: bool, min: u64, max: u64) -> Option<u64> {
     let value = raw
@@ -999,10 +1265,35 @@ impl RenderOnce for NumericSetting {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         use gpui_kit::component::{Disableable, button::ButtonVariants};
         let raw = self.input.read(cx).value();
-        let invalid = raw
-            .trim()
-            .parse::<u64>()
-            .map_or(true, |value| !(self.min..=self.max).contains(&value));
+        let invalid = !numeric_valid(&raw, self.min, self.max, self.zero_inheritance.is_some());
+        if raw.trim().parse::<u64>() == Ok(0)
+            && let Some((custom, description)) = &self.zero_inheritance
+        {
+            let custom = *custom;
+            let source = self.input.clone();
+            return column().id(self.id.clone()).test_support().gap_1().child(
+                row()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(muted(description.clone()))
+                    .child(
+                        crate::controls::Button::new(SharedString::from(format!(
+                            "{}-customize",
+                            self.id
+                        )))
+                        .small()
+                        .ghost()
+                        .label("自定义")
+                        .disabled(self.disabled)
+                        .on_click(move |_, window, cx| {
+                            source.update(cx, |input, cx| {
+                                input.set_value(custom.to_string(), window, cx);
+                                cx.emit(gpui_kit::component::input::InputEvent::Change);
+                            });
+                        }),
+                    ),
+            );
+        }
         let (min, max) = (self.min, self.max);
         let mut number = row().gap_1().min_w_0();
         for (suffix, label, increase) in [("decrease", "−", false), ("increase", "+", true)] {
@@ -1046,8 +1337,12 @@ impl RenderOnce for NumericSetting {
                         )))
                         .small()
                         .ghost()
-                        .label("重置")
-                        .disabled(self.disabled)
+                        .label(if self.zero_inheritance.is_some() {
+                            "恢复继承"
+                        } else {
+                            "重置"
+                        })
+                        .disabled(self.disabled || raw.trim() == default.to_string())
                         .on_click(move |_, window, cx| {
                             source.update(cx, |input, cx| {
                                 input.set_value(default.to_string(), window, cx);
@@ -1064,6 +1359,18 @@ impl RenderOnce for NumericSetting {
 }
 #[cfg(test)]
 mod integer_tests {
+    #[test]
+    fn inheritance_sentinel_does_not_expand_the_custom_range() {
+        use super::numeric_valid;
+        assert!(numeric_valid("0", 12, 28, true));
+        assert!(!numeric_valid("0", 12, 28, false));
+        for value in ["12", "28", " 14 "] {
+            assert!(numeric_valid(value, 12, 28, true));
+        }
+        for value in ["1", "11", "29", "-", "", "1.5", "abc"] {
+            assert!(!numeric_valid(value, 12, 28, true));
+        }
+    }
     #[test]
     fn numeric_steps_are_exact_and_never_coerce_invalid_text_or_overflow() {
         use super::step_integer;

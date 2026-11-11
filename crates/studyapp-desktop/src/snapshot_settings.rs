@@ -82,9 +82,9 @@ impl StudyApp {
         let dirty = self.settings_dirty(cx);
         let mut view = form::section("笔记快照").child(form::settings_row(
             "保存方式",
-            form::choice(
+            form::choice_with_default(
                 "snapshot-mode",
-                policy.mode,
+                (policy.mode, SnapshotSettings::default().mode),
                 SnapshotMode::ALL
                     .into_iter()
                     .map(|v| (v, v.label().into()))

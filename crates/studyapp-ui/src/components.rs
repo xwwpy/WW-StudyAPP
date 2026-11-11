@@ -94,32 +94,92 @@ fn tooltip_at(text: String, position: Point<Pixels>, window: &mut Window, cx: &m
     .into()
 }
 
-/// Attach a delayed text tooltip to the actual painted control bounds. The
-/// framework still owns hover lifetime; the bubble owns its native occlusions.
+#[derive(Default)]
+struct ControlTooltipAnchor {
+    bounds: Bounds<Pixels>,
+    viewport: Size<Pixels>,
+    bubble: Option<WeakEntity<crate::bubble::PointerBubble>>,
+}
+impl ControlTooltipAnchor {
+    fn publish(&mut self, bounds: Bounds<Pixels>, viewport: Size<Pixels>, cx: &mut App) {
+        if self.bounds == bounds && self.viewport == viewport {
+            return;
+        }
+        self.bounds = bounds;
+        self.viewport = viewport;
+        if crate::theme::palette().tooltip_position == studyapp_core::TooltipPosition::BesideControl
+            && let Some(bubble) = &self.bubble
+        {
+            let position = control_tooltip_anchor(bounds, viewport);
+            let _ = bubble.update(cx, |bubble, cx| {
+                if bubble.position != position {
+                    bubble.position = position;
+                    cx.notify();
+                }
+            });
+        }
+    }
+}
+
+type TooltipAnchorSlot = std::rc::Rc<std::cell::RefCell<Option<Entity<ControlTooltipAnchor>>>>;
+#[derive(IntoElement)]
+struct TooltipAnchorMeasure(TooltipAnchorSlot);
+impl RenderOnce for TooltipAnchorMeasure {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Scoped by the parent control's actual element identity, not a new Rc
+        // on each parent redraw. Lists and settings rows retain the same anchor.
+        let anchor = window.use_keyed_state("control-tooltip-anchor", cx, |_, _| {
+            ControlTooltipAnchor::default()
+        });
+        *self.0.borrow_mut() = Some(anchor.clone());
+        canvas(
+            move |bounds, window, cx| {
+                anchor.update(cx, |anchor, cx| {
+                    anchor.publish(bounds, window.viewport_size(), cx)
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0()
+    }
+}
+
+/// Framework-owned hover lifetime, with a stable painted anchor. The live
+/// bubble follows scroll/reflow even when the pointer itself has not moved.
 pub fn control_tooltip<E: ParentElement + InteractiveElement + Styled>(
     control: E,
     text: String,
 ) -> E {
-    use std::{cell::Cell, rc::Rc};
-    let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
-    let measured = bounds.clone();
+    let anchor = TooltipAnchorSlot::default();
+    let measured = anchor.clone();
     let mut control = control.relative();
     control.interactivity().tooltip(move |window, cx| {
+        let anchor = anchor.borrow().clone();
         let position = if crate::theme::palette().tooltip_position
             == studyapp_core::TooltipPosition::BesideControl
         {
-            control_tooltip_anchor(bounds.get(), window.viewport_size())
+            anchor
+                .as_ref()
+                .map(|anchor| {
+                    control_tooltip_anchor(anchor.read(cx).bounds, window.viewport_size())
+                })
+                .unwrap_or_else(|| window.mouse_position())
         } else {
             window.mouse_position()
         };
-        tooltip_at(text.clone(), position, window, cx)
+        let registry = crate::bubble::window_bubble_registry(window, cx);
+        let bubble = cx.new(|_| crate::bubble::PointerBubble {
+            text: text.clone(),
+            position,
+            registry,
+        });
+        if let Some(anchor) = anchor {
+            anchor.update(cx, |anchor, _| anchor.bubble = Some(bubble.downgrade()));
+        }
+        bubble.into()
     });
-    control.extend([
-        canvas(move |bounds, _, _| measured.set(bounds), |_, _, _, _| {})
-            .absolute()
-            .inset_0()
-            .into_any_element(),
-    ]);
+    control.extend([TooltipAnchorMeasure(measured).into_any_element()]);
     control
 }
 fn control_tooltip_anchor(bounds: Bounds<Pixels>, viewport: Size<Pixels>) -> Point<Pixels> {
@@ -891,6 +951,52 @@ mod tests {
                 last.bottom() <= footer.top() + px(1.),
                 "last card cannot be fully revealed"
             );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn fixed_tooltip_reanchors_to_reflowed_control_and_does_not_retain_the_bubble(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let mut settings = studyapp_core::AppearanceSettings::default();
+            settings.notifications.tooltip_position = studyapp_core::TooltipPosition::BesideControl;
+            crate::theme::apply(&settings, false, cx);
+        });
+        let (_, visual) = cx.add_window_view(|_, _| gpui_kit::Empty);
+        visual.update(|window, cx| {
+            let registry = crate::bubble::window_bubble_registry(window, cx);
+            let bubble = cx.new(|_| crate::bubble::PointerBubble {
+                registry,
+                text: "控件说明".into(),
+                position: point(px(1.), px(1.)),
+            });
+            let weak = bubble.downgrade();
+            let mut anchor = super::ControlTooltipAnchor {
+                bubble: Some(weak.clone()),
+                ..Default::default()
+            };
+            for bounds in [
+                gpui_kit::Bounds::new(point(px(30.), px(60.)), gpui_kit::size(px(100.), px(30.))),
+                gpui_kit::Bounds::new(point(px(200.), px(300.)), gpui_kit::size(px(160.), px(45.))),
+            ] {
+                anchor.publish(bounds, gpui_kit::size(px(800.), px(600.)), cx);
+                assert_eq!(
+                    bubble.read(cx).position,
+                    super::control_tooltip_anchor(bounds, gpui_kit::size(px(800.), px(600.)))
+                );
+            }
+            let unchanged = anchor.bounds;
+            let narrow_viewport = gpui_kit::size(px(800.), px(400.));
+            anchor.publish(unchanged, narrow_viewport, cx);
+            assert_eq!(
+                bubble.read(cx).position,
+                super::control_tooltip_anchor(unchanged, narrow_viewport)
+            );
+            drop(bubble);
+            assert!(weak.upgrade().is_none(), "anchor retained a closed tooltip");
+            anchor.publish(gpui_kit::Bounds::default(), window.viewport_size(), cx);
         });
     }
 

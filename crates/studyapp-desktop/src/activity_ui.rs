@@ -1,5 +1,5 @@
 //! A passive view of real controllers. Closing it changes no worker state.
-use crate::{components::*, controls::Button, sync_ui::SyncPanel, update_ui::UpdatePanel};
+use crate::{controls::Button, sync_ui::SyncPanel, update_ui::UpdatePanel};
 use gpui_kit::{
     component::{Disableable, button::ButtonVariants},
     prelude::FluentBuilder,
@@ -152,41 +152,21 @@ impl Render for ActivityPanel {
             .max(0.)
             .min(f32::from(surface.max_height) + 104.);
         let owner = cx.weak_entity();
-        let panel = studyapp_ui::interactive_surface::frame(NoticeStyle::ActivityView, &appearance)
-            .flex()
-            .flex_col()
+        let close = Button::new("close-activity")
+            .ghost()
+            .label("收起")
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.open = false;
+                cx.notify();
+            }));
+        let panel = studyapp_ui::activity_view::panel(tasks, &self.scroll, &appearance, close)
             .relative()
             .id("task-activity-panel")
             .test_support()
             .occlude()
-            .gap_3()
-            .p_4()
             .w(px(width.max(0.)))
             .h(px(height))
-            .shadow_lg()
-            .child(
-                row()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .font_weight(FontWeight::BOLD)
-                            .child("任务活动"),
-                    )
-                    .child(
-                        Button::new("close-activity")
-                            .ghost()
-                            .label("收起")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.open = false;
-                                cx.notify();
-                            })),
-                    ),
-            )
-            .child(muted(
-                "收起面板不会取消任务。这里只显示真实任务状态与支持的操作。",
-            ))
-            .child(studyapp_ui::activity_view::task_list(tasks, &self.scroll, layout).flex_1());
+            .shadow_lg();
         let panel = panel.child(
             canvas(
                 move |bounds, _, cx| {

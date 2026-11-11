@@ -16,6 +16,9 @@ const PREVIEW_VIEWPORTS: [(f32, f32); 4] =
     [(1000., 700.), (1024., 700.), (1000., 720.), (1024., 720.)];
 const LIVE_PREVIEW_VIEWPORT: (f32, f32) = (1000., 700.);
 
+/// Exercise either responsive representation without changing the model directly.
+pub(crate) use studyapp_ui::settings_components::select_choice;
+
 /// Navigate by actual drawer/tree interactions, including scrolled categories.
 pub(crate) fn select_page(window: &mut Window, view: &Entity<StudyApp>, page: &str, cx: &mut App) {
     let target = match page {
@@ -407,7 +410,7 @@ fn capture_task_pages(window: &mut Window, view: &Entity<StudyApp>, database: &P
         window.render_frame(cx);
         match id {
             "appearance-overview" => {
-                assert!(window.try_find("theme-mode-system").is_some());
+                assert!(window.try_find("theme-mode").is_some());
                 assert!(window.try_find("color-open-accent").is_none());
             }
             "appearance-theme-editor" => {
@@ -418,7 +421,7 @@ fn capture_task_pages(window: &mut Window, view: &Entity<StudyApp>, database: &P
             }
             "appearance-workspace" => {
                 assert!(window.try_find("show-file-paths").is_some());
-                assert!(window.try_find("theme-mode-system").is_none());
+                assert!(window.try_find("theme-mode").is_none());
             }
             "storage-overview" => {
                 assert!(view.read(cx).preferences_ui.storage_page == StoragePage::Overview);
@@ -430,12 +433,12 @@ fn capture_task_pages(window: &mut Window, view: &Entity<StudyApp>, database: &P
                 assert!(window.try_find(("storage-category", 0_usize)).is_none());
             }
             "storage-images" => {
-                assert!(window.try_find("images-storage-local").is_some());
+                assert!(window.try_find("images-storage").is_some());
                 assert!(window.try_find("refresh-storage").is_none());
             }
             "storage-library" => {
                 assert!(window.try_find("migrate-library").is_some());
-                assert!(window.try_find("images-storage-local").is_none());
+                assert!(window.try_find("images-storage").is_none());
             }
             _ => unreachable!(),
         }
@@ -907,12 +910,13 @@ pub async fn exercise(
 
             crate::smoke_settings::select_page(window, view, "storage", cx);
             crate::smoke_settings::select_page(window, view, "storage-images", cx);
-            click_scrolled(
+            reveal_scrolled(
                 window,
-                "images-storage-cloud".into(),
+                "images-storage".into(),
                 "settings-section-scroll",
                 cx,
             );
+            select_choice(window, "images-storage", 1, cx);
             assert_eq!(
                 view.read(cx)
                     .preferences_ui
@@ -939,12 +943,13 @@ pub async fn exercise(
                 files,
                 "cloud form wrote settings before save"
             );
-            click_scrolled(
+            reveal_scrolled(
                 window,
-                "images-storage-local".into(),
+                "images-storage".into(),
                 "settings-section-scroll",
                 cx,
             );
+            select_choice(window, "images-storage", 0, cx);
             crate::smoke_settings::select_page(window, view, "shortcuts", cx);
             window.render_frame(cx);
             let content = window.find("settings-section-scroll").bounds();
@@ -1318,7 +1323,7 @@ pub async fn exercise(
                         cx.notify();
                     });
                 } else {
-                    window.click(SharedString::from(format!("theme-mode-{mode}")), cx);
+                    select_choice(window, "theme-mode", if mode == "dark" { 2 } else { 1 }, cx);
                 }
                 window.click("save-settings", cx);
             })

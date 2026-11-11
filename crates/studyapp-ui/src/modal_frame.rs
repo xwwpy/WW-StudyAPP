@@ -5,7 +5,7 @@ use crate::{
     theme,
 };
 use gpui_kit::{
-    component::{Sizable, button::ButtonVariants},
+    component::{Disableable, Sizable, button::ButtonVariants},
     prelude::FluentBuilder,
     *,
 };
@@ -45,6 +45,7 @@ pub struct ModalFrame {
     width: ModalWidth,
     scroll: Option<ScrollHandle>,
     component: studyapp_core::NoticeStyle,
+    preview: Option<studyapp_core::NotificationAppearance>,
 }
 
 impl ModalFrame {
@@ -58,7 +59,13 @@ impl ModalFrame {
             width: ModalWidth::Regular,
             scroll: None,
             component: studyapp_core::NoticeStyle::Dialog,
+            preview: None,
         }
+    }
+    /// Same frame and layout as a real modal, without a live dismiss action.
+    pub fn preview(mut self, appearance: &studyapp_core::NotificationAppearance) -> Self {
+        self.preview = Some(appearance.clone());
+        self
     }
     pub fn description(mut self, text: impl Into<SharedString>) -> Self {
         self.description = Some(text.into());
@@ -96,7 +103,8 @@ impl RenderOnce for ModalFrame {
         use gpui_kit::component::{Icon, IconName};
         use studyapp_core::{NoticeLayout, NoticeStyle, RgbaColor};
         let palette = theme::palette();
-        let appearance = theme::notification_appearance();
+        let is_preview = self.preview.is_some();
+        let appearance = self.preview.unwrap_or_else(theme::notification_appearance);
         let surface = appearance.surface(self.component);
         let alert = self.component == NoticeStyle::ModalCard;
         let centered_alert = alert && appearance.layout(self.component) == NoticeLayout::Primary;
@@ -147,6 +155,26 @@ impl RenderOnce for ModalFrame {
                 .children(alert.then_some(icon))
                 .child(title)
         };
+        let close = if is_preview {
+            crate::controls::Button::new("preview-modal-close")
+                .small()
+                .ghost()
+                .icon(IconName::Close)
+                .disabled(true)
+                .into_any_element()
+        } else {
+            gpui_kit::component::dialog::DialogClose::new()
+                .trigger(|button| {
+                    button
+                        .small()
+                        .ghost()
+                        .icon(IconName::Close)
+                        .tooltip("关闭弹窗")
+                        .accessibility_label("关闭弹窗")
+                        .tab_index(-1)
+                })
+                .into_any_element()
+        };
         let header = column()
             .id("modal-header")
             .test_support()
@@ -158,17 +186,7 @@ impl RenderOnce for ModalFrame {
             .when(centered_alert, |view| view.text_center())
             .child(heading)
             .children(self.description.map(muted))
-            .child(div().absolute().top(px(12.)).right(px(12.)).child(
-                gpui_kit::component::dialog::DialogClose::new().trigger(|button| {
-                    button
-                        .small()
-                        .ghost()
-                        .icon(IconName::Close)
-                        .tooltip("关闭弹窗")
-                        .accessibility_label("关闭弹窗")
-                        .tab_index(-1)
-                }),
-            ));
+            .child(div().absolute().top(px(12.)).right(px(12.)).child(close));
         let padding = space(palette.spacing, 3.).min(px(32.));
         let viewport = window.viewport_size();
         let custom_width = appearance
@@ -191,6 +209,7 @@ impl RenderOnce for ModalFrame {
             .id("modal-frame")
             .test_support()
             .min_w_0()
+            .max_w_full()
             .gap_0()
             .w(if near_full {
                 viewport.width * 0.94

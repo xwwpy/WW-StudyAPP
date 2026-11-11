@@ -6,7 +6,7 @@ use crate::{
     worker::Work,
 };
 use gpui_kit::{
-    component::{Disableable, Selectable, input::InputState},
+    component::{Disableable, input::InputState},
     *,
 };
 use std::sync::mpsc;
@@ -298,14 +298,15 @@ impl Render for SyncPanel {
         let unsaved = self.has_unsaved_changes(cx);
         let mut panel = form::section("笔记文件同步")
             .child(muted("连接自己的 WebDAV 或文件夹/NAS。同步 Markdown 文件，完整历史和学习记录由本地资料库与备份管理。"))
-            .child(row().flex_wrap().children(["关闭同步", "文件夹 / NAS", "WebDAV"].into_iter().enumerate().map(|(i, label)| {
-                Button::new(("sync-target", i)).label(label).selected(self.target == i).disabled(busy)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if this.editing_locked || this.status.busy { return; }
-                        if this.target != i { this.invalidate_folder_picker(); }
-                        this.target = i; cx.notify();
-                    }))
-            })));
+            .child(form::settings_row("同步目标", form::choice_with_default(
+                "sync-target", (self.target, 0usize),
+                vec![(0usize, "关闭同步".into()), (1usize, "文件夹 / NAS".into()), (2usize, "WebDAV".into())],
+                busy, cx.weak_entity(), |this, target, _, cx| {
+                    if this.editing_locked || this.status.busy { return; }
+                    if this.target != target { this.invalidate_folder_picker(); }
+                    this.target = target; cx.notify();
+                },
+            )));
         if self.target == 1 {
             panel = panel.child(
                 form::DirectoryField::new(
@@ -316,23 +317,37 @@ impl Render for SyncPanel {
                 .fallback("尚未选择")
                 .editor(form::input(&self.folder, busy))
                 .actions(
-                    row().child(
-                        Button::new("pick-sync-folder")
-                            .action("选择文件夹")
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if this.editing_locked || this.status.busy || this.target != 1 {
-                                    return;
-                                }
-                                let current =
-                                    std::path::PathBuf::from(this.folder.read(cx).value().trim());
-                                this.folder_picker.choose(
-                                    &this.status.library,
-                                    Some(current),
-                                    "选择同步根目录",
-                                );
-                            })),
-                    ),
+                    row()
+                        .flex_wrap()
+                        .child(
+                            Button::new("reset-sync-folder")
+                                .label("重置")
+                                .disabled(busy || self.folder.read(cx).value().is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.invalidate_folder_picker();
+                                    this.folder
+                                        .update(cx, |input, cx| input.set_value("", window, cx));
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("pick-sync-folder")
+                                .action("选择文件夹")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.editing_locked || this.status.busy || this.target != 1 {
+                                        return;
+                                    }
+                                    let current = std::path::PathBuf::from(
+                                        this.folder.read(cx).value().trim(),
+                                    );
+                                    this.folder_picker.choose(
+                                        &this.status.library,
+                                        Some(current),
+                                        "选择同步根目录",
+                                    );
+                                })),
+                        ),
                 ),
             );
         } else if self.target == 2 {

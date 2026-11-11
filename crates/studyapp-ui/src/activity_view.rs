@@ -15,6 +15,42 @@ pub struct ActivityTask {
     pub state: TaskState,
     pub completed: Option<(u64, u64)>,
 }
+/// Shared complete frame for the live drawer/table and its inert preview.
+pub fn panel(
+    tasks: Vec<(ActivityTask, Option<Button>)>,
+    scroll: &ScrollHandle,
+    appearance: &studyapp_core::NotificationAppearance,
+    close: Button,
+) -> Div {
+    crate::interactive_surface::frame(studyapp_core::NoticeStyle::ActivityView, appearance)
+        .flex()
+        .flex_col()
+        .min_w_0()
+        .gap_3()
+        .p_4()
+        .child(
+            row()
+                .gap_2()
+                .child(
+                    div()
+                        .flex_1()
+                        .font_weight(FontWeight::BOLD)
+                        .child("任务活动"),
+                )
+                .child(close),
+        )
+        .child(muted(
+            "收起面板不会取消任务。这里只显示真实任务状态与支持的操作。",
+        ))
+        .child(
+            task_list(
+                tasks,
+                scroll,
+                appearance.layout(studyapp_core::NoticeStyle::ActivityView),
+            )
+            .flex_1(),
+        )
+}
 pub fn task_list(
     tasks: Vec<(ActivityTask, Option<Button>)>,
     scroll: &ScrollHandle,

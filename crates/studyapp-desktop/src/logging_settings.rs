@@ -12,7 +12,6 @@ use gpui_kit::{
         button::ButtonVariants,
         input::{InputEvent, InputState},
     },
-    prelude::FluentBuilder,
     *,
 };
 use studyapp_core::LogLevel;
@@ -115,28 +114,25 @@ impl StudyApp {
         if !settings.enabled {
             panel = panel.child(muted("启用日志后可调整输出等级和目录；当前草稿保留。"));
         }
-        let mut levels = row().flex_wrap().gap_1();
-        for level in LogLevel::ALL {
-            levels = levels.child(
-                Button::new(SharedString::from(format!(
-                    "logging-level-{}",
-                    level.label()
-                )))
-                .small()
-                .ghost()
-                .label(level.label())
-                .disabled(busy || !settings.enabled)
-                .when(settings.minimum_level == level, |button| {
-                    button.bg(crate::theme::selection_color())
-                })
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if let Some(draft) = &mut this.preferences_ui.draft {
-                        draft.logging.minimum_level = level;
-                    }
-                    cx.notify();
-                })),
-            );
-        }
+        let levels = form::choice_with_default(
+            "logging-level",
+            (
+                settings.minimum_level,
+                studyapp_core::LoggingSettings::default().minimum_level,
+            ),
+            LogLevel::ALL
+                .into_iter()
+                .map(|level| (level, level.label().into()))
+                .collect(),
+            busy || !settings.enabled,
+            cx.weak_entity(),
+            |this, level, _, cx| {
+                if let Some(draft) = &mut this.preferences_ui.draft {
+                    draft.logging.minimum_level = level;
+                }
+                cx.notify();
+            },
+        );
         panel=panel.child(form::settings_row("输出等级",levels)).child(muted("Error：错误；Warn：警告及错误；Info：常规运行信息；Debug / Trace：更细的阶段与计数。任何等级都不记录正文、剪贴板、凭据、完整路径或技术堆栈。"));
         if let Some(input) = &self.preferences_ui.logging_directory {
             panel = panel.child(

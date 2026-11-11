@@ -393,6 +393,9 @@ impl StudyApp {
                                                 },
                                             )
                                         });
+                                if result.target_id() == "appearance.selection" {
+                                    this.preferences_ui.selection_target = None;
+                                }
                                 this.preferences_ui.appearance_group = result.markdown_group;
                                 let scroll = match this.preferences_ui.section {
                                     SettingsSection::Appearance
@@ -747,11 +750,11 @@ fn field_settings() -> Vec<SettingResult> {
             }),
     );
     for (label, group) in [
-        ("正文字号 px", 0),
-        ("行高 %", 0),
-        ("阅读宽度 px", 0),
-        ("代码字号 px", 1),
-        ("代码圆角 px", 1),
+        ("正文字号", 0),
+        ("行高", 0),
+        ("阅读宽度", 0),
+        ("代码字号", 1),
+        ("代码圆角", 1),
     ] {
         fields.push(
             SettingResult::new(
@@ -764,6 +767,175 @@ fn field_settings() -> Vec<SettingResult> {
             .anchor(label),
         );
     }
+    for (target, label, keywords, row) in [
+        (
+            "appearance.overview",
+            "界面主题",
+            "跟随系统 浅色 深色 明暗 模式",
+            0,
+        ),
+        (
+            "appearance.overview",
+            "渲染 Markdown 中的安全 HTML 与行内样式",
+            "html 行内样式 开关 源文 安全",
+            0,
+        ),
+        (
+            "appearance.overview",
+            "列宽",
+            "表格 等宽 内容 自适应 默认",
+            0,
+        ),
+        (
+            "appearance.overview",
+            "列对齐",
+            "表格 源文 左对齐 居中 右对齐",
+            0,
+        ),
+        ("appearance.theme", "主题名称", "自定义 主题 命名", 0),
+        ("appearance.theme", "强调色", "主题 颜色 RGBA", 0),
+        ("appearance.theme", "窗口背景", "主题 颜色 RGBA", 0),
+        ("appearance.theme", "卡片背景", "主题 颜色 RGBA", 0),
+        ("appearance.theme", "文字颜色", "主题 颜色 RGBA", 0),
+        (
+            "appearance.workspace",
+            "显示笔记文件的存储路径",
+            "工作区 路径 隐私 文件",
+            0,
+        ),
+        (
+            "appearance.workspace",
+            "显示主导航",
+            "工作区 侧栏 导航 隐藏",
+            0,
+        ),
+        (
+            "appearance.workspace",
+            "显示资料库",
+            "工作区 侧栏 资料库 隐藏",
+            0,
+        ),
+        (
+            "appearance.selection",
+            "编辑范围",
+            "选中 全局 分类 导航 选项 笔记 目录",
+            0,
+        ),
+        (
+            "appearance.selection",
+            "显示选中标记",
+            "选中 标记 全局 显示 隐藏",
+            0,
+        ),
+        (
+            "appearance.selection",
+            "选中项圆角",
+            "选中 全局 类别 圆角 像素",
+            0,
+        ),
+        ("appearance.widget", "布局", "计时小组件 紧凑 标准 展开", 0),
+        (
+            "appearance.widget",
+            "背景",
+            "计时小组件 跟随主题 不透明 内嵌面色",
+            0,
+        ),
+        (
+            "appearance.widget",
+            "窗口置顶",
+            "计时小组件 窗口 固定 置顶",
+            0,
+        ),
+        (
+            "appearance.widget",
+            "显示秒数",
+            "计时小组件 秒 显示 隐藏",
+            0,
+        ),
+        (
+            "appearance.widget",
+            "显示进度",
+            "计时小组件 进度 显示 隐藏",
+            0,
+        ),
+        (
+            "appearance.widget",
+            "显示计时说明",
+            "计时小组件 说明 阶段 显示 隐藏",
+            0,
+        ),
+        (
+            "appearance.widget",
+            "显示计时按钮",
+            "计时小组件 操作 按钮 显示 隐藏",
+            0,
+        ),
+    ] {
+        fields.push(
+            SettingResult::new(S::Appearance, label, keywords)
+                .target(target, row)
+                .anchor(label),
+        );
+    }
+    for (label, keywords) in [
+        ("显示新版本红点", "更新 红点 版本"),
+        ("立即免打扰", "通知 安静 暂停 免打扰"),
+        ("免打扰时仍显示严重错误", "通知 严重 错误 免打扰 例外"),
+        ("桌面卡片隐藏具体内容", "通知 隐私 后台 桌面 卡片"),
+        ("播放提示音", "通知 声音 提示音"),
+        ("启用定时免打扰", "通知 定时 时间段 开始 结束"),
+        ("免打扰开始", "通知 时间 HH:MM 24 小时 起止 跨天 次日"),
+        ("免打扰结束", "通知 时间 HH:MM 24 小时 起止 跨天 次日"),
+    ] {
+        fields.push(
+            SettingResult::new(S::Notifications, label, keywords)
+                .target("notices.rules", 0)
+                .anchor(label),
+        );
+    }
+    for (label, group) in [
+        ("正文字体", 0),
+        ("代码字体", 1),
+        ("显示代码边框", 1),
+        ("显示表格网格", 2),
+        ("表格交替行背景", 2),
+    ] {
+        fields.push(
+            SettingResult::new(
+                S::Appearance,
+                label,
+                "Markdown 字体 代码 表格 网格 条纹 边框 显示 隐藏",
+            )
+            .target("appearance.theme", 1)
+            .appearance(AppearancePage::ThemeEditor, group)
+            .anchor(label),
+        );
+    }
+    for label in [
+        "保存方式",
+        "云端服务",
+        "寻址方式",
+        "Endpoint",
+        "Bucket",
+        "Region",
+        "Access Key ID",
+        "对象前缀",
+    ] {
+        fields.push(
+            SettingResult::new(
+                S::Storage,
+                label,
+                "图片 云端 存储 S3 对象存储 本地 服务 地址 桶 区域 公开账户 路径",
+            )
+            .target("storage.images", 0)
+            .anchor(label),
+        );
+    }
+    fields.push(
+        SettingResult::new(S::Sync, "同步目标", "关闭 文件夹 NAS WebDAV 同步目标")
+            .target("sync", 0)
+            .anchor("同步目标"),
+    );
     for style in studyapp_core::NoticeStyle::ALL {
         for label in [
             "组件布局",
@@ -820,7 +992,7 @@ mod tests {
     fn concrete_fields_include_their_real_subpage_and_markdown_row() {
         let width = search("阅读宽度")
             .into_iter()
-            .find(|entry| entry.label == "阅读宽度 px")
+            .find(|entry| entry.label == "阅读宽度")
             .unwrap();
         assert_eq!(width.target_id(), "appearance.theme");
         assert_eq!(width.row, 1);
@@ -840,6 +1012,28 @@ mod tests {
                 .iter()
                 .any(|entry| entry.target_id() == "logging" && entry.anchor == Some("日志目录"))
         );
+    }
+
+    #[test]
+    fn individual_enum_boolean_and_secretless_cloud_fields_have_exact_destinations() {
+        for (label, target, row, group) in [
+            ("显示秒数", "appearance.widget", 0, 0),
+            ("界面主题", "appearance.overview", 0, 0),
+            ("代码字体", "appearance.theme", 1, 1),
+            ("表格交替行背景", "appearance.theme", 1, 2),
+            ("免打扰开始", "notices.rules", 0, 0),
+            ("寻址方式", "storage.images", 0, 0),
+            ("同步目标", "sync", 0, 0),
+        ] {
+            let entry = search(label)
+                .into_iter()
+                .find(|entry| entry.label == label)
+                .unwrap();
+            assert_eq!(entry.target_id(), target);
+            assert_eq!(entry.row, row);
+            assert_eq!(entry.markdown_group, group);
+            assert_eq!(entry.anchor, Some(label));
+        }
     }
 
     #[test]

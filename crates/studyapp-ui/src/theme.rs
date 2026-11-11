@@ -76,6 +76,11 @@ pub struct ResolvedTheme {
     pub markdown_layout: MarkdownLayout,
 }
 
+/// The reader's automatic line height follows UI spacing, in integer percent.
+pub fn inherited_line_height(spacing: u16) -> u16 {
+    (175_i32 + (i32::from(spacing.clamp(4, 16)) - 8) * 5) as u16
+}
+
 fn blend(first: u32, second: u32, weight: f32) -> u32 {
     let channel = |shift: u32| {
         (((first >> shift) & 255u32) as f32 * (1. - weight)
@@ -385,7 +390,7 @@ impl ResolvedTheme {
             "quoteBackground": hex(self.markdown_colors[5]), "tableHeader": hex(self.surface_raised), "grid": hex(self.markdown_colors[13]),
             "muted": hex(self.muted), "border": hex(self.border),
             "selection": hex(self.markdown_colors[24]), "selectionText": hex(self.markdown_colors[25]), "fontSize": self.font_size,
-            "spacing": 1.75 + (self.spacing as f64 - 8.) * 0.05,
+            "spacing": f64::from(inherited_line_height(self.spacing)) / 100.,
             "markdown": markdown,
         })
     }
@@ -600,6 +605,24 @@ mod tests {
             });
         }
     }
+    #[test]
+    fn inherited_reader_line_height_matches_the_actual_editor_tokens() {
+        for spacing in [0, 4, 8, 12, 16, u16::MAX] {
+            let settings = AppearanceSettings {
+                spacing,
+                ..Default::default()
+            };
+            let resolved = resolve(&settings, false);
+            let expected = super::inherited_line_height(spacing);
+            assert_eq!(
+                resolved.editor_tokens()["spacing"].as_f64().unwrap(),
+                f64::from(expected) / 100.
+            );
+        }
+        assert_eq!(super::inherited_line_height(8), 175);
+        assert_eq!(super::inherited_line_height(16), 215);
+    }
+
     #[test]
     fn built_in_selection_is_visible_and_all_labels_remain_readable() {
         for dark in [false, true] {

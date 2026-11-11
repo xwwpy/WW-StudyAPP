@@ -430,7 +430,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert!(view.read(cx).preferences_ui.section == crate::settings_ui::SettingsSection::Sync,
                     "Sync category must be selected before using its controls");
                 window.render_frame(cx);
-                window.click(("sync-target", 1_usize), cx);
+                crate::smoke_settings::select_choice(window, "sync-target", 1, cx);
                 let panel = view.read(cx).sync_panel.clone();
                 panel.update(cx, |panel, cx| panel.folder.update(cx, |s, cx| s.set_value(sync_folder.to_string_lossy().into_owned(), window, cx)));
                 window.click("save-settings", cx);
