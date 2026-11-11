@@ -10,7 +10,7 @@ impl StudyApp {
             self.layout = draft.layout.clone();
         }
     }
-    pub(crate) fn workspace_settings(&self, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn workspace_settings(&self, width: Pixels, cx: &mut Context<Self>) -> Div {
         let defaults = studyapp_core::Settings::default();
         let draft = self.preferences_ui.draft.as_ref().unwrap_or(&defaults);
         let layout = &draft.layout;
@@ -107,10 +107,9 @@ impl StudyApp {
             .child(muted(
                 "目录偏好与阅读页共用，保存后重开仍生效；不改变 Markdown 源文或撤销历史。",
             ));
-        column()
-            .gap_4()
-            .child(panels)
-            .child(ordering)
-            .child(directory)
+        form::card_grid(width)
+            .child(div().col_span_full().child(panels))
+            .child(ordering.id("workspace-order-card").test_support())
+            .child(directory.id("workspace-outline-card").test_support())
     }
 }

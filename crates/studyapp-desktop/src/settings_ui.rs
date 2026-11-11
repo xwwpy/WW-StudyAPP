@@ -3057,7 +3057,7 @@ impl StudyApp {
         if part == 3 {
             return form::section("Markdown 参数").child(self.markdown_style_controls(busy, cx));
         }
-        self.workspace_settings(cx)
+        self.workspace_settings(width, cx)
     }
 
     pub fn poll_image_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6863,13 +6863,15 @@ mod scoped_tests {
     struct WorkspaceFixture {
         app: Entity<StudyApp>,
         scroll: gpui_kit::ScrollHandle,
+        width: f32,
     }
     impl Render for WorkspaceFixture {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             self.app.update(cx, |app, cx| {
                 crate::components::scroll_body("workspace-fixture-scroll", &self.scroll)
-                    .size_full()
-                    .child(app.workspace_settings(cx))
+                    .w(gpui_kit::px(self.width))
+                    .h_full()
+                    .child(app.workspace_settings(gpui_kit::px(self.width), cx))
             })
         }
     }
@@ -6884,6 +6886,7 @@ mod scoped_tests {
             WorkspaceFixture {
                 app: app.clone(),
                 scroll: scroll.clone(),
+                width: 700.,
             }
         });
         visual.update(|window, cx| window.render_frame(cx));
@@ -6979,5 +6982,39 @@ mod scoped_tests {
             app.update(cx, |app, cx| app.discard_settings(window, cx));
             assert_eq!(app.read(cx).layout, saved.settings.layout);
         });
+    }
+    #[gpui_kit::test]
+    fn workspace_cards_adapt_to_content_width_without_editing_preferences(cx: &mut TestAppContext) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(1400.), gpui_kit::px(1600.)));
+        let surface = visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            WorkspaceFixture {
+                app: app.clone(),
+                scroll: gpui_kit::ScrollHandle::new(),
+                width: 1100.,
+            }
+        });
+        for width in [1100., 520., 1000.] {
+            surface.update(visual, |view, cx| {
+                view.width = width;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let order = window.find("workspace-order-card").bounds();
+                let outline = window.find("workspace-outline-card").bounds();
+                if width >= 800. {
+                    assert!((f32::from(order.top() - outline.top())).abs() < 1.);
+                    assert!(order.right() <= outline.left());
+                } else {
+                    assert!(outline.top() >= order.bottom());
+                }
+                assert!(order.right() <= gpui_kit::px(width + 1.));
+                assert!(outline.right() <= gpui_kit::px(width + 1.));
+                assert!(!app.read(cx).settings_dirty(cx));
+            });
+        }
     }
 }
