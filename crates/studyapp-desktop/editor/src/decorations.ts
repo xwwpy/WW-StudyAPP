@@ -420,6 +420,9 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
             const urlNode = node.getChild("URL");
             const label=node.getChild("LinkLabel");
             const url = urlNode ? decodeMarkdown(state.sliceDoc(urlNode.from, urlNode.to).replace(/^<|>$/g,"")) : references().get(referenceLabel(label?state.sliceDoc(label.from+1,label.to-1):state.sliceDoc(from+1,to-1)))||"";
+            // Lezer also emits Link for unresolved shortcut references ([i]).
+            // They are ordinary source text unless an actual destination exists.
+            if (!url) return;
             const href = safeHref(url);
             mark(from,to,"md-link",{title:href?`${href}（阅读时点击，编辑时 Ctrl+点击）`:"选中以编辑链接",...(href?{"data-studyapp-href":href,role:"link",tabindex:"0"}:{})});
             if (!active(from, to) && name === "Link") {

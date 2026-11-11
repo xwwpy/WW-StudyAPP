@@ -3284,3 +3284,20 @@ test("selection actionbar follows the selection, preserves exact commands, hides
   assert.deepEqual(errors,[]);
   await page.close();
 });
+
+
+test("unresolved bracket references remain literal in reading and editing", async () => {
+  const {page, errors} = await setup(`[i] and [missing][absent] and [ok][target]
+
+[target]: https://example.org`);
+  for (const readonly of [true, false]) {
+    await page.evaluate(readonly => window.studyappEditor.setReadonly(readonly), readonly);
+    await page.locator("#toolbar").click({position:{x:4,y:4}});
+    const result = await page.locator(".cm-content").evaluate(node => ({text:node.textContent, links:[...node.querySelectorAll(".md-link")].map(n=>n.textContent)}));
+    assert.ok(result.text.includes("[i]"));
+    assert.ok(result.text.includes("[missing][absent]"));
+    assert.equal(result.links.length,1);
+    assert.deepEqual(errors, []);
+  }
+  await page.close();
+});
