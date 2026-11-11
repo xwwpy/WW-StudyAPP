@@ -3301,3 +3301,32 @@ test("unresolved bracket references remain literal in reading and editing", asyn
   }
   await page.close();
 });
+
+test("code controls copy exact content and fold only presentation in readonly and draft", async () => {
+  const text = '# Note\n\n```rust\nlet value = "中文😀";\nprintln!("{}", value);\n```\n\nafter';
+  const {page, errors} = await setup(text);
+  await page.evaluate(() => {
+    document.execCommand = command => {
+      if(command !== "copy") return false;
+      const data = new DataTransfer();
+      document.dispatchEvent(new ClipboardEvent("copy",{clipboardData:data,bubbles:true,cancelable:true}));
+      window.copiedCode = data.getData("text/plain"); return true;
+    };
+  });
+  for (const readonly of [true, false]) {
+    await page.evaluate(readonly => window.studyappEditor.load({generation:41,text:window.studyappEditor.test({type:"snapshot"}).text,readonly}),readonly);
+    const before = await state(page);
+    await page.locator('.md-code-controls button[aria-label="复制代码"]').click();
+    assert.equal(await page.evaluate(()=>window.copiedCode), 'let value = "中文😀";\nprintln!("{}", value);\n');
+    await page.locator('.md-code-controls button[aria-label="折叠代码"]').click();
+    await page.locator('.md-code-folded').waitFor();
+    assert.ok(!(await page.locator('.cm-content').innerText()).includes('println!'));
+    assert.equal((await state(page)).text, before.text);
+    assert.equal((await state(page)).revision, before.revision);
+    await page.locator('.md-code-controls button[aria-label="复制代码"]').click();
+    assert.ok((await page.evaluate(()=>window.copiedCode)).includes('println!'));
+    await page.locator('.md-code-folded').click();
+    assert.ok((await page.locator('.cm-content').innerText()).includes('println!'));
+  }
+  assert.deepEqual(errors, []); await page.close();
+});

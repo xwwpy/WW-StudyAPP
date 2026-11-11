@@ -1,7 +1,8 @@
+import { CodeControls, codeIsFolded } from "./code-blocks";
 import { safeHref } from "./links";
 import { listDepth, listSymbol, listPresentationChanged } from "./lists";
 import { Range, StateEffect, Text, Transaction } from "@codemirror/state";
-import { syntaxTree } from "@codemirror/language";
+import { foldEffect, unfoldEffect, syntaxTree } from "@codemirror/language";
 import { markdownLanguage } from "@codemirror/lang-markdown";
 import { Decoration, DecorationSet, EditorView, ViewPlugin, ViewUpdate, WidgetType } from "@codemirror/view";
 import { completeFenceLanguage, normalizeFenceLanguage } from "./languages";
@@ -249,7 +250,7 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
   }
   update(update: ViewUpdate) {
     const tree = syntaxTree(update.state);
-    if (update.transactions.some(transaction => transaction.effects.some(effect => effect.is(imageMapChanged) || effect.is(languageFocusChanged) || effect.is(tablePresentationChanged) || effect.is(listPresentationChanged))) || update.docChanged || update.selectionSet || update.focusChanged || update.viewportChanged || tree !== this.tree ||
+    if (update.transactions.some(transaction => transaction.effects.some(effect => effect.is(imageMapChanged) || effect.is(languageFocusChanged) || effect.is(tablePresentationChanged) || effect.is(listPresentationChanged) || effect.is(foldEffect) || effect.is(unfoldEffect))) || update.docChanged || update.selectionSet || update.focusChanged || update.viewportChanged || tree !== this.tree ||
         update.startState.readOnly !== update.state.readOnly) {
       this.tree = tree;
       this.decorations = this.build(update.view);
@@ -341,6 +342,14 @@ export const renderedMarkdown = ViewPlugin.fromClass(class {
             const first = state.doc.lineAt(Math.max(from, visible.from)).number;
             const last = state.doc.lineAt(Math.min(to, visible.to)).number;
             const opening = state.doc.lineAt(from);
+            const closing = name === "FencedCode" ? node.getChildren("CodeMark").at(-1) : undefined;
+            const bodyStart = name === "FencedCode" ? Math.min(to, opening.to + 1) : from;
+            const bodyEnd = closing && closing.from > opening.to ? state.doc.lineAt(closing.from).from : to;
+            const foldStart = name === "FencedCode" ? opening.to : opening.from;
+            // Controls do not alter source or selection; CM's folding field owns
+            // multi-line replacements (a viewport plugin must never own those).
+            const code = state.sliceDoc(bodyStart, bodyEnd);
+            ranges.push(Decoration.widget({widget:new CodeControls(foldStart, to, code, codeIsFolded(view, foldStart, to)), side:-1}).range(opening.from));
             const structural = name === "FencedCode" ? /^[ \t]*/.exec(opening.text)![0].length : from-opening.from;
             for (let i = first; i <= last; i++) {
               const position=state.doc.line(i).from;
