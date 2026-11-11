@@ -799,8 +799,18 @@ impl StudyApp {
             }))
             .child(self.note_content.clone())
             .child(studyapp_ui::components::document_status_bar(
-                row().min_w_0().child(pill_tone(status, tone).id("note-draft-status").test_support())
-                    .child(muted("草稿自动保留，点击保存后写入笔记。").truncate().min_w_0()),
+                row()
+                    .min_w_0()
+                    .child(
+                        pill_tone(status, tone)
+                            .id("note-draft-status")
+                            .test_support(),
+                    )
+                    .child(
+                        muted("草稿自动保留，点击保存后写入笔记。")
+                            .truncate()
+                            .min_w_0(),
+                    ),
             ));
         column().flex_1().min_h_0().h_full().min_w_0().child(view)
     }

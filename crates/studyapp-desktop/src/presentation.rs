@@ -276,16 +276,19 @@ mod tests {
 
 /// A reader header names the file, not the first Markdown heading.
 pub fn document_filename(path: &str, fallback: &str) -> String {
-    path.rsplit(['/', char::from(92)]).next().filter(|name| !name.is_empty())
-        .unwrap_or(fallback).to_owned()
+    path.rsplit(['/', char::from(92)])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
 }
 #[cfg(test)]
 mod filename_tests {
     #[test]
     fn reader_uses_cross_platform_filename_including_extension() {
         use super::document_filename;
-        assert_eq!(document_filename(r"C:
-otes\文件.md", "Heading"), "文件.md");
+        let windows = ["C:", "notes", "文件.md"].join(&char::from(92).to_string());
+        assert_eq!(document_filename(&windows, "Heading"), "文件.md");
         assert_eq!(document_filename("/notes/Other.md", "Heading"), "Other.md");
         assert_eq!(document_filename("", "Untitled"), "Untitled");
     }

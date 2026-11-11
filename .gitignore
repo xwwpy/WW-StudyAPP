@@ -2,6 +2,7 @@
 /.scratch/
 /.superpowers/
 /dist/
+/bug
 *.db
 *.db-shm
 *.db-wal
@@ -22,3 +23,5 @@
 !/docs/images/
 
 /scripts/__pycache__/
+
+/.local-notes/
