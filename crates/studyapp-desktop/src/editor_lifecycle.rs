@@ -505,6 +505,7 @@ impl StudyApp {
             || self.image_cloud_busy
             || self.preferences_ui.busy
             || self.preferences_ui.leave.is_some()
+            || self.preferences_ui.theme_delete.is_some()
         {
             return;
         }

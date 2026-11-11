@@ -305,6 +305,7 @@ pub struct PreferencesUi {
     appearance_frame_parts: std::cell::Cell<u64>,
     pub appearance_touched: bool,
     pub editing_preset: Option<String>,
+    pub(crate) theme_delete: Option<String>,
     pub appearance_layout: studyapp_core::MarkdownLayout,
     pub appearance_group: u8,
     pub image_root: Option<Entity<InputState>>,
@@ -1291,6 +1292,7 @@ impl StudyApp {
     }
 
     pub fn begin_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preferences_ui.theme_delete = None;
         if let Some(saved) = self.preferences_ui.saved.clone() {
             self.fill_settings(saved.clone(), window, cx);
             self.preferences_ui.baseline = Some(saved);
@@ -1672,6 +1674,32 @@ impl StudyApp {
 
     pub fn settings_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         use studyapp_ui::modal_frame::{ModalFrame, ModalTone, ModalWidth};
+        if let Some(id) = &self.preferences_ui.theme_delete {
+            let name = self
+                .preferences_ui
+                .draft
+                .as_ref()
+                .and_then(|draft| {
+                    draft
+                        .appearance
+                        .custom_presets
+                        .iter()
+                        .find(|preset| &preset.id == id)
+                })
+                .map(|preset| preset.name.as_str())
+                .unwrap_or("所选主题");
+            let busy =
+                self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
+            return Some(ModalFrame::new(format!("删除主题「{name}」的草稿？"), muted("仅从本次设置草稿中移除此主题；若正在使用，将切换为跟随系统。其他主题、笔记及学习记录保持不变。点击保存全部设置后保留，放弃修改可撤销。"))
+                .tone(ModalTone::Warning).width(ModalWidth::Regular).scroll_handle(self.modal_focus.scroll())
+                .footer(row().justify_end()
+                    .child(Button::new("cancel-delete-theme").label("取消").disabled(busy).on_click(cx.listener(|this, _, _, cx| {
+                        this.preferences_ui.theme_delete = None; cx.notify();
+                    })))
+                    .child(Button::new("confirm-delete-theme").primary().label("删除主题草稿").disabled(busy)
+                        .on_click(cx.listener(|this, _, window, cx| this.confirm_theme_delete(window, cx)))))
+                .into_any_element());
+        }
         if self.preferences_ui.reset_confirmation {
             let scope = if self.preferences_ui.reset_all {
                 SettingsResetScope::All
@@ -2599,6 +2627,236 @@ impl StudyApp {
         column().size_full().min_w_0().min_h_0().child(parameters)
     }
 
+    fn theme_preset_controls(&self, cx: &mut Context<Self>) -> Div {
+        let fallback = studyapp_core::AppearanceSettings::default();
+        let appearance = self
+            .preferences_ui
+            .draft
+            .as_ref()
+            .map(|draft| &draft.appearance)
+            .unwrap_or(&fallback);
+        let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
+        let mut presets = column().gap_3().child(heading("主题预设"));
+        let builtins = form::settings_row(
+            "内置主题",
+            form::choice(
+                "builtin-theme-preset",
+                appearance.active_preset.clone().unwrap_or_default(),
+                studyapp_core::builtin_theme_presets()
+                    .into_iter()
+                    .map(|preset| (preset.id, preset.name))
+                    .collect(),
+                busy,
+                cx.weak_entity(),
+                |this, id, window, cx| {
+                    if this.preferences_ui.busy
+                        || this.preferences_ui.replacing
+                        || this.storage_busy
+                    {
+                        return;
+                    }
+                    let Some(preset) = studyapp_core::builtin_theme_presets()
+                        .into_iter()
+                        .find(|preset| preset.id == id)
+                    else {
+                        return;
+                    };
+                    if this.preferences_ui.appearance_touched && !this.stage_custom_appearance(cx) {
+                        return;
+                    }
+                    let settings = if let Some(draft) = &mut this.preferences_ui.draft {
+                        if let Err(error) =
+                            select_custom_preset(&mut draft.appearance, Some(preset), &id)
+                        {
+                            this.preferences_ui.error = Some(error.to_string());
+                            this.settings_validation_notice(error.to_string(), cx);
+                            cx.notify();
+                            return;
+                        }
+                        Some(draft.appearance.clone())
+                    } else {
+                        None
+                    };
+                    if let Some(settings) = settings {
+                        this.fill_appearance_fields(&settings, window, cx);
+                    }
+                    this.refresh_appearance(window, cx);
+                    cx.notify();
+                },
+            ),
+        );
+        presets = presets
+            .child(builtins)
+            .child(muted("从菜单选择后可继续自定义；保存全部设置后生效。"));
+        if appearance.custom_presets.is_empty() {
+            presets = presets.child(form::settings_row(
+                "自定义主题",
+                muted("尚无自定义主题；编辑后点击「应用到界面」即可保留在本次草稿中。"),
+            ));
+        } else {
+            presets = presets.child(form::settings_row(
+                "自定义主题",
+                form::choice(
+                    "custom-theme-preset",
+                    appearance.active_preset.clone().unwrap_or_default(),
+                    appearance
+                        .custom_presets
+                        .iter()
+                        .map(|preset| (preset.id.clone(), preset.name.clone()))
+                        .collect(),
+                    busy,
+                    cx.weak_entity(),
+                    |this, id, window, cx| {
+                        if this.preferences_ui.busy
+                            || this.preferences_ui.replacing
+                            || this.storage_busy
+                        {
+                            return;
+                        }
+                        let pending = this
+                            .preferences_ui
+                            .appearance_touched
+                            .then(|| this.custom_appearance_input(cx));
+                        let settings = if let Some(draft) = &mut this.preferences_ui.draft {
+                            if let Err(error) =
+                                select_custom_preset(&mut draft.appearance, pending, &id)
+                            {
+                                this.preferences_ui.error = Some(error.to_string());
+                                this.settings_validation_notice(error.to_string(), cx);
+                                cx.notify();
+                                return;
+                            }
+                            this.preferences_ui.error = None;
+                            Some(draft.appearance.clone())
+                        } else {
+                            None
+                        };
+                        if let Some(settings) = settings {
+                            this.fill_appearance_fields(&settings, window, cx);
+                        }
+                        this.refresh_appearance(window, cx);
+                        cx.notify();
+                    },
+                ),
+            ));
+        }
+        presets = presets.child(
+            row()
+                .flex_wrap()
+                .border_t_1()
+                .border_color(crate::theme::color(BORDER))
+                .pt_3()
+                .relative()
+                .child(studyapp_ui::settings_anchor::probe("主题草稿操作"))
+                .child(
+                    Button::new("preview-custom-theme")
+                        .small()
+                        .action("应用到界面")
+                        .disabled(busy)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.stage_custom_appearance(cx) {
+                                this.refresh_appearance(window, cx);
+                            }
+                        })),
+                )
+                .child(
+                    Button::new("new-custom-theme")
+                        .small()
+                        .action("+ 新建")
+                        .disabled(busy)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.preferences_ui.appearance_touched
+                                && !this.stage_custom_appearance(cx)
+                            {
+                                return;
+                            }
+                            let mut settings = this
+                                .preferences_ui
+                                .draft
+                                .as_ref()
+                                .map(|draft| draft.appearance.clone())
+                                .unwrap_or_default();
+                            settings.active_preset = None;
+                            this.fill_appearance_fields(&settings, window, cx);
+                            cx.notify();
+                        })),
+                ),
+        );
+        let selected = appearance.active_preset.as_ref().and_then(|id| {
+            appearance
+                .custom_presets
+                .iter()
+                .find(|preset| &preset.id == id)
+        });
+        presets.child(
+            row()
+                .flex_wrap()
+                .border_t_1()
+                .border_color(crate::theme::color(BORDER))
+                .pt_3()
+                .relative()
+                .child(studyapp_ui::settings_anchor::probe("删除主题草稿"))
+                .child(muted(
+                    "删除仅修改主题草稿，需单独确认；保存全部设置后保留。",
+                ))
+                .child(
+                    Button::new("delete-custom-theme")
+                        .small()
+                        .icon_action(gpui_kit::assets::IconName::Trash, "删除所选主题草稿…")
+                        .disabled(busy || selected.is_none())
+                        .on_click({
+                            let id = selected.map(|preset| preset.id.clone());
+                            cx.listener(move |this, _, _, cx| {
+                                if this.preferences_ui.busy
+                                    || this.preferences_ui.replacing
+                                    || this.storage_busy
+                                    || this.has_required_modal(cx)
+                                {
+                                    return;
+                                }
+                                this.preferences_ui.theme_delete = id.clone();
+                                cx.notify();
+                            })
+                        }),
+                ),
+        )
+    }
+
+    fn confirm_theme_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy {
+            return;
+        }
+        let Some(id) = self.preferences_ui.theme_delete.take() else {
+            return;
+        };
+        let Some(draft) = &mut self.preferences_ui.draft else {
+            return;
+        };
+        if !draft
+            .appearance
+            .custom_presets
+            .iter()
+            .any(|preset| preset.id == id)
+        {
+            cx.notify();
+            return;
+        }
+        draft
+            .appearance
+            .custom_presets
+            .retain(|preset| preset.id != id);
+        if draft.appearance.active_preset.as_ref() == Some(&id) {
+            draft.appearance.active_preset = None;
+            draft.appearance.mode = studyapp_core::ThemeMode::System;
+        }
+        let settings = draft.appearance.clone();
+        if self.preferences_ui.editing_preset.as_ref() == Some(&id) {
+            self.fill_appearance_fields(&settings, window, cx);
+        }
+        self.refresh_appearance(window, cx);
+        cx.notify();
+    }
+
     // Part of the theme card's scrollable content, never a fixed third pane or
     // a bottom region stealing height from the parameter editor.
     fn inline_reading_preview(&self, cx: &mut Context<Self>) -> Div {
@@ -2736,170 +2994,11 @@ impl StudyApp {
             ).child(div().col_span_full().id("appearance-list-card").test_support().child(self.list_style_settings(cx)));
         }
         if part == 1 {
-            let mut custom = card().gap_3().child(
-                row()
-                    .child(heading("自定义主题"))
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("preview-custom-theme")
-                            .small()
-                            .action("应用到界面")
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.stage_custom_appearance(cx) {
-                                    this.refresh_appearance(window, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("new-custom-theme")
-                            .small()
-                            .action("+ 新建")
-                            .disabled(busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if this.preferences_ui.appearance_touched
-                                    && !this.stage_custom_appearance(cx)
-                                {
-                                    return;
-                                }
-                                this.fill_appearance_fields(
-                                    &studyapp_core::AppearanceSettings::default(),
-                                    window,
-                                    cx,
-                                );
-                                cx.notify();
-                            })),
-                    ),
-            );
+            let mut custom = card().gap_3().child(heading("自定义主题"));
             custom = custom.child(muted(
                 "颜色和版式会即时更新阅读预览；保存全部设置后才会写入资料库。",
             ));
             custom = custom.child(self.inline_reading_preview(cx));
-            let mut presets = column().gap_3().child(heading("主题预设"));
-            let builtins = form::settings_row(
-                "内置主题",
-                form::choice(
-                    "builtin-theme-preset",
-                    appearance.active_preset.clone().unwrap_or_default(),
-                    studyapp_core::builtin_theme_presets()
-                        .into_iter()
-                        .map(|preset| (preset.id, preset.name))
-                        .collect(),
-                    busy,
-                    cx.weak_entity(),
-                    |this, id, window, cx| {
-                        if this.preferences_ui.busy
-                            || this.preferences_ui.replacing
-                            || this.storage_busy
-                        {
-                            return;
-                        }
-                        let Some(preset) = studyapp_core::builtin_theme_presets()
-                            .into_iter()
-                            .find(|preset| preset.id == id)
-                        else {
-                            return;
-                        };
-                        if this.preferences_ui.appearance_touched
-                            && !this.stage_custom_appearance(cx)
-                        {
-                            return;
-                        }
-                        let settings = if let Some(draft) = &mut this.preferences_ui.draft {
-                            if let Err(error) =
-                                select_custom_preset(&mut draft.appearance, Some(preset), &id)
-                            {
-                                this.preferences_ui.error = Some(error.to_string());
-                                this.settings_validation_notice(error.to_string(), cx);
-                                cx.notify();
-                                return;
-                            }
-                            Some(draft.appearance.clone())
-                        } else {
-                            None
-                        };
-                        if let Some(settings) = settings {
-                            this.fill_appearance_fields(&settings, window, cx);
-                        }
-                        this.refresh_appearance(window, cx);
-                        cx.notify();
-                    },
-                ),
-            );
-            presets = presets
-                .child(builtins)
-                .child(muted("从菜单选择后可继续自定义；保存全部设置后生效。"));
-            for preset in &appearance.custom_presets {
-                let id = preset.id.clone();
-                let delete_id = id.clone();
-                let selected = appearance.mode == ThemeMode::Custom
-                    && appearance.active_preset.as_ref() == Some(&id);
-                let mut select = Button::new(SharedString::from(format!("select-theme-{id}")))
-                    .small()
-                    .label(format!(
-                        "{}{}",
-                        if selected { "✓ " } else { "" },
-                        preset.name
-                    ))
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let pending = this
-                            .preferences_ui
-                            .appearance_touched
-                            .then(|| this.custom_appearance_input(cx));
-                        let settings = if let Some(draft) = &mut this.preferences_ui.draft {
-                            if let Err(error) =
-                                select_custom_preset(&mut draft.appearance, pending, &id)
-                            {
-                                this.preferences_ui.error = Some(error.to_string());
-                                this.settings_validation_notice(error.to_string(), cx);
-                                cx.notify();
-                                return;
-                            }
-                            this.preferences_ui.error = None;
-                            Some(draft.appearance.clone())
-                        } else {
-                            None
-                        };
-                        if let Some(settings) = settings {
-                            this.fill_appearance_fields(&settings, window, cx);
-                        }
-                        this.refresh_appearance(window, cx);
-                        cx.notify();
-                    }));
-                if selected {
-                    select = select.primary();
-                }
-                presets = presets.child(
-                    row().child(select).child(div().flex_1()).child(
-                        Button::new(SharedString::from(format!("delete-theme-{delete_id}")))
-                            .small()
-                            .icon_action(gpui_kit::assets::IconName::Trash, "删除主题草稿")
-                            .disabled(busy)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if let Some(draft) = &mut this.preferences_ui.draft {
-                                    draft
-                                        .appearance
-                                        .custom_presets
-                                        .retain(|preset| preset.id != delete_id);
-                                    if draft.appearance.active_preset.as_ref() == Some(&delete_id) {
-                                        draft.appearance.active_preset = None;
-                                        draft.appearance.mode = ThemeMode::System;
-                                    }
-                                }
-                                if this.preferences_ui.editing_preset.as_ref() == Some(&delete_id) {
-                                    this.fill_appearance_fields(
-                                        &studyapp_core::AppearanceSettings::default(),
-                                        window,
-                                        cx,
-                                    );
-                                }
-                                this.refresh_appearance(window, cx);
-                                cx.notify();
-                            })),
-                    ),
-                );
-            }
             for (key, label) in [
                 ("name", "主题名称"),
                 ("accent", "强调色"),
@@ -2927,7 +3026,7 @@ impl StudyApp {
                         })),
                 );
             }
-            return custom.child(presets);
+            return custom.child(self.theme_preset_controls(cx));
         }
         if part == 2 {
             return form::section("Markdown 预览").child(self.markdown_style_preview(cx));
@@ -4263,6 +4362,235 @@ mod scoped_tests {
             SettingsFixture { app: entity }
         });
         (app.unwrap(), visual)
+    }
+
+    struct ThemePresetFixture {
+        app: Entity<StudyApp>,
+    }
+    impl Render for ThemePresetFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .child(app.theme_preset_controls(cx))
+                    .children(app.settings_modal(cx))
+            })
+        }
+    }
+
+    fn theme_fixture(cx: &mut TestAppContext) -> (Entity<StudyApp>, &mut VisualTestContext) {
+        let (app, visual) = fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let appearance = &mut app
+                    .preferences_ui
+                    .saved
+                    .as_mut()
+                    .unwrap()
+                    .settings
+                    .appearance;
+                appearance.mode = studyapp_core::ThemeMode::Custom;
+                appearance.active_preset = Some("theme-0".into());
+                appearance.custom_presets = (0..9)
+                    .map(|index| studyapp_core::ThemePreset {
+                        id: format!("theme-{index}"),
+                        name: format!("主题 {index}"),
+                        palette: Default::default(),
+                        markdown: Default::default(),
+                    })
+                    .collect();
+                appearance.notifications.width = 420;
+                app.begin_settings(window, cx);
+            })
+        });
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            ThemePresetFixture { app: app.clone() }
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.draw(cx).clear(cx));
+        (app, visual)
+    }
+
+    #[gpui_kit::test]
+    fn custom_theme_choice_preserves_pending_edits_and_blocks_invalid_replacements(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = theme_fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.preferences_ui.appearance_fields["name"]
+                    .update(cx, |input, cx| input.set_value("edited zero", window, cx));
+                app.preferences_ui.appearance_touched = true;
+            });
+            studyapp_ui::settings_components::select_choice(window, "custom-theme-preset", 1, cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let appearance = &app.preferences_ui.draft.as_ref().unwrap().appearance;
+                assert_eq!(appearance.active_preset.as_deref(), Some("theme-1"));
+                assert_eq!(appearance.custom_presets[0].name, "edited zero");
+                assert_eq!(
+                    app.preferences_ui.appearance_fields["name"]
+                        .read(cx)
+                        .value(),
+                    "主题 1"
+                );
+                app.preferences_ui.appearance_fields["text"]
+                    .update(cx, |input, cx| input.set_value("invalid-color", window, cx));
+                app.preferences_ui.appearance_touched = true;
+            });
+            studyapp_ui::settings_components::select_choice(window, "custom-theme-preset", 2, cx);
+        });
+        visual.run_until_parked();
+        app.read_with(visual, |app, cx| {
+            let appearance = &app.preferences_ui.draft.as_ref().unwrap().appearance;
+            assert_eq!(appearance.active_preset.as_deref(), Some("theme-1"));
+            assert_eq!(appearance.custom_presets[0].name, "edited zero");
+            assert_eq!(
+                app.preferences_ui.appearance_fields["text"]
+                    .read(cx)
+                    .value(),
+                "invalid-color"
+            );
+            assert!(app.preferences_ui.appearance_touched);
+            assert!(app.preferences_ui.error.is_some());
+            assert_eq!(
+                app.preferences_ui
+                    .saved
+                    .as_ref()
+                    .unwrap()
+                    .settings
+                    .appearance
+                    .custom_presets[0]
+                    .name,
+                "主题 0"
+            );
+        });
+    }
+
+    #[gpui_kit::test]
+    fn theme_deletion_requires_confirmation_preserves_other_settings_and_is_discardable(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = theme_fixture(cx);
+        let saved = app.read_with(visual, |app, _| {
+            app.preferences_ui.saved.as_ref().unwrap().settings.clone()
+        });
+        visual.update(|window, cx| {
+            app.read(cx).interval.clone().update(cx, |input, cx| {
+                input.set_value("invalid learning", window, cx)
+            });
+            window.click("delete-custom-theme", cx);
+        });
+        visual.run_until_parked();
+        app.read_with(visual, |app, cx| {
+            assert!(app.has_required_modal(cx));
+            assert_eq!(app.preferences_ui.draft.as_ref().unwrap(), &saved);
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("cancel-delete-theme", cx);
+        });
+        visual.run_until_parked();
+        app.read_with(visual, |app, _| {
+            assert!(app.preferences_ui.theme_delete.is_none());
+            assert_eq!(app.preferences_ui.draft.as_ref().unwrap(), &saved);
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("delete-custom-theme", cx);
+            app.update(cx, |app, cx| {
+                app.preferences_ui.busy = true;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("confirm-delete-theme", cx);
+        });
+        visual.run_until_parked();
+        app.read_with(visual, |app, _| {
+            assert_eq!(app.preferences_ui.draft.as_ref().unwrap(), &saved)
+        });
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.preferences_ui.busy = false;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("confirm-delete-theme", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let draft = app.preferences_ui.draft.as_ref().unwrap();
+                assert_eq!(
+                    draft.appearance.custom_presets,
+                    saved.appearance.custom_presets[1..]
+                );
+                assert_eq!(draft.appearance.mode, studyapp_core::ThemeMode::System);
+                assert!(draft.appearance.active_preset.is_none());
+                assert_eq!(draft.appearance.notifications.width, 420);
+                assert_eq!(app.interval.read(cx).value(), "invalid learning");
+                assert_eq!(&app.preferences_ui.saved.as_ref().unwrap().settings, &saved);
+                assert!(app.settings_dirty(cx));
+                assert!(!app.has_required_modal(cx));
+                app.discard_settings(window, cx);
+                assert_eq!(app.preferences_ui.draft.as_ref().unwrap(), &saved);
+                assert_eq!(
+                    app.preferences_ui.editing_preset.as_deref(),
+                    Some("theme-0")
+                );
+                assert!(!app.settings_dirty(cx));
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    fn deleting_another_theme_does_not_overwrite_invalid_active_theme_fields(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = theme_fixture(cx);
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.preferences_ui.appearance_fields["text"]
+                    .update(cx, |input, cx| input.set_value("unfinished", window, cx));
+                app.preferences_ui.appearance_touched = true;
+                app.preferences_ui.theme_delete = Some("theme-1".into());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("confirm-delete-theme", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                assert_eq!(
+                    app.preferences_ui.appearance_fields["text"]
+                        .read(cx)
+                        .value(),
+                    "unfinished"
+                );
+                assert!(app.preferences_ui.appearance_touched);
+                let appearance = &app.preferences_ui.draft.as_ref().unwrap().appearance;
+                assert_eq!(appearance.active_preset.as_deref(), Some("theme-0"));
+                assert_eq!(appearance.custom_presets.len(), 8);
+                assert!(
+                    !appearance
+                        .custom_presets
+                        .iter()
+                        .any(|preset| preset.id == "theme-1")
+                );
+                app.preferences_ui.theme_delete = Some("theme-0".into());
+                app.begin_settings(window, cx);
+                assert!(
+                    app.preferences_ui.theme_delete.is_none(),
+                    "reloaded settings retained a stale delete target"
+                );
+            })
+        });
     }
 
     struct HtmlPreferenceFixture {

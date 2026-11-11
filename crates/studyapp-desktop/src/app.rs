@@ -1523,6 +1523,7 @@ impl StudyApp {
             || self.folders.read(cx).modal_open()
             || self.preferences_ui.leave.is_some()
             || self.preferences_ui.reset_confirmation
+            || self.preferences_ui.theme_delete.is_some()
             || self.update_panel.read(cx).dialog_visible()
     }
 
@@ -1544,6 +1545,7 @@ impl StudyApp {
         self.timer_pending = None;
         self.preferences_ui.leave = None;
         self.preferences_ui.reset_confirmation = false;
+        self.preferences_ui.theme_delete = None;
         self.confirmation = None;
         self.snapshot_preview.open = false;
         self.export_panel = None;
@@ -1566,8 +1568,10 @@ impl StudyApp {
             cx.notify();
         } else if self.preferences_ui.leave.is_some() {
             self.save_preferences(cx);
-        } else if self.preferences_ui.reset_confirmation {
-            // Reset is deliberately activated by its explicit dialog button.
+        } else if self.preferences_ui.reset_confirmation
+            || self.preferences_ui.theme_delete.is_some()
+        {
+            // Reset/deletion requires its explicit dialog button, never bare Enter.
         } else if self.timer_setup.is_some() || self.timer_pending.is_some() {
             // Timer changes use their explicit confirmation button.
         } else if self.action_sheet_open {
@@ -2110,5 +2114,41 @@ impl Render for StudyApp {
                     root
                 }
             })
+    }
+}
+
+#[cfg(all(test, feature = "ui-test"))]
+mod theme_modal_tests {
+    use super::StudyApp;
+    use gpui_kit::TestAppContext;
+
+    #[gpui_kit::test]
+    fn enter_cannot_delete_a_theme_and_escape_only_cancels_the_confirmation(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let directory = tempfile::tempdir().unwrap().keep();
+        let worker = crate::worker::Worker::start(directory.join("library.sqlite3"), None);
+        let (app, visual) = cx.add_window_view(|window, cx| StudyApp::new(worker, window, cx));
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                let mut draft = studyapp_core::Settings::default();
+                let mut preset = studyapp_core::builtin_theme_presets().remove(0);
+                preset.id = "protected-theme".into();
+                draft.appearance.custom_presets = vec![preset];
+                app.preferences_ui.draft = Some(draft.clone());
+                app.preferences_ui.theme_delete = Some("protected-theme".into());
+                assert!(app.has_required_modal(cx));
+                app.accept_modal(window, cx);
+                assert_eq!(
+                    app.preferences_ui.theme_delete.as_deref(),
+                    Some("protected-theme")
+                );
+                assert_eq!(app.preferences_ui.draft.as_ref(), Some(&draft));
+                app.cancel_modal(cx);
+                assert!(app.preferences_ui.theme_delete.is_none());
+                assert_eq!(app.preferences_ui.draft.as_ref(), Some(&draft));
+            })
+        });
     }
 }
