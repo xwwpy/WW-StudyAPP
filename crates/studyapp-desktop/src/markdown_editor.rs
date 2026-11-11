@@ -586,7 +586,7 @@ impl MarkdownEditor {
             let _ = self.evaluate(&format!("window.studyappEditor.load({payload});"));
             return;
         }
-        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled, "outlinePreference": self.outline_preference, "tableViews": self.tables.views, "tableConfigurable": self.tables.current.is_some(), "document": self.preview.as_deref().map(|document| if document.kind == "pdf" { serde_json::json!({"kind":"pdf","data":""}) } else { serde_json::json!(document) })});
+        let payload = serde_json::json!({"generation": self.document.generation(), "text": self.document.text(), "readonly": self.readonly, "canRequestEdit": self.can_request_edit, "outlineEnabled": self.outline_enabled, "outlinePreference": self.outline_preference, "tableViews": self.tables.views, "tableConfigurable": self.tables.current.is_some(), "positionKey": self.tables.current.as_ref().map(|key| serde_json::to_string(key).expect("document identity")), "document": self.preview.as_deref().map(|document| if document.kind == "pdf" { serde_json::json!({"kind":"pdf","data":""}) } else { serde_json::json!(document) })});
         let shortcuts = serde_json::to_string(&self.shortcuts).expect("string map serializes");
         let theme = &self.theme;
         if let Err(error) = self.evaluate(&format!("window.studyappEditor.setShortcuts({shortcuts}); window.studyappEditor.setTheme({theme}); window.studyappEditor.load({payload}); {}", self.modal_overlay_script())) {

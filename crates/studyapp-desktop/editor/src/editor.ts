@@ -1,3 +1,4 @@
+import { ReadingPositions } from "./reading-position";
 import { codeBlockFolding } from "./code-blocks";
 import { actionbarUpdates, installActionbar } from "./actionbar";
 import { listParagraphBoundaries } from "./markdown-boundaries";
@@ -29,7 +30,7 @@ import { incompleteScalars, scalarText, splitsScalar } from "./unicode";
 import { eventBinding, resolveBindings, typingKeymap } from "./shortcuts";
 import { scanDocumentStatistics } from "./statistics";
 
-interface Load { document?:OriginalDocument; outlinePreference?:unknown; tableViews?:unknown; tableConfigurable?:boolean; outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
+interface Load { positionKey?:string; document?:OriginalDocument; outlinePreference?:unknown; tableViews?:unknown; tableConfigurable?:boolean; outlineEnabled?: boolean; generation: number; text: string; readonly: boolean; canRequestEdit?: boolean; }
 interface Rebase extends Load { previousGeneration: number; previousRevision: number; changes: { from: number; to: number; insert: string }[]; }
 interface TestAction { shown?:boolean; type: string; request?: string | number; from?: number; to?: number; text?: string; anchor?: number; head?: number; name?: string; edits?: number; width?: number; height?: number; }
 interface Bridge {
@@ -405,6 +406,7 @@ const view = new EditorView({
   parent: document.querySelector("#editor")!
 });
 
+const readingPositions = new ReadingPositions(view);
 const selectionActions = installActionbar(view, command, () => loaded && !originalDocument && !modalBlocked && !pendingFlush);
 
 function setReadonly(value: boolean): void {
@@ -423,6 +425,7 @@ function load(value: Load): void {
   if (!Number.isSafeInteger(value?.generation) || value.generation < 0 || typeof value.text !== "string") {
     error("笔记载入参数无效"); return;
   }
+  readingPositions.leave();
   loaded = false;
   closeDocument();
   originalDocument = Boolean(value.document);
@@ -445,6 +448,7 @@ function load(value: Load): void {
   loaded = true;
   updateToolbar();
   updateStatistics(true);
+  if (!originalDocument) readingPositions.restore(value.positionKey);
   try { showDocument(value.document, url => { if(!modalBlocked)post({type:"openLink",generation,url}); }, request => post({type:"renderDocument",generation,...request})); }
   catch (reason) { error(reason instanceof Error ? reason.message : "原文档未能显示"); }
 }

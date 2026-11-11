@@ -3330,3 +3330,31 @@ test("code controls copy exact content and fold only presentation in readonly an
   }
   assert.deepEqual(errors, []); await page.close();
 });
+
+test("reading position follows each library and note across page reload", async () => {
+  const text = Array.from({length:500},(_,i)=>`## Line ${i}\n\nparagraph ${i} 中文😀\n\n`).join("");
+  const {page, errors} = await setup(text);
+  const load = key => page.evaluate(({key,text})=>window.studyappEditor.load({generation:41,text,readonly:true,positionKey:key}),{key,text});
+  await load('library-a/note-1');
+  await page.locator('.cm-scroller').evaluate(node=>node.scrollTop=2200);
+  await page.waitForTimeout(300);
+  const visible = () => page.locator('.cm-scroller').evaluate(node=>{
+    const top=node.getBoundingClientRect().top;
+    const line=[...node.querySelectorAll('.cm-line')].find(line=>line.getBoundingClientRect().bottom>top+2);
+    return {text:line?.textContent,offset:line?.getBoundingClientRect().top-top};
+  });
+  const expected=await visible();
+  const first=await page.locator('.cm-scroller').evaluate(node=>node.scrollTop);
+  await load('library-a/note-2');
+  assert.ok((await state(page)).scrollTop<20);
+  await page.locator('.cm-scroller').evaluate(node=>node.scrollTop=900);
+  await page.waitForTimeout(250);
+  await load('library-a/note-1'); await page.waitForTimeout(300);
+  assert.equal((await visible()).text,expected.text); assert.ok(Math.abs((await visible()).offset-expected.offset)<2);
+  await page.reload(); await load('library-a/note-1'); await page.waitForTimeout(300);
+  assert.equal((await visible()).text,expected.text); assert.ok(Math.abs((await visible()).offset-expected.offset)<2);
+  await load('library-b/note-1'); assert.ok((await state(page)).scrollTop<20);
+  await page.evaluate(()=>Object.defineProperty(window,'localStorage',{get(){throw new Error('blocked');}}));
+  await load('blocked'); assert.ok((await state(page)).scrollTop<20);
+  assert.deepEqual(errors,[]); await page.close();
+});
