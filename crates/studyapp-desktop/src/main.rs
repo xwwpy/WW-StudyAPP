@@ -137,6 +137,7 @@ mod widget_preset_settings;
 mod window_chrome;
 mod worker;
 mod workspace_layout;
+mod workspace_settings;
 
 use gpui_kit::component::{Theme, ThemeMode};
 use gpui_kit::*;

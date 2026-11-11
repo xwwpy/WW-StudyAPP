@@ -900,6 +900,36 @@ fn field_settings() -> Vec<SettingResult> {
             0,
         ),
         (
+            "appearance.workspace",
+            "主导航宽度",
+            "工作区 面板 宽度 数字 px 导航",
+            0,
+        ),
+        (
+            "appearance.workspace",
+            "资料库与笔记列表宽度",
+            "工作区 面板 宽度 数字 px 笔记 资料库",
+            0,
+        ),
+        (
+            "appearance.workspace",
+            "笔记排序",
+            "工作区 资料库 排序 名称 升序 降序 最近 更新",
+            0,
+        ),
+        (
+            "appearance.workspace",
+            "显示阅读目录",
+            "工作区 Markdown 阅读 目录 显示 隐藏",
+            0,
+        ),
+        (
+            "appearance.workspace",
+            "目录位置",
+            "工作区 Markdown 阅读 目录 自动 左侧 右侧 顶部 悬浮",
+            0,
+        ),
+        (
             "appearance.selection",
             "编辑范围",
             "选中 全局 分类 导航 选项 笔记 目录",
@@ -1343,5 +1373,22 @@ mod tests {
     fn empty_and_unmatched_queries_do_not_create_results() {
         assert!(search(" \t ").is_empty());
         assert!(search("absolutely-not-a-setting").is_empty());
+    }
+    #[test]
+    fn workspace_fields_search_by_name_and_reveal_their_own_anchor() {
+        for label in [
+            "主导航宽度",
+            "资料库与笔记列表宽度",
+            "笔记排序",
+            "显示阅读目录",
+            "目录位置",
+        ] {
+            assert!(
+                search(label).iter().any(|entry| entry.label == label
+                    && entry.target_id() == "appearance.workspace"
+                    && entry.anchor.as_deref() == Some(label)),
+                "{label}"
+            );
+        }
     }
 }

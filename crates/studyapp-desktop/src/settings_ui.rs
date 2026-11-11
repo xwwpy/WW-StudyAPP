@@ -525,6 +525,10 @@ impl StudyApp {
                 self.fill_widget_fields(&value, window, cx);
             }
             SettingsResetScope::Workspace => {
+                self.preferences_ui
+                    .number_fields
+                    .borrow_mut()
+                    .retain(|key, _| !key.starts_with("workspace-"));
                 draft.show_file_paths = defaults.settings.show_file_paths;
                 draft.layout = defaults.settings.layout.clone();
                 self.layout = defaults.settings.layout;
@@ -3053,58 +3057,7 @@ impl StudyApp {
         if part == 3 {
             return form::section("Markdown 参数").child(self.markdown_style_controls(busy, cx));
         }
-        column().child(
-            card()
-                .gap_3()
-                .child(heading("工作区"))
-                .child(
-                    studyapp_ui::settings_switch::SettingSwitch::new("show-file-paths")
-                        .default_value(false)
-                        .label("显示笔记文件的存储路径")
-                        .checked(draft.show_file_paths)
-                        .disabled(busy)
-                        .on_click(cx.listener(|this, checked, _, cx| {
-                            if let Some(draft) = &mut this.preferences_ui.draft {
-                                draft.show_file_paths = *checked;
-                            }
-                            cx.notify();
-                        })),
-                )
-                .child(
-                    row()
-                        .flex_wrap()
-                        .child(
-                            studyapp_ui::settings_switch::SettingSwitch::new(
-                                "settings-navigation-visible",
-                            )
-                            .default_value(true)
-                            .label("显示主导航")
-                            .checked(draft.layout.navigation_visible)
-                            .disabled(busy)
-                            .on_click(cx.listener(
-                                |this, checked, _, cx| {
-                                    this.layout.navigation_visible = *checked;
-                                    this.stage_layout(cx);
-                                },
-                            )),
-                        )
-                        .child(
-                            studyapp_ui::settings_switch::SettingSwitch::new(
-                                "settings-folders-visible",
-                            )
-                            .default_value(true)
-                            .label("显示资料库")
-                            .checked(draft.layout.folders_visible)
-                            .disabled(busy)
-                            .on_click(cx.listener(
-                                |this, checked, _, cx| {
-                                    this.layout.folders_visible = *checked;
-                                    this.stage_layout(cx);
-                                },
-                            )),
-                        ),
-                ),
-        )
+        self.workspace_settings(cx)
     }
 
     pub fn poll_image_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -6671,6 +6624,126 @@ mod scoped_tests {
                     ""
                 );
             });
+        });
+    }
+    struct WorkspaceFixture {
+        app: Entity<StudyApp>,
+        scroll: gpui_kit::ScrollHandle,
+    }
+    impl Render for WorkspaceFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                crate::components::scroll_body("workspace-fixture-scroll", &self.scroll)
+                    .size_full()
+                    .child(app.workspace_settings(cx))
+            })
+        }
+    }
+    #[gpui_kit::test]
+    fn workspace_widths_are_discardable_drafts_and_disabled_children_keep_values(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        let scroll = gpui_kit::ScrollHandle::new();
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            WorkspaceFixture {
+                app: app.clone(),
+                scroll: scroll.clone(),
+            }
+        });
+        visual.update(|window, cx| window.render_frame(cx));
+        let saved = app.read_with(visual, |app, _| app.preferences_ui.saved.clone().unwrap());
+        visual.update(|window, cx| {
+            window.click("workspace-navigation-width-increase", cx);
+            assert_eq!(app.read(cx).layout.navigation_width, 161);
+            window.render_frame(cx);
+            window.click("settings-navigation-visible", cx);
+            window.render_frame(cx);
+            window.click("workspace-navigation-width-increase", cx);
+            assert_eq!(app.read(cx).layout.navigation_width, 161);
+            assert!(!app.read(cx).layout.navigation_visible);
+            window.click("settings-navigation-visible", cx);
+            window.render_frame(cx);
+            window.click("workspace-navigation-width-reset", cx);
+            assert_eq!(app.read(cx).layout.navigation_width, 160);
+            let input = app.read(cx).preferences_ui.number_fields.borrow()["workspace-notes-width"]
+                .input
+                .clone();
+            input.update(cx, |input, cx| {
+                input.set_value("333", window, cx);
+                cx.emit(gpui_kit::component::input::InputEvent::Change);
+            });
+            assert_eq!(app.read(cx).layout.notes_width, 333);
+            assert_eq!(
+                app.read(cx)
+                    .preferences_ui
+                    .draft
+                    .as_ref()
+                    .unwrap()
+                    .layout
+                    .notes_width,
+                333
+            );
+            assert_eq!(
+                app.read(cx).preferences_ui.saved.as_ref().unwrap().settings,
+                saved.settings
+            );
+            input.update(cx, |input, cx| {
+                input.set_value("-", window, cx);
+                cx.emit(gpui_kit::component::input::InputEvent::Change);
+            });
+            app.update(cx, |app, cx| {
+                app.select_settings_target("learning", cx);
+                app.select_settings_target("appearance.workspace", cx);
+                assert!(app.setting_numbers_invalid(cx));
+                assert_eq!(
+                    app.preferences_ui.number_fields.borrow()["workspace-notes-width"]
+                        .input
+                        .read(cx)
+                        .value(),
+                    "-"
+                );
+                app.interval
+                    .update(cx, |input, cx| input.set_value("other invalid", window, cx));
+                app.reset_settings_page(SettingsResetScope::Workspace, window, cx);
+                assert_eq!(app.layout, saved.settings.layout);
+                assert!(
+                    !app.preferences_ui
+                        .number_fields
+                        .borrow()
+                        .contains_key("workspace-notes-width")
+                );
+                assert_eq!(app.interval.read(cx).value(), "other invalid");
+                app.discard_settings(window, cx);
+                assert!(!app.settings_dirty(cx));
+            });
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            scroll.set_offset(gpui_kit::point(gpui_kit::px(0.), -scroll.max_offset().y));
+            window.render_frame(cx);
+            window.click("workspace-outline-shown", cx);
+            window.render_frame(cx);
+            crate::settings_components::select_choice(window, "workspace-outline-position", 2, cx);
+            assert_eq!(
+                app.read(cx).layout.outline,
+                Some(studyapp_core::OutlinePreference {
+                    position: studyapp_core::OutlinePosition::Right,
+                    shown: true,
+                })
+            );
+            window.render_frame(cx);
+            window.click("workspace-outline-shown", cx);
+            window.render_frame(cx);
+            assert!(!app.read(cx).layout.outline.unwrap().shown);
+            assert_eq!(
+                app.read(cx).layout.outline.unwrap().position,
+                studyapp_core::OutlinePosition::Right
+            );
+            app.update(cx, |app, cx| app.discard_settings(window, cx));
+            assert_eq!(app.read(cx).layout, saved.settings.layout);
         });
     }
 }
