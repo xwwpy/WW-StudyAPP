@@ -170,9 +170,9 @@ pub(crate) fn alert(
     }
 }
 
-/// An actual operation list, with an independent cancel control. Destructive
-/// actions supplied here still open their controller's separate confirmation.
-pub fn action_sheet(actions: Vec<Button>, cancel: Button, layout: NoticeLayout) -> Div {
+/// Scrollable operation list; the owning ModalFrame keeps cancellation in its
+/// fixed footer. Destructive actions still open their separate confirmation.
+pub fn action_sheet(actions: Vec<Button>, layout: NoticeLayout) -> Div {
     let list = if layout == NoticeLayout::Alternative {
         row().flex_wrap().gap_3()
     } else {
@@ -189,13 +189,6 @@ pub fn action_sheet(actions: Vec<Button>, cancel: Button, layout: NoticeLayout) 
                 button.w_full().justify_start()
             }
         })))
-        .child(
-            div()
-                .border_t_1()
-                .border_color(crate::theme::color(crate::components::BORDER))
-                .pt_3()
-                .child(cancel.w_full()),
-        )
 }
 
 /// Actual export/share targets are supplied by the controller, never inferred

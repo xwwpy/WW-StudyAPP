@@ -331,7 +331,7 @@ impl StudyApp {
     pub(crate) fn settings_tree(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let state = &self.preferences_ui.browsing;
-        let mut tree = column().gap_1().w_full().min_w_0();
+        let mut tree = column().gap_1().w_full().min_w_0().flex_shrink_0();
         for (group, label) in [
             ("learning", "学习与复习"),
             ("notes", "笔记与编辑"),
@@ -416,6 +416,7 @@ impl StudyApp {
                     "settings-tree-scroll",
                     &self.preferences_ui.settings_tree_scroll,
                 )
+                .test_support()
                 .flex_1()
                 .min_h_0()
                 .child(tree),

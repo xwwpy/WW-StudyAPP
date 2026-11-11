@@ -81,12 +81,16 @@ pub fn component_preview(
                     button("preview-create", "新建笔记"),
                     button("preview-import", "导入文件…"),
                 ],
-                button("preview-cancel", "取消"),
                 layout,
             ),
         )
         .component(style)
         .preview(appearance)
+        .footer(
+            div()
+                .w_full()
+                .child(button("preview-cancel", "取消").w_full()),
+        )
         .into_any_element(),
         NoticeStyle::Share => ModalFrame::new(
             "分享与导出",

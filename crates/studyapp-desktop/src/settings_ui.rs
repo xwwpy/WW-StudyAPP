@@ -4364,6 +4364,59 @@ mod scoped_tests {
         (app.unwrap(), visual)
     }
 
+    struct NavigationTreeFixture(Entity<StudyApp>);
+    impl Render for NavigationTreeFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::{InteractiveElement, TestSupportExt, px};
+            self.0.update(cx, |app, cx| {
+                crate::components::row()
+                    .w(px(900.))
+                    .h(px(400.))
+                    .child(app.settings_tree(cx))
+                    .child(
+                        div()
+                            .id("settings-section-scroll")
+                            .test_support()
+                            .w(px(500.))
+                            .h_full(),
+                    )
+            })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn long_navigation_tree_scrolls_independently_without_editing_settings(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        let original = app.read_with(visual, |app, _| app.preferences_ui.draft.clone());
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            NavigationTreeFixture(app.clone())
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                app.read(cx)
+                    .preferences_ui
+                    .settings_tree_scroll
+                    .max_offset()
+                    .y
+                    > gpui_kit::px(500.)
+            );
+            crate::smoke_settings::select_page(window, &app, "storage-library", cx);
+            assert_eq!(
+                app.read(cx).preferences_ui.browsing.selected,
+                "storage.library"
+            );
+            assert!(app.read(cx).preferences_ui.settings_tree_scroll.offset().y < gpui_kit::px(0.));
+            let target = window.find("settings-target-storage.library");
+            let viewport = window.find("settings-tree-scroll").bounds();
+            assert!(target.visible() && viewport.contains(&target.bounds().center()));
+            assert_eq!(app.read(cx).preferences_ui.draft, original);
+        });
+    }
+
     struct ThemePresetFixture {
         app: Entity<StudyApp>,
     }

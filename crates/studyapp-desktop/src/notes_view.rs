@@ -193,13 +193,16 @@ impl StudyApp {
         .detach();
     }
 
-    pub(crate) fn library_controls_busy(&self, cx: &App) -> bool {
+    pub(crate) fn library_tasks_busy(&self) -> bool {
         self.storage_busy
             || self.media_busy()
             || self.preferences_ui.busy
             || self.preferences_ui.replacing
             || self.note_saving
-            || self.has_modal(cx)
+    }
+
+    pub(crate) fn library_controls_busy(&self, cx: &App) -> bool {
+        self.library_tasks_busy() || self.has_modal(cx)
     }
 
     pub(crate) fn library_add_button(&self, cx: &Context<Self>) -> AnyElement {

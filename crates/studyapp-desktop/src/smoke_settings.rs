@@ -242,7 +242,12 @@ async fn exercise_color_controls(
                 .unwrap()
                 .save(database.with_file_name("settings-color-picker.png"))
                 .unwrap();
-            window.click("color-value-accent", cx);
+            click_scrolled(
+                window,
+                "color-value-accent".into(),
+                "color-palette-scroll",
+                cx,
+            );
             window.press(
                 if cfg!(target_os = "macos") {
                     "cmd-a"
@@ -2232,6 +2237,16 @@ async fn settle_preview_picker_geometry(
     requested: Size<Pixels>,
     cx: &mut AsyncApp,
 ) -> serde_json::Value {
+    window
+        .update(cx, |_, window, cx| {
+            reveal_scrolled(
+                window,
+                "color-value-text".into(),
+                "color-palette-scroll",
+                cx,
+            );
+        })
+        .unwrap();
     let mut last = serde_json::Value::Null;
     for _ in 0..125 {
         let (settled, measured) = window.update(cx, |_, window, cx| {

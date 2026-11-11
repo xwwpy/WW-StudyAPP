@@ -1058,6 +1058,12 @@ pub async fn exercise(
             // preference input. Exercise the actual mounted native input.
             let control = view.read(cx).preferences_ui.appearance_colors["accent"].clone();
             let accent = control.read(cx).popup_input().unwrap();
+            crate::smoke_library::reveal_scrolled(
+                window,
+                "color-value-accent".into(),
+                "color-palette-scroll",
+                cx,
+            );
             accent.update(cx, |input, cx| input.set_value("", window, cx));
             accent
         })

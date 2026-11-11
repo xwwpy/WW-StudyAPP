@@ -313,7 +313,9 @@ pub(crate) fn reveal_scrolled(window: &mut Window, id: SharedString, scroll: &st
                 "modal-content-scroll"
             })
         } else {
-            (!fixed_header)
+            // The navigation drawer and an anchored palette are independent
+            // viewports, not descendants of the right-hand settings section.
+            (!fixed_header && !matches!(scroll, "settings-tree-scroll" | "color-palette-scroll"))
                 .then(|| window.try_find("settings-section-scroll"))
                 .flatten()
         };
