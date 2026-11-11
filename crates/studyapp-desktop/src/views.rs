@@ -691,7 +691,7 @@ impl StudyApp {
             let mut item = card()
                 .id(SharedString::from(format!("review-card-{id}")))
                 .test_support()
-                .tooltip(move |window, cx| pointer_tooltip(tip.clone(), window, cx))
+                .map(|view| studyapp_ui::components::control_tooltip(view, tip.clone()))
                 .w_full()
                 .min_w_0()
                 .child(
@@ -946,8 +946,8 @@ impl StudyApp {
                                     .tab_index(0)
                                     .aria_label(tip.clone())
                                     .focus_visible(|style| style.bg(rgb(palette.inset)))
-                                    .tooltip(move |window, cx| {
-                                        pointer_tooltip(tip.clone(), window, cx)
+                                    .map(|view| {
+                                        studyapp_ui::components::control_tooltip(view, tip.clone())
                                     })
                                     .child(div().w(px(18.)).h(px(height)).rounded_t_md().bg(rgb(
                                         if stat.learned_seconds > 0 {
@@ -1012,8 +1012,11 @@ impl StudyApp {
                                             .focus_visible(|style| {
                                                 style.border_1().border_color(rgb(palette.focus))
                                             })
-                                            .tooltip(move |w, cx| {
-                                                pointer_tooltip(tip.clone(), w, cx)
+                                            .map(|view| {
+                                                studyapp_ui::components::control_tooltip(
+                                                    view,
+                                                    tip.clone(),
+                                                )
                                             })
                                     },
                                 ))
@@ -1038,7 +1041,9 @@ impl StudyApp {
                                     .gap_2()
                                     .tab_index(0)
                                     .aria_label(tip.clone())
-                                    .tooltip(move |w, cx| pointer_tooltip(tip.clone(), w, cx))
+                                    .map(|view| {
+                                        studyapp_ui::components::control_tooltip(view, tip.clone())
+                                    })
                                     .child(
                                         typography(TypeRole::Caption)
                                             .child(stat.review_count.to_string()),
@@ -1127,28 +1132,6 @@ impl StudyApp {
     ) -> Div {
         use crate::settings_ui::{SettingsSection, StoragePage};
         let compact = window.viewport_size().width < px(1120.);
-        if self.settings_search_active(cx) {
-            return column()
-                .h_full()
-                .min_h_0()
-                .min_w_0()
-                .gap_3()
-                .child(
-                    div()
-                        .id("settings-save-header")
-                        .test_support()
-                        .flex_shrink_0()
-                        .child(self.settings_header(cx)),
-                )
-                .child(self.settings_search_bar(cx))
-                .child(
-                    scroll_body("settings-search-results", &self.settings_scroll)
-                        .flex_1()
-                        .pr_4()
-                        .pb_4()
-                        .child(self.settings_search_results(cx)),
-                );
-        }
         let section = self.preferences_ui.section;
         let content = page_content().id("settings-page-content").test_support().flex_shrink_0().gap_3().child(self.preference_controls(cx))
             .children((section == SettingsSection::Storage && self.preferences_ui.storage_page == StoragePage::Library).then(|| self.library_storage_controls(&snapshot.data_path, cx)))
@@ -1173,7 +1156,7 @@ impl StudyApp {
                 .child(muted("无需登录即可使用本地功能及自己的文件同步服务。微信登录仍保留后续接入。"))))
             .children((section == SettingsSection::AboutAccount).then(|| card().child(heading("资料与隐私"))
                 .child(muted("笔记、草稿和学习记录优先保存在本机。同步仅连接你自行配置的服务。"))
-                .child(muted("托管笔记保存时保留版本；外部文件保持只读。学习时长由你确认后计入，并非对实际专注程度的自动测量。"))));
+                .child(muted("托管笔记保存正文，版本历史由快照策略管理；外部文件保持只读。学习时长由你确认后计入，并非对实际专注程度的自动测量。"))));
         let transitioning = !cx.reduce_motion()
             && self
                 .preferences_ui
@@ -1193,64 +1176,128 @@ impl StudyApp {
         } else {
             content.into_any_element()
         };
-        let workspace = if compact {
-            column()
+        let auxiliary = matches!(
+            self.preferences_ui.browsing.selected.as_str(),
+            "notes.snapshots"
+                | "notes.editing"
+                | "appearance.selection"
+                | "notices.regions"
+                | "notices.general"
+        ) || self
+            .preferences_ui
+            .browsing
+            .selected
+            .starts_with("notices.component.");
+        let inner = if auxiliary {
+            let owner = cx.weak_entity();
+            container_query(move |available, _, cx| {
+                owner
+                    .update(cx, |this, cx| {
+                        scroll_body("settings-section-scroll", &this.settings_scroll)
+                            .test_support()
+                            .w(available.width)
+                            .h(available.height)
+                            .min_w_0()
+                            .pr_3()
+                            .pb_4()
+                            .children(this.auxiliary_settings_page(available.width, cx))
+                            .into_any_element()
+                    })
+                    .unwrap_or_else(|_| column().into_any_element())
+            })
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .into_any_element()
+        } else if section == SettingsSection::Shortcuts {
+            self.shortcut_controls(cx).into_any_element()
+        } else if section == SettingsSection::Appearance {
+            self.appearance_surface(cx).into_any_element()
+        } else if section == SettingsSection::Notifications {
+            self.notification_surface(cx).into_any_element()
         } else {
-            row().items_stretch()
+            scroll_body("settings-section-scroll", &self.settings_scroll)
+                .test_support()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .pr_3()
+                .pb_4()
+                .child(content)
+                .into_any_element()
         };
-        column()
+        let mut workspace = row().flex_1().min_h_0().min_w_0().items_stretch().gap_3();
+        if !compact {
+            workspace = workspace
+                .child(
+                    self.settings_tree(cx)
+                        .id("settings-category-navigation")
+                        .test_support(),
+                )
+                .child(self.settings_tree_separator(cx));
+        }
+        let mut root = column()
+            .relative()
             .h_full()
             .min_h_0()
             .min_w_0()
-            .gap_2()
             .child(
-                div()
-                    .id("settings-save-header")
-                    .test_support()
-                    .flex_shrink_0()
-                    .child(self.settings_header(cx)),
+                workspace.child(
+                    column()
+                        .id("settings-section-pane")
+                        .test_support()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .gap_2()
+                        .child(self.settings_header(compact, cx))
+                        .child(self.settings_search_bar(cx))
+                        .child(inner)
+                        .child(
+                            div()
+                                .id("settings-save-footer")
+                                .test_support()
+                                .flex_shrink_0()
+                                .border_t_1()
+                                .border_color(crate::theme::color(BORDER))
+                                .child(self.settings_footer(cx)),
+                        ),
+                ),
             )
-            .child(self.settings_search_bar(cx))
-            .child(
-                workspace
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .gap_3()
+            .child(self.settings_resize_events(cx));
+        if compact && self.preferences_ui.settings_drawer {
+            root = root.child(
+                div()
+                    .absolute()
+                    .inset_0()
                     .child(
-                        self.settings_navigation(compact, cx)
-                            .id("settings-category-navigation")
-                            .test_support()
-                            .flex_shrink_0(),
+                        div()
+                            .absolute()
+                            .inset_0()
+                            .bg(rgba(0x00000066))
+                            .occlude()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, _, cx| {
+                                    this.preferences_ui.settings_drawer = false;
+                                    cx.notify();
+                                }),
+                            ),
                     )
                     .child(
-                        column()
-                            .id("settings-section-pane")
-                            .test_support()
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .gap_2()
-                            .child(self.settings_task_navigation(cx))
-                            .child(if section == SettingsSection::Shortcuts {
-                                self.shortcut_controls(cx).into_any_element()
-                            } else if section == SettingsSection::Appearance {
-                                self.appearance_surface(cx).into_any_element()
-                            } else if section == SettingsSection::Notifications {
-                                self.notification_surface(cx).into_any_element()
-                            } else {
-                                scroll_body("settings-section-scroll", &self.settings_scroll)
-                                    .test_support()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .min_w_0()
-                                    .pr_4()
-                                    .pb_4()
-                                    .child(content)
-                                    .into_any_element()
-                            }),
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .p_3()
+                            .occlude()
+                            .bg(crate::theme::color(BG))
+                            .child(self.settings_tree(cx)),
                     ),
-            )
+            );
+        }
+        root
     }
 }
 

@@ -224,6 +224,7 @@ impl StudyApp {
                 }
             }
         }
+        self.fill_widget_preset_stages(&value.countdown_presets, window, cx);
     }
     pub fn widget_settings_value(
         &self,
@@ -256,107 +257,40 @@ impl StudyApp {
         field: fn(&mut TimerWidgetSettings) -> &mut u8,
         cx: &mut Context<Self>,
     ) -> Div {
-        let (min, max, step) = bounds;
+        let (min, max, _) = bounds;
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
-        let custom_scale = key == "widget-scale";
-        let entry = if custom_scale {
-            self.preferences_ui
-                .widget_fields
-                .get("widget-scale")
-                .map(|input| {
-                    div()
-                        .w(px(76.))
-                        .child(form::input(input, busy))
-                        .into_any_element()
-                })
-        } else {
-            None
-        }
-        .unwrap_or_else(|| {
-            div()
-                .min_w(px(48.))
-                .text_center()
-                .child(value.to_string())
-                .into_any_element()
-        });
-        let mut controls = row()
-            .gap_1()
-            .child(
-                Button::new(SharedString::from(format!("{key}-less")))
-                    .small()
-                    .icon_action(gpui_kit::assets::IconName::Minus, format!("减少{label}"))
-                    .disabled(busy || value <= min)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let next =
-                            (i16::from(value) - step).clamp(i16::from(min), i16::from(max)) as u8;
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            *field(&mut draft.timer_widget) = next;
-                        }
-                        if custom_scale
-                            && let Some(input) = this
-                                .preferences_ui
-                                .widget_fields
-                                .get("widget-scale")
-                                .cloned()
-                        {
-                            input.update(cx, |input, cx| {
-                                input.set_value(next.to_string(), window, cx)
-                            });
-                        }
-                        cx.notify();
-                    })),
-            )
-            .child(entry)
-            .child(
-                Button::new(SharedString::from(format!("{key}-more")))
-                    .small()
-                    .icon_action(gpui_kit::assets::IconName::Plus, format!("增加{label}"))
-                    .disabled(busy || value >= max)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        let next =
-                            (i16::from(value) + step).clamp(i16::from(min), i16::from(max)) as u8;
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            *field(&mut draft.timer_widget) = next;
-                        }
-                        if custom_scale
-                            && let Some(input) = this
-                                .preferences_ui
-                                .widget_fields
-                                .get("widget-scale")
-                                .cloned()
-                        {
-                            input.update(cx, |input, cx| {
-                                input.set_value(next.to_string(), window, cx)
-                            });
-                        }
-                        cx.notify();
-                    })),
-            );
-        if custom_scale {
-            controls = controls.child(
-                Button::new("widget-scale-reset")
-                    .small()
-                    .label("100%")
-                    .disabled(busy)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            draft.timer_widget.scale = 100;
-                        }
-                        if let Some(input) = this
-                            .preferences_ui
-                            .widget_fields
-                            .get("widget-scale")
-                            .cloned()
-                        {
-                            input.update(cx, |input, cx| input.set_value("100", window, cx));
-                        }
-                        cx.notify();
-                    })),
+        if key == "widget-scale"
+            && let Some(input) = self.preferences_ui.widget_fields.get(key)
+        {
+            return form::settings_row(
+                label.to_owned(),
+                form::NumericSetting::new(
+                    key.to_owned(),
+                    input,
+                    "%",
+                    100,
+                    min.into(),
+                    max.into(),
+                    busy,
+                ),
             );
         }
-        form::settings_row(label.to_owned(), controls)
+        let default = *field(&mut TimerWidgetSettings::default());
+        self.setting_number(
+            key.to_owned(),
+            label,
+            if key == "widget-opacity" { "%" } else { "px" },
+            (value.into(), default.into(), min.into(), max.into(), busy),
+            move |this, value| {
+                if let Some(draft) = &mut this.preferences_ui.draft {
+                    *field(&mut draft.timer_widget) = value as u8;
+                }
+            },
+            cx,
+        )
     }
-    pub fn widget_settings_controls(&self, cx: &mut Context<Self>) -> Div {
+
+    pub fn widget_settings_controls(&self, width: Pixels, cx: &mut Context<Self>) -> Div {
         let settings = self.preview_widget_settings(cx);
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let timer = self
@@ -471,18 +405,13 @@ impl StudyApp {
             });
             colors = colors.child(form::field("强调色（留空跟随主题）", color.clone()));
         }
-        let mut presets = form::section("计时预设")
+        let presets = form::section("计时预设")
             .id("widget-settings-presets")
-            .test_support();
-        if let Some(input) = self.preferences_ui.widget_fields.get("widget-presets") {
-            presets = presets.child(form::field(
-                "倒计时预设（正整数分钟，最多 8 项）",
-                crate::settings_components::input(input, false).disabled(busy),
-            ));
-        }
-        column().w_full().min_w_0().flex_shrink_0().gap_4()
-            .child(heading("桌面计时小组件"))
-            .child(muted("窗口和今日页共享同一计时。外观修改可实时预览，保存后保留；窗口位置仅保存在当前设备。"))
+            .test_support()
+            .child(self.widget_preset_stages(cx));
+        form::card_grid(width).flex_shrink_0()
+            .child(heading("桌面计时小组件").col_span_full())
+            .child(muted("窗口和今日页共享同一计时。外观修改可实时预览，保存后保留；窗口位置仅保存在当前设备。").col_span_full())
             .child(form::section("布局与显示").id("widget-settings-display").test_support()
                 .child(form::field("布局", layouts)).child(toggles))
             .child(form::section("尺寸与背景").id("widget-settings-size").test_support()
@@ -490,16 +419,16 @@ impl StudyApp {
                 .child(self.widget_number("widget-radius", "圆角", settings.corner_radius, (0,28,2), |s| &mut s.corner_radius, cx))
                 .child(self.widget_number("widget-scale", "整体缩放（50–200%）", settings.scale, (50,200,5), |s| &mut s.scale, cx)))
             .child(colors)
-            .child(presets)
+            .child(presets.col_span_full())
             .child(form::section("窗口行为").id("widget-settings-behavior").test_support()
                 .child(behavior)
                 .child(Button::new("settings-toggle-timer-widget")
                     .action(if self.timer_widget.is_some() { "隐藏桌面小组件" } else { "显示桌面小组件" }).disabled(busy)
                     .on_click(cx.listener(|this, _, window, cx| this.timer_action(TimerCardAction::ShowOnDesktop, window, cx)))))
-            .child(form::section("实时预览").id("widget-settings-preview").test_support()
+            .child(form::section("实时预览").id("widget-settings-preview").test_support().col_span_full()
                 .child(div().max_w(px(480.)).child(timer_card(TimerCardModel::from_timer(&timer,1), TimerCardStyle::from_widget_settings(&settings, crate::theme::palette()), TimerCardVariant::Preview, |_,_,_|{}))))
             .child(muted("小组件开启时，关闭主窗口只会最小化；需要真正退出，请使用卡片内的退出图标。背景不透明度可调至 0，数字和选中按钮不再带额外实色底；文字、图标与进度保持清晰。整体缩放支持直接输入百分比；不透明背景模式固定使用实色。")
-                .id("widget-settings-end").test_support().flex_shrink_0())
+                .id("widget-settings-end").test_support().flex_shrink_0().col_span_full())
     }
 }
 fn parse_scale(text: &str) -> anyhow::Result<u8> {

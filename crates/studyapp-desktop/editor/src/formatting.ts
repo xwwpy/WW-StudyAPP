@@ -24,12 +24,23 @@ export function indentMarkdown(view: EditorView, outdent = false): boolean {
       if (node.name === "ListItem") { items.set(node.from, node); break; }
     }
   }
-  // An item carries all its continuation lines and child lists. Selecting a
-  // parent and child must move that subtree once, preserving its internal depth.
+  // Only subtree mode deduplicates ancestors. Otherwise an explicitly selected
+  // child is an independent item even when its parent is selected too.
   const roots = [...items.values()].filter(item => {
-    for (let parent = item.parent; parent; parent = parent.parent) if (items.has(parent.from) && parent.name === "ListItem") return false;
+    if (!indentSubtree) return true;
+    for (let parent = item.parent; parent; parent = parent.parent) {
+      if (parent.name === "ListItem" && items.has(parent.from)) return false;
+    }
     return true;
   });
+  const owner = (number: number): SyntaxNode | null => {
+    const line = state.doc.line(number);
+    let nearest: SyntaxNode | null = null;
+    for (let node: SyntaxNode | null = tree.resolveInner(line.from + /^[ 	]*/.exec(line.text)![0].length, 1); node; node = node.parent) {
+      if (node.name === "ListItem") { nearest = node; break; }
+    }
+    return nearest;
+  };
   const whitespace = (number: number) => /^[ \t]*/.exec(state.doc.line(number).text)![0];
   const columns = (text: string) => [...text].reduce((width, char) => char === "\t" ? width + 4 - width % 4 : width + 1, 0);
   const indentation = (item: SyntaxNode) => columns(whitespace(state.doc.lineAt(item.from).number));
@@ -56,8 +67,14 @@ export function indentMarkdown(view: EditorView, outdent = false): boolean {
       }
     }
     const first = state.doc.lineAt(item.from).number;
-    const last = (indentSubtree || state.selection.ranges.some(range=>!range.empty)) ? state.doc.lineAt(Math.max(item.from, item.to - 1)).number : first;
-    for (let number = first; number <= last; number++) shifts.set(number, delta);
+    const last = state.doc.lineAt(Math.max(item.from, item.to - 1)).number;
+    for (let number = first; number <= last; number++) {
+      // Own continuation paragraphs/code move with their item. Child-list
+      // lines remain untouched unless subtree mode or explicitly selected.
+      if (indentSubtree || number === first || owner(number)?.from === item.from) {
+        shifts.set(number, delta);
+      }
+    }
   }
   for (const number of lines) if (!shifts.has(number)) {
     shifts.set(number, outdent ? -Math.min(2, columns(whitespace(number))) : 2);

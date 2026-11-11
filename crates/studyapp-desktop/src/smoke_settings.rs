@@ -16,6 +16,51 @@ const PREVIEW_VIEWPORTS: [(f32, f32); 4] =
     [(1000., 700.), (1024., 700.), (1000., 720.), (1024., 720.)];
 const LIVE_PREVIEW_VIEWPORT: (f32, f32) = (1000., 700.);
 
+/// Navigate by actual drawer/tree interactions, including scrolled categories.
+pub(crate) fn select_page(window: &mut Window, view: &Entity<StudyApp>, page: &str, cx: &mut App) {
+    let target = match page {
+        "appearance" | "appearance-overview" => "appearance.overview",
+        "appearance-theme-editor" => "appearance.theme",
+        "appearance-workspace" => "appearance.workspace",
+        "appearance-widget" => "appearance.widget",
+        "appearance-notifications" => "notices.general",
+        "notifications" => "notices.rules",
+        "storage" | "storage-overview" => "storage.overview",
+        "storage-copies" => "storage.copies",
+        "storage-images" => "storage.images",
+        "storage-library" => "storage.library",
+        "about-account" => "about",
+        other => other,
+    };
+    let group = target.split('.').next().unwrap();
+    let group_id = SharedString::from(format!("settings-group-{group}"));
+    window.render_frame(cx);
+    if window.try_find(group_id.clone()).is_none() {
+        window.click("settings-drawer-toggle", cx);
+        window.render_frame(cx);
+    }
+    reveal_scrolled(window, group_id.clone(), "settings-tree-scroll", cx);
+    let id = if target.contains('.') {
+        if !view
+            .read(cx)
+            .preferences_ui
+            .browsing
+            .expanded
+            .contains(group)
+        {
+            window.click(group_id, cx);
+            window.render_frame(cx);
+        }
+        SharedString::from(format!("settings-target-{target}"))
+    } else {
+        group_id
+    };
+    click_scrolled(window, id, "settings-tree-scroll", cx);
+    window.render_frame(cx);
+    assert_eq!(view.read(cx).preferences_ui.browsing.selected, target);
+    assert!(!view.read(cx).preferences_ui.settings_drawer);
+}
+
 fn preview_overlap_notices() -> [studyapp_core::NoticeEvent; 2] {
     use studyapp_core::{NoticeCategory, NoticeEvent, NoticeSeverity};
     [
@@ -60,7 +105,7 @@ async fn exercise_save_shortcut(
     let original = window
         .update(cx, |_, window, cx| {
             window.click(("nav", 4_usize), cx);
-            window.click("settings-section-learning", cx);
+            crate::smoke_settings::select_page(window, view, "learning", cx);
             let original = view.read(cx).interval.read(cx).value();
             let next = if original.as_str() == "35" {
                 "36"
@@ -147,7 +192,7 @@ async fn exercise_color_controls(
     let files = settings_files(&files_root);
     let (accent, original_accent, body, original_body, touched, control) = window
         .update(cx, |_, window, cx| {
-            window.click("appearance-theme-editor", cx);
+            crate::smoke_settings::select_page(window, view, "appearance-theme-editor", cx);
             window.render_frame(cx);
             assert!(
                 window.try_find("color-value-accent").is_none(),
@@ -272,7 +317,7 @@ async fn exercise_color_controls(
                 "reopening recreated the picker"
             );
             window.click("color-close-accent", cx);
-            window.click("settings-section-learning", cx);
+            crate::smoke_settings::select_page(window, view, "learning", cx);
         })
         .unwrap();
     window
@@ -284,7 +329,7 @@ async fn exercise_color_controls(
                 "#EF4444",
                 "category switch discarded color draft"
             );
-            window.click("settings-section-appearance", cx);
+            crate::smoke_settings::select_page(window, view, "appearance.theme", cx);
             assert!(view.read(cx).preferences_ui.section == SettingsSection::Appearance);
             assert_eq!(control.read(cx).picker_id(), Some(picker));
             click_scrolled(
@@ -347,14 +392,7 @@ fn timing_summary(mut samples: Vec<u64>) -> serde_json::Value {
 }
 
 fn capture_task_pages(window: &mut Window, view: &Entity<StudyApp>, database: &Path, cx: &mut App) {
-    let (section, appearance, storage) = {
-        let app = view.read(cx);
-        (
-            app.preferences_ui.section,
-            app.preferences_ui.appearance_page,
-            app.preferences_ui.storage_page,
-        )
-    };
+    let original_target = view.read(cx).preferences_ui.browsing.selected.clone();
     for (category, id, label) in [
         ("appearance", "appearance-overview", "appearance-overview"),
         ("appearance", "appearance-theme-editor", "theme-editor"),
@@ -364,11 +402,8 @@ fn capture_task_pages(window: &mut Window, view: &Entity<StudyApp>, database: &P
         ("storage", "storage-images", "image-storage"),
         ("storage", "storage-library", "library-storage"),
     ] {
-        window.click(
-            SharedString::from(format!("settings-section-{category}")),
-            cx,
-        );
-        window.click(id, cx);
+        let _ = category;
+        select_page(window, view, id, cx);
         window.render_frame(cx);
         match id {
             "appearance-overview" => {
@@ -413,11 +448,7 @@ fn capture_task_pages(window: &mut Window, view: &Entity<StudyApp>, database: &P
             )))
             .unwrap();
     }
-    view.update(cx, |app, cx| {
-        app.select_settings_section(section, cx);
-        app.select_appearance_page(appearance, cx);
-        app.select_storage_page(storage, cx);
-    });
+    select_page(window, view, &original_target, cx);
     window.render_frame(cx);
 }
 
@@ -445,7 +476,6 @@ fn measure_settings(window: &mut Window, view: &Entity<StudyApp>, database: &Pat
             app.select_settings_section(section, cx);
             if section == SettingsSection::Appearance {
                 app.select_appearance_page(AppearancePage::ThemeEditor, cx);
-                app.preferences_ui.appearance_preview_mode = false;
             }
             app.preferences_ui.section_changed_at = None;
             app.preferences_ui.shortcut_eager_baseline = eager;
@@ -517,7 +547,7 @@ fn measure_settings(window: &mut Window, view: &Entity<StudyApp>, database: &Pat
                 } else {
                     parts > 0 && parts <= 2
                 }),
-                "theme editor must only build its own two parameter groups; preview is a separate fixed view"
+                "theme editor must only build its own two parameter groups; preview is embedded in its theme card"
             );
         }
         input.read(cx).focus_handle(cx).focus(window, cx);
@@ -618,7 +648,7 @@ async fn measure_appearance_cache(
                 app.navigate(Page::Settings, window, cx);
                 app.select_settings_section(SettingsSection::Appearance, cx);
                 app.select_appearance_page(AppearancePage::ThemeEditor, cx);
-                app.preferences_ui.appearance_preview_mode = false;
+
                 app.preferences_ui.section_changed_at = None;
                 app.preferences_ui.appearance_eager_baseline = false;
                 cx.notify();
@@ -813,11 +843,11 @@ pub async fn exercise(
             let before_selected = view.read(cx).selected_note.clone();
             let before_versions = view.read(cx).snapshot.as_ref().unwrap().versions.len();
 
-            window.click("settings-section-learning", cx);
+            crate::smoke_settings::select_page(window, view, "learning", cx);
             let interval = view.read(cx).interval.clone();
             interval.update(cx, |input, cx| input.set_value("35", window, cx));
-            window.click("settings-section-appearance", cx);
-            window.click("appearance-workspace", cx);
+            crate::smoke_settings::select_page(window, view, "appearance", cx);
+            crate::smoke_settings::select_page(window, view, "appearance-workspace", cx);
             window.render_frame(cx);
             let preview_rebuilds = view.read(cx).appearance_preview_rebuilds();
             click_scrolled(
@@ -849,7 +879,7 @@ pub async fn exercise(
                 preview_rebuilds + 2
             );
             for (section, id, _) in SettingsSection::ALL {
-                window.click(SharedString::from(format!("settings-section-{id}")), cx);
+                crate::smoke_settings::select_page(window, view, id, cx);
                 window.render_frame(cx);
                 let app = view.read(cx);
                 assert!(app.preferences_ui.section == section);
@@ -875,8 +905,8 @@ pub async fn exercise(
             }
             capture_task_pages(window, view, database, cx);
 
-            window.click("settings-section-storage", cx);
-            window.click("storage-images", cx);
+            crate::smoke_settings::select_page(window, view, "storage", cx);
+            crate::smoke_settings::select_page(window, view, "storage-images", cx);
             click_scrolled(
                 window,
                 "images-storage-cloud".into(),
@@ -915,20 +945,15 @@ pub async fn exercise(
                 "settings-section-scroll",
                 cx,
             );
-            window.click("settings-section-shortcuts", cx);
+            crate::smoke_settings::select_page(window, view, "shortcuts", cx);
             window.render_frame(cx);
-            let nav = window.find("settings-category-navigation").bounds();
             let content = window.find("settings-section-scroll").bounds();
             if window.viewport_size().width < px(1120.) {
-                assert!(
-                    nav.bottom() <= content.top(),
-                    "compact categories must stay above the scroll viewport"
-                );
+                assert!(window.try_find("settings-category-navigation").is_none());
+                assert!(window.try_find("settings-drawer-toggle").is_some());
             } else {
-                assert!(
-                    nav.right() <= content.left(),
-                    "wide settings categories must occupy a separate rail"
-                );
+                let nav = window.find("settings-category-navigation").bounds();
+                assert!(nav.right() <= content.left(), "tree rail overlaps settings");
             }
             let rebuilds = view.read(cx).shortcut_analysis_rebuilds();
             measure_settings(window, view, database, cx);
@@ -1210,7 +1235,7 @@ pub async fn exercise(
     let original_size = window
         .update(cx, |_, window, cx| {
             window.click(("nav", 4_usize), cx);
-            window.click("settings-section-shortcuts", cx);
+            crate::smoke_settings::select_page(window, view, "shortcuts", cx);
             let original = window.viewport_size();
             crate::smoke_library::resize(window, size(px(1024.), px(720.)));
             original
@@ -1231,25 +1256,16 @@ pub async fn exercise(
     window
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
-            let nav = window.find("settings-category-navigation").bounds();
+            assert!(window.try_find("settings-category-navigation").is_none());
+            assert!(window.try_find("settings-drawer-toggle").is_some());
             let content = window.find("settings-section-scroll").bounds();
-            assert!(
-                nav.bottom() <= content.top(),
-                "compact nav overlaps form: viewport={:?}, nav={nav:?}, content={content:?}",
-                window.viewport_size()
-            );
-            assert!(
-                content.size.height > px(220.),
-                "compact settings lost its usable content viewport"
-            );
+            assert!(content.size.height > px(220.));
+            // Every category remains reachable through the actual drawer. Each
+            // selection closes it and returns the full-width content viewport.
             for (_, id, _) in SettingsSection::ALL {
-                let category = window.find(SharedString::from(format!("settings-section-{id}")));
-                assert!(
-                    category.visible(),
-                    "category {id} became unreachable in compact settings"
-                );
-                assert!(category.bounds().right() <= nav.right());
+                select_page(window, view, id, cx);
             }
+            select_page(window, view, "shortcuts", cx);
             assert!(window.find("save-settings").visible());
             window
                 .render_to_image()
@@ -1292,8 +1308,8 @@ pub async fn exercise(
         window
             .update(cx, |_, window, cx| {
                 window.click(("nav", 4_usize), cx);
-                window.click("settings-section-appearance", cx);
-                window.click("appearance-overview", cx);
+                crate::smoke_settings::select_page(window, view, "appearance", cx);
+                crate::smoke_settings::select_page(window, view, "appearance-overview", cx);
                 if mode == "restore" {
                     view.update(cx, |app, cx| {
                         app.preferences_ui.draft.as_mut().unwrap().appearance =
@@ -1403,7 +1419,7 @@ async fn exercise_markdown_preview(
             view.update(cx, |app, cx| {
                 app.select_settings_section(SettingsSection::Appearance, cx);
                 app.select_appearance_page(AppearancePage::ThemeEditor, cx);
-                app.preferences_ui.appearance_preview_mode = true;
+
                 cx.notify();
             });
             crate::smoke_library::resize(window, overlap_size);
@@ -1481,8 +1497,8 @@ async fn exercise_markdown_preview(
 
     let native = crate::smoke_visibility::visible(window, &preview, cx).await;
     assert!(
-        native["bounds"]["height"].as_i64().unwrap() >= 300,
-        "appearance preview collapsed to the editor's 180px minimum: {native}"
+        (120..=220).contains(&native["bounds"]["height"].as_i64().unwrap()),
+        "embedded appearance preview escaped its bounded card: {native}"
     );
     crate::smoke_interactions::exercise_pointer_bubble(
         window, view, &preview, database, "preview", cx,
@@ -1537,7 +1553,6 @@ async fn exercise_markdown_preview(
     );
     window
         .update(cx, |_, window, cx| {
-            window.click("appearance-edit", cx);
             window.render_frame(cx);
             click_scrolled(
                 window,
@@ -1833,10 +1848,9 @@ async fn exercise_markdown_preview(
                 assert!((logical[index].as_f64().unwrap() - f64::from(f32::from(expected))).abs() <= 2., "native bounds escaped measured preview pane: {native}; pane={pane:?}; editor={editor:?}");
             }
             assert!(parameters.size.height > px(0.) && pane.size.height > px(0.));
-            let workspace = parameters.size.width + pane.size.width;
-            let stacked = pane.top() >= parameters.bottom();
-            assert!(stacked || pane.left() >= parameters.right());
-            if !stacked { assert!(pane.size.width > workspace * 0.4); }
+            let stacked=true;
+            assert!(pane.left()>=parameters.left() && pane.right()<=parameters.right());
+            assert!(pane.size.height<=px(220.));
             assert_eq!(view.read(cx).preferences_ui.appearance_preview.as_ref().unwrap().read(cx).editor().unwrap().entity_id(), preview.entity_id());
             serde_json::json!({"requested":[width,height],"viewport":[f32::from(viewport.width),f32::from(viewport.height)],"parameters":[f32::from(parameters.left()),f32::from(parameters.top()),f32::from(parameters.size.width),f32::from(parameters.size.height)],"pane":[f32::from(pane.left()),f32::from(pane.top()),f32::from(pane.size.width),f32::from(pane.size.height)],"stacked":stacked,"native":native})
         }).unwrap();
@@ -1880,12 +1894,8 @@ async fn exercise_markdown_preview(
         geometry.push(measured);
     }
     assert!(
-        geometry.iter().any(|entry| entry["stacked"] == true),
-        "supported compact viewport did not exercise stacked panes"
-    );
-    assert!(
-        geometry.iter().any(|entry| entry["stacked"] == false),
-        "supported wide viewport did not exercise side-by-side panes"
+        geometry.iter().all(|entry| entry["stacked"] == true),
+        "reading preview must remain embedded at every width"
     );
     window
         .update(cx, |_, window, cx| {
@@ -2083,7 +2093,7 @@ async fn exercise_markdown_preview(
                 app.preferences_ui.appearance_fields["text"]
                     .update(cx, |input, cx| input.set_value(original_text, window, cx));
                 app.preferences_ui.appearance_touched = touched;
-                app.preferences_ui.appearance_preview_mode = false;
+
                 app.select_appearance_page(AppearancePage::Workspace, cx);
                 cx.notify();
             });

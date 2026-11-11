@@ -151,6 +151,7 @@ pub(crate) fn append_version(
     }
     state.notes[index].updated_at = now;
     state.notes[index].revision += 1;
+    Arc::make_mut(&mut state.saved_bodies).remove(&version.note_id);
     Arc::make_mut(&mut state.versions).push(version);
     if !baseline
         && !offline
@@ -353,13 +354,36 @@ pub(crate) fn relink(state: &mut State, note_id: &str, path: PathBuf, now: i64) 
     Ok(())
 }
 pub(crate) fn scan(state: &mut State, offline: bool, now: i64) -> String {
-    scan_filtered(state, offline, now, false, false)
+    scan_filtered(
+        state,
+        offline,
+        now,
+        false,
+        false,
+        state.settings.snapshots.mode == crate::SnapshotMode::Automatic,
+    )
 }
 pub(crate) fn scan_external(state: &mut State, offline: bool, now: i64) -> String {
-    scan_filtered(state, offline, now, true, false)
+    scan_filtered(
+        state,
+        offline,
+        now,
+        true,
+        false,
+        state.settings.snapshots.mode == crate::SnapshotMode::Automatic,
+    )
 }
 pub(crate) fn capture(state: &mut State, now: i64) -> String {
-    scan_filtered(state, false, now, false, true)
+    let message = scan_filtered(state, false, now, false, true, true);
+    if state
+        .notes
+        .iter()
+        .filter(|note| !note.detached)
+        .all(|note| note.error.is_none())
+    {
+        state.snapshot_warning = None;
+    }
+    message
 }
 fn scan_filtered(
     state: &mut State,
@@ -367,11 +391,11 @@ fn scan_filtered(
     now: i64,
     external_only: bool,
     explicit: bool,
+    save: bool,
 ) -> String {
     if !explicit && !state.settings.snapshots.scheduled() {
         return "手动模式：未扫描".into();
     }
-    let save = explicit || state.settings.snapshots.mode == crate::SnapshotMode::Automatic;
     if offline {
         state.offline_unreconciled_notes.extend(
             state
@@ -393,7 +417,8 @@ fn scan_filtered(
         let stamp = crate::documents::is_original_document(&path)
             .then(|| crate::documents::ScanStamp::read(&path, now))
             .flatten();
-        if !state.notes[index].missing
+        if !explicit
+            && !state.notes[index].missing
             && state.notes[index].error.is_none()
             && let Some(current) = stamp.as_ref()
             && state
@@ -406,7 +431,9 @@ fn scan_filtered(
             state.offline_unreconciled_notes.remove(&note_id);
             continue;
         }
-        let content = if state.notes[index].managed {
+        let content = if explicit {
+            read_consistent(&state.notes[index])
+        } else if state.notes[index].managed {
             crate::managed::read_content(&path)
         } else {
             read(&path)
@@ -430,6 +457,7 @@ fn scan_filtered(
                     if let Some(stamp) = stamp {
                         state.document_stamps.insert(note_id.clone(), stamp);
                     }
+                    Arc::make_mut(&mut state.saved_bodies).remove(&note_id);
                     state.candidates.remove(&note_id);
                     state.unattributed_notes.remove(&note_id);
                     state.offline_unreconciled_notes.remove(&note_id);
@@ -443,9 +471,28 @@ fn scan_filtered(
                             .candidates
                             .get(&note_id)
                             .is_some_and(|(candidate, first)| {
-                                *candidate == digest && now.saturating_sub(*first) >= 3
+                                *candidate == digest
+                                    && now.saturating_sub(*first)
+                                        >= i64::from(state.settings.snapshots.stable_seconds)
                             }))
                 {
+                    let content = if explicit {
+                        content
+                    } else {
+                        match read_consistent(&state.notes[index]) {
+                            Ok(checked) if hash(&checked) == digest => checked,
+                            Ok(checked) => {
+                                state.candidates.insert(note_id, (hash(&checked), now));
+                                continue;
+                            }
+                            Err(error) => {
+                                state.notes[index].error = Some(format!("{error:#}"));
+                                state.candidates.remove(&note_id);
+                                errors += 1;
+                                continue;
+                            }
+                        }
+                    };
                     append_version(state, index, content, now, capture_offline, false);
                     if let Some(stamp) = stamp {
                         state.document_stamps.insert(note_id.clone(), stamp);
@@ -480,6 +527,125 @@ fn scan_filtered(
         }
     }
     format!("扫描完成，新增 {captured} 个版本，读取失败 {errors} 份")
+}
+
+/// Check the same bytes twice without writing source files. A racing writer is
+/// reported rather than promoted to a snapshot during preview/final capture.
+pub(crate) fn read_consistent(note: &Note) -> Result<String> {
+    let path = Path::new(&note.path);
+    let before = std::fs::metadata(path)?;
+    let load = || {
+        if note.managed {
+            crate::managed::read_content(path)
+        } else {
+            read(path)
+        }
+    };
+    let content = load()?;
+    let check = load()?;
+    let after = std::fs::metadata(path)?;
+    ensure!(
+        before.len() == after.len()
+            && before.modified().ok() == after.modified().ok()
+            && content == check,
+        "文件正在变化，未保存不一致的快照，请稍后重试"
+    );
+    Ok(content)
+}
+
+pub(crate) fn preview(state: &mut State, now: i64) -> Result<String> {
+    let message = scan_filtered(state, false, now, false, true, false);
+    let mut changes = Vec::new();
+    for note in &state.notes {
+        if note.detached || !state.candidates.contains_key(&note.id) {
+            continue;
+        }
+        let current = read_consistent(note)?;
+        let expected_hash = hash(&current);
+        let previous = state
+            .versions
+            .iter()
+            .rev()
+            .find(|v| v.note_id == note.id)
+            .map(|v| v.content.as_str())
+            .unwrap_or("");
+        if hash(previous) == expected_hash {
+            continue;
+        }
+        let diff = if current.starts_with(crate::documents::DOCUMENT_PREFIX) {
+            "原文档内容已变化；保存只新增历史，不改写原文件。".into()
+        } else {
+            TextDiff::from_lines(previous, &current)
+                .unified_diff()
+                .context_radius(3)
+                .header("上次快照", "待保存内容")
+                .to_string()
+        };
+        changes.push(crate::SnapshotChange {
+            note_id: note.id.clone(),
+            title: note.title.clone(),
+            expected_hash,
+            previous: previous.into(),
+            current,
+            diff,
+        });
+    }
+    state.snapshot_changes = Arc::new(changes);
+    Ok(format!(
+        "{message}；待保存 {} 份",
+        state.snapshot_changes.len()
+    ))
+}
+
+pub(crate) fn capture_selected(
+    state: &mut State,
+    selected: &[crate::SnapshotSelection],
+    now: i64,
+) -> Result<String> {
+    ensure!(!selected.is_empty(), "请先勾选需要保存的笔记");
+    let mut ids = std::collections::HashSet::new();
+    let mut ready = Vec::new();
+    // Validate the whole selection before changing any state/history.
+    for selection in selected {
+        ensure!(
+            ids.insert(selection.note_id.clone()),
+            "勾选清单包含重复笔记"
+        );
+        let index = state
+            .notes
+            .iter()
+            .position(|n| n.id == selection.note_id && !n.detached)
+            .context("待保存笔记已不存在或取消管理，请重新扫描")?;
+        let content = read_consistent(&state.notes[index])?;
+        ensure!(
+            hash(&content) == selection.expected_hash,
+            "{} 的内容已变化，请重新扫描和比较后保存",
+            state.notes[index].title
+        );
+        ready.push((index, content));
+    }
+    let mut captured = 0;
+    for (index, content) in ready {
+        let note_id = state.notes[index].id.clone();
+        if state
+            .versions
+            .iter()
+            .rev()
+            .find(|v| v.note_id == note_id)
+            .is_none_or(|v| v.hash != hash(&content))
+        {
+            let offline = state.offline_unreconciled_notes.contains(&note_id);
+            append_version(state, index, content, now, offline, false);
+            captured += 1;
+        }
+        state.candidates.remove(&note_id);
+        state.offline_unreconciled_notes.remove(&note_id);
+        state.unattributed_notes.remove(&note_id);
+    }
+    Arc::make_mut(&mut state.snapshot_changes).retain(|change| !ids.contains(&change.note_id));
+    Ok(format!(
+        "已为勾选笔记新增 {captured} 个快照；未勾选内容保持待保存"
+    ))
 }
 
 #[cfg(test)]

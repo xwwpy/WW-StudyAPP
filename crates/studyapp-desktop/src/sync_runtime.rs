@@ -298,10 +298,16 @@ impl SyncRuntime {
             SyncTarget::WebDav { .. } => match password {
                 Some(password) => {
                     ensure!(
-                        !password.is_empty() && password.len() <= 64 * 1024,
+                        password.len() <= 64 * 1024,
                         "请填写有效的 WebDAV 密码或应用密码"
                     );
-                    crate::credentials::protect(&password)?
+                    // Some(empty) is the explicit, UI-confirmed clear proposal.
+                    // None continues to mean keep the existing ciphertext.
+                    if password.is_empty() {
+                        vec![]
+                    } else {
+                        crate::credentials::protect(&password)?
+                    }
                 }
                 None => {
                     ensure!(
@@ -561,15 +567,12 @@ impl SyncRuntime {
                 .filter(|note| !note.detached)
                 .filter_map(|note| {
                     snapshot
-                        .versions
-                        .iter()
-                        .rev()
-                        .find(|v| v.note_id == note.id)
-                        .map(|version| SyncNote {
+                        .note_body(&note.id)
+                        .map(|(content, hash)| SyncNote {
                             id: note.id.clone(),
                             title: note.title.clone(),
-                            content: version.content.clone(),
-                            hash: version.hash.clone(),
+                            content: content.to_owned(),
+                            hash: hash.to_owned(),
                             managed: note.managed,
                         })
                 })
@@ -632,13 +635,9 @@ impl SyncRuntime {
                         .any(|note| note.id == plan.id && note.detached),
                     "笔记已取消管理，未应用迟到的同步结果"
                 );
-                let current = snapshot
-                    .versions
-                    .iter()
-                    .rev()
-                    .find(|v| v.note_id == plan.id);
+                let current = snapshot.note_body(&plan.id);
                 ensure!(
-                    current.map(|v| &v.hash) == plan.expected_local_hash.as_ref(),
+                    current.map(|(_, hash)| hash) == plan.expected_local_hash.as_deref(),
                     "本地笔记在同步期间改变，已保留修改，请再次同步"
                 );
                 match &plan.action {
@@ -686,19 +685,10 @@ impl SyncRuntime {
                     }
                     SyncAction::CopyExternal { content } => {
                         let copy_id = remote_copy_id(&plan.id, content);
-                        if let Some(existing) = snapshot
-                            .versions
-                            .iter()
-                            .rev()
-                            .find(|v| v.note_id == copy_id)
-                        {
+                        if let Some((_, current_hash)) = snapshot.note_body(&copy_id) {
                             ensure!(
                                 snapshot.notes.iter().any(|n| n.id == copy_id && n.managed)
-                                    && snapshot
-                                        .versions
-                                        .iter()
-                                        .any(|v| v.note_id == existing.note_id
-                                            && v.hash == studyapp_sync::content_hash(content)),
+                                    && current_hash == studyapp_sync::content_hash(content),
                                 "远端副本已在本地编辑，已保留，请手动检查后再次同步"
                             );
                         } else {
@@ -911,15 +901,7 @@ mod tests {
         engine.snapshot().notes.last().unwrap().id.clone()
     }
     fn edit(engine: &mut Engine, id: &str, content: &str) {
-        let hash = engine
-            .snapshot()
-            .versions
-            .iter()
-            .rev()
-            .find(|v| v.note_id == id)
-            .unwrap()
-            .hash
-            .clone();
+        let hash = engine.snapshot().note_body(id).unwrap().1.to_owned();
         engine
             .apply(
                 Command::SaveNote {
@@ -951,16 +933,7 @@ mod tests {
         assert!(sync(&mut a, &mut first).contains("1 份冲突副本"));
         let snapshot = first.snapshot();
         assert_eq!(snapshot.notes.len(), 2);
-        assert_eq!(
-            snapshot
-                .versions
-                .iter()
-                .rev()
-                .find(|v| v.note_id == id)
-                .unwrap()
-                .content,
-            "remote edit"
-        );
+        assert_eq!(snapshot.note_body(&id).unwrap().0, "remote edit");
         assert!(
             snapshot
                 .notes
@@ -1022,49 +995,68 @@ mod tests {
     }
 
     #[test]
-    fn downloaded_external_copy_is_idempotent_after_config_failure() {
-        let root = tempfile::tempdir().unwrap().keep();
-        let (mut engine, mut runtime) = library(&root, "local");
-        let source = root.join("source.md");
-        std::fs::write(&source, "original").unwrap();
-        engine.apply(Command::Import(vec![source]), NOW).unwrap();
-        let id = engine.snapshot().notes[0].id.clone();
-        let folder = root.join("shared");
-        configure(&mut runtime, &folder);
-        sync(&mut runtime, &mut engine);
-        let provider = LocalFolderProvider::new(folder).unwrap();
-        let remote = provider.read(&id).unwrap().unwrap();
-        provider
-            .write(&id, "downloaded", remote.revision.as_deref())
-            .unwrap();
-        let completion = runtime.task(Arc::new(engine.snapshot()), false).unwrap()().unwrap();
-        let path = runtime.path.clone();
-        runtime.path = root.clone();
-        assert!(runtime.finish(Ok(completion), &mut engine, NOW).is_err());
-        assert_eq!(engine.snapshot().notes.len(), 2);
-        let copy = engine
-            .snapshot()
-            .notes
-            .iter()
-            .find(|n| n.id != id)
-            .unwrap()
-            .id
-            .clone();
-        edit(&mut engine, &copy, "locally edited downloaded copy");
-        runtime.path = path;
-        sync(&mut runtime, &mut engine);
-        assert_eq!(engine.snapshot().notes.len(), 2);
-        assert_eq!(
-            runtime.data.baselines[&id].remote_hash,
-            studyapp_sync::content_hash("downloaded")
-        );
-        assert!(
-            engine
+    fn retry_reuses_only_an_unedited_downloaded_copy_after_config_failure() {
+        for edited in [false, true] {
+            let root = tempfile::tempdir().unwrap().keep();
+            let (mut engine, mut runtime) = library(&root, "local");
+            let source = root.join("source.md");
+            std::fs::write(&source, "original").unwrap();
+            engine.apply(Command::Import(vec![source]), NOW).unwrap();
+            let id = engine.snapshot().notes[0].id.clone();
+            let folder = root.join("shared");
+            configure(&mut runtime, &folder);
+            sync(&mut runtime, &mut engine);
+            let baseline = runtime.data.baselines[&id].clone();
+            let provider = LocalFolderProvider::new(folder).unwrap();
+            let remote = provider.read(&id).unwrap().unwrap();
+            provider
+                .write(&id, "downloaded", remote.revision.as_deref())
+                .unwrap();
+            let completion = runtime.task(Arc::new(engine.snapshot()), false).unwrap()().unwrap();
+            let path = runtime.path.clone();
+            runtime.path = root.clone();
+            assert!(runtime.finish(Ok(completion), &mut engine, NOW).is_err());
+            assert_eq!(engine.snapshot().notes.len(), 2);
+            let copy = engine
                 .snapshot()
-                .versions
+                .notes
                 .iter()
-                .any(|v| v.note_id == copy && v.content == "locally edited downloaded copy")
-        );
+                .find(|n| n.id != id)
+                .unwrap()
+                .id
+                .clone();
+            if edited {
+                edit(&mut engine, &copy, "locally edited downloaded copy");
+            }
+            runtime.path = path;
+            let message = sync(&mut runtime, &mut engine);
+            assert_eq!(engine.snapshot().notes.len(), 2);
+            if edited {
+                assert!(message.contains("未完成"));
+                assert_eq!(runtime.data.baselines[&id], baseline);
+                assert_eq!(
+                    engine.snapshot().note_body(&copy).unwrap().0,
+                    "locally edited downloaded copy"
+                );
+                assert_eq!(
+                    engine
+                        .snapshot()
+                        .versions
+                        .iter()
+                        .find(|v| v.note_id == copy)
+                        .unwrap()
+                        .content,
+                    "downloaded"
+                );
+            } else {
+                assert!(!message.contains("未完成"));
+                assert_eq!(
+                    runtime.data.baselines[&id].remote_hash,
+                    studyapp_sync::content_hash("downloaded")
+                );
+                assert_eq!(engine.snapshot().note_body(&copy).unwrap().0, "downloaded");
+            }
+        }
     }
 
     #[test]
@@ -1115,10 +1107,7 @@ mod tests {
             .unwrap();
         assert!(message.contains("未完成"));
         assert_eq!(runtime.data.baselines, original_baseline);
-        assert_eq!(
-            engine.snapshot().versions.last().unwrap().content,
-            "during sync"
-        );
+        assert_eq!(engine.snapshot().note_body(&id).unwrap().0, "during sync");
     }
 
     #[test]

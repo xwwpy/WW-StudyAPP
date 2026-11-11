@@ -118,7 +118,7 @@ fn explicit_rename_survives_body_heading_edits_and_backup_restore() {
             .apply(
                 Command::SaveNote {
                     note_id: note.id.clone(),
-                    expected_hash: snapshot.versions.last().unwrap().hash.clone(),
+                    expected_hash: snapshot.note_body(&note.id).unwrap().1.to_owned(),
                     content: content.into(),
                 },
                 now,
@@ -135,7 +135,12 @@ fn explicit_rename_survives_body_heading_edits_and_backup_restore() {
     let reopened = Engine::open(&database, 1008).unwrap().snapshot();
     assert_eq!(reopened.notes[0].title, "Pinned");
     assert!(reopened.notes[0].title_override);
-    assert_eq!(reopened.versions.len(), 3);
+    assert_eq!(
+        reopened.note_body(&note.id).unwrap().0,
+        "# New heading
+body edit"
+    );
+    assert_eq!(reopened.versions.len(), 2);
 }
 
 #[test]

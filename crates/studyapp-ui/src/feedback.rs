@@ -172,7 +172,7 @@ pub fn modal_frame_shell_observed(
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
         )
         .popup(
-            framed_popup(window.viewport_size().width * 0.9).child(
+            framed_popup(window.viewport_size().width * 0.96).child(
                 div()
                     .id("modal-native-occlusion")
                     .test_support()

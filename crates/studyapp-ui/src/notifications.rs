@@ -15,6 +15,8 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct NotificationOcclusions(pub Vec<Bounds<Pixels>>);
 
+#[path = "notification_banner.rs"]
+mod banner;
 #[path = "notification_modal.rs"]
 mod modal;
 #[path = "notification_presenter.rs"]
@@ -31,8 +33,10 @@ pub struct NotificationCenter {
     anchors: BTreeMap<String, Bounds<Pixels>>,
     anchor_owners: BTreeMap<String, u64>,
     card_sizes: BTreeMap<u64, Size<Pixels>>,
+    expanded: std::collections::BTreeSet<u64>,
     modal_blocked: bool,
     modal_surface: Option<Entity<modal::NotificationModal>>,
+    banner_surface: Option<Entity<banner::NotificationBanner>>,
     last_activity: (bool, bool),
     queue: NoticeQueue,
     epoch: Instant,
@@ -68,8 +72,10 @@ impl NotificationCenter {
             anchors: Default::default(),
             anchor_owners: Default::default(),
             card_sizes: Default::default(),
+            expanded: Default::default(),
             modal_blocked: false,
             modal_surface: None,
+            banner_surface: None,
             last_activity: (false, false),
             queue: NoticeQueue::default(),
             epoch: Instant::now(),
@@ -244,7 +250,7 @@ mod tests {
 
 impl Render for NotificationCenter {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.queue.visible().any(|entry| entry.event.is_some()) {
+        if self.queue.candidates().any(|entry| entry.event.is_some()) {
             return self.structured_surface(window, cx).into_any_element();
         }
         let now = self.now();

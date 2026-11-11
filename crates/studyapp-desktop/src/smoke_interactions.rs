@@ -1251,8 +1251,8 @@ pub async fn exercise(
                 previous_clipboard.unwrap_or_else(|| ClipboardItem::new_string(String::new())),
             );
             window.click(("nav", 4_usize), cx);
-            window.click("settings-section-appearance", cx);
-            window.click("appearance-workspace", cx);
+            crate::smoke_settings::select_page(window, view, "appearance", cx);
+            crate::smoke_settings::select_page(window, view, "appearance-workspace", cx);
             click_scrolled(window, "show-file-paths".into(), "page-scroll", cx);
             assert!(
                 view.read(cx)
@@ -1355,8 +1355,8 @@ pub async fn exercise(
                 "discard retained dirty settings"
             );
             window.click(("nav", 4_usize), cx);
-            window.click("settings-section-appearance", cx);
-            window.click("appearance-workspace", cx);
+            crate::smoke_settings::select_page(window, view, "appearance", cx);
+            crate::smoke_settings::select_page(window, view, "appearance-workspace", cx);
             click_scrolled(window, "show-file-paths".into(), "page-scroll", cx);
             window.click(("nav", 1_usize), cx);
             window.render_frame(cx);
@@ -1426,8 +1426,8 @@ pub async fn exercise(
     window
         .update(cx, |_, window, cx| {
             window.click(("nav", 4_usize), cx);
-            window.click("settings-section-storage", cx);
-            window.click("storage-copies", cx);
+            crate::smoke_settings::select_page(window, view, "storage", cx);
+            crate::smoke_settings::select_page(window, view, "storage-copies", cx);
             view.update(cx, |app, cx| {
                 app.clear_notices(cx);
                 app.storage_work(Work::RefreshStorage, cx);
@@ -1592,8 +1592,8 @@ pub async fn exercise(
             scroll_settings(window, f32::from(old_top - outer_bottom_anchor), cx);
             assert_eq!(window.find("storage-copy-list").bounds().origin.y, old_top, "outer boundary probe did not restore the original offset");
             assert_eq!(view.read(cx).storage_ui.scroll.scroll_px_offset_for_scrollbar(), inner_offset);
-            window.click("settings-section-appearance", cx);
-            window.click("appearance-workspace", cx);
+            crate::smoke_settings::select_page(window, view, "appearance", cx);
+            crate::smoke_settings::select_page(window, view, "appearance-workspace", cx);
             click_scrolled(window, "show-file-paths".into(), "page-scroll", cx);
             crate::smoke_library::resize(window, storage_size);
             assert!(

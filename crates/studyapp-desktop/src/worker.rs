@@ -153,6 +153,7 @@ pub struct Update {
     pub preferences: Option<PreferenceSnapshot>,
     pub preferences_result: Option<Result<(), String>>,
     pub media_result: Option<crate::media::MediaResponse>,
+    pub snapshot_result: Option<Result<(), String>>,
     pub image_cloud_busy: Option<bool>,
 }
 
@@ -371,6 +372,7 @@ fn relocate(
     let _logging_pause = audit_log::pause_for_migration()?;
     let paths = crate::app_usage::runtime_paths()?;
     let now = chrono::Utc::now().timestamp();
+    engine.finish_snapshots(now)?;
     let migration =
         crate::app_migration::prepare_relocating_profile(engine, paths, target, now, |message| {
             let _ = updates.send(Update {
@@ -645,6 +647,9 @@ impl Worker {
                     _ => {}
                 }
             }
+            if engine.snapshot_warning().is_some() {
+                startup_notice = Some(Err("上次退出的自动快照未全部完成。已保存正文仍保留；请检查无法读取的笔记，再扫描并保存快照。".into()));
+            }
             let mut generation = 0_u64;
             let mut read_model_cache = studyapp_desktop::read_models::ReadModelCache::default();
             let mut image_cloud_busy = false;
@@ -664,7 +669,13 @@ impl Worker {
                     read_models: Some(read_models),
                     notifications: startup_notice
                         .as_ref()
-                        .map(|outcome| notices::Context::Recovery.event(outcome))
+                        .map(|outcome| {
+                            let mut event = notices::Context::Recovery.event(outcome);
+                            if engine.snapshot_warning().is_some() {
+                                event.summary = "上次退出的自动快照未全部完成。已保存正文仍保留；请检查无法读取的笔记，再扫描并保存快照。".into();
+                            }
+                            event
+                        })
                         .into_iter()
                         .collect(),
                     notice: startup_notice,
@@ -677,6 +688,7 @@ impl Worker {
                     preferences: Some(preferences.snapshot()),
                     preferences_result: None,
                     media_result: None,
+                    snapshot_result: None,
                     image_cloud_busy: Some(image_cloud_busy),
                     owner_close: None,
                 })
@@ -762,7 +774,7 @@ impl Worker {
                                 } else {
                                     vec![]
                                 },
-                                notice: Some(Err(error)),
+                                notice: Some(Err(error.clone())),
                                 editor_result,
                                 library_replaced: false,
                                 library_result,
@@ -772,6 +784,14 @@ impl Worker {
                                 preferences: Some(preferences.snapshot()),
                                 preferences_result,
                                 media_result,
+                                snapshot_result: matches!(
+                                    work.as_ref(),
+                                    Work::Apply(
+                                        Command::PreviewSnapshots
+                                            | Command::CaptureSelectedSnapshots(_)
+                                    )
+                                )
+                                .then(|| Err(error.clone())),
                                 image_cloud_busy: Some(image_cloud_busy),
                                 owner_close: None,
                             });
@@ -802,6 +822,7 @@ impl Worker {
                 let mut library_replaced = false;
                 let mut library_result = None;
                 let mut note_result = None;
+                let mut snapshot_result = None;
                 let mut sync_changed = false;
                 let mut storage_event = None;
                 let mut preferences_result = None;
@@ -838,6 +859,7 @@ impl Worker {
                                 preferences: None,
                                 preferences_result: None,
                                 owner_close: None,
+                                snapshot_result: None,
                                 media_result: Some(crate::media::MediaResponse {
                                     library,
                                     generation,
@@ -903,6 +925,9 @@ impl Worker {
                     Ok(Work::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                         #[cfg(test)]
                         startup_timing::event("ShutdownOrDisconnect", "enter");
+                        if let Err(error) = engine.finish_snapshots(now) {
+                            eprintln!("退出快照未完成，已保存正文仍保留：{error:#}");
+                        }
                         if let Err(error) =
                             startup_step!(result, ShutdownCheckpoint, engine.checkpoint())
                         {
@@ -911,6 +936,10 @@ impl Worker {
                         break;
                     }
                     Ok(Work::Apply(command)) => {
+                        let snapshot_command = matches!(
+                            &command,
+                            Command::PreviewSnapshots | Command::CaptureSelectedSnapshots(_)
+                        );
                         let existing_notes = if matches!(
                             &command,
                             Command::CreateNote { .. }
@@ -1001,6 +1030,10 @@ impl Worker {
                                     }),
                                 Err(error) => Err(error.clone()),
                             });
+                        }
+                        if snapshot_command {
+                            snapshot_result =
+                                Some(result.as_ref().map(|_| ()).map_err(Clone::clone));
                         }
                         library_replaced = restoring && result.is_ok();
                         library_result =
@@ -1112,6 +1145,7 @@ impl Worker {
                                 !synchronization.status.busy && !image_cloud_busy,
                                 "同步正在运行，请等待完成后再切换资料库"
                             );
+                            engine.finish_snapshots(now)?;
                             engine.checkpoint()?;
                             std::fs::create_dir_all(&directory)?;
                             let (next_lock, next, next_preferences, next_sync) =
@@ -1278,6 +1312,7 @@ impl Worker {
                                     !synchronization.status.busy && !image_cloud_busy,
                                     "同步正在运行，请等待完成后再迁移资料库"
                                 );
+                                engine.finish_snapshots(now)?;
                                 let _logging_pause = audit_log::pause_for_migration()?;
                                 let database = crate::storage_backend::migrate_library(
                                     &mut engine,
@@ -1433,6 +1468,7 @@ impl Worker {
                             preferences: Some(preferences.snapshot()),
                             preferences_result,
                             media_result: None,
+                            snapshot_result,
                             image_cloud_busy: Some(image_cloud_busy),
                             owner_close: None,
                         })
@@ -2425,6 +2461,125 @@ mod tests {
     fn apply(worker: &Worker, command: Command) -> Update {
         worker.sender.send(Work::Apply(command)).unwrap();
         receive_notice(worker)
+    }
+
+    #[test]
+    fn snapshot_preview_and_selected_capture_return_explicit_operation_receipts() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let worker = Worker::start(root.join("study.sqlite3"), None);
+        initial_update(&worker);
+        let mut settings = studyapp_core::Settings::default();
+        settings.snapshots.mode = studyapp_core::SnapshotMode::Manual;
+        assert!(
+            apply(&worker, Command::SaveSettings(Box::new(settings)))
+                .notice
+                .unwrap()
+                .is_ok()
+        );
+        let created = apply(
+            &worker,
+            Command::CreateNote {
+                title: "preview".into(),
+                content: "baseline".into(),
+            },
+        );
+        let snapshot = created.snapshot.unwrap();
+        let note = &snapshot.notes[0];
+        let saved = apply(
+            &worker,
+            Command::SaveNote {
+                note_id: note.id.clone(),
+                expected_hash: snapshot.note_body(&note.id).unwrap().1.into(),
+                content: "saved current".into(),
+            },
+        );
+        assert_eq!(saved.snapshot.unwrap().versions.len(), 1);
+        let preview = apply(&worker, Command::PreviewSnapshots);
+        assert_eq!(preview.snapshot_result, Some(Ok(())));
+        let snapshot = preview.snapshot.unwrap();
+        assert_eq!(snapshot.versions.len(), 1);
+        let change = &snapshot.snapshot_changes[0];
+        let selection = studyapp_core::SnapshotSelection {
+            note_id: change.note_id.clone(),
+            expected_hash: change.expected_hash.clone(),
+        };
+        std::fs::write(&note.path, "unseen newer text").unwrap();
+        let stale = apply(&worker, Command::CaptureSelectedSnapshots(vec![selection]));
+        assert!(stale.snapshot_result.unwrap().is_err());
+        assert_eq!(stale.snapshot.unwrap().versions.len(), 1);
+        let refreshed = apply(&worker, Command::PreviewSnapshots);
+        let snapshot = refreshed.snapshot.unwrap();
+        let change = &snapshot.snapshot_changes[0];
+        let captured = apply(
+            &worker,
+            Command::CaptureSelectedSnapshots(vec![studyapp_core::SnapshotSelection {
+                note_id: change.note_id.clone(),
+                expected_hash: change.expected_hash.clone(),
+            }]),
+        );
+        assert_eq!(captured.snapshot_result, Some(Ok(())));
+        assert_eq!(captured.snapshot.unwrap().versions.len(), 2);
+    }
+
+    #[test]
+    fn switching_libraries_finishes_only_automatic_snapshots() {
+        for mode in studyapp_core::SnapshotMode::ALL {
+            let root = tempfile::tempdir().unwrap().keep();
+            let database = root.join("study.sqlite3");
+            let mut worker = Worker::start(database.clone(), None);
+            initial_update(&worker);
+            let mut settings = studyapp_core::Settings::default();
+            settings.snapshots.mode = mode;
+            settings.snapshots.stable_seconds = 86400;
+            assert!(
+                apply(&worker, Command::SaveSettings(Box::new(settings)))
+                    .notice
+                    .unwrap()
+                    .is_ok()
+            );
+            let created = apply(
+                &worker,
+                Command::CreateNote {
+                    title: "switch".into(),
+                    content: "baseline".into(),
+                },
+            );
+            let snapshot = created.snapshot.unwrap();
+            let note = &snapshot.notes[0];
+            assert!(
+                apply(
+                    &worker,
+                    Command::SaveNote {
+                        note_id: note.id.clone(),
+                        expected_hash: snapshot.note_body(&note.id).unwrap().1.into(),
+                        content: "saved before switching".into()
+                    }
+                )
+                .notice
+                .unwrap()
+                .is_ok()
+            );
+            worker
+                .sender
+                .send(Work::SwitchLibrary(root.join("next")))
+                .unwrap();
+            assert_eq!(receive_notice(&worker).library_result, Some(Ok(())));
+            worker.shutdown();
+            let engine =
+                Engine::open_deferred_scan(&database, chrono::Utc::now().timestamp()).unwrap();
+            assert_eq!(
+                engine.snapshot().versions.len(),
+                if mode == studyapp_core::SnapshotMode::Automatic {
+                    2
+                } else {
+                    1
+                }
+            );
+            assert_eq!(
+                engine.snapshot().note_body(&note.id).unwrap().0,
+                "saved before switching"
+            );
+        }
     }
 
     #[test]

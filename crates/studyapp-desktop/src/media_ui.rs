@@ -193,7 +193,12 @@ impl StudyApp {
     /// Storage migration must wait for all jobs that can read/write media.
     /// Preview resolution remains nonblocking for ordinary editor controls.
     pub fn media_jobs_active(&self) -> bool {
-        self.media_ui.busy() || !self.media_ui.resolving.is_empty()
+        self.media_ui.busy()
+            || !self.media_ui.resolving.is_empty()
+            || self
+                .export_panel
+                .as_ref()
+                .is_some_and(|panel| panel.images.is_some())
     }
 
     fn media_key(&self, cx: &App) -> Option<DocumentKey> {
@@ -309,6 +314,40 @@ impl StudyApp {
             }
         }
         self.send_next_image(cx);
+    }
+
+    pub(crate) fn start_export_preview_images(
+        &mut self,
+        source: PathBuf,
+        settings: ImageSettings,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(panel) = &self.export_panel else {
+            return;
+        };
+        let generation = panel.preview.read(cx).generation();
+        let content = panel.preview.read(cx).value().to_owned();
+        let request = self.media_ui.next();
+        let control = ResolveControl::default();
+        if self.send_media(
+            self.last_library.clone(),
+            MediaRequest::Resolve {
+                control: control.clone(),
+                generation,
+                request,
+                content,
+                note_path: Some(source),
+                settings,
+            },
+            cx,
+        ) && let Some(panel) = &mut self.export_panel
+        {
+            panel.images = Some(crate::export_panel::ExportImageJob {
+                request,
+                generation,
+                control,
+            });
+        }
     }
 
     fn can_insert_image(&self, cx: &App) -> bool {
@@ -719,6 +758,31 @@ impl StudyApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if response.library == self.last_library
+            && let Some(panel) = &mut self.export_panel
+            && panel.images.as_ref().is_some_and(|job| {
+                job.request == response.request && job.generation == response.generation
+            })
+        {
+            panel.images = None;
+            match response.result {
+                Ok(MediaOutcome::Resolved { images, missing }) => {
+                    panel.preview.update(cx, |editor, cx| {
+                        editor.set_images(response.generation, images, cx)
+                    });
+                    panel.image_warning = (!missing.is_empty()).then(|| {
+                        format!(
+                            "部分图片暂不可预览（{} 项）；导出仍保留原始引用。",
+                            missing.len()
+                        )
+                    });
+                }
+                Err(_) => panel.image_warning = Some("图片暂不可预览；导出仍保留原始引用。".into()),
+                _ => {}
+            }
+            cx.notify();
+            return;
+        }
         if self.media_ui.retention.as_ref().is_some_and(|p| {
             p.library == response.library
                 && p.generation == response.generation

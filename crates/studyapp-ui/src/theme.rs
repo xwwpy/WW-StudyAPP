@@ -3,19 +3,39 @@ use gpui_kit::{
     component::{Theme, ThemeMode as ComponentMode},
     *,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use studyapp_core::{
     AppearanceSettings, MARKDOWN_COLORS, MarkdownLayout, RgbaColor, ThemeMode, ThemePalette,
     readable_theme_color, theme_contrast,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectionColors {
+    pub selected_background: u32,
+    pub selected_text: u32,
+    pub selected_border: u32,
+    pub idle_background: u32,
+    pub idle_text: u32,
+    pub selection_indicator: bool,
+    pub selection_radius: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResolvedTheme {
+    pub selection_categories: [SelectionColors; 4],
     pub table_defaults: studyapp_core::TableDefaults,
     pub indent_subtree: bool,
     pub list_markers: [studyapp_core::ListMarker; studyapp_core::LIST_LEVELS],
     pub render_html: bool,
     pub hover_content: studyapp_core::HoverContent,
+    pub actionbar_layout: studyapp_core::NoticeLayout,
+    pub actionbar_background: RgbaColor,
+    pub actionbar_border: RgbaColor,
+    pub actionbar_radius: u8,
+    pub actionbar_border_width: u8,
+    pub actionbar_width: u16,
+    pub actionbar_height: u16,
+    pub tooltip_position: studyapp_core::TooltipPosition,
     pub hover_background: RgbaColor,
     pub hover_border: RgbaColor,
     pub hover_width: u16,
@@ -146,7 +166,7 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
     let idle_background = custom(&chosen.idle_background, surface, surface);
     let hover = settings
         .notifications
-        .surface(studyapp_core::NoticeStyle::Anchored);
+        .surface(studyapp_core::NoticeStyle::Tooltip);
     let hover_background = hover
         .background
         .as_deref()
@@ -156,8 +176,64 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
         hover_background.rgb(),
         (u16::from(hover_background.alpha()) * u16::from(hover.opacity) / 100) as u8,
     );
+    let selection_categories = studyapp_core::SelectionCategory::ALL.map(|category| {
+        let style = settings.selection.effective(category);
+        let selected_background = custom(
+            &style.selected_background,
+            surface,
+            if theme_contrast(text, selected_default) >= 4.5 {
+                selected_default
+            } else {
+                surface
+            },
+        );
+        let idle_background = custom(&style.idle_background, surface, surface);
+        SelectionColors {
+            selected_background,
+            selected_text: custom(
+                &style.selected_text,
+                selected_background,
+                readable_theme_color(text, &[selected_background]),
+            ),
+            selected_border: custom(&style.selected_border, selected_background, focus),
+            idle_background,
+            idle_text: custom(
+                &style.idle_text,
+                idle_background,
+                readable_theme_color(text, &[idle_background]),
+            ),
+            selection_indicator: style.indicator,
+            selection_radius: style.radius,
+        }
+    });
+    let actionbar = settings
+        .notifications
+        .surface(studyapp_core::NoticeStyle::Actionbar);
+    let actionbar_background = actionbar
+        .background
+        .as_deref()
+        .and_then(studyapp_core::parse_rgba_color)
+        .unwrap_or(RgbaColor::opaque(surface));
     ResolvedTheme {
+        actionbar_layout: settings
+            .notifications
+            .layout(studyapp_core::NoticeStyle::Actionbar),
+        actionbar_background: RgbaColor::new(
+            actionbar_background.rgb(),
+            (u16::from(actionbar_background.alpha()) * u16::from(actionbar.opacity) / 100) as u8,
+        ),
+        actionbar_border: actionbar
+            .border_color
+            .as_deref()
+            .and_then(studyapp_core::parse_rgba_color)
+            .unwrap_or(RgbaColor::opaque(blend(surface, text, 0.1))),
+        actionbar_radius: actionbar.radius,
+        actionbar_border_width: actionbar.border_width,
+        actionbar_width: actionbar.width,
+        actionbar_height: actionbar.max_height,
+        selection_categories,
         hover_content: settings.notifications.hover_content,
+        tooltip_position: settings.notifications.tooltip_position,
         hover_background,
         hover_border: hover
             .border_color
@@ -245,6 +321,11 @@ pub fn resolve(settings: &AppearanceSettings, system_dark: bool) -> ResolvedThem
 }
 
 thread_local! { static PALETTE: Cell<ResolvedTheme> = Cell::new(resolve(&AppearanceSettings::default(), false)); }
+thread_local! { static NOTICES: RefCell<studyapp_core::NotificationAppearance> = RefCell::new(Default::default()); }
+pub fn notification_appearance() -> studyapp_core::NotificationAppearance {
+    NOTICES.with_borrow(Clone::clone)
+}
+
 pub fn palette() -> ResolvedTheme {
     PALETTE.with(Cell::get)
 }
@@ -283,6 +364,14 @@ impl ResolvedTheme {
             .collect::<serde_json::Map<_, _>>()
             .into();
         serde_json::json!({
+            "actionbarLayout": self.actionbar_layout,
+            "actionbarBackground": self.actionbar_background.to_hex(),
+            "actionbarBorder": self.actionbar_border.to_hex(),
+            "actionbarText": hex(studyapp_core::readable_theme_color(self.text, &[self.actionbar_background.over(self.surface)])),
+            "actionbarRadius": self.actionbar_radius,
+            "actionbarBorderWidth": self.actionbar_border_width,
+            "actionbarWidth": self.actionbar_width,
+            "actionbarHeight": self.actionbar_height,
             "renderHtml": self.render_html,
             "tableDefaults": self.table_defaults,
             "listMarkers": self.list_markers,
@@ -310,6 +399,22 @@ pub fn system_is_dark(appearance: WindowAppearance) -> bool {
 }
 
 /// A quiet surface selection, shared by tree rows and collection navigation.
+pub fn global_selection() -> SelectionColors {
+    let p = palette();
+    SelectionColors {
+        selected_background: p.selected_background,
+        selected_text: p.selected_text,
+        selected_border: p.selected_border,
+        idle_background: p.idle_background,
+        idle_text: p.idle_text,
+        selection_indicator: p.selection_indicator,
+        selection_radius: p.selection_radius,
+    }
+}
+pub fn selection(category: studyapp_core::SelectionCategory) -> SelectionColors {
+    palette().selection_categories[category.index()]
+}
+
 pub fn selection_color() -> Hsla {
     rgb(selection_surface(palette())).into()
 }
@@ -350,6 +455,11 @@ fn neutral_selection(surface: u32, text: u32) -> u32 {
 pub fn apply(settings: &AppearanceSettings, system_dark: bool, cx: &mut App) -> ResolvedTheme {
     let p = resolve(settings, system_dark);
     PALETTE.with(|palette| palette.set(p));
+    NOTICES.with_borrow_mut(|current| {
+        if *current != settings.notifications {
+            *current = settings.notifications.clone();
+        }
+    });
     Theme::change(
         if p.dark {
             ComponentMode::Dark

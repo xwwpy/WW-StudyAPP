@@ -95,6 +95,7 @@ pub struct LibraryIndex {
     direct_folders: HashSet<String>,
     relations: HashMap<String, FolderRelation>,
     versions: Option<Arc<Vec<NoteVersion>>>,
+    saved_bodies: Option<Arc<HashMap<String, studyapp_core::SavedNoteBody>>>,
     signature: u64,
     /// Number of content bodies normalized, for deterministic drag regressions.
     pub content_bodies_indexed: usize,
@@ -148,6 +149,10 @@ impl LibraryIndex {
         self.versions
             .as_ref()
             .is_none_or(|v| !Arc::ptr_eq(v, &snapshot.versions))
+            || self
+                .saved_bodies
+                .as_ref()
+                .is_none_or(|bodies| !Arc::ptr_eq(bodies, &snapshot.saved_bodies))
             || self.signature != signature(snapshot)
     }
     pub fn ordered_notes(&self, sort: LibrarySort) -> &[usize] {
@@ -211,9 +216,9 @@ impl LibraryIndex {
         let mut result = Self {
             signature: signature(snapshot),
             versions: Some(snapshot.versions.clone()),
+            saved_bodies: Some(snapshot.saved_bodies.clone()),
             ..Default::default()
         };
-        let mut latest = HashMap::new();
         let mut baseline = HashMap::new();
         let mut counts = HashMap::new();
         for v in snapshot.versions.iter() {
@@ -221,7 +226,6 @@ impl LibraryIndex {
             baseline
                 .entry(v.note_id.as_str())
                 .or_insert(v.hash.as_str());
-            latest.insert(v.note_id.as_str(), v);
         }
         let mut recorded_ids = HashSet::new();
         let mut learned: HashMap<&str, i64> = HashMap::new();
@@ -298,9 +302,9 @@ impl LibraryIndex {
                 .unwrap_or_else(|| empty.into())
         };
         for (position, note) in snapshot.notes.iter().enumerate() {
-            let version = latest.get(note.id.as_str());
+            let version = snapshot.note_body(&note.id);
             let content = version
-                .map(|v| v.content.to_lowercase())
+                .map(|(content, _)| content.to_lowercase())
                 .unwrap_or_default();
             result.content_bodies_indexed += usize::from(version.is_some());
             let mut ancestors = Vec::new();
@@ -311,7 +315,7 @@ impl LibraryIndex {
                 parent = folder_parents.get(id).copied().flatten();
             }
             let status = StudyStatus::from_history(
-                version.map(|v| v.hash.as_str()),
+                version.map(|(_, hash)| hash),
                 recorded.get(note.id.as_str()).copied(),
                 baseline.get(note.id.as_str()).copied(),
             );

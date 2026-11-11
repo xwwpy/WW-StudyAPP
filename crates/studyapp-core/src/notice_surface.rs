@@ -113,9 +113,37 @@ impl NoticeSurface {
         Ok(())
     }
 }
+/// New edits override individual properties. Empty color means theme automatic;
+/// an absent property continues following its parent after future changes.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct NoticeSurfacePatch {
+    pub opacity: Option<u8>,
+    pub border_width: Option<u8>,
+    pub border_color: Option<String>,
+    pub background: Option<String>,
+    pub width: Option<u16>,
+    pub radius: Option<u8>,
+    pub max_height: Option<u16>,
+    pub density: Option<NoticeDensity>,
+}
+impl NoticeSurfacePatch {
+    fn apply(&self, surface: &mut NoticeSurface) {
+        macro_rules! fields { ($($field:ident),*) => { $(if let Some(value) = self.$field { surface.$field = value; })* }; }
+        fields!(opacity, border_width, width, radius, max_height, density);
+        for (value, field) in [
+            (&self.background, &mut surface.background),
+            (&self.border_color, &mut surface.border_color),
+        ] {
+            if let Some(value) = value {
+                *field = (!value.is_empty()).then(|| value.clone());
+            }
+        }
+    }
+}
 impl crate::NotificationAppearance {
     pub fn surface(&self, style: NoticeStyle) -> NoticeSurface {
-        self.surfaces.get(&style).cloned().unwrap_or_else(|| {
+        let mut resolved = self.surfaces.get(&style).cloned().unwrap_or_else(|| {
             let mut surface = NoticeSurface {
                 width: self.width,
                 radius: self.radius,
@@ -128,7 +156,19 @@ impl crate::NotificationAppearance {
                     surface.density = NoticeDensity::Compact;
                     surface.radius = self.radius.min(10);
                 }
-                NoticeStyle::ModalCard | NoticeStyle::ActionSheet => surface.max_height = 320,
+                NoticeStyle::ModalCard | NoticeStyle::ActionSheet => {
+                    surface.max_height = 320;
+                    surface.width = 480;
+                }
+                NoticeStyle::Share | NoticeStyle::Dialog => {
+                    surface.max_height = 400;
+                    surface.width = 640;
+                }
+                NoticeStyle::Tooltip => {
+                    surface.width = 300;
+                    surface.radius = 6;
+                    surface.max_height = 200;
+                }
                 NoticeStyle::Anchored => {
                     surface.width = self.width.min(320);
                     surface.radius = self.radius.min(6);
@@ -137,8 +177,33 @@ impl crate::NotificationAppearance {
                 _ => {}
             }
             surface
-        })
+        });
+        if let Some(patch) = self.surface_patches.get(&style) {
+            patch.apply(&mut resolved);
+        }
+        resolved
     }
+    pub fn surface_patch_mut(&mut self, style: NoticeStyle) -> &mut NoticeSurfacePatch {
+        // Convert a legacy full override once, preserving every untouched field,
+        // including an explicit theme-auto color rather than inheriting global.
+        if let Some(legacy) = self.surfaces.remove(&style) {
+            let patch = self.surface_patches.entry(style).or_default();
+            patch.opacity.get_or_insert(legacy.opacity);
+            patch.border_width.get_or_insert(legacy.border_width);
+            patch.width.get_or_insert(legacy.width);
+            patch.max_height.get_or_insert(legacy.max_height);
+            patch.radius.get_or_insert(legacy.radius);
+            patch.density.get_or_insert(legacy.density);
+            patch
+                .background
+                .get_or_insert_with(|| legacy.background.unwrap_or_default());
+            patch
+                .border_color
+                .get_or_insert_with(|| legacy.border_color.unwrap_or_default());
+        }
+        self.surface_patches.entry(style).or_default()
+    }
+    /// Compatibility API for existing fully explicit component configurations.
     pub fn surface_mut(&mut self, style: NoticeStyle) -> &mut NoticeSurface {
         let fallback = self.surface(style);
         self.surfaces.entry(style).or_insert(fallback)

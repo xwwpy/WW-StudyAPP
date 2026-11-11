@@ -56,6 +56,7 @@ pub struct UpdatePanel {
     library: String,
     isolated_launch: bool,
     busy: bool,
+    task_started: bool,
     relocating: bool,
     check_policy: UpdateCheckPolicy,
     check_epoch: std::time::Instant,
@@ -105,6 +106,31 @@ fn signed_check_reply(
 impl EventEmitter<UpdateEvent> for UpdatePanel {}
 
 impl UpdatePanel {
+    pub(crate) fn activity_task(&self) -> Option<studyapp_ui::activity_view::ActivityTask> {
+        use studyapp_ui::activity_view::{ActivityTask, TaskState};
+        self.task_started.then(|| ActivityTask {
+            id: "update-task",
+            title: "应用更新".into(),
+            detail: self.status.clone(),
+            state: if self.busy {
+                TaskState::Running
+            } else if self.error.is_some() || self.nsis_error.is_some() {
+                TaskState::Failed
+            } else {
+                TaskState::Completed
+            },
+            completed: if self.busy {
+                self.nsis_progress.or(match self.progress {
+                    Some(UpdateProgress::Downloading { downloaded, total }) if total > 0 => {
+                        Some((downloaded, total))
+                    }
+                    _ => None,
+                })
+            } else {
+                None
+            },
+        })
+    }
     pub fn available_version(&self) -> Option<&str> {
         self.release
             .as_ref()
@@ -178,6 +204,10 @@ impl UpdatePanel {
             return;
         };
         self.busy = true;
+        self.task_started = true;
+        self.progress = None;
+        self.nsis_progress = None;
+        self.nsis_error = None;
         self.error = None;
         self.nsis_error = None;
         self.status = "正在验证安装环境；您可以继续编辑…".into();
@@ -224,6 +254,7 @@ impl UpdatePanel {
         Self {
             library: String::new(),
             busy: false,
+            task_started: false,
             relocating: false,
             check_policy: UpdateCheckPolicy::default(),
             check_epoch: std::time::Instant::now(),
@@ -431,6 +462,10 @@ impl UpdatePanel {
             return;
         };
         self.busy = true;
+        self.task_started = true;
+        self.progress = None;
+        self.nsis_progress = None;
+        self.nsis_error = None;
         self.error = None;
         self.nsis_error = None;
         self.nsis_progress = Some((0, 0));
@@ -530,6 +565,10 @@ impl UpdatePanel {
             return;
         }
         self.busy = true;
+        self.task_started = true;
+        self.progress = None;
+        self.nsis_progress = None;
+        self.nsis_error = None;
         self.error = None;
         if origin == CheckOrigin::Manual {
             self.status = "正在检查正式版本…".into();
@@ -572,6 +611,10 @@ impl UpdatePanel {
             return;
         };
         self.busy = true;
+        self.task_started = true;
+        self.progress = None;
+        self.nsis_progress = None;
+        self.nsis_error = None;
         self.error = None;
         self.prepared = None;
         self.progress = Some(UpdateProgress::Downloading {
@@ -829,6 +872,10 @@ impl UpdatePanel {
             return;
         }
         self.busy = true;
+        self.task_started = true;
+        self.progress = None;
+        self.nsis_progress = None;
+        self.nsis_error = None;
         self.prepared = None;
         self.error = None;
         self.status = "正在验证当前版本并修复安装文件…".into();
@@ -1219,6 +1266,7 @@ mod tests {
             library: String::new(),
             isolated_launch: true,
             busy: true,
+            task_started: true,
             relocating: false,
             release: None,
             prepared: None,

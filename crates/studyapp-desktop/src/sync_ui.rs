@@ -1,5 +1,4 @@
 use crate::controls::Button;
-use crate::controls::Checkbox;
 use crate::{
     components::*,
     settings_components as form,
@@ -7,7 +6,7 @@ use crate::{
     worker::Work,
 };
 use gpui_kit::{
-    component::{Disableable, Selectable, button::ButtonVariants, input::InputState},
+    component::{Disableable, Selectable, input::InputState},
     *,
 };
 use std::sync::mpsc;
@@ -27,11 +26,11 @@ pub struct SyncPanel {
     pub url: Entity<InputState>,
     pub username: Entity<InputState>,
     pub password: Entity<InputState>,
+    credential: Entity<studyapp_ui::settings_secret::SecretSetting>,
     interval: Entity<InputState>,
     automatic: bool,
     initialized: bool,
     folder_picker: crate::folder_picker::FolderPicker,
-    folder_expanded: bool,
 }
 
 impl EventEmitter<SyncEvent> for SyncPanel {}
@@ -84,6 +83,7 @@ impl SyncPanel {
             _ => false,
         };
         !target_matches
+            || self.credential.read(cx).pending_clear()
             || !self.password.read(cx).value().is_empty()
             || self.automatic != self.status.settings.auto_minutes.is_some()
             || (self.automatic
@@ -96,6 +96,14 @@ impl SyncPanel {
         };
         let password = input("应用密码；留空保留已保存密码", window, cx);
         password.update(cx, |s, cx| s.set_masked(true, window, cx));
+        let credential = cx.new(|cx| {
+            studyapp_ui::settings_secret::SecretSetting::new(password.clone(), false, cx)
+        });
+        cx.subscribe(
+            &credential,
+            |_, _, _: &studyapp_ui::settings_secret::SecretChanged, cx| cx.notify(),
+        )
+        .detach();
         let panel = Self {
             sender,
             notification_center: None,
@@ -106,11 +114,11 @@ impl SyncPanel {
             url: input("https://dav.example.com/path/", window, cx),
             username: input("WebDAV 用户名", window, cx),
             password,
+            credential,
             interval: input("5–1440 分钟", window, cx),
             automatic: false,
             initialized: false,
             folder_picker: Default::default(),
-            folder_expanded: false,
         };
         for input in [
             &panel.folder,
@@ -162,8 +170,8 @@ impl SyncPanel {
                     2
                 }
             };
-            self.password
-                .update(cx, |s, cx| s.set_value("", window, cx));
+            self.credential
+                .update(cx, |secret, cx| secret.reset(window, cx));
             self.automatic = status.settings.auto_minutes.is_some();
             self.interval.update(cx, |s, cx| {
                 s.set_value(
@@ -218,7 +226,8 @@ impl SyncPanel {
             None
         };
         let raw = self.password.read(cx).value().to_string();
-        let password = (!raw.is_empty()).then(|| zeroize::Zeroizing::new(raw));
+        let password = (self.credential.read(cx).pending_clear() || !raw.is_empty())
+            .then(|| zeroize::Zeroizing::new(raw));
         Ok((
             SyncSettings {
                 target,
@@ -255,8 +264,8 @@ impl SyncPanel {
         self.interval.update(cx, |input, cx| {
             input.set_value(settings.auto_minutes.unwrap_or(15).to_string(), window, cx)
         });
-        self.password
-            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.credential
+            .update(cx, |secret, cx| secret.reset(window, cx));
         cx.notify();
     }
 
@@ -305,42 +314,25 @@ impl Render for SyncPanel {
                     self.folder.read(cx).value(),
                 )
                 .fallback("尚未选择")
-                .expanded(self.folder_expanded)
                 .editor(form::input(&self.folder, busy))
                 .actions(
-                    row()
-                        .child(
-                            Button::new("sync-directory-expand")
-                                .action(if self.folder_expanded {
-                                    "收起"
-                                } else {
-                                    "编辑路径"
-                                })
-                                .ghost()
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.folder_expanded = !this.folder_expanded;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("pick-sync-folder")
-                                .action("选择文件夹")
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if this.editing_locked || this.status.busy || this.target != 1 {
-                                        return;
-                                    }
-                                    let current = std::path::PathBuf::from(
-                                        this.folder.read(cx).value().trim(),
-                                    );
-                                    this.folder_picker.choose(
-                                        &this.status.library,
-                                        Some(current),
-                                        "选择同步根目录",
-                                    );
-                                })),
-                        ),
+                    row().child(
+                        Button::new("pick-sync-folder")
+                            .action("选择文件夹")
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.editing_locked || this.status.busy || this.target != 1 {
+                                    return;
+                                }
+                                let current =
+                                    std::path::PathBuf::from(this.folder.read(cx).value().trim());
+                                this.folder_picker.choose(
+                                    &this.status.library,
+                                    Some(current),
+                                    "选择同步根目录",
+                                );
+                            })),
+                    ),
                 ),
             );
         } else if self.target == 2 {
@@ -355,9 +347,14 @@ impl Render for SyncPanel {
                                 .flex_1(),
                         )
                         .child(
-                            form::field("密码", form::input(&self.password, busy))
-                                .min_w(px(180.))
-                                .flex_1(),
+                            form::field("凭据", {
+                                self.credential.update(cx, |secret, cx| {
+                                    secret.configure(self.status.credential_saved, busy, cx)
+                                });
+                                self.credential.clone()
+                            })
+                            .min_w(px(180.))
+                            .flex_1(),
                         ),
                 )
                 .child(muted(if self.status.credential_saved {
@@ -389,12 +386,12 @@ impl Render for SyncPanel {
         } else {
             sync_now.into_any_element()
         };
-        panel.child(row().child(Checkbox::new("auto-sync").label("自动同步").checked(self.automatic).disabled(busy)
+        panel.child(row().child(studyapp_ui::settings_switch::SettingSwitch::new("auto-sync").default_value(false).label("自动同步").checked(self.automatic).disabled(busy)
             .on_click(cx.listener(|this, checked, _, cx| {
                 if this.editing_locked || this.status.busy { return; }
                 this.automatic = *checked; cx.notify();
             })))
-            .child(form::input(&self.interval, busy || !self.automatic).w(px(150.))).child(muted("分钟")))
+            .child(form::NumericSetting::new("auto-sync-interval", &self.interval, "分钟", 30, 5, 1440, busy || !self.automatic)))
             .child(row().child(Button::new("test-sync").action("测试连接").disabled(busy || unsaved || matches!(self.status.settings.target, SyncTarget::Disabled)).on_click(cx.listener(|this, _, _, cx| this.start(true, cx))))
                 .child(sync_now))
             .child(muted(if unsaved { "同步设置有未保存的修改，请先保存。" } else { "使用已保存的同步设置" }))

@@ -1,6 +1,12 @@
 use crate::settings_ui::{AppearancePage, SettingsSection, StoragePage};
 
+#[derive(Clone)]
 pub struct SettingResult {
+    target: Option<&'static str>,
+    row: usize,
+    anchor: Option<&'static str>,
+    component: Option<studyapp_core::NoticeStyle>,
+    category: Option<studyapp_core::NoticeCategory>,
     pub section: SettingsSection,
     pub label: &'static str,
     pub keywords: &'static str,
@@ -12,6 +18,11 @@ pub struct SettingResult {
 impl SettingResult {
     const fn new(section: SettingsSection, label: &'static str, keywords: &'static str) -> Self {
         Self {
+            target: None,
+            row: 0,
+            anchor: None,
+            component: None,
+            category: None,
             section,
             label,
             keywords,
@@ -19,6 +30,51 @@ impl SettingResult {
             storage: StoragePage::Overview,
             markdown_group: 0,
         }
+    }
+    const fn target(mut self, target: &'static str, row: usize) -> Self {
+        self.target = Some(target);
+        self.row = row;
+        self
+    }
+    const fn anchor(mut self, anchor: &'static str) -> Self {
+        self.anchor = Some(anchor);
+        self
+    }
+    fn target_id(&self) -> String {
+        if let Some(target) = self.target {
+            return target.into();
+        }
+        if let Some(style) = self.component {
+            return format!(
+                "notices.component.{}",
+                studyapp_core::NoticeStyle::ALL
+                    .iter()
+                    .position(|value| *value == style)
+                    .unwrap_or(0)
+            );
+        }
+        match self.section {
+            SettingsSection::Learning => "learning",
+            SettingsSection::Logging => "logging",
+            SettingsSection::Notifications => "notices.rules",
+            SettingsSection::Shortcuts => "shortcuts",
+            SettingsSection::Sync => "sync",
+            SettingsSection::AboutAccount => "about",
+            SettingsSection::Storage => match self.storage {
+                StoragePage::Overview => "storage.overview",
+                StoragePage::Copies => "storage.copies",
+                StoragePage::Images => "storage.images",
+                StoragePage::Library => "storage.library",
+            },
+            SettingsSection::Appearance => match self.appearance {
+                AppearancePage::Overview => "appearance.overview",
+                AppearancePage::ThemeEditor => "appearance.theme",
+                AppearancePage::Workspace => "appearance.workspace",
+                AppearancePage::Widget => "appearance.widget",
+                AppearancePage::Notifications => "notices.general",
+            },
+        }
+        .into()
     }
     const fn appearance(mut self, page: AppearancePage, group: u8) -> Self {
         self.appearance = page;
@@ -149,17 +205,27 @@ static SETTINGS: &[SettingResult] = &[
     ),
 ];
 
-pub fn search(query: &str) -> Vec<&'static SettingResult> {
+pub fn search(query: &str) -> Vec<SettingResult> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return Vec::new();
     }
-    SETTINGS
-        .iter()
+    let mut settings = SETTINGS.to_vec();
+    settings.extend(extra_settings());
+    settings
+        .into_iter()
         .filter(|item| {
-            query
-                .split_whitespace()
-                .all(|word| item.label.contains(word) || item.keywords.contains(word))
+            let text = format!(
+                "{} {} {} {}",
+                item.label,
+                item.keywords,
+                item.component
+                    .map(|style| style.label())
+                    .unwrap_or_default(),
+                crate::settings_navigation::target_title(&item.target_id())
+            )
+            .to_lowercase();
+            query.split_whitespace().all(|word| text.contains(word))
         })
         .collect()
 }
@@ -167,20 +233,34 @@ pub fn search(query: &str) -> Vec<&'static SettingResult> {
 use crate::{app::StudyApp, components::*, controls::Button};
 use gpui_kit::{
     component::{Disableable, Sizable, button::ButtonVariants},
+    prelude::FluentBuilder,
     *,
 };
 
 impl StudyApp {
+    pub(crate) fn open_settings_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preferences_ui.settings_search_open = true;
+        if let Some(input) = &self.preferences_ui.search {
+            input.read(cx).focus_handle(cx).focus(window, cx);
+        }
+        cx.notify();
+    }
     pub fn settings_search_active(&self, cx: &App) -> bool {
-        self.preferences_ui
-            .search
-            .as_ref()
-            .is_some_and(|input| !input.read(cx).value().trim().is_empty())
+        self.preferences_ui.settings_search_open
+            && self
+                .preferences_ui
+                .search
+                .as_ref()
+                .is_some_and(|input| !input.read(cx).value().trim().is_empty())
     }
 
     pub fn settings_search_bar(&self, cx: &mut Context<Self>) -> Div {
+        if !self.preferences_ui.settings_search_open {
+            return row();
+        }
         let active = self.settings_search_active(cx);
         row()
+            .relative()
             .min_w_0()
             .gap_2()
             .children(self.preferences_ui.search.as_ref().map(|input| {
@@ -190,7 +270,8 @@ impl StudyApp {
                     .flex_1()
                     .min_w_0()
                     .capture_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                        if event.keystroke.key == "escape" && this.settings_search_active(cx) {
+                        if event.keystroke.key == "escape" {
+                            this.preferences_ui.settings_search_open = false;
                             if let Some(input) = &this.preferences_ui.search {
                                 input.update(cx, |input, cx| input.set_value("", window, cx));
                             }
@@ -215,6 +296,36 @@ impl StudyApp {
                         cx.notify();
                     }))
             }))
+            .when(active, |view| {
+                view.child(
+                    div()
+                        .id("settings-search-popup")
+                        .test_support()
+                        .absolute()
+                        .top_full()
+                        .left_0()
+                        .right_0()
+                        .occlude()
+                        .p_3()
+                        .rounded_md()
+                        .shadow_lg()
+                        .bg(crate::theme::color(BG))
+                        .border_1()
+                        .border_color(crate::theme::color(BORDER))
+                        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                            this.preferences_ui.settings_search_open = false;
+                            cx.notify();
+                        }))
+                        .child(
+                            scroll_body(
+                                "settings-search-results",
+                                &self.preferences_ui.settings_search_scroll,
+                            )
+                            .max_h(px(360.))
+                            .child(self.settings_search_results(cx)),
+                        ),
+                )
+            })
     }
 
     pub fn settings_search_results(&self, cx: &mut Context<Self>) -> Div {
@@ -241,28 +352,440 @@ impl StudyApp {
                 .map(|(_, _, label)| label)
                 .unwrap_or_default();
             content = content.child(
-                card().gap_1().child(muted(category)).child(
-                    Button::new(("settings-search-result", index))
-                        .ghost()
-                        .w_full()
-                        .justify_start()
-                        .label(result.label)
-                        .disabled(self.preferences_ui.busy)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_settings_section(result.section, cx);
-                            this.select_appearance_page(result.appearance, cx);
-                            this.select_storage_page(result.storage, cx);
-                            this.preferences_ui.appearance_group = result.markdown_group;
-                            if let Some(input) = &this.preferences_ui.search {
-                                input.update(cx, |input, cx| input.set_value("", window, cx));
-                            }
-                            cx.notify();
-                        })),
-                ),
+                column()
+                    .gap_1()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(crate::theme::color(BORDER))
+                    .child(muted(format!(
+                        "{category} / {}",
+                        crate::settings_navigation::target_title(&result.target_id())
+                    )))
+                    .child(muted(format!("匹配说明：{}", result.keywords)))
+                    .child(
+                        Button::new(("settings-search-result", index))
+                            .ghost()
+                            .w_full()
+                            .justify_start()
+                            .label(result.label)
+                            .tooltip(result.keywords)
+                            .disabled(self.preferences_ui.busy)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.select_settings_target(&result.target_id(), cx);
+                                this.preferences_ui.notification_category = result.category;
+                                let category_index = result.category.and_then(|category| {
+                                    studyapp_core::NoticeCategory::ALL
+                                        .iter()
+                                        .position(|value| *value == category)
+                                });
+                                if let Some(index) = category_index {
+                                    this.preferences_ui.notification_page = index / 5;
+                                }
+                                let row = category_index.map_or(result.row, |row| row % 5 + 2);
+                                *this.preferences_ui.pending_settings_scroll.borrow_mut() =
+                                    crate::settings_navigation::virtual_target(&result.target_id())
+                                        .then(|| {
+                                            (
+                                                result.target_id(),
+                                                ListOffset {
+                                                    item_ix: row,
+                                                    offset_in_item: px(0.),
+                                                },
+                                            )
+                                        });
+                                this.preferences_ui.appearance_group = result.markdown_group;
+                                let scroll = match this.preferences_ui.section {
+                                    SettingsSection::Appearance
+                                        if result.target_id() == "appearance.theme"
+                                            || result.target_id() == "appearance.overview"
+                                            || result.target_id() == "appearance.workspace" =>
+                                    {
+                                        studyapp_ui::settings_anchor::SettingScroll::Virtual(
+                                            this.settings_appearance_scroll(),
+                                        )
+                                    }
+                                    SettingsSection::Notifications
+                                        if result.target_id() == "notices.rules" =>
+                                    {
+                                        studyapp_ui::settings_anchor::SettingScroll::Virtual(
+                                            this.preferences_ui.notification_rows.scroll.clone(),
+                                        )
+                                    }
+                                    SettingsSection::Shortcuts => {
+                                        studyapp_ui::settings_anchor::SettingScroll::Virtual(
+                                            this.settings_shortcut_scroll(),
+                                        )
+                                    }
+                                    _ => studyapp_ui::settings_anchor::SettingScroll::Normal(
+                                        this.settings_scroll.clone(),
+                                    ),
+                                };
+                                studyapp_ui::settings_anchor::seek(
+                                    result.anchor.unwrap_or(result.label),
+                                    scroll,
+                                    window,
+                                    cx,
+                                );
+
+                                if let Some(input) = &this.preferences_ui.search {
+                                    input.update(cx, |input, cx| input.set_value("", window, cx));
+                                }
+                                this.preferences_ui.settings_search_open = false;
+                                cx.notify();
+                            })),
+                    ),
             );
         }
         content
     }
+}
+
+fn extra_settings() -> Vec<SettingResult> {
+    use SettingsSection as S;
+    let mut entries: Vec<_> = [
+        (
+            S::Learning,
+            "notes.snapshots",
+            "快照模式",
+            "正文 保存 版本 历史 自动 仅扫描 手动 稳定等待 扫描间隔 离开收尾 Ctrl+S",
+        ),
+        (
+            S::Learning,
+            "notes.snapshots",
+            "扫描变化与选择保存快照",
+            "重新扫描 diff 差异 勾选 变化清单 手动 快照 过期预览",
+        ),
+        (
+            S::Learning,
+            "notes.editing",
+            "Tab 同时调整未选中的子项",
+            "列表 编辑 缩进 子树 续行 选中 多光标 shift tab",
+        ),
+        (
+            S::Appearance,
+            "appearance.selection",
+            "全局与分类选中样式",
+            "导航 选项 笔记 文件 目录 选中 取消选中 背景 文字 边框 标记 圆角 继承",
+        ),
+        (
+            S::Appearance,
+            "appearance.widget",
+            "计时小组件",
+            "透明度 字号 大小 宽度 高度 按钮 置顶 位置 拖动 计时 小组件",
+        ),
+        (
+            S::Notifications,
+            "notices.regions",
+            "通知分区与堆叠",
+            "轻提示 进度 角落 横幅 底部 单张 排队 数量 新到 靠前 错层 空间 等待",
+        ),
+        (
+            S::Notifications,
+            "notices.rules",
+            "免打扰时间",
+            "24 小时 HH:MM 开始 结束 次日 跨天 提示音 红点 隐私 严重错误",
+        ),
+        (
+            S::Appearance,
+            "notices.general",
+            "提示动效与默认外观",
+            "停留 秒 宽度 圆角 透明度 背景 强调色 边框 过渡 动画 减少动态 阴影 紧凑 间距",
+        ),
+        (
+            S::Storage,
+            "storage.images",
+            "图片云端凭据",
+            "密钥 secret 更换 清除 本次输入 隐藏 加密 S3 对象存储",
+        ),
+        (
+            S::Sync,
+            "sync",
+            "同步凭据",
+            "密码 WebDAV 应用密码 更换 清除 保存 确认 本次输入 隐藏 账户",
+        ),
+        (
+            S::Storage,
+            "storage.library",
+            "资料库备份与迁移",
+            "备份 创建 恢复 目录 位置 迁移 应用资料 完整性",
+        ),
+    ]
+    .into_iter()
+    .map(|(section, target, label, keywords)| {
+        SettingResult::new(section, label, keywords).target(target, 0)
+    })
+    .collect();
+    entries.extend(studyapp_core::NoticeStyle::ALL.into_iter().map(|style| {
+        let mut entry = SettingResult::new(S::Appearance, style.label(), "通知 浮层 组件 独立 布局 备选 外观 不透明度 边框 颜色 宽度 高度 圆角 字段 默认 继承 简略 详细 预览");
+        entry.component = Some(style); entry
+    }));
+    entries.extend(
+        studyapp_core::NoticeCategory::ALL
+            .into_iter()
+            .map(|category| {
+                let mut entry = SettingResult::new(
+                    S::Notifications,
+                    category.label(),
+                    "通知 场景 分类 前台 后台 桌面 声音 开关 内容 字段 继承 自定义 必要 风险",
+                );
+                entry.category = Some(category);
+                entry
+            }),
+    );
+    entries.extend(field_settings());
+    entries
+}
+
+fn field_settings() -> Vec<SettingResult> {
+    use SettingsSection as S;
+    let mut fields: Vec<_> = [
+        (
+            S::Learning,
+            "learning",
+            "询问间隔",
+            "学习节奏 分钟 下一时间段",
+        ),
+        (S::Learning, "learning", "回答期限", "回答时限 分钟 超时"),
+        (
+            S::Learning,
+            "learning",
+            "复习间隔",
+            "阶段 天 新建计划 添加 删除 分页",
+        ),
+        (
+            S::Learning,
+            "notes.snapshots",
+            "保存方式",
+            "快照 自动保存 仅扫描 手动",
+        ),
+        (
+            S::Learning,
+            "notes.snapshots",
+            "扫描间隔",
+            "快照 秒 定时 后台",
+        ),
+        (
+            S::Learning,
+            "notes.snapshots",
+            "内容稳定等待",
+            "快照 稳定窗口 秒 连续修改 合并",
+        ),
+        (
+            S::Learning,
+            "notes.editing",
+            "Tab 同时调整未选中的子项",
+            "缩进 列表 子树 续行 多光标",
+        ),
+        (
+            S::Appearance,
+            "appearance.overview",
+            "主题与阅读",
+            "明暗 跟随系统 浅色 深色 Markdown HTML",
+        ),
+        (
+            S::Appearance,
+            "appearance.overview",
+            "界面字号",
+            "字体 大小 像素 12 22 px",
+        ),
+        (
+            S::Appearance,
+            "appearance.overview",
+            "内容间距",
+            "紧凑 宽松 像素 布局 px",
+        ),
+        (
+            S::Appearance,
+            "appearance.overview",
+            "多级无序列表",
+            "标记 预设 固定层级 自定义",
+        ),
+        (
+            S::Appearance,
+            "appearance.selection",
+            "选中背景",
+            "全局 分类 继承 导航 选项 笔记 目录 颜色",
+        ),
+        (
+            S::Appearance,
+            "appearance.selection",
+            "选中文字",
+            "全局 分类 继承 颜色",
+        ),
+        (
+            S::Appearance,
+            "appearance.selection",
+            "选中边框与标记",
+            "全局 分类 继承 颜色",
+        ),
+        (
+            S::Appearance,
+            "appearance.selection",
+            "未选中背景",
+            "全局 分类 继承 颜色",
+        ),
+        (
+            S::Appearance,
+            "appearance.selection",
+            "未选中文字",
+            "全局 分类 继承 颜色",
+        ),
+        (
+            S::Appearance,
+            "appearance.widget",
+            "布局与显示",
+            "小组件 紧凑 标准 展开 显示按钮",
+        ),
+        (
+            S::Appearance,
+            "appearance.widget",
+            "圆角",
+            "小组件 尺寸 背景 px",
+        ),
+        (
+            S::Appearance,
+            "appearance.widget",
+            "整体缩放（50–200%）",
+            "小组件 百分比 大小",
+        ),
+        (
+            S::Appearance,
+            "appearance.widget",
+            "背景不透明度（%）",
+            "小组件 透明度 颜色",
+        ),
+        (
+            S::Appearance,
+            "appearance.widget",
+            "强调色（留空跟随主题）",
+            "小组件 RGBA 颜色 继承",
+        ),
+        (
+            S::Appearance,
+            "appearance.widget",
+            "计时预设",
+            "倒计时 分钟 正整数",
+        ),
+        (
+            S::Appearance,
+            "appearance.widget",
+            "窗口行为",
+            "小组件 窗口置顶 显示 隐藏",
+        ),
+        (
+            S::Notifications,
+            "notices.rules",
+            "免打扰",
+            "开始 结束 24小时 HH:MM 次日 跨天",
+        ),
+        (
+            S::Storage,
+            "storage.images",
+            "本地图片",
+            "路径 图片目录 选择文件夹",
+        ),
+        (
+            S::Storage,
+            "storage.library",
+            "当前资料库",
+            "路径 更改位置 迁移 验证 原资料保留",
+        ),
+        (
+            S::Storage,
+            "storage.library",
+            "备份与恢复",
+            "导出备份 从备份恢复 当前设置保留",
+        ),
+        (
+            S::Sync,
+            "sync",
+            "同步文件夹",
+            "文件夹 路径 根目录 选择文件夹",
+        ),
+        (S::Sync, "sync", "WebDAV 地址", "https nas 服务 连接"),
+        (S::Sync, "sync", "账户", "用户名 WebDAV"),
+        (
+            S::Sync,
+            "sync",
+            "凭据",
+            "密码 应用密码 WebDAV 更换 清除 隐藏",
+        ),
+        (S::Sync, "sync", "自动同步", "启用 开关 分钟 周期 间隔"),
+        (S::Logging, "logging", "启用日志", "开启 关闭 日志 本机"),
+        (
+            S::Logging,
+            "logging",
+            "输出等级",
+            "error warn info debug trace 详细程度",
+        ),
+        (
+            S::Logging,
+            "logging",
+            "日志目录",
+            "文件夹 路径 默认位置 logs",
+        ),
+    ]
+    .into_iter()
+    .map(|(section, target, label, keywords)| {
+        SettingResult::new(section, label, keywords)
+            .target(target, 0)
+            .anchor(label)
+    })
+    .collect();
+    fields.extend(
+        crate::settings_ui::MARKDOWN_FIELDS
+            .iter()
+            .map(|(_, _, label, group)| {
+                SettingResult::new(
+                    S::Appearance,
+                    label,
+                    "Markdown 颜色 阅读 编辑器 高亮 对比度 RGBA 继承",
+                )
+                .target("appearance.theme", 1)
+                .appearance(AppearancePage::ThemeEditor, *group)
+                .anchor(label)
+            }),
+    );
+    for (label, group) in [
+        ("正文字号 px", 0),
+        ("行高 %", 0),
+        ("阅读宽度 px", 0),
+        ("代码字号 px", 1),
+        ("代码圆角 px", 1),
+    ] {
+        fields.push(
+            SettingResult::new(
+                S::Appearance,
+                label,
+                "Markdown 阅读 版式 字体 大小 宽度 自动 继承",
+            )
+            .target("appearance.theme", 1)
+            .appearance(AppearancePage::ThemeEditor, group)
+            .anchor(label),
+        );
+    }
+    for style in studyapp_core::NoticeStyle::ALL {
+        for label in [
+            "组件布局",
+            "不透明度（%）",
+            "边框宽度（px）",
+            "宽度（px）",
+            "内容最大高度（px）",
+            "圆角（px）",
+            "此组件背景（自动 / RGBA）",
+            "此组件边框（自动 / RGBA）",
+        ] {
+            let mut entry = SettingResult::new(
+                S::Appearance,
+                label,
+                "通知 浮层 组件 独立 外观 继承 有效值 默认 颜色 尺寸 布局 透明度",
+            )
+            .anchor(label);
+            entry.component = Some(style);
+            fields.push(entry);
+        }
+    }
+    fields
 }
 
 #[cfg(test)]
@@ -290,6 +813,32 @@ mod tests {
             search("快捷键")
                 .iter()
                 .any(|item| matches!(item.section, SettingsSection::Shortcuts))
+        );
+    }
+
+    #[test]
+    fn concrete_fields_include_their_real_subpage_and_markdown_row() {
+        let width = search("阅读宽度")
+            .into_iter()
+            .find(|entry| entry.label == "阅读宽度 px")
+            .unwrap();
+        assert_eq!(width.target_id(), "appearance.theme");
+        assert_eq!(width.row, 1);
+        assert_eq!(width.markdown_group, 0);
+        let code = search("代码背景")
+            .into_iter()
+            .find(|entry| entry.label == "代码背景")
+            .unwrap();
+        assert_eq!(code.target_id(), "appearance.theme");
+        assert_eq!(code.markdown_group, 1);
+        let corner = search("角落 圆角");
+        assert!(corner.iter().any(|entry| entry.component
+            == Some(studyapp_core::NoticeStyle::CornerCard)
+            && entry.label == "圆角（px）"));
+        assert!(
+            search("日志目录")
+                .iter()
+                .any(|entry| entry.target_id() == "logging" && entry.anchor == Some("日志目录"))
         );
     }
 

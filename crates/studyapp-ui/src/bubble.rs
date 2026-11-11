@@ -216,7 +216,10 @@ impl Render for PointerBubble {
         .body
         .size
         .height;
-        let padding = px(8.)
+        let compact = crate::theme::notification_appearance()
+            .layout(studyapp_core::NoticeStyle::Tooltip)
+            == studyapp_core::NoticeLayout::Alternative;
+        let padding = px(if compact { 4. } else { 8. })
             .min(available_width * 0.25)
             .min(available_height * 0.25);
         let border = px(f32::from(palette.hover_border_width))
@@ -371,7 +374,10 @@ impl Element for BubbleElement {
         window.on_mouse_event::<MouseMoveEvent>(move |event, phase, _, cx| {
             if phase == DispatchPhase::Capture {
                 let _ = owner.update(cx, |this, cx| {
-                    if this.position != event.position {
+                    if crate::theme::palette().tooltip_position
+                        == studyapp_core::TooltipPosition::FollowPointer
+                        && this.position != event.position
+                    {
                         this.position = event.position;
                         cx.notify();
                     }

@@ -103,6 +103,50 @@ impl Engine {
         self.pending_startup_errors = None;
         Ok(())
     }
+    /// Best-effort final capture is restricted to automatic mode. Body writes
+    /// already committed by the editor do not depend on this operation.
+    pub fn snapshot_warning(&self) -> Option<&str> {
+        self.state.snapshot_warning.as_deref()
+    }
+    pub fn finish_snapshots(&mut self, now: i64) -> Result<()> {
+        if self.state.settings.snapshots.mode != crate::SnapshotMode::Automatic {
+            return Ok(());
+        }
+        let result = self.apply(Command::CaptureSnapshots, now).and_then(|_| {
+            let errors: Vec<_> = self
+                .state
+                .notes
+                .iter()
+                .filter(|n| !n.detached)
+                .filter_map(|n| {
+                    n.error
+                        .as_ref()
+                        .map(|error| format!("{}：{error}", n.title))
+                })
+                .collect();
+            ensure!(
+                errors.is_empty(),
+                "部分快照未完成；已保存正文不受影响：{}",
+                errors.join("；")
+            );
+            Ok(())
+        });
+        self.state.snapshot_warning = result.as_ref().err().map(|_| "离开资料库前的自动快照未全部完成；已保存正文仍保留，请检查读取失败的笔记并重新扫描保存。".into());
+        let saved = storage::save(
+            &mut self.conn,
+            &self.state,
+            self.state.versions.len(),
+            false,
+        );
+        match (result, saved) {
+            (Err(error), Err(save)) => {
+                Err(error.context(format!("快照未完成的提示也未能保存：{save:#}")))
+            }
+            (Err(error), _) => Err(error),
+            (_, Err(error)) => Err(error),
+            _ => Ok(()),
+        }
+    }
     pub fn settings(&self) -> &Settings {
         &self.state.settings
     }
@@ -308,7 +352,7 @@ impl Engine {
                 if let Some(write) = write {
                     self.write_managed(next, vec![write], false)?;
                 }
-                return Ok("同步笔记已接收（离线版本）".into());
+                return Ok("同步笔记正文已接收；快照按所选策略记录".into());
             }
             Command::ReceiveSyncedCopy {
                 note_id,
@@ -326,6 +370,27 @@ impl Engine {
                 )?;
                 self.write_managed(next, vec![write], false)?;
                 return Ok("同步副本已接收（离线版本）".into());
+            }
+            Command::ExportPreviewedNote {
+                note_id,
+                version_id,
+                expected_hash,
+                path,
+            } => {
+                let actual = if let Some(version_id) = version_id {
+                    next.versions
+                        .iter()
+                        .find(|version| version.note_id == *note_id && version.id == *version_id)
+                        .map(|version| version.hash.as_str())
+                } else {
+                    next.note_body(note_id).map(|(_, hash)| hash)
+                };
+                ensure!(
+                    actual == Some(expected_hash.as_str()),
+                    "导出预览已过期，请重新打开分享与导出"
+                );
+                crate::managed::export(&next, note_id, version_id.as_deref(), path)?;
+                return Ok(format!("笔记原文已导出：{}", path.display()));
             }
             Command::ExportNote {
                 note_id,
@@ -517,6 +582,10 @@ impl Engine {
             }
             Command::Scan { offline } => crate::notes::scan(&mut next, offline, now),
             Command::CaptureSnapshots => crate::notes::capture(&mut next, now),
+            Command::PreviewSnapshots => crate::notes::preview(&mut next, now)?,
+            Command::CaptureSelectedSnapshots(selected) => {
+                crate::notes::capture_selected(&mut next, &selected, now)?
+            }
             Command::Submit {
                 session_id,
                 summary,
@@ -726,7 +795,8 @@ impl Engine {
             | Command::SaveNote { .. }
             | Command::ReceiveSyncedNote { .. }
             | Command::ReceiveSyncedCopy { .. }
-            | Command::ExportNote { .. } => unreachable!(),
+            | Command::ExportNote { .. }
+            | Command::ExportPreviewedNote { .. } => unreachable!(),
         };
         storage::save(&mut self.conn, &next, self.state.versions.len(), false)?;
         self.state = next;
@@ -1239,7 +1309,10 @@ mod managed_storage_tests {
         assert_eq!(engine.snapshot().settings, settings);
         assert_eq!(engine.snapshot().timer.target_seconds, 3600);
         assert_eq!(engine.snapshot().timer.active_seconds, 1);
-        assert_eq!(engine.snapshot().versions.last().unwrap().content, "after");
+        assert_eq!(
+            engine.snapshot().note_body(&before.notes[0].id).unwrap().0,
+            "after"
+        );
     }
 
     #[test]

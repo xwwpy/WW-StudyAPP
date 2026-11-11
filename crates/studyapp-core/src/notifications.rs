@@ -92,9 +92,15 @@ pub enum NoticeStyle {
     ActionSheet,
     Snackbar,
     ActivityView,
+    Hud,
+    Share,
+    Dialog,
+    Actionbar,
+    PopupMenu,
+    Tooltip,
 }
 impl NoticeStyle {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 14] = [
         Self::Bubble,
         Self::CornerCard,
         Self::Banner,
@@ -103,17 +109,29 @@ impl NoticeStyle {
         Self::ActionSheet,
         Self::Snackbar,
         Self::ActivityView,
+        Self::Hud,
+        Self::Share,
+        Self::Dialog,
+        Self::Actionbar,
+        Self::PopupMenu,
+        Self::Tooltip,
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::Bubble => "轻量气泡",
+            Self::Bubble => "轻提示 / Toast",
             Self::CornerCard => "角落操作卡片",
-            Self::Banner => "顶部悬浮横幅",
-            Self::ModalCard => "居中弹出卡片",
-            Self::Anchored => "控件定位气泡 / Popover",
+            Self::Banner => "页面横幅 / Banner",
+            Self::ModalCard => "确认警告 / Alert",
+            Self::Anchored => "控件详情 / Popover",
             Self::ActionSheet => "底部操作面板 / Action Sheet",
             Self::Snackbar => "底部反馈条 / Snackbar",
             Self::ActivityView => "任务活动面板 / Activity View",
+            Self::Hud => "任务进度 / HUD",
+            Self::Share => "分享与导出",
+            Self::Dialog => "内容与表单 / Dialog",
+            Self::Actionbar => "选区工具栏 / Actionbar",
+            Self::PopupMenu => "操作菜单 / Popup Menu",
+            Self::Tooltip => "悬停说明 / Tooltip",
         }
     }
 }
@@ -237,10 +255,16 @@ pub enum NoticeDensity {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct NotificationAppearance {
+    pub layouts: BTreeMap<NoticeStyle, crate::NoticeLayout>,
+    pub component_fields: BTreeMap<NoticeStyle, crate::NoticeContent>,
+    pub scenario_fields: BTreeMap<NoticeCategory, crate::NoticeContentPatch>,
+    pub regions: BTreeMap<crate::NoticeRegion, crate::NoticeRegionSettings>,
+    pub tooltip_position: crate::TooltipPosition,
     pub stack: crate::NoticeStack,
     pub content: crate::NoticeContent,
     pub hover_content: crate::HoverContent,
     pub surfaces: BTreeMap<NoticeStyle, crate::NoticeSurface>,
+    pub surface_patches: BTreeMap<NoticeStyle, crate::NoticeSurfacePatch>,
     pub style: NoticeStyle,
     pub position: NoticePosition,
     pub duration_seconds: u8,
@@ -257,10 +281,16 @@ pub struct NotificationAppearance {
 impl Default for NotificationAppearance {
     fn default() -> Self {
         Self {
+            layouts: BTreeMap::new(),
+            component_fields: BTreeMap::new(),
+            scenario_fields: BTreeMap::new(),
+            regions: BTreeMap::new(),
+            tooltip_position: Default::default(),
             stack: Default::default(),
             content: Default::default(),
             hover_content: Default::default(),
             surfaces: Default::default(),
+            surface_patches: Default::default(),
             style: NoticeStyle::Bubble,
             position: Default::default(),
             duration_seconds: 5,
@@ -278,6 +308,18 @@ impl Default for NotificationAppearance {
 }
 impl NotificationAppearance {
     pub fn validate(&self) -> Result<()> {
+        for region in self.regions.values() {
+            ensure!(
+                (1..=4).contains(&region.max_visible),
+                "分区同时显示数量须为1–4"
+            );
+        }
+        for fields in self.component_fields.values() {
+            ensure!(fields.title || fields.summary, "组件至少显示标题或正文");
+        }
+        for style in NoticeStyle::ALL {
+            self.surface(style).validate()?;
+        }
         for surface in self.surfaces.values() {
             surface.validate()?;
         }
@@ -344,27 +386,34 @@ impl NotificationSettings {
         if !rule.foreground {
             return NoticeRoute::Suppressed;
         }
-        let style = rule.style.unwrap_or(match severity {
-            NoticeSeverity::Critical => NoticeStyle::ModalCard,
-            NoticeSeverity::Error => NoticeStyle::CornerCard,
-            _ if matches!(
-                category,
-                NoticeCategory::TimerComplete
-                    | NoticeCategory::ReviewDue
-                    | NoticeCategory::SyncConflict
-            ) =>
-            {
-                NoticeStyle::CornerCard
+        let fallback = category.default_style(severity);
+        let style = if severity == NoticeSeverity::Critical {
+            fallback
+        } else {
+            rule.style
+                .filter(|style| {
+                    category.notification_styles().contains(style)
+                        && !(severity >= NoticeSeverity::Error
+                            && matches!(style, NoticeStyle::Bubble | NoticeStyle::Snackbar))
+                })
+                .unwrap_or(fallback)
+        };
+        // Appearance editing is intentionally independent of event routing.
+        let _ = appearance;
+        NoticeRoute::Foreground(style)
+    }
+    pub fn route_event(
+        &self,
+        event: &NoticeEvent,
+        appearance: &NotificationAppearance,
+        environment: NoticeEnvironment,
+    ) -> NoticeRoute {
+        match self.route(event.category, event.severity, appearance, environment) {
+            NoticeRoute::Foreground(NoticeStyle::Bubble) if event.action.is_some() => {
+                NoticeRoute::Foreground(NoticeStyle::Snackbar)
             }
-            _ => appearance.style,
-        });
-        NoticeRoute::Foreground(
-            if style == NoticeStyle::Anchored && !environment.anchor_available {
-                NoticeStyle::CornerCard
-            } else {
-                style
-            },
-        )
+            route => route,
+        }
     }
 }
 

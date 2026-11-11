@@ -1,5 +1,6 @@
 //! Shared neutral form surfaces, labels and inputs for the settings workspace.
 use crate::components::*;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::{
         Sizable,
@@ -160,8 +161,21 @@ pub fn virtual_rows(
         ))
 }
 
+pub fn card_grid(width: Pixels) -> Div {
+    div()
+        .grid()
+        .grid_cols(if width >= px(800.) { 2 } else { 1 })
+        .gap_4()
+        .w_full()
+        .min_w_0()
+        .items_start()
+}
+
 pub fn section(title: impl Into<SharedString>) -> Div {
+    let title = title.into();
     column()
+        .relative()
+        .child(crate::settings_anchor::probe(title.clone()))
         .min_w_0()
         .flex_shrink_0()
         .gap_3()
@@ -174,34 +188,79 @@ pub fn section(title: impl Into<SharedString>) -> Div {
 }
 
 pub fn field(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
+    let label = label.into();
     column()
+        .relative()
+        .child(crate::settings_anchor::probe(label.clone()))
         .min_w_0()
         .gap_1()
         .child(
             typography(crate::design::TypeRole::Body)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(crate::theme::color(INK))
-                .child(label.into()),
+                .child(label),
         )
         .child(control)
 }
 
 /// One aligned label/value row, shared by ordinary values and location fields.
 pub fn settings_row(label: impl Into<SharedString>, control: impl IntoElement) -> Div {
-    column()
+    let label = label.into();
+    row()
+        .relative()
+        .child(crate::settings_anchor::probe(label.clone()))
         .w_full()
         .min_w_0()
-        .gap_1()
+        .flex_wrap()
+        .items_start()
+        .gap_3()
         .py_2()
         .border_b_1()
         .border_color(crate::theme::color(BORDER))
         .child(
             div()
+                .flex_basis(px(180.))
+                .flex_grow(0.7)
+                .min_w_0()
                 .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(label.into()),
+                .child(label),
         )
-        .child(div().w_full().min_w_0().child(control))
+        .child(
+            div()
+                .flex_basis(px(280.))
+                .flex_grow(1.)
+                .max_w_full()
+                .min_w_0()
+                .child(control),
+        )
+}
+
+/// Lightweight named outline for one wrapping multi-select set, not a card.
+pub fn checkbox_group(label: impl Into<SharedString>, controls: impl IntoElement) -> Div {
+    let label = label.into();
+    column()
+        .relative()
+        .min_w_0()
+        .mt_2()
+        .p_3()
+        .pt_4()
+        .border_1()
+        .border_color(crate::theme::color(BORDER))
+        .rounded_sm()
+        .child(
+            div()
+                .absolute()
+                .top(px(-9.))
+                .left(px(10.))
+                .px_2()
+                .bg(crate::theme::color(0xFFFFFF))
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .child(label.clone()),
+        )
+        .child(crate::settings_anchor::probe(label))
+        .child(controls)
 }
 
 /// Location display and optional precision editor share one presentation.
@@ -285,7 +344,7 @@ impl RenderOnce for DirectoryField {
                     .child(absolute.clone())
                     .tooltip(move |window, cx| Tooltip::new(absolute.clone()).build(window, cx)),
             )
-            .children(self.expanded.then(|| {
+            .children(Some({
                 div().id(self.id).test_support().min_w_0().child(
                     self.editor
                         .unwrap_or_else(|| muted(self.path).into_any_element()),
@@ -368,6 +427,104 @@ mod tests {
     use std::cell::RefCell;
     use std::{cell::Cell, collections::BTreeSet, rc::Rc};
 
+    struct NumberEventFixture {
+        source: Entity<InputState>,
+        clock: Entity<InputState>,
+        events: usize,
+        clock_events: usize,
+    }
+    impl Render for NumberEventFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            super::column()
+                .w(px(600.))
+                .child(super::NumericSetting::new(
+                    "semantic-number",
+                    &self.source,
+                    "分钟",
+                    5,
+                    1,
+                    10,
+                    false,
+                ))
+                .child(crate::settings_time::time_input(
+                    "semantic-clock",
+                    &self.clock,
+                    0,
+                    false,
+                    cx,
+                ))
+        }
+    }
+    #[gpui_kit::test]
+    fn step_reset_and_time_buttons_emit_real_changes_without_coercing_invalid_text(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (view, visual) = cx.add_window_view(|window, cx| {
+            let source = cx.new(|cx| InputState::new(window, cx).default_value("3"));
+            let clock = cx.new(|cx| InputState::new(window, cx).default_value("23:59"));
+            cx.subscribe(
+                &source,
+                |this: &mut NumberEventFixture,
+                 _,
+                 event: &gpui_kit::component::input::InputEvent,
+                 cx| {
+                    if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                        this.events += 1;
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+            cx.subscribe(
+                &clock,
+                |this: &mut NumberEventFixture,
+                 _,
+                 event: &gpui_kit::component::input::InputEvent,
+                 cx| {
+                    if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                        this.clock_events += 1;
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+            NumberEventFixture {
+                source,
+                clock,
+                events: 0,
+                clock_events: 0,
+            }
+        });
+        draw(visual);
+        visual.update(|window, cx| window.click("semantic-number-increase", cx));
+        draw(visual);
+        visual.update(|window, cx| {
+            assert_eq!(view.read(cx).source.read(cx).value(), "4");
+            assert_eq!(view.read(cx).events, 1);
+            window.click("semantic-number-reset", cx);
+        });
+        draw(visual);
+        visual.update(|window, cx| {
+            assert_eq!(view.read(cx).source.read(cx).value(), "5");
+            assert_eq!(view.read(cx).events, 2);
+            let source = view.read(cx).source.clone();
+            source.update(cx, |input, cx| input.set_value("-", window, cx));
+        });
+        draw(visual);
+        visual.update(|window, cx| {
+            window.click("semantic-number-increase", cx);
+            assert_eq!(view.read(cx).source.read(cx).value(), "-");
+            assert_eq!(view.read(cx).events, 2);
+            window.click("semantic-clock-minute-up", cx);
+        });
+        draw(visual);
+        visual.update(|_, cx| {
+            assert_eq!(view.read(cx).clock.read(cx).value(), "00:00");
+            assert_eq!(view.read(cx).clock_events, 1);
+        });
+    }
+
     struct DirectoryFixture {
         expanded: bool,
     }
@@ -408,7 +565,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn directory_field_always_shows_path_and_only_expands_precision_editor(
+    fn directory_field_keeps_the_precision_editor_visible_regardless_of_legacy_expansion(
         cx: &mut TestAppContext,
     ) {
         cx.update(gpui_kit::init);
@@ -416,8 +573,8 @@ mod tests {
         draw(cx);
         cx.update(|window, _| {
             assert!(
-                window.try_find("directory-detail").is_none(),
-                "precision editor should stay collapsed"
+                window.try_find("directory-detail").is_some(),
+                "precision editor must remain visible"
             )
         });
         cx.update(|window, _| assert!(window.try_find("directory-detail-path").is_some()));
@@ -725,30 +882,201 @@ pub fn choice<T: 'static, V: Clone + PartialEq + 'static>(
     change: impl Fn(&mut T, V, &mut Window, &mut Context<T>) + Clone + 'static,
 ) -> impl IntoElement {
     use gpui_kit::component::{
-        Disableable,
+        Disableable, Selectable,
         menu::{DropdownMenu, PopupMenuItem},
     };
-    let label = options
-        .iter()
-        .find(|(value, _)| *value == current)
-        .map(|(_, label)| label.clone())
-        .unwrap_or_else(|| "选择…".into());
-    crate::controls::Button::new(id)
-        .label(label)
-        .disabled(disabled)
-        .dropdown_menu(move |mut menu, _, _| {
-            for (value, label) in &options {
-                let owner = owner.clone();
-                let change = change.clone();
-                let value = value.clone();
-                let checked = value == current;
-                menu = menu.item(PopupMenuItem::new(label.clone()).checked(checked).on_click(
-                    move |_, window, cx| {
-                        let _ =
-                            owner.update(cx, |this, cx| change(this, value.clone(), window, cx));
-                    },
-                ));
+    let id = id.into();
+    let short = (2..=3).contains(&options.len())
+        && options.iter().all(|(_, label)| label.chars().count() <= 8);
+    column().w_full().min_w_0().child(
+        container_query(move |available, _, _| {
+            let needed = options
+                .iter()
+                .map(|(_, label)| label.chars().count() as f32 * 14. + 28.)
+                .sum::<f32>();
+            if short && f32::from(available.width) >= needed {
+                return row()
+                    .id(id.clone())
+                    .min_w_0()
+                    .gap_1()
+                    .children(options.iter().enumerate().map(|(index, (value, label))| {
+                        let owner = owner.clone();
+                        let change = change.clone();
+                        let value = value.clone();
+                        crate::controls::Button::new(("choice-option", index))
+                            .small()
+                            .label(label.clone())
+                            .selected(value == current)
+                            .disabled(disabled)
+                            .on_click(move |_, window, cx| {
+                                let _ = owner
+                                    .update(cx, |this, cx| change(this, value.clone(), window, cx));
+                            })
+                    }))
+                    .into_any_element();
             }
-            menu
+            let label = options
+                .iter()
+                .find(|(value, _)| *value == current)
+                .map(|(_, label)| label.clone())
+                .unwrap_or_else(|| "选择…".into());
+            let options = options.clone();
+            let current = current.clone();
+            let owner = owner.clone();
+            let change = change.clone();
+            crate::controls::Button::new(id.clone())
+                .label(label)
+                .disabled(disabled)
+                .dropdown_menu(move |mut menu, _, _| {
+                    for (value, label) in &options {
+                        let owner = owner.clone();
+                        let change = change.clone();
+                        let value = value.clone();
+                        let checked = value == current;
+                        menu =
+                            menu.item(PopupMenuItem::new(label.clone()).checked(checked).on_click(
+                                move |_, window, cx| {
+                                    let _ = owner.update(cx, |this, cx| {
+                                        change(this, value.clone(), window, cx)
+                                    });
+                                },
+                            ));
+                    }
+                    menu
+                })
+                .into_any_element()
         })
+        .h(px(40.)),
+    )
+}
+
+/// Caller-owned numeric draft text is validated on global Save, including
+/// invalid interim input; it never silently falls back to an older value.
+#[derive(IntoElement)]
+pub struct NumericSetting {
+    id: SharedString,
+    input: Entity<InputState>,
+    unit: SharedString,
+    default: u64,
+    min: u64,
+    max: u64,
+    disabled: bool,
+}
+impl NumericSetting {
+    pub fn new(
+        id: impl Into<SharedString>,
+        input: &Entity<InputState>,
+        unit: impl Into<SharedString>,
+        default: u64,
+        min: u64,
+        max: u64,
+        disabled: bool,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            input: input.clone(),
+            unit: unit.into(),
+            default,
+            min,
+            max,
+            disabled,
+        }
+    }
+}
+fn step_integer(raw: &str, increase: bool, min: u64, max: u64) -> Option<u64> {
+    let value = raw
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .filter(|value| (min..=max).contains(value))?;
+    if increase {
+        value.checked_add(1).filter(|next| *next <= max)
+    } else {
+        value.checked_sub(1).filter(|next| *next >= min)
+    }
+}
+impl RenderOnce for NumericSetting {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        use gpui_kit::component::{Disableable, button::ButtonVariants};
+        let raw = self.input.read(cx).value();
+        let invalid = raw
+            .trim()
+            .parse::<u64>()
+            .map_or(true, |value| !(self.min..=self.max).contains(&value));
+        let (min, max) = (self.min, self.max);
+        let mut number = row().gap_1().min_w_0();
+        for (suffix, label, increase) in [("decrease", "−", false), ("increase", "+", true)] {
+            if increase {
+                number = number.child(div().w(px(112.)).child(input(&self.input, self.disabled)));
+            }
+            let source = self.input.clone();
+            number = number.child(
+                crate::controls::Button::new(SharedString::from(format!("{}-{suffix}", self.id)))
+                    .small()
+                    .ghost()
+                    .label(label)
+                    .disabled(self.disabled || step_integer(&raw, increase, min, max).is_none())
+                    .on_click(move |_, window, cx| {
+                        let next = step_integer(&source.read(cx).value(), increase, min, max);
+                        if let Some(next) = next {
+                            source.update(cx, |input, cx| {
+                                input.set_value(next.to_string(), window, cx);
+                                cx.emit(gpui_kit::component::input::InputEvent::Change);
+                            });
+                        }
+                    }),
+            );
+        }
+        let source = self.input.clone();
+        let default = self.default;
+        column()
+            .id(self.id.clone())
+            .test_support()
+            .gap_1()
+            .child(
+                row()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(number)
+                    .child(muted(self.unit))
+                    .child(
+                        crate::controls::Button::new(SharedString::from(format!(
+                            "{}-reset",
+                            self.id
+                        )))
+                        .small()
+                        .ghost()
+                        .label("重置")
+                        .disabled(self.disabled)
+                        .on_click(move |_, window, cx| {
+                            source.update(cx, |input, cx| {
+                                input.set_value(default.to_string(), window, cx);
+                                // Explicit user edits must notify semantic subscribers.
+                                cx.emit(gpui_kit::component::input::InputEvent::Change);
+                            });
+                        }),
+                    ),
+            )
+            .when(invalid, |view| {
+                view.child(muted(format!("请输入 {}–{} 的整数", self.min, self.max)))
+            })
+    }
+}
+#[cfg(test)]
+mod integer_tests {
+    #[test]
+    fn numeric_steps_are_exact_and_never_coerce_invalid_text_or_overflow() {
+        use super::step_integer;
+        assert_eq!(
+            step_integer("9007199254740993", true, 1, u64::MAX),
+            Some(9007199254740994)
+        );
+        assert_eq!(step_integer(&u64::MAX.to_string(), true, 0, u64::MAX), None);
+        assert_eq!(step_integer("0", false, 0, 10), None);
+        assert_eq!(step_integer("10", true, 1, 10), None);
+        assert_eq!(step_integer("1", false, 1, 10), None);
+        for raw in ["-", "", "1.5", "11", "abc"] {
+            assert_eq!(step_integer(raw, true, 1, 10), None);
+        }
+    }
 }

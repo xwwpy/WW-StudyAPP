@@ -1,5 +1,8 @@
 //! Pure notification lifecycle; timestamps are supplied by the view or tests.
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    time::Duration,
+};
 use studyapp_core::{
     NoticeEvent, NoticeEventId, NoticeRoute, NoticeSeverity, NoticeStyle, NotificationAppearance,
 };
@@ -54,6 +57,8 @@ pub struct NoticeQueue {
     next_id: u64,
     last_tick: Duration,
     visible_limit: usize,
+    region_limits: BTreeMap<studyapp_core::NoticeRegion, usize>,
+    layout_visible: Option<BTreeSet<u64>>,
 }
 impl Default for NoticeQueue {
     fn default() -> Self {
@@ -62,6 +67,8 @@ impl Default for NoticeQueue {
             next_id: 0,
             last_tick: Duration::ZERO,
             visible_limit: VISIBLE_LIMIT,
+            region_limits: BTreeMap::new(),
+            layout_visible: None,
         }
     }
 }
@@ -102,14 +109,15 @@ impl NoticeQueue {
         appearance: &NotificationAppearance,
         now: Duration,
     ) -> Option<NoticeEventId> {
-        if route == NoticeRoute::Suppressed
+        if matches!(route, NoticeRoute::Foreground(style) if !style.queued_feedback())
+            || route == NoticeRoute::Suppressed
             || event.validate().is_err()
             || appearance.validate().is_err()
         {
             return None;
         }
         self.tick(now);
-        self.visible_limit = usize::from(appearance.visible_limit());
+        self.configure_limits(appearance);
         if let Some(key) = &event.dedupe_key
             && let Some(index) = self.entries.iter().position(|entry| {
                 entry.closing_at.is_none()
@@ -188,7 +196,7 @@ impl NoticeQueue {
         now: Duration,
     ) {
         self.reroute_with(appearance, now, |event| {
-            settings.route(event.category, event.severity, appearance, environment)
+            settings.route_event(event, appearance, environment)
         });
     }
 
@@ -199,7 +207,7 @@ impl NoticeQueue {
         mut resolve: impl FnMut(&NoticeEvent) -> NoticeRoute,
     ) {
         self.tick(now);
-        self.visible_limit = usize::from(appearance.visible_limit().clamp(1, 4));
+        self.configure_limits(appearance);
         for entry in &mut self.entries {
             if let Some(event) = &entry.event {
                 let next = resolve(event);
@@ -218,18 +226,69 @@ impl NoticeQueue {
         self.bound_pending();
     }
 
-    pub fn visible(&self) -> impl Iterator<Item = &Notice> {
-        let mut modal_selected = false;
-        self.entries
-            .iter()
-            .filter(move |entry| match entry.route {
-                NoticeRoute::Foreground(NoticeStyle::ModalCard) => {
-                    !std::mem::replace(&mut modal_selected, true)
-                }
-                NoticeRoute::Foreground(_) => true,
-                _ => false,
+    fn configure_limits(&mut self, appearance: &NotificationAppearance) {
+        self.visible_limit = usize::from(appearance.visible_limit().clamp(1, 4));
+        self.region_limits = studyapp_core::NoticeRegion::ALL
+            .into_iter()
+            .map(|region| {
+                let settings = appearance.region_settings(region);
+                let limit = if settings.stack == studyapp_core::NoticeStack::Queue {
+                    1
+                } else {
+                    settings.max_visible.clamp(1, 4)
+                };
+                (region, usize::from(limit))
             })
-            .take(self.visible_limit)
+            .collect();
+    }
+    /// Region slots are independent. A modal temporarily takes precedence over
+    /// passive foreground feedback, without dismissing or ageing that backlog.
+    pub fn candidates(&self) -> impl Iterator<Item = &Notice> {
+        let modal = self
+            .entries
+            .iter()
+            .any(|entry| entry.route == NoticeRoute::Foreground(NoticeStyle::ModalCard));
+        let mut counts = BTreeMap::new();
+        let mut modal_selected = false;
+        self.entries.iter().filter(move |entry| match entry.route {
+            NoticeRoute::Foreground(NoticeStyle::ModalCard) => {
+                !std::mem::replace(&mut modal_selected, true)
+            }
+            NoticeRoute::Foreground(style) if !modal => {
+                let Some(region) = style.region() else {
+                    return false;
+                };
+                let count = counts.entry(region).or_insert(0usize);
+                *count += 1;
+                *count
+                    <= self
+                        .region_limits
+                        .get(&region)
+                        .copied()
+                        .unwrap_or(VISIBLE_LIMIT)
+            }
+            _ => false,
+        })
+    }
+    pub fn visible(&self) -> impl Iterator<Item = &Notice> {
+        self.candidates().filter(|entry| {
+            entry.route == NoticeRoute::Foreground(NoticeStyle::ModalCard)
+                || self
+                    .layout_visible
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&entry.id))
+        })
+    }
+    /// The layout host reports fitting rectangles. Hidden entries keep their
+    /// remaining lifetime and become candidates again when space is available.
+    pub fn set_layout_visible(&mut self, ids: BTreeSet<u64>, now: Duration) -> bool {
+        if self.layout_visible.as_ref() == Some(&ids) {
+            return false;
+        }
+        self.tick(now);
+        self.layout_visible = Some(ids);
+        self.promote(now);
+        true
     }
     pub fn desktop_visible(&self) -> impl Iterator<Item = &Notice> {
         self.entries
@@ -524,7 +583,7 @@ mod structured_tests {
         event
     }
     #[test]
-    fn single_card_mode_keeps_other_types_queued_until_dismissal() {
+    fn single_card_mode_queues_within_its_region_until_dismissal() {
         let mut queue = NoticeQueue::default();
         let appearance = NotificationAppearance {
             stack: studyapp_core::NoticeStack::Queue,
@@ -543,7 +602,7 @@ mod structured_tests {
         let second_event_id = second.id;
         queue.push_event(
             second,
-            Route::Foreground(Style::ActionSheet),
+            Route::Foreground(Style::CornerCard),
             &appearance,
             at(0),
         );
@@ -560,7 +619,7 @@ mod structured_tests {
         assert_eq!(queue.visible().count(), 1);
         let promoted = queue.visible().next().unwrap();
         assert_eq!(promoted.event.as_ref().unwrap().id, second_event_id);
-        assert_eq!(promoted.route, Route::Foreground(Style::ActionSheet));
+        assert_eq!(promoted.route, Route::Foreground(Style::CornerCard));
     }
     #[test]
     fn explicit_dedupe_keeps_one_correlation_id_and_errors_do_not_expire() {
@@ -842,5 +901,102 @@ mod structured_tests {
                 .did_present(&[numeric_id], Route::Foreground(Style::CornerCard))
                 .is_empty()
         );
+    }
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::NoticeQueue;
+    use std::{collections::BTreeSet, time::Duration};
+    use studyapp_core::{
+        NoticeCategory as C, NoticeEvent, NoticeRegion as R, NoticeRegionSettings, NoticeRoute,
+        NoticeSeverity as S, NoticeStack, NoticeStyle as T, NotificationAppearance,
+    };
+    #[test]
+    fn each_region_has_its_own_capacity_and_active_menus_are_not_queue_entries() {
+        let mut queue = NoticeQueue::default();
+        let mut appearance = NotificationAppearance::default();
+        appearance.regions.insert(
+            R::Toast,
+            NoticeRegionSettings {
+                stack: NoticeStack::Queue,
+                max_visible: 4,
+            },
+        );
+        appearance.regions.insert(
+            R::Corner,
+            NoticeRegionSettings {
+                stack: NoticeStack::Vertical,
+                max_visible: 2,
+            },
+        );
+        for style in [
+            T::Bubble,
+            T::CornerCard,
+            T::Bubble,
+            T::CornerCard,
+            T::CornerCard,
+        ] {
+            queue.push_event(
+                NoticeEvent::new(C::OperationResult, S::Information, "信息"),
+                NoticeRoute::Foreground(style),
+                &appearance,
+                Duration::ZERO,
+            );
+        }
+        assert_eq!(queue.visible().count(), 3);
+        assert_eq!(
+            queue
+                .visible()
+                .filter(|entry| entry.route == NoticeRoute::Foreground(T::Bubble))
+                .count(),
+            1
+        );
+        for style in [
+            T::PopupMenu,
+            T::ActionSheet,
+            T::Anchored,
+            T::Share,
+            T::Dialog,
+            T::Actionbar,
+            T::ActivityView,
+            T::Tooltip,
+        ] {
+            queue.push_event(
+                NoticeEvent::new(C::OperationResult, S::Information, "非队列交互"),
+                NoticeRoute::Foreground(style),
+                &appearance,
+                Duration::ZERO,
+            );
+            assert!(
+                !queue
+                    .visible()
+                    .any(|entry| entry.route == NoticeRoute::Foreground(style))
+            );
+        }
+    }
+    #[test]
+    fn not_fitting_feedback_keeps_its_lifetime_until_space_returns() {
+        let mut queue = NoticeQueue::default();
+        let appearance = NotificationAppearance {
+            animation: false,
+            duration_seconds: 5,
+            ..Default::default()
+        };
+        queue.push_event(
+            NoticeEvent::new(C::OperationResult, S::Information, "等待空间"),
+            NoticeRoute::Foreground(T::Bubble),
+            &appearance,
+            Duration::ZERO,
+        );
+        let id = queue.visible().next().unwrap().id;
+        queue.set_layout_visible(BTreeSet::new(), Duration::ZERO);
+        queue.tick(Duration::from_secs(30));
+        assert!(!queue.is_empty());
+        queue.set_layout_visible([id].into_iter().collect(), Duration::from_secs(30));
+        queue.tick(Duration::from_secs(34));
+        assert_eq!(queue.visible().count(), 1);
+        queue.tick(Duration::from_secs(36));
+        assert!(queue.is_empty());
     }
 }

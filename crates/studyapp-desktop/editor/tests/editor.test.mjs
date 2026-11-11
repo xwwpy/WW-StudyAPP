@@ -812,6 +812,7 @@ test("Markdown indentation uses ordered marker width and moves selected subtrees
     const raw = `${marker} parent\r\n2. child\r\n   - grandchild\r\n3. sibling\r\n4. end`;
     const original = raw.replaceAll("\r", "");
     const { page } = await setup(raw);
+    await page.evaluate(() => window.studyappEditor.setTheme({indentSubtree:true}));
     await select(page, original.indexOf("2. child"), original.indexOf("4. end"));
     await page.keyboard.press("Tab");
     const nested = (await state(page)).text;
@@ -3180,4 +3181,85 @@ test("0.3.6 Tab on a newly inserted empty bullet leaves neighboring levels untou
   assert.equal((await state(page)).text,'- before\n  - \n- after');
   await page.keyboard.press('Shift+Tab');assert.equal((await state(page)).text,text);
   assert.deepEqual(errors,[]);await page.close();
+});
+
+test("0.4 own-item indentation includes continuation body but never an unselected child", async () => {
+  const original = "- previous\n- current\n  own continuation\n  - child\n    child continuation\n- after";
+  const {page,errors} = await setup(original);
+  await page.evaluate(() => window.studyappEditor.setTheme({indentSubtree:false}));
+  await select(page, original.indexOf("current"));
+  await page.keyboard.press("Tab");
+  assert.equal((await state(page)).text, "- previous\n  - current\n    own continuation\n  - child\n    child continuation\n- after");
+  await page.keyboard.press("Control+z");
+  assert.equal((await state(page)).text, original);
+  // A nonempty selection that stops before the child still does not move it.
+  await select(page, original.indexOf("current"), original.indexOf("  - child"));
+  await page.keyboard.press("Tab");
+  assert.equal((await state(page)).text, "- previous\n  - current\n    own continuation\n  - child\n    child continuation\n- after");
+  assert.deepEqual(errors, []);
+  await page.close();
+});
+
+test("0.4 explicitly selected child moves once even when its parent is selected", async () => {
+  const original = "- previous\n- current\n  own continuation\n  - child\n    child continuation\n- after";
+  for (const subtree of [false,true]) {
+    const {page,errors} = await setup(original);
+    await page.evaluate(value => window.studyappEditor.setTheme({indentSubtree:value}), subtree);
+    await select(page, original.indexOf("current"), original.indexOf("child") + 5);
+    await page.keyboard.press("Tab");
+    assert.equal((await state(page)).text, "- previous\n  - current\n    own continuation\n    - child\n      child continuation\n- after");
+    await page.keyboard.press("Control+z");
+    assert.equal((await state(page)).text, original);
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
+});
+
+test("0.4 parsing leaves unindented body outside lists without changing source or Enter", async () => {
+  const {listParagraphBoundaries} = await import("../src/markdown-boundaries.ts");
+  const parser = markdownParser.configure(listParagraphBoundaries);
+  for (const original of ["- item\nbody", "1. item\nbody", "- [x] item\nbody", "- parent\n  - child\nbody"]) {
+    for (let node = parser.parse(original).resolveInner(original.indexOf("body") + 1, 1); node; node = node.parent) {
+      assert.notEqual(node.name, "ListItem", parser.parse(original).toString());
+    }
+    const {page,errors} = await setup(original);
+    await select(page, original.length);
+    await page.keyboard.press("Enter");
+    assert.equal((await state(page)).text, original + "\n");
+    await page.keyboard.press("Control+z");
+    assert.equal((await state(page)).text, original);
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
+  const continuation = "- item\n  continued\nbody";
+  let inside = false;
+  for (let node = parser.parse(continuation).resolveInner(continuation.indexOf("continued") + 1, 1); node; node = node.parent) {
+    inside ||= node.name === "ListItem";
+  }
+  assert.ok(inside, "indented continuation must remain part of the item");
+});
+
+test("selection actionbar follows the selection, preserves exact commands, hides and supports occupied-top layout", async () => {
+  const {page, errors} = await setup("选中的正文\n\n下一段");
+  await select(page, 0, 5);
+  const bar=page.locator('#editor-actionbar');
+  await bar.waitFor({state:'visible'});
+  const box=await bar.boundingBox();
+  assert.ok(box.x>=8 && box.x+box.width<=1100-8 && box.y>=0 && box.y+box.height<=800);
+  await bar.getByRole('button',{name:'加粗',exact:true}).click();
+  assert.equal((await state(page)).text,"**选中的正文**\n\n下一段");
+  await select(page,0);
+  await bar.waitFor({state:'hidden'});
+  await page.evaluate(()=>window.studyappEditor.setTheme({actionbarLayout:'alternative'}));
+  await select(page,2,7);
+  await bar.waitFor({state:'visible'});
+  assert.equal(await bar.evaluate(el=>getComputedStyle(el).position),'relative');
+  await page.evaluate(()=>window.studyappEditor.setReadonly(true));
+  await bar.waitFor({state:'visible'});
+  assert.equal(await bar.getByRole('button',{name:'加粗',exact:true}).isVisible(),false);
+  assert.equal(await bar.getByRole('button',{name:'复制',exact:true}).isVisible(),true);
+  await page.evaluate(()=>window.studyappEditor.setModalOverlay(true,.48));
+  await bar.waitFor({state:'hidden'});
+  assert.deepEqual(errors,[]);
+  await page.close();
 });

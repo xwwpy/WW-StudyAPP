@@ -17,12 +17,14 @@ pub struct AppButton {
     inner: ComponentButton,
     disabled: bool,
     loading: bool,
+    tooltip_text: Option<SharedString>,
     size: Size,
     has_icon: bool,
     has_label: bool,
     has_children: bool,
     target_scale: f32,
     selection_state: Option<bool>,
+    selection_category: Option<studyapp_core::SelectionCategory>,
     surface_colors: Option<(gpui_kit::Hsla, gpui_kit::Hsla, gpui_kit::Hsla)>,
 }
 
@@ -36,14 +38,26 @@ impl AppButton {
             inner: ComponentButton::new(id),
             disabled: false,
             loading: false,
+            tooltip_text: None,
             size: Size::Medium,
             has_icon: false,
             has_label: false,
             has_children: false,
             target_scale: 1.,
             selection_state: None,
+            selection_category: Some(studyapp_core::SelectionCategory::Options),
             surface_colors: None,
         }
+    }
+
+    pub fn selection_category(mut self, category: studyapp_core::SelectionCategory) -> Self {
+        self.selection_category = Some(category);
+        self
+    }
+
+    pub fn global_selection(mut self) -> Self {
+        self.selection_category = None;
+        self
     }
 
     /// Scale minimum pointer targets alongside custom-sized child content.
@@ -110,7 +124,7 @@ impl AppButton {
     }
 
     pub fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
-        self.inner = self.inner.tooltip(tooltip);
+        self.tooltip_text = Some(tooltip.into());
         self
     }
 
@@ -254,8 +268,13 @@ impl ParentElement for AppButton {
 
 impl RenderOnce for AppButton {
     fn render(mut self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        if let Some(text) = self.tooltip_text.take() {
+            self.inner = crate::components::control_tooltip(self.inner, text.to_string());
+        }
         if let Some(selected) = self.selection_state {
-            let p = crate::theme::palette();
+            let p = self
+                .selection_category
+                .map_or_else(crate::theme::global_selection, crate::theme::selection);
             let bg = if selected {
                 p.selected_background
             } else {
@@ -278,6 +297,14 @@ impl RenderOnce for AppButton {
                 .rounded(gpui_kit::px(f32::from(p.selection_radius)))
                 .border_1()
                 .border_color(gpui_kit::rgb(if selected { p.selected_border } else { bg }));
+            if selected && p.selection_indicator {
+                self.inner = self.inner.child(
+                    gpui_kit::div()
+                        .size(gpui_kit::px(4.))
+                        .rounded_full()
+                        .bg(gpui_kit::rgb(p.selected_border)),
+                );
+            }
             if selected {
                 self.inner = self.inner.font_weight(gpui_kit::FontWeight::SEMIBOLD);
             }

@@ -2020,6 +2020,96 @@ mod tests {
         assert!(store.save(changed, &mut engine, &mut runtime).is_err());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn credential_clear_replace_and_abandon_follow_the_atomic_preferences_commit() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (root, mut engine, mut runtime, mut store) = library();
+        let mut initial = request(&store);
+        initial.sync.target = crate::sync_runtime::SyncTarget::WebDav {
+            url: "https://example.com/dav/".into(),
+            username: "learner".into(),
+        };
+        initial.password = Some(zeroize::Zeroizing::new("original-test-secret".into()));
+        store.save(initial, &mut engine, &mut runtime).unwrap();
+        let original = runtime
+            .prepare_configuration(runtime.status.settings.clone(), None)
+            .unwrap()
+            .credentials
+            .protected_password;
+        let revision = store.snapshot().revision;
+        let mut clearing = request(&store);
+        clearing.password = Some(zeroize::Zeroizing::new(String::new()));
+        let prepared = store.prepare(clearing, &engine, &runtime).unwrap();
+        assert_eq!(
+            runtime
+                .prepare_configuration(runtime.status.settings.clone(), None)
+                .unwrap()
+                .credentials
+                .protected_password,
+            original
+        );
+        drop(prepared); // Abandoning a prepared draft is not a commit.
+        assert_eq!(store.snapshot().revision, revision);
+        assert_eq!(
+            runtime
+                .prepare_configuration(runtime.status.settings.clone(), None)
+                .unwrap()
+                .credentials
+                .protected_password,
+            original
+        );
+        let path = root.join("settings/manifest.json");
+        let before = std::fs::read(&path).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&path)
+            .unwrap();
+        let mut clearing = request(&store);
+        clearing.password = Some(zeroize::Zeroizing::new(String::new()));
+        assert!(store.save(clearing, &mut engine, &mut runtime).is_err());
+        assert_eq!(
+            runtime
+                .prepare_configuration(runtime.status.settings.clone(), None)
+                .unwrap()
+                .credentials
+                .protected_password,
+            original
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(runtime.status.credential_saved);
+        drop(held);
+        let mut clearing = request(&store);
+        clearing.password = Some(zeroize::Zeroizing::new(String::new()));
+        store.save(clearing, &mut engine, &mut runtime).unwrap();
+        assert!(!runtime.status.credential_saved);
+        let stored: CredentialPayload =
+            read_json(&store.current_directory().join("credentials.json")).unwrap();
+        assert!(stored.protected_password.is_empty());
+        let mut replacing = request(&store);
+        replacing.password = Some(zeroize::Zeroizing::new("replacement-test-secret".into()));
+        store.save(replacing, &mut engine, &mut runtime).unwrap();
+        assert!(runtime.status.credential_saved);
+        let stored: CredentialPayload =
+            read_json(&store.current_directory().join("credentials.json")).unwrap();
+        assert_eq!(
+            crate::credentials::unprotect(&stored.protected_password)
+                .unwrap()
+                .as_str(),
+            "replacement-test-secret"
+        );
+        let mut changed = request(&store);
+        changed.sync.target = crate::sync_runtime::SyncTarget::WebDav {
+            url: "https://example.org/dav/".into(),
+            username: "learner".into(),
+        };
+        assert!(store.save(changed, &mut engine, &mut runtime).is_err());
+        let unchanged: CredentialPayload =
+            read_json(&store.current_directory().join("credentials.json")).unwrap();
+        assert_eq!(unchanged.protected_password, stored.protected_password);
+    }
+
     #[test]
     fn categorized_publication_replays_on_restart_and_is_library_scoped() {
         let (root, mut engine, mut runtime, mut store) = library();

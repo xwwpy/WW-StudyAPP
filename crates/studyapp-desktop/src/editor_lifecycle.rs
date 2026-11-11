@@ -324,14 +324,9 @@ impl StudyApp {
                 .as_ref()
                 .and_then(|snapshot| {
                     snapshot
-                        .versions
-                        .iter()
-                        .rev()
-                        .find(|version| {
-                            version.note_id == note_id
-                                && version.content == self.note_content.read(cx).value()
-                        })
-                        .map(|version| version.id.clone())
+                        .note_body(&note_id)
+                        .filter(|(content, _)| *content == self.note_content.read(cx).value())
+                        .map(|(_, hash)| format!("current:{note_id}:{hash}"))
                 })
                 .unwrap_or_default();
             self.refresh_recoverable();
@@ -701,13 +696,26 @@ impl StudyApp {
             if self.history {
                 self.history_preview.prepare(version);
             }
-            show &= version.is_some() && !self.history;
+            let current = self.selected_note.as_ref().and_then(|note_id| {
+                let snapshot = self.snapshot.as_ref()?;
+                if self.selected_version.is_some() {
+                    version.map(|v| (v.id.clone(), v.content.clone(), note_id.clone()))
+                } else {
+                    snapshot.note_body(note_id).map(|(content, hash)| {
+                        (
+                            format!("current:{note_id}:{hash}"),
+                            content.to_owned(),
+                            note_id.clone(),
+                        )
+                    })
+                }
+            });
+            show &= current.is_some() && !self.history;
             if show
-                && let Some(version) = version
-                && self.reader_key != version.id
+                && let Some((key, text, document)) = current
+                && self.reader_key != key
             {
-                let text = version.content.clone();
-                let document = version.note_id.clone();
+                self.reader_key = key;
                 let library = self.last_library.clone();
                 let views = self
                     .snapshot
@@ -715,7 +723,6 @@ impl StudyApp {
                     .and_then(|s| s.table_views.get(&document))
                     .cloned()
                     .unwrap_or_default();
-                self.reader_key = version.id.clone();
                 self.note_content.update(cx, |editor, cx| {
                     editor.set_table_context(library, document, views);
                     editor.set_value(text, window, cx);

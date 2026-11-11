@@ -53,7 +53,7 @@ fn defaults_are_individual_and_do_not_include_required_confirmations_or_system_n
             &appearance,
             env(true)
         ),
-        Route::Foreground(Style::Bubble)
+        Route::Foreground(Style::CornerCard)
     );
     assert_eq!(
         settings.route(
@@ -71,7 +71,7 @@ fn defaults_are_individual_and_do_not_include_required_confirmations_or_system_n
     );
 }
 #[test]
-fn switches_styles_anchor_fallback_and_desktop_unavailability_are_explicit() {
+fn routes_only_applicable_styles_and_handles_desktop_unavailability() {
     let mut settings = NotificationSettings::default();
     let appearance = NotificationAppearance::default();
     for style in Style::ALL {
@@ -89,11 +89,16 @@ fn switches_styles_anchor_fallback_and_desktop_unavailability_are_explicit() {
                 &appearance,
                 env(true)
             ),
-            Route::Foreground(if style == Style::Anchored {
-                Style::CornerCard
-            } else {
-                style
-            })
+            Route::Foreground(
+                if Category::IntegrityResult
+                    .notification_styles()
+                    .contains(&style)
+                {
+                    style
+                } else {
+                    Style::Bubble
+                }
+            )
         );
         assert_eq!(
             settings.route(
@@ -105,7 +110,16 @@ fn switches_styles_anchor_fallback_and_desktop_unavailability_are_explicit() {
                     ..env(true)
                 }
             ),
-            Route::Foreground(style)
+            Route::Foreground(
+                if Category::IntegrityResult
+                    .notification_styles()
+                    .contains(&style)
+                {
+                    style
+                } else {
+                    Style::Bubble
+                }
+            )
         );
     }
     assert_eq!(

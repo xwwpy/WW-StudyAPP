@@ -172,7 +172,12 @@ fn create_save_noop_and_restart_keep_versions_dates_and_managed_path() {
     assert_eq!(engine.snapshot().versions.len(), 1);
     assert_eq!(engine.snapshot().notes[0].updated_at, 1001);
     save(&mut engine, &id, &hash, "# 修订\n正文", 1003).unwrap();
-    assert_eq!(engine.snapshot().versions.len(), 2);
+    assert_eq!(engine.snapshot().versions.len(), 1);
+    assert_eq!(
+        engine.snapshot().note_body(&id).unwrap().0,
+        std::fs::read_to_string(&path).unwrap()
+    );
+    assert_ne!(engine.snapshot().note_body(&id).unwrap().1, hash);
     assert_eq!(engine.snapshot().notes[0].created_at, 1001);
     assert_eq!(engine.snapshot().notes[0].updated_at, 1003);
     assert!(engine.snapshot().sessions.is_empty());
@@ -188,11 +193,13 @@ fn cas_rejects_stale_snapshot_and_unscanned_disk_changes() {
     let (id, first, path) = create(&mut engine, "one");
     save(&mut engine, &id, &first, "two", 1002).unwrap();
     assert!(save(&mut engine, &id, &first, "stale", 1003).is_err());
-    let latest = engine.snapshot().versions.last().unwrap().hash.clone();
+    let latest = engine.snapshot().note_body(&id).unwrap().1.to_owned();
+    assert_ne!(latest, first);
     std::fs::write(&path, "external").unwrap();
     assert!(save(&mut engine, &id, &latest, "draft", 1004).is_err());
     assert_eq!(std::fs::read_to_string(path).unwrap(), "external");
-    assert_eq!(engine.snapshot().versions.len(), 2);
+    assert_eq!(engine.snapshot().versions.len(), 1);
+    assert_eq!(engine.snapshot().note_body(&id).unwrap().0, "two");
 }
 
 #[test]
@@ -604,7 +611,9 @@ fn synced_content_is_excluded_from_active_learning_and_history_exports_are_exact
     let hash = engine.snapshot().versions[0].hash.clone();
     let version_id = engine.snapshot().versions[0].id.clone();
     save(&mut engine, &id, &hash, "# 主动学习\n已编辑", 1002).unwrap();
-    let hash = engine.snapshot().versions[1].hash.clone();
+    assert_eq!(engine.snapshot().versions.len(), 1);
+    engine.apply(Command::CaptureSnapshots, 1002).unwrap();
+    let hash = engine.snapshot().note_body(&id).unwrap().1.to_owned();
     let active_id = engine.snapshot().versions[1].id.clone();
     engine
         .apply(
@@ -778,4 +787,54 @@ fn synced_copy_keeps_its_title_is_offline_and_never_overwrites() {
     }
     assert!(engine.snapshot().sessions[0].version_ids.is_empty());
     assert!(engine.snapshot().sessions[0].suggested_summary.is_empty());
+}
+
+#[test]
+fn previewed_export_rejects_stale_body_and_exports_exact_selected_version_without_overwrite() {
+    let (dir, mut engine) = fixture();
+    let original = "# 原文\r\n\r\n旧正文";
+    let (id, hash, _) = create(&mut engine, original);
+    let old_version = engine.snapshot().versions.last().unwrap().id.clone();
+    save(&mut engine, &id, &hash, "# 当前正文\r\n", 1010).unwrap();
+    let stale_path = dir.join("stale-export.md");
+    let stale = engine
+        .apply(
+            Command::ExportPreviewedNote {
+                note_id: id.clone(),
+                version_id: None,
+                expected_hash: hash.clone(),
+                path: stale_path.clone(),
+            },
+            1011,
+        )
+        .unwrap_err();
+    assert!(stale.to_string().contains("预览已过期"));
+    assert!(!stale_path.exists());
+    let selected_path = dir.join("selected-export.md");
+    let command = Command::ExportPreviewedNote {
+        note_id: id.clone(),
+        version_id: Some(old_version),
+        expected_hash: hash,
+        path: selected_path.clone(),
+    };
+    engine.apply(command.clone(), 1012).unwrap();
+    assert_eq!(std::fs::read(&selected_path).unwrap(), original.as_bytes());
+    assert!(engine.apply(command, 1013).is_err());
+    assert_eq!(std::fs::read(selected_path).unwrap(), original.as_bytes());
+    let current_hash = engine.snapshot().note_body(&id).unwrap().1.to_owned();
+    engine
+        .apply(
+            Command::ExportPreviewedNote {
+                note_id: id,
+                version_id: None,
+                expected_hash: current_hash,
+                path: stale_path.clone(),
+            },
+            1014,
+        )
+        .unwrap();
+    assert_eq!(
+        std::fs::read(stale_path).unwrap(),
+        "# 当前正文\r\n".as_bytes()
+    );
 }

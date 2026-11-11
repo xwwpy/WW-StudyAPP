@@ -197,14 +197,9 @@ pub(crate) fn edit(
         state.notes[index].managed,
         "导入的外部笔记为只读，请创建托管副本后编辑"
     );
-    let previous = state
-        .versions
-        .iter()
-        .rev()
-        .find(|version| version.note_id == id)
-        .context("笔记版本不存在")?;
+    let (_, previous_hash) = state.note_body(id).context("笔记正文不存在")?;
     ensure!(
-        previous.hash == expected,
+        previous_hash == expected,
         "笔记版本已变化，草稿未覆盖，请重新比较后保存"
     );
     let disk = read_content(&path(database, id)?).context("无法读取托管原文，草稿未覆盖")?;
@@ -215,11 +210,39 @@ pub(crate) fn edit(
     if notes::hash(&content) == expected {
         return Ok(None);
     }
-    notes::append_version(state, index, content.clone(), now, offline, false);
+    let digest = notes::hash(&content);
+    let matches_history = state
+        .versions
+        .iter()
+        .rev()
+        .find(|v| v.note_id == id)
+        .is_some_and(|v| v.hash == digest);
+    if matches_history {
+        Arc::make_mut(&mut state.saved_bodies).remove(id);
+        state.candidates.remove(id);
+    } else {
+        Arc::make_mut(&mut state.saved_bodies).insert(
+            id.into(),
+            crate::SavedNoteBody {
+                content: content.clone(),
+                hash: digest.clone(),
+            },
+        );
+        state.candidates.insert(id.into(), (digest, now));
+    }
+    if !state.notes[index].title_override && content.lines().any(|line| line.starts_with("# ")) {
+        state.notes[index].title = notes::title(&content, Path::new(&state.notes[index].path));
+    }
+    state.notes[index].updated_at = now;
+    state.notes[index].revision += 1;
+    if offline {
+        state.offline_unreconciled_notes.insert(id.into());
+    }
     state.notes[index].missing = false;
     state.notes[index].error = None;
-    state.candidates.remove(id);
-    state.offline_unreconciled_notes.remove(id);
+    if !offline {
+        state.offline_unreconciled_notes.remove(id);
+    }
     Ok(Some(Write {
         note_id: id.into(),
         expected_hash: Some(expected.into()),
@@ -234,13 +257,17 @@ pub(crate) fn export(
     destination: &Path,
 ) -> Result<()> {
     ensure!(state.notes.iter().any(|note| note.id == id), "找不到笔记");
-    let version = state
-        .versions
-        .iter()
-        .rev()
-        .find(|v| v.note_id == id && version.is_none_or(|id| id == v.id))
-        .context("找不到指定笔记版本")?;
-    let original = crate::documents::DocumentPreview::from_content(&version.content);
+    let content = if let Some(version_id) = version {
+        state
+            .versions
+            .iter()
+            .find(|v| v.note_id == id && v.id == version_id)
+            .map(|v| v.content.as_str())
+            .context("找不到指定笔记版本")?
+    } else {
+        state.note_body(id).context("找不到笔记正文")?.0
+    };
+    let original = crate::documents::DocumentPreview::from_content(content);
     let bytes = original
         .as_ref()
         .map(|document| document.bytes())
@@ -250,7 +277,7 @@ pub(crate) fn export(
         .create_new(true)
         .open(destination)
         .context("导出目标已存在或无法创建，请选择新文件名")?;
-    file.write_all(bytes.as_deref().unwrap_or(version.content.as_bytes()))?;
+    file.write_all(bytes.as_deref().unwrap_or(content.as_bytes()))?;
     file.sync_all()?;
     Ok(())
 }
@@ -267,13 +294,10 @@ pub(crate) fn restore_writes(state: &mut State, database: &Path, now: i64) -> Re
         state.notes[index].error = None;
         state.offline_unreconciled_notes.remove(&note_id);
         let content = state
-            .versions
-            .iter()
-            .rev()
-            .find(|v| v.note_id == note_id)
-            .context("托管笔记缺少版本")?
-            .content
-            .clone();
+            .note_body(&note_id)
+            .context("托管笔记缺少正文")?
+            .0
+            .to_owned();
         let disk = current(&path(database, &note_id)?)?;
         if disk.as_deref() == Some(&content) {
             continue;
@@ -462,15 +486,31 @@ pub(crate) fn recover(
         ensure!(
             intent
                 .state
+                .note_body(&write.note_id)
+                .is_some_and(
+                    |(content, hash)| content == write.content && hash == notes::hash(content)
+                ),
+            "恢复写入与持久正文不一致"
+        );
+        if let Some(external) = publish(database, &intent.id, write)? {
+            let now = intent.state.notes[index].updated_at;
+            if intent
+                .state
                 .versions
                 .iter()
                 .rev()
                 .find(|v| v.note_id == write.note_id)
-                .is_some_and(|v| v.content == write.content),
-            "恢复写入与版本快照不一致"
-        );
-        if let Some(external) = publish(database, &intent.id, write)? {
-            let now = intent.state.notes[index].updated_at;
+                .is_none_or(|v| v.hash != notes::hash(&write.content))
+            {
+                notes::append_version(
+                    &mut intent.state,
+                    index,
+                    write.content.clone(),
+                    now,
+                    true,
+                    false,
+                );
+            }
             notes::append_version(&mut intent.state, index, external, now, true, false);
             intent.state.notes[index].error = Some(
                 "写入期间发现外部修改：保留了外部文件，草稿已保存在版本历史，请比较后重新保存"

@@ -17,6 +17,9 @@ use studyapp_core::{
 #[derive(Clone, PartialEq)]
 pub(crate) struct NotificationViewKey {
     settings: NotificationSettings,
+    times: Vec<SharedString>,
+    page: usize,
+    appearance: NotificationAppearance,
     selected: Option<NoticeCategory>,
     theme: crate::theme::ResolvedTheme,
     busy: bool,
@@ -58,9 +61,25 @@ impl StudyApp {
     fn notification_busy(&self) -> bool {
         self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy
     }
-    fn notification_view_key(&self) -> NotificationViewKey {
+    fn notification_view_key(&self, cx: &App) -> NotificationViewKey {
         NotificationViewKey {
             settings: self.notification_settings(),
+            page: self.preferences_ui.notification_page,
+            times: ["notification-start", "notification-end"]
+                .into_iter()
+                .filter_map(|key| {
+                    self.preferences_ui
+                        .notification_fields
+                        .get(key)
+                        .map(|input| input.read(cx).value())
+                })
+                .collect(),
+            appearance: self
+                .preferences_ui
+                .draft
+                .as_ref()
+                .map(|draft| draft.appearance.notifications.clone())
+                .unwrap_or_default(),
             selected: self.preferences_ui.notification_category,
             theme: crate::theme::palette(),
             busy: self.notification_busy(),
@@ -68,7 +87,7 @@ impl StudyApp {
         }
     }
     pub fn notification_surface(&self, cx: &mut Context<Self>) -> Div {
-        let key = self.notification_view_key();
+        let key = self.notification_view_key(cx);
         let Some(view) = self.preferences_ui.notification_view.as_ref() else {
             return column();
         };
@@ -93,18 +112,30 @@ impl StudyApp {
             )
     }
     fn notification_workspace(&self, available: Size<Pixels>, cx: &mut Context<Self>) -> Div {
-        let rows: Vec<_> = (0..NoticeCategory::ALL.len() + 2).collect();
+        let pages = NoticeCategory::ALL.len().div_ceil(5);
+        let page = self
+            .preferences_ui
+            .notification_page
+            .min(pages.saturating_sub(1));
+        let rows: Vec<_> = [0, 1]
+            .into_iter()
+            .chain(
+                (page * 5..((page + 1) * 5).min(NoticeCategory::ALL.len())).map(|index| index + 2),
+            )
+            .collect();
         self.preferences_ui.notification_rows.sync_with_height(
             &rows,
-            self.notification_view_key(),
+            self.notification_view_key(cx),
             px(64.),
         );
+        self.apply_settings_list_offset(&self.preferences_ui.notification_rows.scroll);
         let owner = cx.entity();
         column().w(available.width).h(available.height).min_h_0().min_w_0()
             .child(form::virtual_rows(&self.preferences_ui.notification_rows.scroll, move |row, _, cx| {
                 owner.update(cx, |app, cx| {
                     #[cfg(feature = "ui-test")]
                     app.preferences_ui.notification_row_builds.set(app.preferences_ui.notification_row_builds.get() + 1);
+                    let row = rows[row];
                     div().py_2().child(match row {
                         0 => app.notification_general(cx),
                         1 => column().gap_2().child(heading("分别管理通知"))
@@ -113,13 +144,18 @@ impl StudyApp {
                     })
                 }).into_any_element()
             }))
+            .child(row().flex_wrap().gap_2().child(muted(format!("场景第 {} / {} 页 · 每页 5 项", page + 1, pages)))
+                .child(Button::new("notice-page-prev").small().ghost().label("上一页").disabled(page == 0 || self.notification_busy())
+                    .on_click(cx.listener(move |this, _, _, cx| { this.preferences_ui.notification_page = page.saturating_sub(1); this.preferences_ui.notification_rows.scroll_to_top(); cx.notify(); })))
+                .child(Button::new("notice-page-next").small().ghost().label("下一页").disabled(page + 1 >= pages || self.notification_busy())
+                    .on_click(cx.listener(move |this, _, _, cx| { this.preferences_ui.notification_page = (page + 1).min(pages - 1); this.preferences_ui.notification_rows.scroll_to_top(); cx.notify(); }))))
     }
     #[cfg(feature = "ui-test")]
     pub fn notification_cache_matches(&self, cx: &App) -> bool {
         self.preferences_ui
             .notification_view
             .as_ref()
-            .is_some_and(|view| view.read(cx).key.as_ref() == Some(&self.notification_view_key()))
+            .is_some_and(|view| view.read(cx).key.as_ref() == Some(&self.notification_view_key(cx)))
     }
     #[cfg(feature = "ui-test")]
     pub fn notification_render_work(&self) -> u64 {
@@ -164,52 +200,75 @@ impl StudyApp {
             .child(muted("分类开关与前后台开关分别生效；删除、覆盖和未保存内容的必要确认不受这些开关影响。后台使用独立桌面卡片，不使用系统通知。"));
         for (key, label, checked, field) in globals {
             general = general.child(
-                Checkbox::new(SharedString::from(key.to_owned()))
-                    .label(label)
-                    .checked(checked)
-                    .disabled(busy)
-                    .on_click(cx.listener(move |this, checked, _, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            *field(&mut draft.notifications) = *checked;
-                        }
-                        cx.notify();
-                    })),
+                studyapp_ui::settings_switch::SettingSwitch::new(SharedString::from(
+                    key.to_owned(),
+                ))
+                .default_value(*field(&mut NotificationSettings::default()))
+                .label(label)
+                .checked(checked)
+                .disabled(busy)
+                .on_click(cx.listener(move |this, checked, _, cx| {
+                    if let Some(draft) = &mut this.preferences_ui.draft {
+                        *field(&mut draft.notifications) = *checked;
+                    }
+                    cx.notify();
+                })),
             );
         }
         general = general.child(
-            Checkbox::new("notification-quiet")
+            studyapp_ui::settings_switch::SettingSwitch::new("notification-quiet")
+                .default_value(false)
                 .label("启用定时免打扰")
                 .checked(settings.quiet_hours.is_some())
                 .disabled(busy)
                 .on_click(cx.listener(|this, checked: &bool, _, cx| {
                     if let Some(draft) = &mut this.preferences_ui.draft {
-                        draft.notifications.quiet_hours = checked.then_some(QuietHours {
-                            start_minute: 1320,
-                            end_minute: 480,
-                        });
+                        if !*checked {
+                            this.preferences_ui.quiet_draft =
+                                draft.notifications.quiet_hours.take();
+                        } else {
+                            draft.notifications.quiet_hours =
+                                Some(this.preferences_ui.quiet_draft.clone().unwrap_or(
+                                    QuietHours {
+                                        start_minute: 1320,
+                                        end_minute: 480,
+                                    },
+                                ));
+                        }
                     }
                     cx.notify();
                 })),
         );
-        if let Some(hours) = &settings.quiet_hours {
-            general = general
-                .child(self.notification_time(
-                    "notification-start",
-                    "免打扰开始",
-                    hours.start_minute,
-                    hours.end_minute,
-                    true,
-                    cx,
-                ))
-                .child(self.notification_time(
-                    "notification-end",
-                    "免打扰结束",
-                    hours.end_minute,
-                    hours.start_minute,
-                    false,
-                    cx,
-                ));
+        let enabled = settings.quiet_hours.is_some();
+        let mut times = row().flex_wrap().gap_3();
+        for (key, label, default) in [
+            ("notification-start", "免打扰开始", 1320),
+            ("notification-end", "免打扰结束", 480),
+        ] {
+            if let Some(input) = self.preferences_ui.notification_fields.get(key) {
+                times = times.child(
+                    form::field(
+                        label,
+                        studyapp_ui::settings_time::time_input(
+                            key,
+                            input,
+                            default,
+                            busy || !enabled,
+                            cx,
+                        ),
+                    )
+                    .flex_1()
+                    .min_w(px(250.)),
+                );
+            }
         }
+        general = general.child(times);
+        if let Some(hours) = &settings.quiet_hours
+            && hours.start_minute > hours.end_minute
+        {
+            general = general.child(muted("结束时间为次日，免打扰时段跨天。"));
+        }
+
         general
     }
     fn notification_category_row(&self, category: NoticeCategory, cx: &mut Context<Self>) -> Div {
@@ -217,50 +276,35 @@ impl StudyApp {
         let busy = self.notification_busy();
         let rule = settings.rule(category);
         let key = format!("notification-rule-{category:?}");
-        let selected = self.preferences_ui.notification_category == Some(category);
         let mut item = column()
+            .relative()
+            .child(studyapp_ui::settings_anchor::probe(category.label()))
             .gap_2()
-            .py_2()
+            .py_3()
             .border_b_1()
             .border_color(crate::theme::color(BORDER))
             .child(
-                row()
-                    .min_w_0()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div().flex_1().min_w_0().child(
-                            Checkbox::new(SharedString::from(format!("{key}-enabled")))
-                                .label(category.label())
-                                .checked(rule.enabled)
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, checked, _, cx| {
-                                    if let Some(draft) = &mut this.preferences_ui.draft {
-                                        draft
-                                            .notifications
-                                            .rules
-                                            .entry(category)
-                                            .or_insert_with(|| category.default_rule())
-                                            .enabled = *checked;
-                                    }
-                                    cx.notify();
-                                })),
-                        ),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("{key}-options")))
-                            .small()
-                            .ghost()
-                            .action(if selected { "收起" } else { "设置" })
-                            .disabled(busy)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.preferences_ui.notification_category =
-                                    (!selected).then_some(category);
-                                cx.notify();
-                            })),
-                    ),
+                studyapp_ui::settings_switch::SettingSwitch::new(SharedString::from(format!(
+                    "{key}-enabled"
+                )))
+                .label(category.label())
+                .checked(rule.enabled)
+                .default_value(category.default_rule().enabled)
+                .disabled(busy)
+                .on_click(cx.listener(move |this, checked, _, cx| {
+                    if let Some(draft) = &mut this.preferences_ui.draft {
+                        draft
+                            .notifications
+                            .rules
+                            .entry(category)
+                            .or_insert_with(|| category.default_rule())
+                            .enabled = *checked;
+                    }
+                    cx.notify();
+                })),
             );
-        if selected {
+
+        {
             let mut channels = row().flex_wrap();
             for (suffix, label, checked, foreground) in [
                 ("foreground", "应用内", rule.foreground, true),
@@ -289,7 +333,9 @@ impl StudyApp {
                 );
             }
             let mut styles = row().flex_wrap().gap_1();
-            for style in std::iter::once(None).chain(NoticeStyle::ALL.into_iter().map(Some)) {
+            for style in std::iter::once(None)
+                .chain(category.notification_styles().iter().copied().map(Some))
+            {
                 styles = styles.child(
                     Button::new(SharedString::from(format!("{key}-style-{style:?}")))
                         .small()
@@ -310,53 +356,12 @@ impl StudyApp {
                         })),
                 );
             }
-            item = item.child(channels).child(form::field("前台样式", styles));
+            item = item
+                .child(form::checkbox_group("通知投递渠道", channels))
+                .child(form::field("前台样式", styles))
+                .child(self.notice_scenario_fields(category, cx));
         }
         item
-    }
-    fn notification_time(
-        &self,
-        key: &str,
-        label: &str,
-        value: u16,
-        other: u16,
-        start: bool,
-        cx: &mut Context<Self>,
-    ) -> Div {
-        let mut controls = row()
-            .flex_wrap()
-            .gap_1()
-            .child(
-                div()
-                    .min_w(px(55.))
-                    .child(format!("{:02}:{:02}", value / 60, value % 60)),
-            );
-        for (step, text) in [(-60, "−1时"), (-1, "−1分"), (1, "+1分"), (60, "+1时")] {
-            let next = (i32::from(value) + step).rem_euclid(1440) as u16;
-            controls = controls.child(
-                Button::new(SharedString::from(format!("{key}-{step}")))
-                    .small()
-                    .ghost()
-                    .label(text)
-                    .disabled(self.notification_busy() || next == other)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(hours) = this
-                            .preferences_ui
-                            .draft
-                            .as_mut()
-                            .and_then(|s| s.notifications.quiet_hours.as_mut())
-                        {
-                            if start {
-                                hours.start_minute = next;
-                            } else {
-                                hours.end_minute = next;
-                            }
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        form::settings_row(label.to_owned(), controls)
     }
     pub fn fill_notification_fields(
         &mut self,
@@ -364,7 +369,6 @@ impl StudyApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.fill_surface_fields(value, window, cx);
         if self.preferences_ui.notification_view.is_none() {
             let owner = cx.weak_entity();
             self.preferences_ui.notification_view =
@@ -452,40 +456,37 @@ impl StudyApp {
         set: fn(&mut NotificationAppearance, u16),
         cx: &mut Context<Self>,
     ) -> Div {
-        let (min, max, step) = bounds;
-        let mut controls = row().gap_1();
-        for (suffix, text, next, limit) in [
+        let defaults = NotificationAppearance::default();
+        let default = match key {
+            "notification-duration" => defaults.duration_seconds.into(),
+            "notification-visible" => defaults.max_visible.into(),
+            "notification-width" => defaults.width,
+            _ => defaults.radius.into(),
+        };
+        self.setting_number(
+            key.into(),
+            label,
+            if key == "notification-duration" {
+                "秒"
+            } else if key == "notification-visible" {
+                "张"
+            } else {
+                "px"
+            },
             (
-                "less",
-                "−",
-                value.saturating_sub(step).max(min),
-                value <= min,
+                value.into(),
+                default.into(),
+                bounds.0.into(),
+                bounds.1.into(),
+                self.notification_busy(),
             ),
-            (
-                "more",
-                "+",
-                value.saturating_add(step).min(max),
-                value >= max,
-            ),
-        ] {
-            controls = controls.child(
-                Button::new(SharedString::from(format!("{key}-{suffix}")))
-                    .small()
-                    .action(text)
-                    .disabled(self.notification_busy() || limit)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            set(&mut draft.appearance.notifications, next);
-                        }
-                        cx.notify();
-                    })),
-            );
-            if suffix == "less" {
-                controls =
-                    controls.child(div().min_w(px(48.)).text_center().child(value.to_string()));
-            }
-        }
-        form::settings_row(label.to_owned(), controls)
+            move |this, value| {
+                if let Some(draft) = &mut this.preferences_ui.draft {
+                    set(&mut draft.appearance.notifications, value as u16);
+                }
+            },
+            cx,
+        )
     }
     pub fn notification_appearance_part(&self, part: usize, cx: &mut Context<Self>) -> Div {
         #[cfg(feature = "ui-test")]
@@ -498,23 +499,6 @@ impl StudyApp {
         let appearance = self.preview_notification_appearance(cx);
         let busy = self.notification_busy();
         if part == 0 {
-            let mut styles = row().flex_wrap().gap_1();
-            for style in NoticeStyle::ALL {
-                styles = styles.child(
-                    Button::new(SharedString::from(format!("notification-style-{style:?}")))
-                        .small()
-                        .ghost()
-                        .label(style.label())
-                        .disabled(busy)
-                        .selected(appearance.style == style)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if let Some(draft) = &mut this.preferences_ui.draft {
-                                draft.appearance.notifications.style = style;
-                            }
-                            cx.notify();
-                        })),
-                );
-            }
             let mut positions = row().flex_wrap().gap_1();
             for (value, label) in [
                 (NoticePosition::TopLeft, "左上"),
@@ -539,20 +523,13 @@ impl StudyApp {
                     })),
                 );
             }
-            let controls=form::section("通知外观").child(muted("沿用应用字体、按钮和明暗风格。分类可在“通知”页单独覆盖样式；控件定位气泡缺少有效控件时使用角落卡片。"))
-            .child(form::field("前台默认样式",styles)).child(form::field("气泡与角落卡片位置",positions))
+            let controls=form::section("通知外观").child(muted("沿用应用字体、按钮和明暗风格。组件按真实业务匹配；在通知场景中仅可选择适用的替代组件。"))
+            .child(form::field("角落卡片位置",positions))
             .child(self.notification_number("notification-duration","普通提示停留（秒）",appearance.duration_seconds.into(),(2,30,1),|s,v|s.duration_seconds=v as u8,cx))
             .child(self.notification_number("notification-visible","最多叠放",appearance.max_visible.into(),(1,4,1),|s,v|s.max_visible=v as u8,cx))
             .child(self.notification_number("notification-width","卡片宽度",appearance.width,(240,480,20),|s,v|s.width=v,cx))
             .child(self.notification_number("notification-radius","卡片圆角",appearance.radius.into(),(0,24,2),|s,v|s.radius=v as u8,cx));
-            return column().gap_4().child(controls)
-                .child(form::section("同时出现时")
-                    .child(form::settings_row("堆叠方式",form::choice("notification-stack",appearance.stack,
-                        studyapp_core::NoticeStack::ALL.into_iter().map(|v|(v,v.label().into())).collect(),busy,cx.weak_entity(),|this,value,_,cx| {
-                            if let Some(draft)=&mut this.preferences_ui.draft { draft.appearance.notifications.stack=value; } cx.notify();
-                        })))
-                    .child(muted("最多展示指定数量，超出的通知排队；悬停暂停计时。阻塞对话框打开时，普通通知让位。")))
-                .child(self.notice_surface_controls(cx));
+            return controls;
         }
         let mut controls = form::section("间距、动效与颜色");
         let toggles: [Toggle<NotificationAppearance>; 3] = [
@@ -577,7 +554,8 @@ impl StudyApp {
         ];
         for (key, label, checked, field) in toggles {
             controls = controls.child(
-                Checkbox::new(key)
+                studyapp_ui::settings_switch::SettingSwitch::new(key)
+                    .default_value(*field(&mut NotificationAppearance::default()))
                     .label(label)
                     .checked(checked)
                     .disabled(busy)
@@ -590,7 +568,8 @@ impl StudyApp {
             );
         }
         controls = controls.child(
-            Checkbox::new("notification-compact")
+            studyapp_ui::settings_switch::SettingSwitch::new("notification-compact")
+                .default_value(false)
                 .label("紧凑间距")
                 .checked(appearance.density == NoticeDensity::Compact)
                 .disabled(busy)
@@ -619,24 +598,116 @@ impl StudyApp {
         column()
             .gap_4()
             .child(controls)
-            .child(self.notice_content_controls(cx))
             .child(self.hover_content_controls(cx))
     }
-    fn notification_preview(&self, cx: &App) -> Div {
+    fn notification_preview(&self, cx: &mut Context<Self>) -> Div {
         let appearance = self.preview_notification_appearance(cx);
         let model = studyapp_ui::notification_card::NotificationCardModel {
+            category: None,
             key: "notification-preview".into(),
             title: "计时完成".into(),
             summary: "这一段计时已结束。可以记录收获，或稍后继续学习。".into(),
             severity: studyapp_core::NoticeSeverity::Success,
             event_id: None,
             repetitions: 1,
-            style: appearance.style,
+            style: self
+                .preferences_ui
+                .notice_component
+                .unwrap_or(NoticeStyle::Bubble),
         };
+        let scroll = self.preferences_ui.notification_preview_scroll.clone();
+        let key = format!("notice-preview-{:?}", model.style);
+        let collapsed = self.preferences_ui.collapsed_previews.contains(&key);
         form::section("即时预览")
-            .child(studyapp_ui::notification_card::notification_card(model,&appearance,&self.preferences_ui.notification_preview_scroll,
-                Button::new("notification-preview-close").small().ghost().action("关闭通知").accessibility_label("示例关闭按钮").disabled(true),
-                Some(Button::new("notification-preview-action").small().action("记录这段").disabled(true))))
-            .child(muted("预览不产生真实通知、不播放声音，也不改变分类开关。严重错误会保留到关闭或处理；停留时间只影响普通提示。修改后请保存全部设置。"))
+            .child(Button::new("toggle-notice-preview").small().ghost().label(if collapsed { "展开预览" } else { "收起预览" })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if !this.preferences_ui.collapsed_previews.remove(&key) { this.preferences_ui.collapsed_previews.insert(key.clone()); }
+                    this.preferences_ui.section_revision += 1; cx.notify();
+                })))
+            .children((!collapsed).then_some(studyapp_ui::notice_preview::ComponentPreview { model, appearance, scroll }))
+            .child(muted("布局示例不产生真实通知、不执行文件操作、不播放声音。菜单、任务和表单使用各自的真实组件结构。"))
+    }
+}
+
+impl StudyApp {
+    pub(crate) fn fill_notification_times(
+        &mut self,
+        settings: &NotificationSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let hours = settings.quiet_hours.clone().unwrap_or(QuietHours {
+            start_minute: 1320,
+            end_minute: 480,
+        });
+        self.preferences_ui.quiet_draft = Some(hours.clone());
+        for (key, minute) in [
+            ("notification-start", hours.start_minute),
+            ("notification-end", hours.end_minute),
+        ] {
+            let text = studyapp_ui::settings_time::format_time(minute);
+            if let Some(input) = self.preferences_ui.notification_fields.get(key) {
+                input.update(cx, |input, cx| input.set_value(text, window, cx));
+            } else {
+                let input = cx.new(|cx| {
+                    InputState::new(window, cx)
+                        .placeholder("HH:MM")
+                        .default_value(text)
+                });
+                cx.subscribe(
+                    &input,
+                    |this, _, event: &gpui_kit::component::input::InputEvent, cx| {
+                        if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                            let value = this
+                                .preferences_ui
+                                .draft
+                                .as_ref()
+                                .map(|draft| draft.notifications.clone());
+                            if let Some(settings) = value
+                                .and_then(|value| this.notification_settings_value(value, cx).ok())
+                                && let Some(hours) = settings.quiet_hours
+                            {
+                                this.preferences_ui.quiet_draft = Some(hours.clone());
+                                if let Some(draft) = &mut this.preferences_ui.draft {
+                                    draft.notifications.quiet_hours = Some(hours);
+                                }
+                            }
+                            cx.notify();
+                        }
+                    },
+                )
+                .detach();
+                self.preferences_ui.notification_fields.insert(key, input);
+            }
+        }
+    }
+    pub(crate) fn notification_settings_value(
+        &self,
+        mut value: NotificationSettings,
+        cx: &App,
+    ) -> anyhow::Result<NotificationSettings> {
+        if value.quiet_hours.is_some() {
+            let minute = |key| {
+                self.preferences_ui
+                    .notification_fields
+                    .get(key)
+                    .and_then(|input| {
+                        studyapp_ui::settings_time::parse_time(input.read(cx).value().as_str())
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("免打扰时间请填写 00:00–23:59，精确到分钟"))
+            };
+            value.quiet_hours = Some(QuietHours {
+                start_minute: minute("notification-start")?,
+                end_minute: minute("notification-end")?,
+            });
+        }
+        value.validate()?;
+        Ok(value)
+    }
+    pub(crate) fn notification_times_dirty(&self, cx: &App) -> bool {
+        self.preferences_ui.draft.as_ref().is_some_and(|draft| {
+            self.notification_settings_value(draft.notifications.clone(), cx)
+                .is_err()
+        })
     }
 }

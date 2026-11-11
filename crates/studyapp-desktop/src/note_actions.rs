@@ -273,6 +273,8 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
+            saved_bodies: Default::default(),
+            snapshot_changes: Default::default(),
             pending_snapshot_count: 0,
             table_views: Default::default(),
             settings: Settings::default(),

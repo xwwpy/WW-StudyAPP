@@ -1196,7 +1196,7 @@ impl FolderPanel {
                         div()
                             .id(tooltip_id)
                             .w_full()
-                            .tooltip(move |window, cx| sidebar_tooltip(tip.clone(), window, cx))
+                            .map(|view| studyapp_ui::components::control_tooltip(view, tip.clone()))
                             .child(
                                 Button::new(SharedString::from(element_id))
                                     .small()
@@ -1534,23 +1534,28 @@ impl FolderPanel {
             ),
         };
         let chosen = self.filter == filter;
-        let entry = library_interaction(library_entry().id(id), chosen, self.busy)
-            .test_support()
-            .aria_selected(chosen)
-            .w_full()
-            .child(div().w(px(12.)).flex_shrink_0())
-            .child(
-                Icon::new(icon)
-                    .small()
-                    .text_color(crate::theme::color(MUTED)),
-            )
-            .child(div().flex_1().min_w_0().truncate().child(label))
-            .child(muted(count.to_string()).text_xs())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if !this.busy {
-                    this.set_filter(filter.clone(), cx);
-                }
-            }));
+        let entry = collection_interaction(
+            library_entry().id(id),
+            chosen,
+            self.busy,
+            studyapp_core::SelectionCategory::Directory,
+        )
+        .test_support()
+        .aria_selected(chosen)
+        .w_full()
+        .child(div().w(px(12.)).flex_shrink_0())
+        .child(
+            Icon::new(icon)
+                .small()
+                .text_color(crate::theme::color(MUTED)),
+        )
+        .child(div().flex_1().min_w_0().truncate().child(label))
+        .child(muted(count.to_string()).text_xs())
+        .on_click(cx.listener(move |this, _, _, cx| {
+            if !this.busy {
+                this.set_filter(filter.clone(), cx);
+            }
+        }));
         if index == 1 {
             self.folder_drop_target("folder-drop-root".into(), None, cx)
                 .border_0()
@@ -1670,12 +1675,19 @@ impl FolderPanel {
                 move || selector
             })
             .aria_selected(chosen)
-            .when(chosen, |style| style.bg(crate::theme::selection_color()))
-            .tooltip(move |window, cx| sidebar_tooltip(tip.clone(), window, cx))
+            .bg(rgb(if chosen {
+                crate::theme::selection(studyapp_core::SelectionCategory::Directory)
+                    .selected_background
+            } else {
+                crate::theme::selection(studyapp_core::SelectionCategory::Directory).idle_background
+            }))
+            .map(|view| studyapp_ui::components::control_tooltip(view, tip.clone()))
             .child(
                 entry
                     .child(
                         Button::new(SharedString::from(format!("folder-row-{id}")))
+                            .selection_category(studyapp_core::SelectionCategory::Directory)
+                            .selected(chosen)
                             .small()
                             .h(px(LIBRARY_ROW_HEIGHT - 2.))
                             .ghost()
@@ -2340,6 +2352,8 @@ mod ui_tests {
 
     fn panel_snapshot() -> Arc<Snapshot> {
         Arc::new(Snapshot {
+            saved_bodies: Default::default(),
+            snapshot_changes: Default::default(),
             pending_snapshot_count: 0,
             table_views: Default::default(),
             settings: studyapp_core::Settings::default(),

@@ -360,7 +360,10 @@ impl StudyApp {
         }
         if application {
             crate::app_migration::reset_cancel();
-            self.storage_ui.migration_progress = Some("正在准备迁移…".into());
+            let progress = "正在准备迁移…".into();
+            self.activity_panel
+                .update(cx, |panel, cx| panel.migration_progress(&progress, cx));
+            self.storage_ui.migration_progress = Some(progress);
             self.storage_ui.cleanup = None;
             self.suspend_migration_hosts(true, cx);
         }
@@ -382,6 +385,9 @@ impl StudyApp {
             .is_err()
         {
             if application {
+                self.activity_panel.update(cx, |panel, cx| {
+                    panel.migration_finished(Err("后台工作线程已关闭，迁移未开始。".into()), cx)
+                });
                 self.storage_ui.migration_progress = None;
                 self.suspend_migration_hosts(false, cx);
             }
@@ -403,6 +409,11 @@ impl StudyApp {
             .update(cx, |editor, cx| editor.suspend_for_migration(value, cx));
         if let Some(preview) = &self.preferences_ui.appearance_preview {
             preview.update(cx, |preview, cx| preview.suspend_for_migration(value, cx));
+        }
+        if let Some(panel) = &self.export_panel {
+            panel
+                .preview
+                .update(cx, |editor, cx| editor.suspend_for_migration(value, cx));
         }
         self.update_panel
             .update(cx, |panel, _| panel.set_relocating(value));

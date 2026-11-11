@@ -208,7 +208,6 @@ impl StudyApp {
     }
 
     pub(crate) fn library_add_button(&self, cx: &Context<Self>) -> AnyElement {
-        let owner = cx.weak_entity();
         Button::new("library-add-menu")
             .small()
             .ghost()
@@ -216,64 +215,10 @@ impl StudyApp {
             .accessibility_label("新建或导入")
             .tooltip("新建或导入")
             .disabled(self.library_controls_busy(cx))
-            .dropdown_menu(move |menu, _, cx| {
-                let Some((_, _, busy)) = Self::library_menu_state(&owner, cx) else {
-                    return menu;
-                };
-                let create_note = owner.clone();
-                let create_folder = owner.clone();
-                let import_files = owner.clone();
-                let import_folder = owner.clone();
-                let can_create = owner
-                    .update(cx, |this, cx| this.folders.read(cx).can_create_folder())
-                    .unwrap_or(false);
-                menu.min_w(px(196.))
-                    .item(
-                        PopupMenuItem::new("新建 Markdown")
-                            .icon(IconName::FileText)
-                            .disabled(busy)
-                            .on_click(move |_, window, cx| {
-                                let _ = create_note.update(cx, |this, cx| {
-                                    if !this.library_controls_busy(cx) {
-                                        this.new_note(window, cx);
-                                    }
-                                });
-                            }),
-                    )
-                    .item(
-                        PopupMenuItem::new("新建文件夹")
-                            .icon(IconName::Folder)
-                            .disabled(busy || !can_create)
-                            .on_click(move |_, window, cx| {
-                                let _ = create_folder.update(cx, |this, cx| {
-                                    if !this.library_controls_busy(cx) {
-                                        this.folders.update(cx, |panel, cx| {
-                                            panel.begin_create_folder(window, cx)
-                                        });
-                                    }
-                                });
-                            }),
-                    )
-                    .separator()
-                    .item(PopupMenuItem::new("导入文件…").disabled(busy).on_click(
-                        move |_, _, cx| {
-                            let _ = import_files.update(cx, |this, cx| {
-                                if !this.library_controls_busy(cx) {
-                                    this.settings_picker("import", None, cx);
-                                }
-                            });
-                        },
-                    ))
-                    .item(PopupMenuItem::new("导入文件夹…").disabled(busy).on_click(
-                        move |_, _, cx| {
-                            let _ = import_folder.update(cx, |this, cx| {
-                                if !this.library_controls_busy(cx) {
-                                    this.settings_picker("import-folder", None, cx);
-                                }
-                            });
-                        },
-                    ))
-            })
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.action_sheet_open = true;
+                cx.notify();
+            }))
             .into_any_element()
     }
 
@@ -348,6 +293,15 @@ impl StudyApp {
                                 this.selected_version = None;
                                 cx.notify();
                             });
+                        }),
+                );
+                let preview_owner = owner.clone();
+                menu = menu.item(
+                    PopupMenuItem::new("查看待保存快照…")
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            let _ =
+                                preview_owner.update(cx, |this, cx| this.open_snapshot_preview(cx));
                         }),
                 );
                 let has_recovery = owner
@@ -483,7 +437,7 @@ impl StudyApp {
                     let action_library = library.clone();
                     let action_version = version.clone();
                     menu = menu.item(PopupMenuItem::new(label).disabled(disabled).on_click(
-                        move |_, _, cx| {
+                        move |_, window, cx| {
                             let _ = action_owner.update(cx, |this, cx| {
                                 if this.library_controls_busy(cx)
                                     || this.snapshot.as_ref().is_none_or(|s| {
@@ -494,9 +448,12 @@ impl StudyApp {
                                     return;
                                 }
                                 match action {
-                                    ReaderAction::Export => {
-                                        this.export_note(action_id.clone(), action_version.clone())
-                                    }
+                                    ReaderAction::Export => this.open_note_export(
+                                        action_id.clone(),
+                                        action_version.clone(),
+                                        window,
+                                        cx,
+                                    ),
                                     ReaderAction::Move => this.folders.update(cx, |panel, cx| {
                                         panel.begin_move_note(action_id.clone(), cx)
                                     }),
@@ -623,7 +580,7 @@ impl StudyApp {
         })
         // Anchor within the sidebar so native editor children cannot
         // cover learning/review timestamps near the row's right edge.
-        .tooltip(move |window, cx| sidebar_tooltip(tip.clone(), window, cx))
+        .map(|view| studyapp_ui::components::control_tooltip(view, tip.clone()))
         .on_click(cx.listener(move |this, _, window, cx| {
             if this.library_controls_busy(cx) {
                 return;
@@ -1007,8 +964,13 @@ impl StudyApp {
                 .iter()
                 .rev()
                 .find(|v| self.selected_version.as_ref().is_none_or(|id| id == &v.id));
-            let historical =
-                version.is_some_and(|v| versions.last().is_some_and(|last| last.id != v.id));
+            let historical = self.selected_version.is_some()
+                && version.is_some_and(|v| {
+                    versions.last().is_some_and(|last| last.id != v.id)
+                        || snapshot
+                            .note_body(&id)
+                            .is_some_and(|(_, hash)| hash != v.hash)
+                });
             let copy = !managed || historical;
             let library = self.folders.read(cx).library_index();
             let metadata = library.note(&id);

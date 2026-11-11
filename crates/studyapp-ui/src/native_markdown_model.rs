@@ -578,14 +578,13 @@ impl Document {
         if source.len() > 65_536 {
             return None;
         }
-        use pulldown_cmark::{Event, Options, Parser, Tag};
-        let options =
-            Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+        use crate::markdown_parser::parser;
+        use pulldown_cmark::{Event, Tag};
         let mut html_document = false;
         let mut bullet_list = false;
-        for event in Parser::new_ext(source, options) {
+        for event in parser(source) {
             html_document |= matches!(event, Event::Html(_) | Event::InlineHtml(_));
-            bullet_list |= matches!(event, Event::Start(Tag::List(None)));
+            bullet_list |= matches!(event, Event::Start(Tag::List(_)));
         }
         if !(bullet_list || html_document && render_html) {
             return None;
@@ -594,7 +593,7 @@ impl Document {
         let mut html = String::new();
         pulldown_cmark::html::push_html(
             &mut html,
-            Parser::new_ext(&safe, options).map(|event| match event {
+            parser(&safe).map(|event| match event {
                 Event::TaskListMarker(checked) => {
                     Event::Text(if checked { "☑ " } else { "☐ " }.into())
                 }

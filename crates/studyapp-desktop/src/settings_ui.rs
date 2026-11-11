@@ -19,7 +19,7 @@ use gpui_kit::{
 };
 use std::{collections::BTreeMap, rc::Rc, time::Instant};
 
-const MARKDOWN_FIELDS: [(&str, &str, &str, u8); 26] = [
+pub(crate) const MARKDOWN_FIELDS: [(&str, &str, &str, u8); 26] = [
     ("md-body", "body", "正文", 0),
     ("md-heading", "heading", "标题", 0),
     ("md-link", "link", "链接", 0),
@@ -111,6 +111,12 @@ pub enum StoragePage {
 
 #[derive(Clone, Copy)]
 enum SettingsResetScope {
+    All,
+    NotesSnapshots,
+    NotesEditing,
+    Selection,
+    NoticeRegions,
+    NoticeComponent(studyapp_core::NoticeStyle),
     Learning,
     Notifications,
     Logging,
@@ -127,6 +133,12 @@ enum SettingsResetScope {
 impl SettingsResetScope {
     fn name(self) -> &'static str {
         match self {
+            Self::All => "全部设置（所有子页）",
+            Self::NotesSnapshots => "笔记与编辑 · 快照策略",
+            Self::NotesEditing => "笔记与编辑 · 编辑行为",
+            Self::Selection => "外观 · 选中样式",
+            Self::NoticeRegions => "通知与浮层 · 分区与堆叠",
+            Self::NoticeComponent(style) => style.label(),
             Self::Learning => "学习",
             Self::Notifications => "通知",
             Self::Logging => "日志",
@@ -166,7 +178,7 @@ type AppearanceViewKey = (
     Option<String>,
     u64,
     AppearancePage,
-    bool,
+    Option<studyapp_core::NoticeStyle>,
 );
 
 pub struct AppearanceView {
@@ -223,14 +235,26 @@ pub enum SettingsContinuation {
 
 #[derive(Default)]
 pub struct PreferencesUi {
+    pub(crate) browsing: crate::settings_navigation::SettingsBrowsing,
+    pub(crate) browsing_library: String,
+    pub(crate) settings_drawer: bool,
+    pub(crate) settings_tree_scroll: ScrollHandle,
+    pub(crate) settings_resize: Option<(Pixels, u16)>,
+    pub(crate) settings_search_open: bool,
+    pub(crate) number_fields:
+        std::cell::RefCell<BTreeMap<String, crate::settings_numbers::NumberField>>,
+    pub(crate) pending_settings_scroll: std::cell::RefCell<Option<(String, ListOffset)>>,
+    pub(crate) settings_search_scroll: ScrollHandle,
+    pub(crate) review_stages: Vec<Entity<InputState>>,
+    pub(crate) review_page: usize,
+    pub(crate) list_levels_page: usize,
+    pub(crate) widget_preset_stages: Vec<Entity<InputState>>,
+    pub(crate) widget_preset_page: usize,
     pub search: Option<Entity<InputState>>,
     pub section: SettingsSection,
     pub appearance_page: AppearancePage,
-    pub appearance_preview_mode: bool,
     pub appearance_preview: Option<Entity<crate::appearance_preview::AppearancePreview>>,
     pub storage_page: StoragePage,
-    pub image_directory_expanded: Option<bool>,
-    pub library_directory_expanded: Option<bool>,
     pub storage_search: Option<Entity<InputState>>,
     pub section_revision: u64,
     pub section_changed_at: Option<Instant>,
@@ -252,14 +276,18 @@ pub struct PreferencesUi {
     pub shortcut_search: Option<Entity<InputState>>,
     pub logging_directory: Option<Entity<InputState>>,
     pub logging_picker: crate::folder_picker::FolderPicker,
-    pub logging_directory_expanded: bool,
     pub(crate) notification_view:
         Option<Entity<crate::notification_settings::NotificationSettingsView>>,
     pub(crate) notification_rows:
         form::VirtualRows<crate::notification_settings::NotificationViewKey>,
     #[cfg(feature = "ui-test")]
     pub(crate) notification_row_builds: std::cell::Cell<u64>,
+    pub notice_component: Option<studyapp_core::NoticeStyle>,
+    pub(crate) quiet_draft: Option<studyapp_core::QuietHours>,
+    pub(crate) notification_page: usize,
     pub notification_category: Option<studyapp_core::NoticeCategory>,
+    pub selection_target: Option<studyapp_core::SelectionCategory>,
+    pub snapshot_fields: BTreeMap<&'static str, Entity<InputState>>,
     pub notification_fields: BTreeMap<&'static str, Entity<InputState>>,
     pub notification_preview_scroll: ScrollHandle,
     pub widget_fields: BTreeMap<&'static str, Entity<InputState>>,
@@ -285,6 +313,8 @@ pub struct PreferencesUi {
     pub replacing: bool,
     pub leave: Option<SettingsContinuation>,
     pub reset_confirmation: bool,
+    pub(crate) reset_all: bool,
+    pub(crate) collapsed_previews: std::collections::BTreeSet<String>,
     pub error: Option<String>,
 }
 
@@ -313,7 +343,28 @@ fn select_custom_preset(
 }
 
 impl StudyApp {
+    pub(crate) fn settings_appearance_scroll(&self) -> ListState {
+        self.preferences_ui.appearance_rows.scroll.clone()
+    }
+    pub(crate) fn settings_shortcut_scroll(&self) -> ListState {
+        self.preferences_ui.shortcut_rows.scroll.clone()
+    }
+
     fn settings_reset_scope(&self) -> Option<SettingsResetScope> {
+        match self.preferences_ui.browsing.selected.as_str() {
+            "notes.snapshots" => return Some(SettingsResetScope::NotesSnapshots),
+            "notes.editing" => return Some(SettingsResetScope::NotesEditing),
+            "appearance.selection" => return Some(SettingsResetScope::Selection),
+            "notices.regions" => return Some(SettingsResetScope::NoticeRegions),
+            "notices.general" => return Some(SettingsResetScope::NotificationAppearance),
+            page if page.starts_with("notices.component.") => {
+                return self
+                    .preferences_ui
+                    .notice_component
+                    .map(SettingsResetScope::NoticeComponent);
+            }
+            _ => {}
+        }
         Some(match self.preferences_ui.section {
             SettingsSection::Learning => SettingsResetScope::Learning,
             SettingsSection::Notifications => SettingsResetScope::Notifications,
@@ -348,12 +399,50 @@ impl StudyApp {
             return;
         }
         let defaults = PreferenceSnapshot::defaults();
+        if matches!(scope, SettingsResetScope::All) {
+            self.fill_settings(defaults, window, cx);
+            return;
+        }
         let Some(draft) = &mut self.preferences_ui.draft else {
             return;
         };
         match scope {
-            SettingsResetScope::Learning => {
+            SettingsResetScope::All => unreachable!("handled above"),
+            SettingsResetScope::NotesSnapshots => {
                 draft.snapshots = defaults.settings.snapshots;
+                self.fill_snapshot_fields(defaults.settings.snapshots, window, cx);
+            }
+            SettingsResetScope::NotesEditing => draft.appearance.list_style.indent_subtree = false,
+            SettingsResetScope::Selection => {
+                self.preferences_ui
+                    .number_fields
+                    .borrow_mut()
+                    .retain(|key, _| !key.starts_with("selection-"));
+                draft.appearance.selection = defaults.settings.appearance.selection.clone();
+                self.fill_selection_fields(&defaults.settings.appearance.selection, window, cx);
+            }
+            SettingsResetScope::NoticeRegions => {
+                draft.appearance.notifications.regions.clear();
+                self.preferences_ui
+                    .number_fields
+                    .borrow_mut()
+                    .retain(|key, _| !key.starts_with("region-"));
+            }
+            SettingsResetScope::NoticeComponent(style) => {
+                self.preferences_ui
+                    .number_fields
+                    .borrow_mut()
+                    .retain(|key, _| !key.ends_with(&format!("-{style:?}")));
+                let appearance = &mut draft.appearance.notifications;
+                appearance.layouts.remove(&style);
+                appearance.surfaces.remove(&style);
+                appearance.surface_patches.remove(&style);
+                appearance.component_fields.remove(&style);
+                let value = appearance.clone();
+                self.fill_surface_fields(&value, Some(style), window, cx);
+            }
+
+            SettingsResetScope::Learning => {
                 draft.interval_minutes = defaults.settings.interval_minutes;
                 draft.answer_minutes = defaults.settings.answer_minutes;
                 draft.review_days = defaults.settings.review_days.clone();
@@ -376,25 +465,45 @@ impl StudyApp {
                         cx,
                     )
                 });
+                self.fill_review_stages(&defaults.settings.review_days, window, cx);
             }
             SettingsResetScope::Notifications => {
-                draft.notifications = defaults.settings.notifications;
+                draft.notifications = defaults.settings.notifications.clone();
+                self.fill_notification_times(&defaults.settings.notifications, window, cx);
             }
             SettingsResetScope::Logging => {
                 draft.logging = defaults.settings.logging.clone();
                 self.fill_logging_fields(&defaults.settings.logging, window, cx);
             }
             SettingsResetScope::NotificationAppearance => {
-                let value = defaults.settings.appearance.notifications;
+                let previous = &draft.appearance.notifications;
+                let mut value = defaults.settings.appearance.notifications;
+                value.layouts = previous.layouts.clone();
+                value.surfaces = previous.surfaces.clone();
+                value.surface_patches = previous.surface_patches.clone();
+                value.component_fields = previous.component_fields.clone();
+                value.scenario_fields = previous.scenario_fields.clone();
+                value.regions = previous.regions.clone();
+                value.tooltip_position = previous.tooltip_position;
                 draft.appearance.notifications = value.clone();
+                self.preferences_ui
+                    .number_fields
+                    .borrow_mut()
+                    .retain(|key, _| !key.starts_with("notification-"));
                 self.fill_notification_fields(&value, window, cx);
             }
             SettingsResetScope::Appearance => {
+                self.preferences_ui
+                    .number_fields
+                    .borrow_mut()
+                    .retain(|key, _| !key.starts_with("appearance-"));
                 // Presets and their editor fields belong to the theme editor.
                 draft.appearance.mode = defaults.settings.appearance.mode;
                 draft.appearance.render_html = defaults.settings.appearance.render_html;
                 draft.appearance.table_defaults = defaults.settings.appearance.table_defaults;
+                let behavior = draft.appearance.list_style.indent_subtree;
                 draft.appearance.list_style = defaults.settings.appearance.list_style;
+                draft.appearance.list_style.indent_subtree = behavior;
                 draft.appearance.font_size = defaults.settings.appearance.font_size;
                 draft.appearance.spacing = defaults.settings.appearance.spacing;
             }
@@ -405,6 +514,10 @@ impl StudyApp {
                 self.preferences_ui.appearance_touched = true;
             }
             SettingsResetScope::Widget => {
+                self.preferences_ui
+                    .number_fields
+                    .borrow_mut()
+                    .retain(|key, _| !key.starts_with("widget-"));
                 let value = defaults.settings.timer_widget;
                 draft.timer_widget = value.clone();
                 self.fill_widget_fields(&value, window, cx);
@@ -557,7 +670,11 @@ impl StudyApp {
         self.preferences_ui.markdown_preview.rebuilds()
     }
 
-    pub fn select_settings_section(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
+    pub(crate) fn set_settings_section(
+        &mut self,
+        section: SettingsSection,
+        cx: &mut Context<Self>,
+    ) {
         for color in self.preferences_ui.appearance_colors.values() {
             color.update(cx, |color, cx| color.dismiss(cx));
         }
@@ -581,7 +698,13 @@ impl StudyApp {
         if self.page == Page::Settings
             && let Some(draft) = &self.preferences_ui.draft
         {
-            return draft.appearance.clone();
+            let mut appearance = draft.appearance.clone();
+            if let Some(saved) = &self.preferences_ui.saved {
+                // Functional editing behavior is not an appearance preview.
+                appearance.list_style.indent_subtree =
+                    saved.settings.appearance.list_style.indent_subtree;
+            }
+            return appearance;
         }
         self.preferences_ui
             .saved
@@ -596,7 +719,6 @@ impl StudyApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.fill_selection_fields(&settings.selection, window, cx);
         if self.preferences_ui.appearance_view.is_none() {
             let owner = cx.weak_entity();
             self.preferences_ui.appearance_view =
@@ -678,6 +800,13 @@ impl StudyApp {
                             window,
                             cx,
                         )
+                        .with_reset_value(match key {
+                            "accent" => Some(studyapp_core::ThemePalette::default().accent),
+                            "background" => Some(studyapp_core::ThemePalette::default().background),
+                            "surface" => Some(studyapp_core::ThemePalette::default().surface),
+                            "text" => Some(studyapp_core::ThemePalette::default().text),
+                            _ => None,
+                        })
                     });
                     cx.subscribe(
                         &color,
@@ -899,6 +1028,16 @@ impl StudyApp {
         {
             return false;
         }
+        if self.page == Page::Settings
+            && !self.has_modal(cx)
+            && keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.shift
+            && keystroke.key.eq_ignore_ascii_case("f")
+        {
+            self.open_settings_search(window, cx);
+            return true;
+        }
         let modifiers = keystroke.modifiers;
         let Ok(combination) = crate::shortcuts::key_combination(
             &keystroke.key,
@@ -973,7 +1112,13 @@ impl StudyApp {
         let Some(baseline) = &self.preferences_ui.baseline else {
             return false;
         };
-        self.preferences_ui.appearance_touched
+        self.setting_numbers_invalid(cx)
+            || self
+                .preferences_ui
+                .appearance_colors
+                .values()
+                .any(|color| !color.read(cx).source_valid(cx))
+            || self.preferences_ui.appearance_touched
             || self
                 .preferences_ui
                 .image_cloud
@@ -995,6 +1140,8 @@ impl StudyApp {
                     input.read(cx).value().trim()
                         != baseline.settings.logging.directory.as_deref().unwrap_or("")
                 })
+            || self.notification_times_dirty(cx)
+            || self.snapshot_fields_dirty(baseline.settings.snapshots, cx)
             || self.widget_fields_dirty(&baseline.settings.timer_widget, cx)
             || self.preferences_ui.draft.as_ref() != Some(&baseline.settings)
             || self.interval.read(cx).value().trim()
@@ -1028,6 +1175,8 @@ impl StudyApp {
         self.preferences_ui.recording = None;
         self.preferences_ui.recording_error = None;
         self.fill_widget_fields(&value.settings.timer_widget, window, cx);
+        self.fill_snapshot_fields(value.settings.snapshots, window, cx);
+        self.fill_review_stages(&value.settings.review_days, window, cx);
         self.fill_logging_fields(&value.settings.logging, window, cx);
         if self.preferences_ui.search.is_none() {
             let input = cx
@@ -1059,10 +1208,14 @@ impl StudyApp {
                 cx,
             )
         });
+        self.preferences_ui.number_fields.borrow_mut().clear();
         self.layout = value.settings.layout.clone();
         self.preferences_ui.draft = Some(value.settings.clone());
+        self.fill_selection_fields(&value.settings.appearance.selection, window, cx);
+        self.fill_surface_fields(&value.settings.appearance.notifications, None, window, cx);
         self.fill_appearance_fields(&value.settings.appearance, window, cx);
         self.fill_notification_fields(&value.settings.appearance.notifications, window, cx);
+        self.fill_notification_times(&value.settings.notifications, window, cx);
         self.preferences_ui.image_cloud = Some(crate::image_cloud::ImageCloudDraft::new(
             &value.settings.images,
             value.image_secret_saved,
@@ -1140,6 +1293,7 @@ impl StudyApp {
         if let Some(saved) = self.preferences_ui.saved.clone() {
             self.fill_settings(saved.clone(), window, cx);
             self.preferences_ui.baseline = Some(saved);
+            self.restore_settings_browsing(cx);
         }
     }
 
@@ -1209,6 +1363,9 @@ impl StudyApp {
         if page == Page::Settings {
             self.begin_settings(window, cx);
         }
+        if self.page == Page::Settings {
+            self.persist_settings_browsing();
+        }
         self.page = page;
         cx.notify();
     }
@@ -1250,14 +1407,7 @@ impl StudyApp {
             SettingsContinuation::InstallUpdate => self.request_install_update(window, cx),
             SettingsContinuation::InstallPackage => self.install_nsis_update(window, cx),
             SettingsContinuation::ViewNote(id) => {
-                let version = self.snapshot.as_ref().and_then(|s| {
-                    s.versions
-                        .iter()
-                        .rev()
-                        .find(|v| v.note_id == id)
-                        .map(|v| v.id.clone())
-                });
-                self.select_note_document(id, version, true, window, cx);
+                self.select_note_document(id, None, true, window, cx);
             }
             SettingsContinuation::ConfirmDeleteCopy(id) => {
                 self.storage_ui.purge = None;
@@ -1369,6 +1519,17 @@ impl StudyApp {
             }
         }
         let prepared = (|| -> anyhow::Result<SavePreferences> {
+            anyhow::ensure!(
+                self.preferences_ui
+                    .appearance_colors
+                    .values()
+                    .all(|color| color.read(cx).source_valid(cx)),
+                "颜色设置含无效输入，请填写 HEX 色值或恢复继承"
+            );
+            anyhow::ensure!(
+                !self.setting_numbers_invalid(cx),
+                "数字设置含无效输入，请填写各行标注范围内的整数"
+            );
             let baseline = self
                 .preferences_ui
                 .baseline
@@ -1379,6 +1540,9 @@ impl StudyApp {
                 .draft
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("配置尚未加载"))?;
+            settings.notifications =
+                self.notification_settings_value(settings.notifications, cx)?;
+            settings.snapshots = self.snapshot_settings_value(settings.snapshots, cx)?;
             settings.timer_widget =
                 Box::new(self.widget_settings_value((*settings.timer_widget).clone(), cx)?);
             settings.interval_minutes = self
@@ -1508,8 +1672,12 @@ impl StudyApp {
     pub fn settings_modal(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         use studyapp_ui::modal_frame::{ModalFrame, ModalTone, ModalWidth};
         if self.preferences_ui.reset_confirmation {
-            let scope = self.settings_reset_scope()?;
-            return Some(ModalFrame::new(format!("恢复「{}」默认？", scope.name()), muted("仅恢复本页选项为默认草稿；其他页面的修改保留。保存后生效，笔记、学习记录和已有文件保留。"))
+            let scope = if self.preferences_ui.reset_all {
+                SettingsResetScope::All
+            } else {
+                self.settings_reset_scope()?
+            };
+            return Some(ModalFrame::new(format!("恢复「{}」默认？", scope.name()), muted(if matches!(scope, SettingsResetScope::All) { "将所有设置子页恢复默认草稿，包括通知、快捷键和连接设置；保存后生效。笔记、历史、学习记录及已有文件不会删除。放弃修改可撤销此次恢复。" } else { "仅恢复本页选项为默认草稿；其他页面的修改保留。保存后生效，笔记、学习记录和已有文件保留。" }))
                 .tone(ModalTone::Warning).width(ModalWidth::Regular).scroll_handle(self.modal_focus.scroll())
                 .footer(row().justify_end()
                     .child(Button::new("cancel-reset-settings").label("取消").on_click(cx.listener(|this, _, _, cx| {
@@ -1577,7 +1745,7 @@ impl StudyApp {
         )
     }
 
-    pub fn settings_header(&self, cx: &mut Context<Self>) -> Div {
+    pub fn settings_footer(&self, cx: &mut Context<Self>) -> Div {
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let dirty = self.settings_dirty(cx);
         column().min_w_0().gap_2().px_2().py_2().child(
@@ -1607,10 +1775,23 @@ impl StudyApp {
                         .disabled(busy || self.sync_panel.read(cx).status.busy)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.preferences_ui.recording = None;
+                            this.preferences_ui.reset_all = false;
                             this.preferences_ui.reset_confirmation = true;
                             cx.notify();
                         }))
                 }))
+                .child(
+                    Button::new("reset-all-settings")
+                        .small()
+                        .ghost()
+                        .label("恢复全部默认…")
+                        .disabled(busy || self.sync_panel.read(cx).status.busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.preferences_ui.reset_all = true;
+                            this.preferences_ui.reset_confirmation = true;
+                            cx.notify();
+                        })),
+                )
                 .child(studyapp_ui::notification_anchor::NotificationAnchor::new(
                     "settings-save",
                     self.notifications.clone(),
@@ -1636,42 +1817,6 @@ impl StudyApp {
         )
     }
 
-    pub fn settings_navigation(&self, compact: bool, cx: &mut Context<Self>) -> Div {
-        let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
-        let navigation = if compact {
-            row().min_w_0().gap_1().pb_2()
-        } else {
-            column().w(px(136.)).flex_shrink_0().gap_1().pt_1()
-        };
-        navigation.children(
-            SettingsSection::ALL
-                .into_iter()
-                .map(|(section, id, label)| {
-                    let selected = section == self.preferences_ui.section;
-                    let mut button =
-                        Button::new(SharedString::from(format!("settings-section-{id}")))
-                            .small()
-                            .ghost()
-                            .label(label)
-                            .disabled(busy)
-                            .rounded_md()
-                            .selected(selected)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_settings_section(section, cx)
-                            }));
-                    if !compact {
-                        button = button.w_full().justify_start().h(px(36.));
-                    } else {
-                        button = button.flex_1().min_w_0();
-                    }
-                    if selected {
-                        button = button.selected(true).font_weight(FontWeight::SEMIBOLD);
-                    }
-                    button
-                }),
-        )
-    }
-
     pub fn select_appearance_page(&mut self, page: AppearancePage, cx: &mut Context<Self>) {
         if self.preferences_ui.appearance_page == page {
             return;
@@ -1694,79 +1839,8 @@ impl StudyApp {
         cx.notify();
     }
 
-    pub fn settings_task_navigation(&self, cx: &mut Context<Self>) -> Div {
-        let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
-        let mut navigation = row().flex_wrap().gap_1().min_w_0();
-        if self.preferences_ui.section == SettingsSection::Appearance {
-            for (page, id, label) in [
-                (
-                    AppearancePage::Overview,
-                    "appearance-overview",
-                    "主题与阅读",
-                ),
-                (
-                    AppearancePage::ThemeEditor,
-                    "appearance-theme-editor",
-                    "主题编辑",
-                ),
-                (AppearancePage::Workspace, "appearance-workspace", "工作区"),
-                (AppearancePage::Widget, "appearance-widget", "计时小组件"),
-                (
-                    AppearancePage::Notifications,
-                    "appearance-notifications",
-                    "通知",
-                ),
-            ] {
-                let mut button = Button::new(id)
-                    .small()
-                    .ghost()
-                    .selected(self.preferences_ui.appearance_page == page)
-                    .label(label)
-                    .disabled(busy)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.select_appearance_page(page, cx)),
-                    );
-                if self.preferences_ui.appearance_page == page {
-                    button = button.selected(true).font_weight(FontWeight::SEMIBOLD);
-                }
-                navigation = navigation.child(button);
-            }
-        } else if self.preferences_ui.section == SettingsSection::Storage {
-            for (page, id, label) in [
-                (StoragePage::Overview, "storage-overview", "空间概览"),
-                (StoragePage::Copies, "storage-copies", "托管副本"),
-                (StoragePage::Images, "storage-images", "图片存储"),
-                (StoragePage::Library, "storage-library", "资料库与备份"),
-            ] {
-                let mut button = Button::new(id)
-                    .small()
-                    .ghost()
-                    .selected(self.preferences_ui.storage_page == page)
-                    .label(label)
-                    .disabled(busy)
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.select_storage_page(page, cx)),
-                    );
-                if self.preferences_ui.storage_page == page {
-                    button = button.selected(true).font_weight(FontWeight::SEMIBOLD);
-                }
-                navigation = navigation.child(button);
-            }
-        }
-        navigation
-    }
-
     pub fn library_storage_controls(&self, path: &str, cx: &mut Context<Self>) -> Div {
         let busy = self.storage_busy || self.note_saving || self.sync_panel.read(cx).status.busy;
-        let expanded = self
-            .preferences_ui
-            .library_directory_expanded
-            .unwrap_or_else(|| {
-                self.preferences_ui
-                    .draft
-                    .as_ref()
-                    .is_some_and(|draft| draft.show_file_paths)
-            });
         form::section("资料库位置")
             .child(
                 form::DirectoryField::new(
@@ -1774,33 +1848,16 @@ impl StudyApp {
                     "当前资料库",
                     studyapp_desktop::presentation::display_path(path),
                 )
-                .expanded(expanded)
                 .actions(
-                    row()
-                        .child(
-                            Button::new("library-directory-expand")
-                                .small()
-                                .ghost()
-                                .action(if expanded {
-                                    "收起详情"
-                                } else {
-                                    "查看详情"
-                                })
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.preferences_ui.library_directory_expanded =
-                                        Some(!expanded);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("migrate-library")
-                                .small()
-                                .action("更改位置")
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.choose_storage(window, cx)
-                                })),
-                        ),
+                    row().child(
+                        Button::new("migrate-library")
+                            .small()
+                            .action("更改位置")
+                            .disabled(busy)
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.choose_storage(window, cx)),
+                            ),
+                    ),
                 ),
             )
             .child(muted(
@@ -1850,26 +1907,33 @@ impl StudyApp {
                     form::section("学习节奏")
                         .child(form::settings_row(
                             "询问间隔",
-                            row()
-                                .child(form::input(&self.interval, busy).w(px(100.)))
-                                .child(muted("分钟 · 正整数")),
+                            form::NumericSetting::new(
+                                "learning-interval",
+                                &self.interval,
+                                "分钟",
+                                60,
+                                1,
+                                u32::MAX.into(),
+                                busy,
+                            ),
                         ))
                         .child(form::settings_row(
                             "回答期限",
-                            row()
-                                .child(form::input(&self.deadline, busy).w(px(100.)))
-                                .child(muted("分钟 · 正整数")),
+                            form::NumericSetting::new(
+                                "learning-deadline",
+                                &self.deadline,
+                                "分钟",
+                                5,
+                                1,
+                                u32::MAX.into(),
+                                busy,
+                            ),
                         ))
-                        .child(form::settings_row(
-                            "复习间隔",
-                            form::input(&self.review_days, busy),
-                        ))
-                        .child(muted("复习间隔以天为单位，用逗号分隔。"))
                         .child(muted(
                             "保存后生效；询问间隔从下一时间段生效，复习间隔只影响新建计划。",
                         )),
                 )
-                .child(self.snapshot_settings(cx)),
+                .child(self.review_stages(cx)),
             SettingsSection::Appearance => column(),
             SettingsSection::Notifications => column(),
             SettingsSection::Logging => self.logging_controls(cx),
@@ -2061,16 +2125,20 @@ impl StudyApp {
                 let value = input.read(cx).value().trim().to_owned();
                 let invalid =
                     !value.is_empty() && studyapp_core::parse_rgba_color(&value).is_none();
-                let mut field = column().gap_1().child(
-                    row()
-                        .child(div().w(px(100.)).text_sm().child(*label))
-                        .child(div().flex_1().min_w_0().child(self.color_control(
-                            key,
-                            colors[index],
-                            busy,
-                            cx,
-                        ))),
-                );
+                let mut field = column()
+                    .relative()
+                    .child(studyapp_ui::settings_anchor::probe(*label))
+                    .gap_1()
+                    .child(
+                        row()
+                            .child(div().w(px(100.)).text_sm().child(*label))
+                            .child(div().flex_1().min_w_0().child(self.color_control(
+                                key,
+                                colors[index],
+                                busy,
+                                cx,
+                            ))),
+                    );
                 if invalid {
                     field = field.child(
                         muted("请输入 #RRGGBB 或 #RRGGBBAA，例如 #586D8380")
@@ -2112,6 +2180,8 @@ impl StudyApp {
                 });
                 panel = panel.child(
                     row()
+                        .relative()
+                        .child(studyapp_ui::settings_anchor::probe(label))
                         .child(div().w(px(100.)).text_sm().child(label))
                         .child(div().flex_1().child(form::input(input, busy))),
                 );
@@ -2274,6 +2344,10 @@ impl StudyApp {
     pub fn appearance_preview_visible(&self, _: &Window, cx: &App) -> bool {
         self.page == Page::Settings
             && !self.settings_search_active(cx)
+            && !self
+                .preferences_ui
+                .collapsed_previews
+                .contains("reading-preview")
             && self.preferences_ui.section == SettingsSection::Appearance
             && self.preferences_ui.appearance_page == AppearancePage::ThemeEditor
     }
@@ -2327,7 +2401,7 @@ impl StudyApp {
             self.preferences_ui.editing_preset.clone(),
             self.preferences_ui.section_revision,
             self.preferences_ui.appearance_page,
-            self.preferences_ui.appearance_preview_mode,
+            self.preferences_ui.notice_component,
         )
     }
 
@@ -2379,6 +2453,7 @@ impl StudyApp {
                 self.appearance_view_key(cx),
                 px(320.),
             );
+            self.apply_settings_list_offset(&self.preferences_ui.appearance_rows.scroll);
             self.preferences_ui.appearance_rows.track_focuses(
                 (0..3)
                     .map(|row| (row, self.preferences_ui.appearance_focus[row].clone()))
@@ -2418,7 +2493,7 @@ impl StudyApp {
                         .min_h_0()
                         .pr_4()
                         .pb_4()
-                        .child(self.widget_settings_controls(cx)),
+                        .child(self.widget_settings_controls(available.width, cx)),
                 );
         }
         // Keep programmatic field changes reflected even when the sample is
@@ -2429,6 +2504,7 @@ impl StudyApp {
         self.preferences_ui
             .appearance_rows
             .sync_with_height(parts, key, px(320.));
+        self.apply_settings_list_offset(&self.preferences_ui.appearance_rows.scroll);
         self.preferences_ui.appearance_rows.track_focuses(
             parts
                 .iter()
@@ -2440,6 +2516,8 @@ impl StudyApp {
         self.preferences_ui.appearance_frame_parts.set(0);
         let owner = cx.entity();
         let parameters = column()
+            .id("appearance-parameters")
+            .test_support()
             .flex_1()
             .min_w_0()
             .min_h_0()
@@ -2459,90 +2537,82 @@ impl StudyApp {
             ));
         #[cfg(feature = "ui-test")]
         let parameters = if self.preferences_ui.appearance_eager_baseline {
-            column().flex_1().min_w_0().min_h_0().child(
-                scroll_body("settings-section-scroll", &self.settings_scroll)
-                    .test_support()
-                    .flex_1()
-                    .min_h_0()
-                    .gap_0()
-                    .px_4()
-                    .children(
-                        parts
-                            .iter()
-                            .map(|&part| div().py_2().child(self.appearance_part(part, cx))),
-                    ),
-            )
+            column()
+                .id("appearance-parameters")
+                .test_support()
+                .flex_1()
+                .min_w_0()
+                .min_h_0()
+                .child(
+                    scroll_body("settings-section-scroll", &self.settings_scroll)
+                        .test_support()
+                        .flex_1()
+                        .min_h_0()
+                        .gap_0()
+                        .px_4()
+                        .children(
+                            parts
+                                .iter()
+                                .map(|&part| div().py_2().child(self.appearance_part(part, cx))),
+                        ),
+                )
         } else {
             parameters
         };
-        if self.preferences_ui.appearance_page != AppearancePage::ThemeEditor {
-            return column().size_full().min_h_0().child(parameters);
-        }
-        let preview = column()
-            .min_w_0()
-            .min_h_0()
-            .flex_1()
-            .child(heading("阅读预览").text_base())
-            .child(muted("使用正文渲染器，只预览当前草稿。"))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_hidden()
-                    .children(self.preferences_ui.appearance_preview.clone()),
-            );
-        let focused = self.preferences_ui.appearance_preview_mode;
-        let toolbar = row().children(
-            [
-                (false, "appearance-edit", "参数与预览"),
-                (true, "appearance-preview", "专注预览"),
-            ]
-            .into_iter()
-            .map(|(focus, id, label)| {
-                let button = Button::new(id).small().label(label).on_click(cx.listener(
-                    move |this, _, _, cx| {
-                        for color in this.preferences_ui.appearance_colors.values() {
-                            color.update(cx, |color, cx| color.dismiss(cx));
-                        }
-                        this.preferences_ui.appearance_preview_mode = focus;
-                        cx.notify();
-                    },
-                ));
-                button.selected(focus == focused)
-            }),
-        );
-        let sample = div()
-            .id("appearance-preview-pane")
-            .test_support()
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .min_h_0()
-            .overflow_hidden()
-            .child(preview);
-        let panes = if focused {
-            row().flex_1().min_h_0().items_stretch().child(sample)
-        } else {
-            form::adaptive_split(
-                available,
-                div()
-                    .id("appearance-parameters")
-                    .test_support()
-                    .flex()
-                    .size_full()
-                    .min_w_0()
-                    .min_h_0()
-                    .child(parameters),
-                sample,
-            )
-        };
+        column().size_full().min_w_0().min_h_0().child(parameters)
+    }
+
+    // Part of the theme card's scrollable content, never a fixed third pane or
+    // a bottom region stealing height from the parameter editor.
+    fn inline_reading_preview(&self, cx: &mut Context<Self>) -> Div {
+        let collapsed = self
+            .preferences_ui
+            .collapsed_previews
+            .contains("reading-preview");
         column()
-            .size_full()
-            .min_w_0()
-            .min_h_0()
             .gap_2()
-            .child(toolbar)
-            .child(panes)
+            .child(heading("阅读预览"))
+            .flex_shrink_0()
+            .gap_2()
+            .child(
+                row()
+                    .w_full()
+                    .child(muted("使用真实正文渲染器，只预览当前草稿。"))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("toggle-reading-preview")
+                            .small()
+                            .ghost()
+                            .label(if collapsed {
+                                "展开预览"
+                            } else {
+                                "收起预览"
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if !this
+                                    .preferences_ui
+                                    .collapsed_previews
+                                    .remove("reading-preview")
+                                {
+                                    this.preferences_ui
+                                        .collapsed_previews
+                                        .insert("reading-preview".into());
+                                }
+                                this.preferences_ui.section_revision += 1;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .children((!collapsed).then(|| {
+                div()
+                    .id("appearance-preview-pane")
+                    .test_support()
+                    .h(px(220.))
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .children(self.preferences_ui.appearance_preview.clone())
+            }))
     }
 
     #[cfg(feature = "ui-test")]
@@ -2580,7 +2650,7 @@ impl StudyApp {
             return column().gap_3().child(
                 form::section("主题与阅读")
                     .child(
-                        Checkbox::new("markdown-render-html")
+                        studyapp_ui::settings_switch::SettingSwitch::new("markdown-render-html").default_value(true)
                             .label("渲染 Markdown 中的安全 HTML 与行内样式")
                             .checked(appearance.render_html)
                             .disabled(busy)
@@ -2618,60 +2688,10 @@ impl StudyApp {
                             }),
                         ),
                     )
-                    .child(
-                        row()
-                            .child(div().flex_1().child("界面字号"))
-                            .child(
-                                Button::new("theme-font-smaller")
-                                    .small()
-                                    .action("−")
-                                    .disabled(busy || appearance.font_size <= 12)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        if let Some(draft) = &mut this.preferences_ui.draft {
-                                            draft.appearance.font_size = draft
-                                                .appearance
-                                                .font_size
-                                                .saturating_sub(1)
-                                                .max(12);
-                                        }
-                                        this.refresh_appearance(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(muted(format!("{} px", appearance.font_size)))
-                            .child(
-                                Button::new("theme-font-larger")
-                                    .small()
-                                    .action("+")
-                                    .disabled(busy || appearance.font_size >= 22)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        if let Some(draft) = &mut this.preferences_ui.draft {
-                                            draft.appearance.font_size =
-                                                (draft.appearance.font_size + 1).min(22);
-                                        }
-                                        this.refresh_appearance(window, cx);
-                                        cx.notify();
-                                    })),
-                            ),
-                    )
-                    .child(row().child(div().flex_1().child("内容间距")).children(
-                        [(4, "紧凑"), (8, "标准"), (12, "宽松")].into_iter().map(
-                            |(spacing, label)| {
-                                let button = Button::new(("theme-spacing", spacing as usize))
-                                    .small()
-                                    .label(label)
-                                    .disabled(busy)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if let Some(draft) = &mut this.preferences_ui.draft {
-                                            draft.appearance.spacing = spacing;
-                                        }
-                                        this.refresh_appearance(window, cx);
-                                        cx.notify();
-                                    }));
-                                button.selected(appearance.spacing == spacing)
-                            },
-                        ),
-                    ))
+                    .child(self.setting_number("appearance-font-size".into(), "界面字号", "px", (appearance.font_size.into(), 14, 12, 22, busy),
+                        |this, value| { if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.font_size = value as u16; } }, cx))
+                    .child(self.setting_number("appearance-spacing".into(), "内容间距", "px", (appearance.spacing.into(), 8, 4, 16, busy),
+                        |this, value| { if let Some(draft) = &mut this.preferences_ui.draft { draft.appearance.spacing = value as u16; } }, cx))
                     .child(heading("Markdown 表格默认显示"))
                     .child(row().flex_wrap().child("列宽").children([
                         (studyapp_core::TableSizing::Equal, "equal", "等宽"),
@@ -2699,7 +2719,7 @@ impl StudyApp {
                     })))
                     .child(muted("适用于所有主题；正文中可为单张表格调整列宽与对齐，恢复默认后重新跟随此处。不会改写 Markdown。"))
                     .child(muted("修改可即时预览；保存全部设置后才会写入资料库。")),
-            ).child(self.list_style_settings(cx)).child(self.selection_settings(cx));
+            ).child(self.list_style_settings(cx));
         }
         if part == 1 {
             let mut custom = card().gap_3().child(
@@ -2740,7 +2760,8 @@ impl StudyApp {
             custom = custom.child(muted(
                 "颜色和版式会即时更新阅读预览；保存全部设置后才会写入资料库。",
             ));
-            custom = custom.child(heading("主题预设"));
+            custom = custom.child(self.inline_reading_preview(cx));
+            let mut presets = column().gap_3().child(heading("主题预设"));
             let mut builtins = row().flex_wrap();
             for preset in studyapp_core::builtin_theme_presets() {
                 let id = preset.id.clone();
@@ -2778,7 +2799,7 @@ impl StudyApp {
                         })),
                 );
             }
-            custom = custom
+            presets = presets
                 .child(builtins)
                 .child(muted("点击应用后可继续自定义；保存全部设置后生效。"));
             for preset in &appearance.custom_presets {
@@ -2822,7 +2843,7 @@ impl StudyApp {
                 if selected {
                     select = select.primary();
                 }
-                custom = custom.child(
+                presets = presets.child(
                     row().child(select).child(div().flex_1()).child(
                         Button::new(SharedString::from(format!("delete-theme-{delete_id}")))
                             .small()
@@ -2879,7 +2900,7 @@ impl StudyApp {
                         })),
                 );
             }
-            return custom;
+            return custom.child(presets);
         }
         if part == 2 {
             return form::section("Markdown 预览").child(self.markdown_style_preview(cx));
@@ -2892,7 +2913,8 @@ impl StudyApp {
                 .gap_3()
                 .child(heading("工作区"))
                 .child(
-                    Checkbox::new("show-file-paths")
+                    studyapp_ui::settings_switch::SettingSwitch::new("show-file-paths")
+                        .default_value(false)
                         .label("显示笔记文件的存储路径")
                         .checked(draft.show_file_paths)
                         .disabled(busy)
@@ -2907,24 +2929,34 @@ impl StudyApp {
                     row()
                         .flex_wrap()
                         .child(
-                            Checkbox::new("settings-navigation-visible")
-                                .label("显示主导航")
-                                .checked(draft.layout.navigation_visible)
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, checked, _, cx| {
+                            studyapp_ui::settings_switch::SettingSwitch::new(
+                                "settings-navigation-visible",
+                            )
+                            .default_value(true)
+                            .label("显示主导航")
+                            .checked(draft.layout.navigation_visible)
+                            .disabled(busy)
+                            .on_click(cx.listener(
+                                |this, checked, _, cx| {
                                     this.layout.navigation_visible = *checked;
                                     this.stage_layout(cx);
-                                })),
+                                },
+                            )),
                         )
                         .child(
-                            Checkbox::new("settings-folders-visible")
-                                .label("显示资料库")
-                                .checked(draft.layout.folders_visible)
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, checked, _, cx| {
+                            studyapp_ui::settings_switch::SettingSwitch::new(
+                                "settings-folders-visible",
+                            )
+                            .default_value(true)
+                            .label("显示资料库")
+                            .checked(draft.layout.folders_visible)
+                            .disabled(busy)
+                            .on_click(cx.listener(
+                                |this, checked, _, cx| {
                                     this.layout.folders_visible = *checked;
                                     this.stage_layout(cx);
-                                })),
+                                },
+                            )),
                         ),
                 ),
         )
@@ -2996,10 +3028,6 @@ impl StudyApp {
                 ),
         );
         if let Some(input) = &self.preferences_ui.image_root {
-            let expanded = self
-                .preferences_ui
-                .image_directory_expanded
-                .unwrap_or(draft.show_file_paths);
             panel = panel.child(
                 form::DirectoryField::new(
                     "image-directory-detail",
@@ -3016,49 +3044,36 @@ impl StudyApp {
                     },
                 )
                 .fallback("资料库内的图片文件夹")
-                .expanded(expanded)
                 .editor(form::input(input, busy))
                 .actions(
-                    row()
-                        .child(
-                            Button::new("image-directory-expand")
-                                .small()
-                                .ghost()
-                                .action(if expanded { "收起" } else { "编辑路径" })
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.preferences_ui.image_directory_expanded = Some(!expanded);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("pick-image-root")
-                                .small()
-                                .action("选择文件夹")
-                                .disabled(busy)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    let raw = this
-                                        .preferences_ui
-                                        .image_root
-                                        .as_ref()
-                                        .map(|input| input.read(cx).value().trim().to_owned())
-                                        .unwrap_or_default();
-                                    let current = if raw.is_empty() {
-                                        std::path::Path::new(&this.last_library)
-                                            .parent()
-                                            .map(|path| path.join("images"))
-                                    } else {
-                                        Some(std::path::PathBuf::from(raw))
-                                    };
-                                    if let Some(cloud) = &mut this.preferences_ui.image_cloud {
-                                        cloud.picker.choose(
-                                            &this.last_library,
-                                            current,
-                                            "选择本地图片目录",
-                                        );
-                                    }
-                                })),
-                        ),
+                    row().child(
+                        Button::new("pick-image-root")
+                            .small()
+                            .action("选择文件夹")
+                            .disabled(busy)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let raw = this
+                                    .preferences_ui
+                                    .image_root
+                                    .as_ref()
+                                    .map(|input| input.read(cx).value().trim().to_owned())
+                                    .unwrap_or_default();
+                                let current = if raw.is_empty() {
+                                    std::path::Path::new(&this.last_library)
+                                        .parent()
+                                        .map(|path| path.join("images"))
+                                } else {
+                                    Some(std::path::PathBuf::from(raw))
+                                };
+                                if let Some(cloud) = &mut this.preferences_ui.image_cloud {
+                                    cloud.picker.choose(
+                                        &this.last_library,
+                                        current,
+                                        "选择本地图片目录",
+                                    );
+                                }
+                            })),
+                    ),
                 ),
             );
         }
@@ -3098,7 +3113,6 @@ impl StudyApp {
                     ("bucket", "Bucket"),
                     ("region", "Region"),
                     ("access_key_id", "Access Key ID"),
-                    ("secret", "Secret"),
                     ("prefix", "对象前缀"),
                 ] {
                     panel = panel.child(
@@ -3121,15 +3135,7 @@ impl StudyApp {
                         button.selected(cloud.addressing == style)
                     })))
                     .child(muted("虚拟主机：bucket.endpoint/key；路径：endpoint/bucket/key。不同服务的兼容范围与要求不同，请按服务商文档选择。"))
-                    .child(row().child(muted(if cloud.clear_secret { "保存后将清除当前密钥" } else if cloud.secret_saved { "当前目标的密钥已加密保存；留空保留。更换目标需重新填写。" } else { "请填写 Secret；它只会加密保存，不进入笔记或编辑器。" }))
-                        .child(Button::new("clear-image-secret").small().ghost().icon_action(gpui_kit::assets::IconName::KeyRound, "清除已保存密钥").disabled(busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(cloud) = &mut this.preferences_ui.image_cloud {
-                                    cloud.clear_secret = true;
-                                    cloud.fields["secret"].update(cx, |input, cx| input.set_value("", window, cx));
-                                }
-                                cx.notify();
-                            }))));
+                    .child({ cloud.credential.update(cx, |secret, cx| secret.configure(cloud.secret_saved, busy, cx)); cloud.credential.clone() });
             } else {
                 let target = match &self.sync_panel.read(cx).status.settings.target {
                     crate::sync_runtime::SyncTarget::Disabled => {
@@ -3253,6 +3259,7 @@ impl StudyApp {
                 spacing: theme.spacing,
             },
         );
+        self.apply_settings_list_offset(&self.preferences_ui.shortcut_rows.scroll);
         self.preferences_ui.shortcut_rows.track_focus(
             self.preferences_ui
                 .recording
@@ -3744,7 +3751,7 @@ mod scoped_tests {
             app.update(cx, |app, cx| {
                 app.select_settings_section(SettingsSection::Appearance, cx);
                 app.select_appearance_page(AppearancePage::ThemeEditor, cx);
-                app.preferences_ui.appearance_preview_mode = false;
+
                 assert!(
                     app.appearance_preview_visible(window, cx),
                     "compact edit mode hid the sample"
@@ -4053,33 +4060,34 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
-    fn appearance_focus_mode_keeps_readonly_surface_bounded_across_resizes(
-        cx: &mut TestAppContext,
-    ) {
+    fn inline_reading_preview_collapses_without_replacing_the_parameters(cx: &mut TestAppContext) {
         let (app, visual) = fixture(cx);
-        let preview = app.read_with(visual, |app, _| {
-            app.preferences_ui.appearance_preview.clone().unwrap()
-        });
-        app.update(visual, |app, _| {
-            app.preferences_ui.section = SettingsSection::Appearance;
-            app.preferences_ui.appearance_page = AppearancePage::ThemeEditor;
+        app.update(visual, |app, cx| {
+            app.select_settings_target("appearance.theme", cx);
         });
         let surface = visual.replace_root_view(|_, _| AppearanceFixture {
             app: app.clone(),
             width: 1050.,
             height: 650.,
         });
-        for (focused, width, height) in [
-            (true, 1050., 650.),
+        for (collapsed, width, height) in [
+            (false, 1050., 650.),
             (true, 590., 380.),
             (false, 590., 380.),
             (false, 900., 500.),
-            (true, 900., 500.),
-            (true, 830., 460.),
-            (false, 830., 460.),
         ] {
-            app.update(visual, |app, _| {
-                app.preferences_ui.appearance_preview_mode = focused;
+            app.update(visual, |app, cx| {
+                if collapsed {
+                    app.preferences_ui
+                        .collapsed_previews
+                        .insert("reading-preview".into());
+                } else {
+                    app.preferences_ui
+                        .collapsed_previews
+                        .remove("reading-preview");
+                }
+                app.preferences_ui.section_revision += 1;
+                cx.notify();
             });
             surface.update(visual, |surface, cx| {
                 surface.width = width;
@@ -4090,29 +4098,19 @@ mod scoped_tests {
                 visual.run_until_parked();
                 visual.update(|window, cx| window.draw(cx).clear(cx));
             }
-            visual.update(|window, cx| {
-                let pane = window.find("appearance-preview-pane").bounds();
-                // This is the real readonly preview's empty placeholder. It
-                // receives the same flex allocation without creating WebView.
-                let readonly = window.find("appearance-markdown-preview").bounds();
-                assert!(
-                    readonly.size.height > gpui_kit::px(40.),
-                    "readonly surface collapsed: focused={focused}, size={width}x{height}, pane={pane:?}, readonly={readonly:?}"
-                );
-                if focused {
-                    assert!(pane.size.height > gpui_kit::px(height * 0.8));
-                    assert!(pane.size.width > gpui_kit::px(width * 0.95));
-                    assert!(window.try_find("appearance-parameters").is_none());
+            visual.update(|window, _| {
+                let parameters = window.find("appearance-parameters").bounds();
+                assert!(parameters.size.height > gpui_kit::px(0.));
+                if collapsed {
+                    assert!(window.try_find("appearance-preview-pane").is_none());
+                } else {
+                    let pane = window.find("appearance-preview-pane").bounds();
+                    assert!(pane.top() >= parameters.top());
+                    // The preview scrolls with its card and may be below the viewport.
+                    assert!(pane.left() >= parameters.left());
+                    assert!(pane.right() <= gpui_kit::px(width + 1.));
+                    assert!(pane.size.height <= gpui_kit::px(220.));
                 }
-                assert!(pane.bottom() <= gpui_kit::px(height + 1.));
-                assert!(pane.right() <= gpui_kit::px(width + 1.));
-                assert!(readonly.top() >= pane.top());
-                assert!(readonly.bottom() <= pane.bottom() + gpui_kit::px(1.));
-                assert_eq!(
-                    app.read(cx).preferences_ui.appearance_preview.as_ref().unwrap().entity_id(),
-                    preview.entity_id()
-                );
-                assert!(preview.read(cx).editor().is_none(), "safe fixture mounted a native editor");
             });
         }
     }
@@ -4132,15 +4130,15 @@ mod scoped_tests {
             width: 1050.,
             height: 650.,
         });
-        for (width, height, stacked) in [
-            (1050., 650., false),
+        for (width, height) in [
+            (1050., 650.),
             // Native evidence at the supported 1000px window minimum assigns
             // 806px to this workspace; it must still use the compact layout.
-            (806., 460., true),
-            (830., 460., false),
-            (590., 650., true),
-            (590., 380., true),
-            (900., 500., false),
+            (806., 460.),
+            (830., 460.),
+            (590., 650.),
+            (590., 380.),
+            (900., 500.),
         ] {
             surface.update(visual, |surface, cx| {
                 surface.width = width;
@@ -4159,14 +4157,10 @@ mod scoped_tests {
                         && sample.size.height > gpui_kit::px(0.),
                     "size={width}x{height} parameters={parameters:?} sample={sample:?}"
                 );
-                assert!(sample.bottom() <= gpui_kit::px(height + 1.));
+                assert!(sample.size.height <= gpui_kit::px(220.));
                 assert!(sample.right() <= gpui_kit::px(width + 1.));
-                if stacked {
-                    assert!(sample.top() >= parameters.bottom());
-                } else {
-                    assert!(sample.left() >= parameters.right());
-                    assert!(sample.size.width > gpui_kit::px(width * 0.4));
-                }
+                assert!(sample.top() >= parameters.top());
+                assert!(sample.left() >= parameters.left());
                 assert_eq!(
                     app.read(cx)
                         .preferences_ui
@@ -4190,7 +4184,7 @@ mod scoped_tests {
                     .size_full()
                     .flex()
                     .flex_col()
-                    .child(app.settings_header(cx))
+                    .child(app.settings_header(false, cx))
                     .child(crate::settings_components::input(&app.interval, false))
                     .children(app.settings_modal(cx))
             })
@@ -4522,6 +4516,8 @@ mod scoped_tests {
                 let settings = studyapp_core::Settings::default();
                 app.snapshot = Some(
                     studyapp_core::Snapshot {
+                        saved_bodies: Default::default(),
+                        snapshot_changes: Default::default(),
                         pending_snapshot_count: 0,
                         settings,
                         table_views: Default::default(),
@@ -5769,6 +5765,121 @@ mod scoped_tests {
                         .read(cx)
                         .editor()
                         .is_none()
+                );
+            });
+        });
+    }
+    struct TypedControlFixture {
+        app: Entity<StudyApp>,
+        selection: bool,
+    }
+    impl Render for TypedControlFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                let body = if self.selection {
+                    app.selection_settings(cx)
+                } else {
+                    app.notice_surface_controls(cx)
+                };
+                div().w(gpui_kit::px(650.)).child(body)
+            })
+        }
+    }
+    #[gpui_kit::test]
+    fn numeric_rows_have_natural_height_and_scoped_reset_preserves_other_invalid_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(gpui_kit::px(900.), gpui_kit::px(1600.)));
+        visual.replace_root_view(|_, _| TypedControlFixture {
+            app: app.clone(),
+            selection: false,
+        });
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            window.click("surface-width-Bubble-inherit", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert!(window.find("surface-width-Bubble").bounds().size.height > gpui_kit::px(20.));
+            let input = app.read(cx).preferences_ui.number_fields.borrow()["surface-width-Bubble"]
+                .input
+                .clone();
+            input.update(cx, |input, cx| input.set_value("-", window, cx));
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.select_settings_target("notes.editing", cx);
+                app.select_settings_target("notices.component.0", cx);
+                assert_eq!(
+                    app.preferences_ui.number_fields.borrow()["surface-width-Bubble"]
+                        .input
+                        .read(cx)
+                        .value(),
+                    "-"
+                );
+                let other = app.preferences_ui.notification_fields["surface-corner-bg"].clone();
+                other.update(cx, |input, cx| input.set_value("invalid-color", window, cx));
+                app.reset_settings_page(
+                    SettingsResetScope::NoticeComponent(studyapp_core::NoticeStyle::Bubble),
+                    window,
+                    cx,
+                );
+                assert!(
+                    !app.preferences_ui
+                        .number_fields
+                        .borrow()
+                        .contains_key("surface-width-Bubble")
+                );
+                assert_eq!(other.read(cx).value(), "invalid-color");
+                app.reset_settings_page(SettingsResetScope::NotificationAppearance, window, cx);
+                assert_eq!(other.read(cx).value(), "invalid-color");
+            });
+        });
+    }
+    #[gpui_kit::test]
+    fn selection_category_raw_color_drafts_survive_switching_and_unrelated_resets(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        let key = "selection-navigation-background";
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.preferences_ui.selection_target =
+                    Some(studyapp_core::SelectionCategory::Navigation);
+                app.preferences_ui.appearance_fields[key]
+                    .update(cx, |input, cx| input.set_value("#12", window, cx));
+                app.preferences_ui.selection_target =
+                    Some(studyapp_core::SelectionCategory::Directory);
+                app.reset_settings_page(SettingsResetScope::ThemeEditor, window, cx);
+                assert_eq!(
+                    app.preferences_ui.appearance_fields[key].read(cx).value(),
+                    "#12"
+                );
+                app.preferences_ui.selection_target =
+                    Some(studyapp_core::SelectionCategory::Navigation);
+            });
+        });
+        visual.replace_root_view(|_, _| TypedControlFixture {
+            app: app.clone(),
+            selection: true,
+        });
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            assert_eq!(
+                app.read(cx).preferences_ui.appearance_fields[key]
+                    .read(cx)
+                    .value(),
+                "#12"
+            );
+            app.update(cx, |app, cx| {
+                assert!(app.settings_dirty(cx));
+                app.reset_settings_page(SettingsResetScope::Selection, window, cx);
+                assert_eq!(
+                    app.preferences_ui.appearance_fields[key].read(cx).value(),
+                    ""
                 );
             });
         });

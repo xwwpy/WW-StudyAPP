@@ -37,12 +37,13 @@ pub fn content(id: impl Into<ElementId>, source: &str) -> AnyElement {
     if let Some(content) = crate::native_html::content(id.clone(), source) {
         return content;
     }
+    let safe = crate::markdown_content::markdown_preview_with_html(
+        source,
+        crate::theme::palette().render_html,
+    );
     TextView::markdown(
         id,
-        crate::markdown_content::markdown_preview_with_html(
-            source,
-            crate::theme::palette().render_html,
-        ),
+        crate::markdown_parser::display_source(&safe).into_owned(),
     )
     .style(crate::compact_markdown::summary_markdown_style())
     .on_link_click(|_, _, _, _| {})

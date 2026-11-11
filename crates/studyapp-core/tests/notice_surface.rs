@@ -63,3 +63,30 @@ fn selection_customizations_are_serializable_and_legacy_safe() {
     settings.selection.radius = 255;
     assert!(settings.validate().is_err());
 }
+
+#[test]
+fn legacy_full_surface_migrates_without_freezing_inherited_or_losing_auto_colors() {
+    let mut appearance = studyapp_core::NotificationAppearance {
+        background: Some("#112233".into()),
+        ..Default::default()
+    };
+    let style = studyapp_core::NoticeStyle::CornerCard;
+    let mut legacy = appearance.surface(style);
+    legacy.background = None;
+    legacy.width = 420;
+    appearance.surfaces.insert(style, legacy.clone());
+    let patch = appearance.surface_patch_mut(style);
+    assert_eq!(patch.background.as_deref(), Some(""));
+    patch.radius = None;
+    assert!(!appearance.surfaces.contains_key(&style));
+    assert_eq!(appearance.surface(style).background, None);
+    assert_eq!(appearance.surface(style).width, 420);
+    appearance.radius = 24;
+    assert_eq!(appearance.surface(style).radius, 24);
+    appearance.surface_patch_mut(style).background = None;
+    assert_eq!(
+        appearance.surface(style).background.as_deref(),
+        Some("#112233")
+    );
+    appearance.validate().unwrap();
+}

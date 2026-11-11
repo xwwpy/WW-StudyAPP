@@ -157,13 +157,7 @@ pub fn markdown_excerpt(source: &str, limit: usize) -> String {
         .collect()
 }
 
-fn parser(source: &str) -> pulldown_cmark::Parser<'_> {
-    use pulldown_cmark::Options;
-    pulldown_cmark::Parser::new_ext(
-        source,
-        Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,
-    )
-}
+use crate::markdown_parser::parser;
 
 #[cfg(test)]
 mod tests {

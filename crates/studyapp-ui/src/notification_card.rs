@@ -1,4 +1,4 @@
-//! One content surface for foreground styles, desktop cards and appearance previews.
+//! Feedback dispatcher. Each component owns its own visual structure.
 use crate::{
     components::{column, row, scroll_body},
     controls::Button,
@@ -15,6 +15,7 @@ use studyapp_core::{
 #[derive(Clone)]
 pub struct NotificationCardModel {
     pub key: SharedString,
+    pub category: Option<studyapp_core::NoticeCategory>,
     pub title: SharedString,
     pub summary: SharedString,
     pub severity: NoticeSeverity,
@@ -26,6 +27,7 @@ impl NotificationCardModel {
     pub fn from_event(event: &NoticeEvent, repetitions: u32, style: NoticeStyle) -> Self {
         Self {
             key: event.id.to_string().into(),
+            category: Some(event.category),
             title: event.category.label().into(),
             summary: event.summary.clone().into(),
             severity: event.severity,
@@ -44,9 +46,21 @@ pub fn notification_card(
     close: Button,
     action: Option<Button>,
 ) -> Div {
+    notification_card_state(model, appearance, scroll, close, action, true, None)
+}
+
+pub fn notification_card_state(
+    model: NotificationCardModel,
+    appearance: &NotificationAppearance,
+    scroll: &ScrollHandle,
+    close: Button,
+    action: Option<Button>,
+    expanded: bool,
+    toggle: Option<Button>,
+) -> Div {
     let palette = crate::theme::palette();
     let surface = appearance.surface(model.style);
-    let fields = &appearance.content;
+    let fields = appearance.effective_content(model.style, model.category, model.severity);
     let required = model.severity >= NoticeSeverity::Error;
     let raw_background = surface
         .background
@@ -75,6 +89,70 @@ pub fn notification_card(
         NoticeSeverity::Warning => IconName::TriangleAlert,
         NoticeSeverity::Error | NoticeSeverity::Critical => IconName::CircleX,
     };
+    let paint = crate::notification_surfaces::SurfacePaint {
+        background: painted_background,
+        border: surface
+            .border_color
+            .as_deref()
+            .and_then(studyapp_core::parse_rgba_color)
+            .map_or(palette.border, |v| v.over(background)),
+        foreground,
+        accent,
+        symbol: symbol.clone(),
+        shadow: appearance.shadow,
+    };
+    let action = action.filter(|_| fields.action || required);
+    let strip_summary = if fields.repetitions && model.repetitions > 1 {
+        SharedString::from(format!("{} ×{}", model.summary, model.repetitions))
+    } else {
+        model.summary.clone()
+    };
+    match model.style {
+        NoticeStyle::Bubble => {
+            return crate::notification_surfaces::toast(
+                strip_summary,
+                &surface,
+                paint,
+                fields.icon
+                    && appearance.layout(model.style) == studyapp_core::NoticeLayout::Primary,
+            );
+        }
+        NoticeStyle::Snackbar => {
+            return crate::notification_surfaces::snackbar(
+                strip_summary,
+                &surface,
+                paint,
+                action,
+                close,
+                appearance.layout(model.style),
+            );
+        }
+        NoticeStyle::Banner => {
+            return crate::notification_surfaces::banner(
+                strip_summary,
+                &surface,
+                paint,
+                fields.icon,
+                action,
+                close,
+            );
+        }
+        NoticeStyle::ModalCard => {
+            return crate::notification_surfaces::alert(
+                crate::notification_surfaces::AlertContent {
+                    title: model.title,
+                    risk: model.summary,
+                    confirm: action,
+                    cancel: close,
+                },
+                &surface,
+                paint,
+                scroll,
+                appearance.layout(model.style),
+            );
+        }
+        _ => {}
+    }
     let glyph = px((palette.font_size as f32 + 2.).clamp(16., 22.));
     let compact = matches!(model.style, NoticeStyle::Bubble | NoticeStyle::Snackbar);
     let mut header = row().min_w_0().gap_2().items_center();
@@ -135,6 +213,10 @@ pub fn notification_card(
     ) {
         card = card.child(div().h(px(2.)).w_full().bg(rgb(accent).opacity(0.35)));
     }
+    let collapsed = model.style == NoticeStyle::CornerCard
+        && appearance.layout(model.style) == studyapp_core::NoticeLayout::Alternative
+        && !expanded
+        && !required;
     if fields.summary || required {
         let summary = if fields.detailed || required {
             model.summary.to_string()
@@ -146,23 +228,31 @@ pub fn notification_card(
                     ""
                 }
         };
+        let body_id = SharedString::from(format!("notification-body-{}", model.key));
+        let body = if collapsed {
+            div()
+                .id(body_id)
+                .test_support()
+                .min_w_0()
+                .line_clamp(2)
+                .overflow_hidden()
+                .child(summary)
+        } else {
+            scroll_body(body_id, scroll)
+                .test_support()
+                .min_w_0()
+                .max_h(px(f32::from(surface.max_height)))
+                .child(summary)
+                .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+        };
         card = card.child(
-            scroll_body(
-                SharedString::from(format!("notification-body-{}", model.key)),
-                scroll,
-            )
-            .test_support()
-            .min_w_0()
-            .max_h(px(f32::from(surface.max_height)))
-            .text_color(rgb(foreground))
-            .text_size(crate::design::type_size(
-                palette.font_size,
-                crate::design::TypeRole::Body,
-            ))
-            .line_height(px(palette.font_size as f32
-                * crate::design::line_height(crate::design::TypeRole::Body)))
-            .child(summary)
-            .on_scroll_wheel(|_, _, cx| cx.stop_propagation()),
+            body.text_color(rgb(foreground))
+                .text_size(crate::design::type_size(
+                    palette.font_size,
+                    crate::design::TypeRole::Body,
+                ))
+                .line_height(px(palette.font_size as f32
+                    * crate::design::line_height(crate::design::TypeRole::Body))),
         );
     }
     if fields.event_id
@@ -175,6 +265,7 @@ pub fn notification_card(
     {
         card = card.child(row().justify_end().child(action));
     }
+    card = card.children(toggle);
     if model.style == NoticeStyle::Banner {
         card = card.w_full();
     }
@@ -204,6 +295,7 @@ mod tests {
             };
             let model = NotificationCardModel {
                 key: "geometry".into(),
+                category: None,
                 title: "小组件提示".into(),
                 summary: "桌面小组件已显示。长消息在卡片内滚动，关闭提示不会改变计时。\n"
                     .repeat(20)

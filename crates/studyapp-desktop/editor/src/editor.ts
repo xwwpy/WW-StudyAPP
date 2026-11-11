@@ -1,3 +1,5 @@
+import { actionbarUpdates, installActionbar } from "./actionbar";
+import { listParagraphBoundaries } from "./markdown-boundaries";
 import { closeDocument, showDocument, documentResult, type OriginalDocument, type DocumentResult } from "./documents";
 import { installLinks } from "./links";
 import { setListMarkers, listPresentationChanged, leaveList, continueBullet } from "./lists";
@@ -319,8 +321,8 @@ function extensions(readonly: boolean, rawText = ""): Extension[] {
     tableHistory, tableUpdates, outlineUpdates, readOnlyMode.of(readonlyExtensions(readonly)), renderingMode.of(source ? [] : [renderedMarkdown, htmlRendering]),
     themeMode.of([EditorView.theme({}), htmlConfiguration.of(htmlEnabled)]), rawUrlWrapping,
     documentLimits(rawText, warning, clearWarning),
-    markdown({ base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
-    syntaxHighlighting(codeHighlighting), history(), renderedSelection, previewMouseSelection, copyMenuUpdates, EditorView.lineWrapping,
+    markdown({ extensions: [listParagraphBoundaries], base: markdownLanguage, codeLanguages: fencedLanguage, completeHTMLTags: false, pasteURLAsLink: false }),
+    syntaxHighlighting(codeHighlighting), history(), renderedSelection, previewMouseSelection, copyMenuUpdates, actionbarUpdates, EditorView.lineWrapping,
     EditorState.allowMultipleSelections.of(true),
     placeholder("从这里开始记录，支持 Markdown…"),
     EditorView.contentAttributes.of({ "aria-label": "笔记正文", spellcheck: "false", tabindex: "0" }),
@@ -401,6 +403,8 @@ const view = new EditorView({
   state: EditorState.create({ doc: "", extensions: extensions(true) }),
   parent: document.querySelector("#editor")!
 });
+
+const selectionActions = installActionbar(view, command, () => loaded && !originalDocument && !modalBlocked && !pendingFlush);
 
 function setReadonly(value: boolean): void {
   view.dispatch({ effects: readOnlyMode.reconfigure(readonlyExtensions(originalDocument || Boolean(value))) });
@@ -592,6 +596,7 @@ function setTheme(tokens: Record<string, unknown>): void {
   setListMarkers(tokens?.listMarkers);
   setIndentSubtree(tokens?.indentSubtree);
   themeWarning.hidden = !applyEditorTheme(tokens);
+  selectionActions.configure(tokens);
   // A changed style module invalidates CodeMirror's measured text geometry,
   // including its cursor layer, without replacing document/history/selection.
   htmlEnabled = tokens?.renderHtml !== false;
@@ -621,6 +626,7 @@ function setModalOverlay(blocked: boolean, opacity: number): void {
   modalShade.hidden = !modalBlocked;
   modalShade.style.backgroundColor = `rgba(0,0,0,${Number.isFinite(opacity) ? Math.max(0,Math.min(1,opacity)) : 0.48})`;
   main.inert = modalBlocked;
+  selectionActions.update();
   if (restore && document.hasFocus()) view.focus();
   if (!modalBlocked) resumeModalFocus = false;
 }

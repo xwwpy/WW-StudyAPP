@@ -81,7 +81,10 @@ pub fn sidebar_tooltip(text: String, window: &mut Window, cx: &mut App) -> AnyVi
 }
 
 pub fn pointer_tooltip(text: String, window: &mut Window, cx: &mut App) -> AnyView {
-    let position = window.mouse_position();
+    tooltip_at(text, window.mouse_position(), window, cx)
+}
+
+fn tooltip_at(text: String, position: Point<Pixels>, window: &mut Window, cx: &mut App) -> AnyView {
     let registry = crate::bubble::window_bubble_registry(window, cx);
     cx.new(|_| crate::bubble::PointerBubble {
         text,
@@ -89,6 +92,47 @@ pub fn pointer_tooltip(text: String, window: &mut Window, cx: &mut App) -> AnyVi
         registry,
     })
     .into()
+}
+
+/// Attach a delayed text tooltip to the actual painted control bounds. The
+/// framework still owns hover lifetime; the bubble owns its native occlusions.
+pub fn control_tooltip<E: ParentElement + InteractiveElement + Styled>(
+    control: E,
+    text: String,
+) -> E {
+    use std::{cell::Cell, rc::Rc};
+    let bounds = Rc::new(Cell::new(Bounds::<Pixels>::default()));
+    let measured = bounds.clone();
+    let mut control = control.relative();
+    control.interactivity().tooltip(move |window, cx| {
+        let position = if crate::theme::palette().tooltip_position
+            == studyapp_core::TooltipPosition::BesideControl
+        {
+            control_tooltip_anchor(bounds.get(), window.viewport_size())
+        } else {
+            window.mouse_position()
+        };
+        tooltip_at(text.clone(), position, window, cx)
+    });
+    control.extend([
+        canvas(move |bounds, _, _| measured.set(bounds), |_, _, _, _| {})
+            .absolute()
+            .inset_0()
+            .into_any_element(),
+    ]);
+    control
+}
+fn control_tooltip_anchor(bounds: Bounds<Pixels>, viewport: Size<Pixels>) -> Point<Pixels> {
+    // Pick the roomier side; the bubble's measured geometry clamps the body.
+    let below = viewport.height - bounds.bottom();
+    point(
+        bounds.center().x,
+        if below >= bounds.top() {
+            bounds.bottom()
+        } else {
+            bounds.top()
+        },
+    )
 }
 
 pub const LIBRARY_ROW_HEIGHT: f32 = 32.;
@@ -108,25 +152,51 @@ pub fn library_entry() -> Div {
 }
 
 pub fn library_interaction(row: Stateful<Div>, selected: bool, disabled: bool) -> Stateful<Div> {
-    row.role(accesskit::Role::ListBoxOption)
+    collection_interaction(
+        row,
+        selected,
+        disabled,
+        studyapp_core::SelectionCategory::Library,
+    )
+}
+pub fn collection_interaction(
+    row: Stateful<Div>,
+    selected: bool,
+    disabled: bool,
+    category: studyapp_core::SelectionCategory,
+) -> Stateful<Div> {
+    let selection = crate::theme::selection(category);
+    row.relative()
+        .children((selected && selection.selection_indicator).then(|| {
+            div()
+                .absolute()
+                .left(px(2.))
+                .top(px(8.))
+                .bottom(px(8.))
+                .w(px(3.))
+                .rounded_full()
+                .bg(rgb(selection.selected_border))
+        }))
+        .role(accesskit::Role::ListBoxOption)
         .aria_selected(selected)
         .tab_index(0)
         .tab_stop(!disabled)
+        .rounded(px(f32::from(selection.selection_radius)))
         .border_1()
         .border_color(if selected {
-            rgb(crate::theme::palette().selected_border)
+            rgb(selection.selected_border)
         } else {
             rgba(0)
         })
         .bg(rgb(if selected {
-            crate::theme::palette().selected_background
+            selection.selected_background
         } else {
-            crate::theme::palette().idle_background
+            selection.idle_background
         }))
         .text_color(rgb(if selected {
-            crate::theme::palette().selected_text
+            selection.selected_text
         } else {
-            crate::theme::palette().idle_text
+            selection.idle_text
         }))
         .when(disabled, |row| row.opacity(0.5).cursor_default())
         .when(!disabled, |row| {
@@ -269,8 +339,9 @@ pub fn heading(text: impl Into<SharedString>) -> Div {
 /// A compact selection marker shared by navigation surfaces; the supplied
 /// control retains ownership of focus, hit testing, and action identifiers.
 pub fn navigation_item(control: impl IntoElement, selected: bool) -> Div {
+    let selection = crate::theme::selection(studyapp_core::SelectionCategory::Navigation);
     div().relative().w_full().min_w_0().child(control).children(
-        (selected && crate::theme::palette().selection_indicator).then(|| {
+        (selected && selection.selection_indicator).then(|| {
             div()
                 .absolute()
                 .left_0()
@@ -278,7 +349,7 @@ pub fn navigation_item(control: impl IntoElement, selected: bool) -> Div {
                 .bottom(px(9.))
                 .w(px(3.))
                 .rounded_full()
-                .bg(rgb(crate::theme::palette().selected_border))
+                .bg(rgb(selection.selected_border))
         }),
     )
 }

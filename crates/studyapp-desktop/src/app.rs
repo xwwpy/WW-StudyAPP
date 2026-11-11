@@ -104,11 +104,15 @@ pub struct StudyApp {
     pub draft_persist: Option<crate::editor_lifecycle::PersistPending>,
     pub draft_discard: Option<crate::editor_lifecycle::DiscardPending>,
     pub confirmation: Option<crate::editor_lifecycle::NoteConfirmation>,
+    pub(crate) action_sheet_open: bool,
+    pub(crate) export_panel: Option<crate::export_panel::ExportPanel>,
+    pub(crate) snapshot_preview: crate::snapshot_preview::SnapshotPreview,
     pub reader_key: String,
     pub draft_dirty_since: Option<std::time::Instant>,
     pub close_requested: bool,
     pub close_allowed: bool,
     pub sync_panel: Entity<crate::sync_ui::SyncPanel>,
+    pub(crate) activity_panel: Entity<crate::activity_ui::ActivityPanel>,
     pub folders: Entity<crate::folders_ui::FolderPanel>,
     pub history_preview: crate::history_preview::HistoryPreview,
     pub storage_report: Option<crate::storage_backend::StorageReport>,
@@ -427,6 +431,27 @@ impl StudyApp {
                     cx.stop_propagation();
                     return;
                 }
+                if this.preferences_ui.settings_resize.is_some()
+                    && event.keystroke.key.eq_ignore_ascii_case("escape")
+                {
+                    if let Some((_, width)) = this.preferences_ui.settings_resize.take() {
+                        this.preferences_ui.browsing.width = width;
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                if this.page == Page::Settings
+                    && !this.has_modal(cx)
+                    && event.keystroke.modifiers.control
+                    && !event.keystroke.modifiers.alt
+                    && !event.keystroke.modifiers.shift
+                    && event.keystroke.key.eq_ignore_ascii_case("f")
+                {
+                    this.open_settings_search(window, cx);
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.input_preference == InputPreference::CharacterInput {
                     return;
                 }
@@ -468,6 +493,23 @@ impl StudyApp {
         )
         .detach();
         cx.observe(&sync_panel, |_, _, cx| cx.notify()).detach();
+        let activity_panel = cx.new(|cx| {
+            crate::activity_ui::ActivityPanel::new(sync_panel.clone(), update_panel.clone(), cx)
+        });
+        cx.subscribe(
+            &activity_panel,
+            |this, _, event: &crate::activity_ui::ActivityOcclusion, cx| {
+                this.note_content.update(cx, |editor, cx| {
+                    editor.set_overlay_regions("task-activity", event.0.clone(), cx)
+                });
+                if let Some(preview) = &this.preferences_ui.appearance_preview {
+                    preview.update(cx, |preview, cx| {
+                        preview.set_overlay_regions("task-activity", event.0.clone(), cx)
+                    });
+                }
+            },
+        )
+        .detach();
         let folders = cx.new(|cx| crate::folders_ui::FolderPanel::new(window, cx));
         let interval = input("正整数分钟", "60", window, cx);
         let deadline = input("正整数分钟", "5", window, cx);
@@ -540,6 +582,7 @@ impl StudyApp {
             owner_recovery: Default::default(),
             owner_close: None,
             sync_panel,
+            activity_panel,
             folders,
             history_preview: Default::default(),
             storage_report: None,
@@ -603,6 +646,9 @@ impl StudyApp {
             draft_persist: None,
             draft_discard: None,
             confirmation: None,
+            snapshot_preview: Default::default(),
+            export_panel: None,
+            action_sheet_open: false,
             reader_key: String::new(),
             draft_dirty_since: None,
             close_requested: false,
@@ -739,6 +785,8 @@ impl StudyApp {
             }
             use crate::storage_backend::StorageEvent;
             if let Some(StorageEvent::Progress(progress)) = &update.storage_event {
+                self.activity_panel
+                    .update(cx, |panel, cx| panel.migration_progress(progress, cx));
                 self.storage_ui.migration_progress = Some(progress.clone());
                 changed = true;
                 continue;
@@ -756,6 +804,13 @@ impl StudyApp {
                         && update.snapshot.is_some()
                         && !crate::app_migration::startup_pending())
             {
+                if self.snapshot.is_none()
+                    && update.snapshot.is_some()
+                    && !crate::app_migration::startup_pending()
+                {
+                    self.activity_panel
+                        .update(cx, |panel, cx| panel.migration_finished(Ok(()), cx));
+                }
                 self.storage_ui.migration_progress = None;
                 self.suspend_migration_hosts(false, cx);
             }
@@ -802,6 +857,9 @@ impl StudyApp {
                 self.storage_busy = false;
                 self.folders
                     .update(cx, |panel, cx| panel.set_busy(false, cx));
+                self.activity_panel.update(cx, |panel, cx| {
+                    panel.migration_finished(result.as_ref().map(|_| ()).map_err(Clone::clone), cx)
+                });
                 match result {
                     Ok(report) => self.storage_report = Some(report),
                     Err(error) if !structured_feedback => self.push_notice(Err(error), cx),
@@ -859,6 +917,9 @@ impl StudyApp {
                         cx,
                     );
                 }
+            }
+            if let Some(result) = update.snapshot_result {
+                self.accept_snapshot_result(result);
             }
             if let Some(preferences) = update.preferences {
                 self.accept_preferences(preferences, update.library_replaced, window, cx);
@@ -985,6 +1046,9 @@ impl StudyApp {
             self.update_health.reset_catalog();
             self.draft_failed = false;
             self.last_library = snapshot.data_path.clone();
+            self.snapshot_preview = Default::default();
+            self.export_panel = None;
+            self.action_sheet_open = false;
             self.update_panel.update(cx, |panel, cx| {
                 panel.set_library(snapshot.data_path.clone(), cx)
             });
@@ -1240,6 +1304,7 @@ impl StudyApp {
             })
             .is_err()
         {
+            self.snapshot_preview.busy = false;
             self.push_notice(Err("后台服务已停止，请重新打开应用".into()), cx);
             self.saving = false;
             self.note_saving = false;
@@ -1449,6 +1514,9 @@ impl StudyApp {
     pub(crate) fn has_required_modal(&self, cx: &App) -> bool {
         self.timer_setup.is_some()
             || self.timer_pending.is_some()
+            || self.snapshot_preview.open
+            || self.export_panel.is_some()
+            || self.action_sheet_open
             || self.confirmation.is_some()
             || self.storage_confirm.is_some()
             || self.storage_ui.integrity_dialog
@@ -1477,6 +1545,9 @@ impl StudyApp {
         self.preferences_ui.leave = None;
         self.preferences_ui.reset_confirmation = false;
         self.confirmation = None;
+        self.snapshot_preview.open = false;
+        self.export_panel = None;
+        self.action_sheet_open = false;
         self.storage_confirm = None;
         self.storage_ui.purge = None;
         self.storage_ui.integrity_dialog = false;
@@ -1499,6 +1570,12 @@ impl StudyApp {
             // Reset is deliberately activated by its explicit dialog button.
         } else if self.timer_setup.is_some() || self.timer_pending.is_some() {
             // Timer changes use their explicit confirmation button.
+        } else if self.action_sheet_open {
+            // Operations require their explicit button.
+        } else if self.export_panel.is_some() {
+            // Export requires an explicit target and native file selection.
+        } else if self.snapshot_preview.open {
+            // Capturing requires the explicit checked-selection button.
         } else if self.confirmation.is_some() || self.storage_confirm.is_some() {
             // Destructive actions require activation of their explicit button.
             // Enter on the dialog scope itself must never remove user content.
@@ -1566,6 +1643,7 @@ impl StudyApp {
                     .map(|(i, (page, label, icon))| {
                         navigation_item(
                             Button::new(("nav", i))
+                                .selection_category(studyapp_core::SelectionCategory::Navigation)
                                 .label(label)
                                 .icon(icon)
                                 .ghost()
@@ -1673,7 +1751,18 @@ impl Render for StudyApp {
             Page::Settings => "设置",
         };
         let body = if let Some(progress) = &self.storage_ui.migration_progress {
-            let panel = progress.panel();
+            let hud_layout = self
+                .snapshot
+                .as_ref()
+                .map(|snapshot| {
+                    snapshot
+                        .settings
+                        .appearance
+                        .notifications
+                        .layout(studyapp_core::NoticeStyle::Hud)
+                })
+                .unwrap_or_default();
+            let panel = progress.panel_with_layout(hud_layout);
             if self.preferences_ui.replacing && self.update_panel.read(cx).is_relocating()
                 || crate::app_migration::startup_pending()
             {
@@ -1704,10 +1793,18 @@ impl Render for StudyApp {
             .as_ref()
             .filter(|_| self.page == Page::Today && self.storage_ui.migration_progress.is_none())
             .map(|snapshot| self.today_timer(snapshot, cx));
+        let mut export_visible = false;
         let modal_content = if let Some(settings) = self.settings_modal(cx) {
             Some(settings)
         } else if let Some(timer) = self.timer_modal(cx) {
             Some(timer)
+        } else if self.action_sheet_open {
+            Some(self.library_action_sheet(cx))
+        } else if self.export_panel.is_some() {
+            export_visible = true;
+            Some(self.export_panel_modal(window, cx))
+        } else if self.snapshot_preview.open {
+            Some(self.snapshot_preview_modal(cx))
         } else if self.confirmation.is_some() {
             Some(self.confirmation_view(cx).into_any_element())
         } else if self.storage_confirm.is_some() {
@@ -1726,6 +1823,15 @@ impl Render for StudyApp {
                         .update(cx, |center, cx| center.modal_content(cx))
                 })
         };
+        if let Some(panel) = &self.export_panel {
+            let shapes = self.bubble_registry.read(cx).shapes();
+            panel.preview.update(cx, |editor, cx| {
+                editor.set_theme(crate::theme::palette().editor_tokens(), cx);
+                editor.set_visible(export_visible && !self.external_drop.active(), cx);
+                editor.set_overlay_shapes("pointer-tooltip", shapes, cx);
+            });
+        }
+
         let modal = modal_content.map(|content| {
             let cancel_owner = cx.weak_entity();
             let accept_owner = cx.weak_entity();
@@ -1754,6 +1860,16 @@ impl Render for StudyApp {
                         });
                     }
                 },
+            )
+            .when(
+                self.action_sheet_open
+                    || self.export_panel.is_some()
+                        && self
+                            .effective_appearance()
+                            .notifications
+                            .layout(studyapp_core::NoticeStyle::Share)
+                            == studyapp_core::NoticeLayout::Alternative,
+                |dialog| dialog.items_end().pb_3(),
             )
             .on_cancel(move |_, _, cx| {
                 let _ = cancel_owner.update(cx, |this, cx| this.cancel_modal(cx));
@@ -1840,6 +1956,16 @@ impl Render for StudyApp {
                     .into_any_element(),
             );
         }
+        actions.push(
+            Button::new("titlebar-task-activity")
+                .small()
+                .ghost()
+                .label("任务")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.activity_panel.update(cx, |panel, cx| panel.toggle(cx))
+                }))
+                .into_any_element(),
+        );
         let window_title = format!("WW-StudyApp  ·  {title}");
         let close_owner = cx.weak_entity();
         let background = column()
@@ -1914,6 +2040,10 @@ impl Render for StudyApp {
                             .min_w_0()
                             .min_h_0()
                             .h_full()
+                            .child(
+                                self.notifications
+                                    .update(cx, |center, cx| center.banner_content(cx)),
+                            )
                             .children(today_timer)
                             .child(
                                 column()
@@ -1959,6 +2089,7 @@ impl Render for StudyApp {
                 ))
             })
             .child(self.external_drop_event_layer(cx))
+            .child(self.activity_panel.clone())
             .child(self.notifications.clone())
             .child(self.resize_event_layer(cx));
         div()

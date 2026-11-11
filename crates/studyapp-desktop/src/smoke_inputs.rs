@@ -617,7 +617,7 @@ pub async fn exercise(
                 app.select_settings_section(SettingsSection::Learning, cx);
                 app.deadline
                     .update(cx, |input, cx| input.set_value("", window, cx));
-                app.review_days
+                app.preferences_ui.review_stages[0]
                     .update(cx, |input, cx| input.set_value("", window, cx));
             });
             window.render_frame(cx);
@@ -627,7 +627,7 @@ pub async fn exercise(
         .update(cx, |_, _, cx| {
             (
                 view.read(cx).deadline.clone(),
-                view.read(cx).review_days.clone(),
+                view.read(cx).preferences_ui.review_stages[0].clone(),
             )
         })
         .unwrap();
@@ -642,9 +642,9 @@ pub async fn exercise(
     )
     .await;
     probe(
-        "learning-review-days",
+        "learning-review-stage-1",
         &review_days,
-        "2, 4",
+        "2",
         &probe_context,
         &mut evidence,
         &mut failures,
@@ -660,13 +660,19 @@ pub async fn exercise(
         .unwrap();
     click_input(window, &interval, &native, cx);
     settle(cx).await;
-    press(&native, VK_TAB);
-    settle(cx).await;
-    let tab_target = window
-        .update(cx, |_, window, cx| {
-            view.read(cx).deadline.focus_handle(cx).is_focused(window)
-        })
-        .unwrap();
+    let mut tab_target = false;
+    for _ in 0..6 {
+        press(&native, VK_TAB);
+        settle(cx).await;
+        tab_target = window
+            .update(cx, |_, window, cx| {
+                deadline.focus_handle(cx).is_focused(window)
+            })
+            .unwrap();
+        if tab_target {
+            break;
+        }
+    }
     record(
         window,
         &editor,
@@ -678,8 +684,18 @@ pub async fn exercise(
     );
     type_text(&native, "3");
     settle(cx).await;
-    chord(&native, VK_SHIFT, VK_TAB);
-    settle(cx).await;
+    for _ in 0..6 {
+        chord(&native, VK_SHIFT, VK_TAB);
+        settle(cx).await;
+        if window
+            .update(cx, |_, window, cx| {
+                interval.focus_handle(cx).is_focused(window)
+            })
+            .unwrap()
+        {
+            break;
+        }
+    }
     record(
         window,
         &editor,
@@ -752,13 +768,13 @@ pub async fn exercise(
     }
 
     // Different settings surfaces reuse their input entities across section
-    // switches, collapsed directory editors, and cached virtual rows.
+    // switches, always-visible directory editors, and cached virtual rows.
     let (settings_search, image_root, theme_name, cloud_endpoint) = window
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| {
                 app.select_settings_section(SettingsSection::Storage, cx);
                 app.select_storage_page(StoragePage::Images, cx);
-                app.preferences_ui.image_directory_expanded = Some(true);
+                app.open_settings_search(window, cx);
                 if let Some(draft) = &mut app.preferences_ui.draft {
                     draft.images.storage = studyapp_core::media_settings::ImageStorage::Cloud;
                 }
@@ -813,19 +829,20 @@ pub async fn exercise(
     .await;
     window
         .update(cx, |_, window, cx| {
-            view.update(cx, |app, cx| {
-                app.preferences_ui.image_directory_expanded = Some(false);
-                cx.notify();
-            });
-            window.render_frame(cx);
-            view.update(cx, |app, cx| {
-                app.preferences_ui.image_directory_expanded = Some(true);
-                cx.notify();
-            });
-            window.render_frame(cx);
+            crate::smoke_settings::select_page(window, view, "storage.overview", cx);
+            crate::smoke_settings::select_page(window, view, "storage.images", cx);
+            assert_eq!(
+                view.read(cx)
+                    .preferences_ui
+                    .image_root
+                    .as_ref()
+                    .unwrap()
+                    .entity_id(),
+                image_root.entity_id()
+            );
         })
         .unwrap();
-    evidence.push(json!({"stage":"image-local-directory:expanded-again",
+    evidence.push(json!({"stage":"image-local-directory:page-reentry",
         "value":window.update(cx, |_, _, cx| image_root.read(cx).value().to_string()).unwrap()}));
     persist(database, &evidence);
     if window

@@ -133,6 +133,7 @@ pub struct ImageCloudDraft {
     pub kind: u8,
     pub addressing: ObjectAddressing,
     pub clear_secret: bool,
+    pub credential: Entity<studyapp_ui::settings_secret::SecretSetting>,
     pub secret_saved: bool,
     pub picker: crate::folder_picker::FolderPicker,
 }
@@ -168,8 +169,21 @@ impl ImageCloudDraft {
                 .detach();
             fields.insert(key, input);
         }
+        let credential = cx.new(|cx| {
+            studyapp_ui::settings_secret::SecretSetting::new(
+                fields["secret"].clone(),
+                secret_saved,
+                cx,
+            )
+        });
+        cx.subscribe(
+            &credential,
+            |_, _, _: &studyapp_ui::settings_secret::SecretChanged, cx| cx.notify(),
+        )
+        .detach();
         Self {
             fields,
+            credential,
             kind,
             addressing: target.addressing,
             clear_secret: false,
@@ -195,7 +209,7 @@ impl ImageCloudDraft {
         let secret = self.fields["secret"].read(cx).value().to_string();
         if !secret.is_empty() {
             SecretChange::Replace(zeroize::Zeroizing::new(secret))
-        } else if self.clear_secret {
+        } else if self.clear_secret || self.credential.read(cx).pending_clear() {
             SecretChange::Clear
         } else {
             SecretChange::Keep

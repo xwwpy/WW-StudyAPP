@@ -1,19 +1,18 @@
 //! Structured views share the original center, queue and invalidation boundary.
 use super::{NotificationCenter, NotificationOcclusions};
 use crate::{
-    components::column,
-    controls::Button,
-    notice_queue::Notice,
-    notification_card::{NotificationCardModel, notification_card},
+    components::column, controls::Button, notice_queue::Notice,
+    notification_card::NotificationCardModel,
 };
 use gpui_kit::{
     component::{Sizable, button::ButtonVariants},
+    prelude::FluentBuilder,
     *,
 };
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use studyapp_core::{
-    NoticeAction, NoticeEnvironment, NoticeEvent, NoticeEventId, NoticePosition, NoticeRoute,
-    NoticeSeverity, NoticeStyle, NotificationAppearance, NotificationSettings,
+    NoticeAction, NoticeEnvironment, NoticeEvent, NoticeEventId, NoticeRoute, NoticeSeverity,
+    NoticeStyle, NotificationAppearance, NotificationSettings,
 };
 
 type FrameBounds = Rc<RefCell<Vec<(u64, Bounds<Pixels>)>>>;
@@ -135,9 +134,8 @@ impl NotificationCenter {
         let anchors = &self.anchors;
         let blocked = self.modal_blocked;
         self.queue.reroute_with(appearance, now, |event| {
-            let route = policy.route(
-                event.category,
-                event.severity,
+            let route = policy.route_event(
+                event,
                 appearance,
                 NoticeEnvironment {
                     anchor_available: event
@@ -161,9 +159,8 @@ impl NotificationCenter {
         self.start_timer(cx);
     }
     pub fn enqueue(&mut self, event: NoticeEvent, cx: &mut Context<Self>) -> Option<NoticeEventId> {
-        let route = self.policy.route(
-            event.category,
-            event.severity,
+        let route = self.policy.route_event(
+            &event,
             &self.appearance,
             NoticeEnvironment {
                 anchor_available: event
@@ -281,7 +278,12 @@ impl NotificationCenter {
             });
         }
     }
-    fn render_card(&mut self, entry: Notice, bounds: FrameBounds, cx: &mut Context<Self>) -> Div {
+    pub(super) fn render_card(
+        &mut self,
+        entry: Notice,
+        bounds: FrameBounds,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let id = entry.id;
         let style = match entry.route {
             NoticeRoute::Foreground(style) => style,
@@ -294,6 +296,7 @@ impl NotificationCenter {
         } else {
             NotificationCardModel {
                 key: format!("legacy-{id}").into(),
+                category: None,
                 title: if entry.message.is_ok() {
                     "提示"
                 } else {
@@ -323,6 +326,27 @@ impl NotificationCenter {
             .action("关闭通知")
             .accessibility_label("关闭通知")
             .on_click(cx.listener(move |this, _, _, cx| this.dismiss(id, cx)));
+        let expanded = self.expanded.contains(&id);
+        let toggle = (style == NoticeStyle::CornerCard
+            && self.appearance.layout(style) == studyapp_core::NoticeLayout::Alternative
+            && model.severity < NoticeSeverity::Error)
+            .then(|| {
+                Button::new(SharedString::from(format!("notice-expand-{id}")))
+                    .small()
+                    .ghost()
+                    .label(if expanded {
+                        "收起正文"
+                    } else {
+                        "展开完整正文"
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.expanded.remove(&id) {
+                            this.expanded.insert(id);
+                        }
+                        this.card_sizes.remove(&id);
+                        cx.notify();
+                    }))
+            });
         let scroll = self.scrolls.entry(id).or_default().clone();
         let presented_owner = cx.weak_entity();
         div().min_w_0().child(
@@ -332,16 +356,25 @@ impl NotificationCenter {
                 .occlude()
                 .min_w_0()
                 .w(px(f32::from(surface_width)))
+                .when(
+                    style == NoticeStyle::Banner
+                        || style == NoticeStyle::Snackbar
+                            && self.appearance.layout(style)
+                                == studyapp_core::NoticeLayout::Alternative,
+                    |view| view.w_full(),
+                )
                 .max_w_full()
                 .flex_shrink_0()
                 .opacity(entry.opacity(self.now()))
                 .on_hover(cx.listener(move |this, hovered, _, cx| this.hover(id, *hovered, cx)))
-                .child(notification_card(
+                .child(crate::notification_card::notification_card_state(
                     model,
                     &self.appearance,
                     &scroll,
                     close,
                     action,
+                    expanded,
+                    toggle,
                 ))
                 .relative()
                 .child(
@@ -381,137 +414,95 @@ impl NotificationCenter {
             .map(|surface| surface.clone().into_any_element())
     }
     pub(super) fn structured_surface(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let mut entries: Vec<_> = self.queue.visible().cloned().collect();
-        if self.appearance.stack == studyapp_core::NoticeStack::NewestFirst {
-            entries.reverse();
+        use crate::notice_placement::{Candidate, place};
+        let viewport = window.viewport_size();
+        let entries: Vec<_> = self.queue.candidates().cloned().collect();
+        let candidates: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| {
+                let NoticeRoute::Foreground(style) = entry.route else {
+                    return None;
+                };
+                let surface = self.appearance.surface(style);
+                let estimate = match style {
+                    NoticeStyle::Bubble => 44.,
+                    NoticeStyle::Snackbar => 68.,
+                    NoticeStyle::Banner => 80.,
+                    _ => f32::from(surface.max_height) + 96.,
+                };
+                Some(Candidate {
+                    id: entry.id,
+                    style,
+                    width: f32::from(surface.width),
+                    height: self
+                        .card_sizes
+                        .get(&entry.id)
+                        .map_or(estimate, |size| f32::from(size.height)),
+                })
+            })
+            .collect();
+        let placement = place(
+            &candidates,
+            &self.appearance,
+            viewport.width.into(),
+            viewport.height.into(),
+        );
+        if self.queue.set_layout_visible(placement.ids(), self.now()) {
+            cx.notify();
         }
         self.scrolls
-            .retain(|id, _| entries.iter().any(|e| e.id == *id));
-        let viewport = window.viewport_size();
-        let width = px(f32::from(
-            entries
-                .iter()
-                .filter_map(|e| match e.route {
-                    NoticeRoute::Foreground(style) => Some(self.appearance.surface(style).width),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(self.appearance.width),
-        ))
-        .min((viewport.width - px(32.)).max(px(0.)));
+            .retain(|id, _| entries.iter().any(|entry| entry.id == *id));
+        self.card_sizes
+            .retain(|id, _| entries.iter().any(|entry| entry.id == *id));
+        self.expanded
+            .retain(|id| entries.iter().any(|entry| entry.id == *id));
         let frame = Rc::new(RefCell::new(Vec::new()));
-        let mut corners = column().absolute().gap_2().w(width).min_w_0();
-        corners = match self.appearance.position {
-            NoticePosition::TopLeft => corners
-                .top(px(crate::design::TITLE_BAR_HEIGHT + 12.))
-                .left(px(16.)),
-            NoticePosition::TopRight => corners
-                .top(px(crate::design::TITLE_BAR_HEIGHT + 12.))
-                .right(px(16.)),
-            NoticePosition::BottomLeft => corners.bottom(px(16.)).left(px(16.)),
-            NoticePosition::BottomRight => corners.bottom(px(16.)).right(px(16.)),
-        };
-        let mut banners = column()
+        let mut floating = div()
+            .id("floating-notice")
+            .test_support()
             .absolute()
-            .top(px(crate::design::TITLE_BAR_HEIGHT + 12.))
-            .left(px(16.))
-            .right(px(16.))
-            .gap_2();
-        let mut sheets = column()
-            .absolute()
-            .bottom(px(16.))
-            .left((viewport.width - width) * 0.5)
-            .w(width)
-            .gap_2();
-        let mut activities = column()
-            .absolute()
-            .top(px(crate::design::TITLE_BAR_HEIGHT + 80.))
-            .right(px(16.))
-            .w(width)
-            .gap_2();
-        let mut anchored = div().absolute().inset_0();
-        for (index, entry) in entries.into_iter().enumerate() {
-            let style = match entry.route {
-                NoticeRoute::Foreground(style) => style,
-                _ => continue,
-            };
-            if style == NoticeStyle::ModalCard {
+            .inset_0();
+        for (id, rect) in placement.floating {
+            let Some(entry) = entries.iter().find(|entry| entry.id == id) else {
                 continue;
-            }
-            let anchor = entry
-                .event
-                .as_ref()
-                .and_then(|e| e.anchor.as_ref())
-                .and_then(|key| self.anchors.get(key))
-                .copied();
-            let measured = self
-                .card_sizes
-                .get(&entry.id)
-                .copied()
-                .unwrap_or(size(width, px(220.)));
-            let card = self.render_card(entry, frame.clone(), cx);
-            let card = if self.appearance.stack == studyapp_core::NoticeStack::Staggered {
-                div().min_w_0().ml(px(index as f32 * 8.)).child(card)
-            } else {
-                div().min_w_0().child(card)
             };
-            match style {
-                NoticeStyle::Banner => banners = banners.child(card),
-                NoticeStyle::ActionSheet | NoticeStyle::Snackbar => sheets = sheets.child(card),
-                NoticeStyle::ActivityView => activities = activities.child(card),
-                NoticeStyle::Anchored if anchor.is_some() => {
-                    let anchor = anchor.expect("checked anchor");
-                    let x = anchor
-                        .left()
-                        .max(px(16.))
-                        .min((viewport.width - width - px(16.)).max(px(16.)));
-                    let below = anchor.bottom() + px(8.);
-                    let y = if below + measured.height <= viewport.height - px(16.) {
-                        below
-                    } else {
-                        (anchor.top() - measured.height - px(8.))
-                            .max(px(crate::design::TITLE_BAR_HEIGHT + 8.))
-                    };
-                    anchored = anchored.child(div().absolute().left(x).top(y).w(width).child(card));
-                }
-                _ => corners = corners.child(card),
-            }
+            floating = floating.child(
+                div()
+                    .absolute()
+                    .left(px(rect.x))
+                    .top(px(rect.y))
+                    .w(px(rect.width))
+                    .child(self.render_card(entry.clone(), frame.clone(), cx)),
+            );
         }
         let weak = cx.weak_entity();
-        div().absolute().inset_0().child(
-            div()
-                .id("floating-notice")
-                .test_support()
-                .absolute()
-                .inset_0()
-                .child(corners)
-                .child(banners)
-                .child(sheets)
-                .child(activities)
-                .child(anchored)
-                .child(
-                    canvas(
-                        move |_, _, cx| {
-                            let records = frame.borrow().clone();
-                            let _ = weak.update(cx, |this, cx| {
-                                let occlusions: Vec<_> = records.iter().map(|(_, b)| *b).collect();
-                                let sizes: BTreeMap<_, _> =
-                                    records.into_iter().map(|(id, b)| (id, b.size)).collect();
-                                if this.card_sizes != sizes {
-                                    this.card_sizes = sizes;
-                                    cx.notify();
-                                }
-                                if this.occlusions != occlusions {
-                                    this.occlusions = occlusions.clone();
-                                    cx.emit(NotificationOcclusions(occlusions));
-                                }
-                            });
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .size(px(0.)),
-                ),
+        div().absolute().inset_0().child(floating).child(
+            canvas(
+                move |_, _, cx| {
+                    let records = frame.borrow().clone();
+                    let _ = weak.update(cx, |this, cx| {
+                        let occlusions: Vec<_> =
+                            records.iter().map(|(_, bounds)| *bounds).collect();
+                        let mut changed = false;
+                        for (id, bounds) in records {
+                            if this.card_sizes.get(&id) != Some(&bounds.size) {
+                                this.card_sizes.insert(id, bounds.size);
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            cx.notify();
+                        }
+                        if this.occlusions != occlusions {
+                            this.occlusions = occlusions.clone();
+                            cx.emit(NotificationOcclusions(occlusions));
+                        }
+                    });
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size(px(0.)),
         )
     }
 }

@@ -182,6 +182,10 @@ pub struct TimerState {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
     #[serde(default)]
+    pub saved_bodies: std::sync::Arc<std::collections::HashMap<String, crate::SavedNoteBody>>,
+    #[serde(default)]
+    pub snapshot_changes: std::sync::Arc<Vec<crate::SnapshotChange>>,
+    #[serde(default)]
     pub pending_snapshot_count: usize,
     #[serde(default)]
     pub table_views: std::sync::Arc<crate::LibraryTableViews>,
@@ -252,6 +256,12 @@ pub enum Command {
         note_id: String,
         title: String,
         content: String,
+    },
+    ExportPreviewedNote {
+        note_id: String,
+        version_id: Option<String>,
+        expected_hash: String,
+        path: PathBuf,
     },
     ExportNote {
         note_id: String,
@@ -325,6 +335,8 @@ pub enum Command {
     },
     /// Explicit capture bypasses the passive scan debounce in every mode.
     CaptureSnapshots,
+    PreviewSnapshots,
+    CaptureSelectedSnapshots(Vec<crate::SnapshotSelection>),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DayStat {
@@ -347,5 +359,21 @@ impl Default for TimerState {
             started_at: 0,
             spans: vec![],
         }
+    }
+}
+
+impl Snapshot {
+    /// Current durable text is independent of the selected history version.
+    pub fn note_body(&self, note_id: &str) -> Option<(&str, &str)> {
+        self.saved_bodies
+            .get(note_id)
+            .map(|body| (body.content.as_str(), body.hash.as_str()))
+            .or_else(|| {
+                self.versions
+                    .iter()
+                    .rev()
+                    .find(|v| v.note_id == note_id)
+                    .map(|v| (v.content.as_str(), v.hash.as_str()))
+            })
     }
 }

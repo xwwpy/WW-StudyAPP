@@ -23,10 +23,13 @@ thread_local! { static RECENT: RefCell<Vec<RgbaColor>> = const { RefCell::new(Ve
 pub struct ColorSetting {
     key: &'static str,
     source: Entity<gpui_kit::component::input::InputState>,
+    inline: Entity<gpui_kit::component::input::InputState>,
     draft: ColorDraft,
     last_source: String,
     editor: Option<Entity<gpui_kit::component::input::InputState>>,
     automatic: bool,
+    automatic_label: SharedString,
+    reset_value: Option<String>,
     inherited: u32,
     disabled: bool,
     open: bool,
@@ -54,6 +57,19 @@ impl ColorSetting {
         cx: &mut Context<Self>,
     ) -> Self {
         let draft = ColorDraft::new(source.read(cx).value().to_string(), automatic);
+        let raw = draft.raw().to_owned();
+        let inline =
+            cx.new(|cx| gpui_kit::component::input::InputState::new(window, cx).default_value(raw));
+        let inline_subscription = cx.observe_in(&inline, window, |this, input, window, cx| {
+            let raw = input.read(cx).value().to_string();
+            if raw == this.last_source || this.disabled {
+                return;
+            }
+            this.draft.set_text(raw);
+            this.write_source(window, cx);
+            this.sync_picker(window, cx);
+            cx.notify();
+        });
         let subscription = cx.observe_in(&source, window, |this, source, window, cx| {
             let _ = source;
             this.sync_source(window, cx);
@@ -61,10 +77,13 @@ impl ColorSetting {
         Self {
             key,
             source,
+            inline,
             last_source: draft.raw().to_owned(),
             draft,
             editor: None,
             automatic,
+            automatic_label: "恢复继承".into(),
+            reset_value: None,
             inherited: 0x233631,
             disabled: false,
             open: false,
@@ -73,7 +92,20 @@ impl ColorSetting {
             popup_surface: None,
             layout_revision: 0,
             picker: None,
-            subscriptions: vec![subscription],
+            subscriptions: vec![subscription, inline_subscription],
+        }
+    }
+
+    pub fn with_reset_value(mut self, value: Option<String>) -> Self {
+        self.reset_value = value;
+        self
+    }
+
+    pub fn automatic_label(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let label = label.into();
+        if self.automatic_label != label {
+            self.automatic_label = label;
+            cx.notify();
         }
     }
 
@@ -112,6 +144,10 @@ impl ColorSetting {
             _ => RgbaColor::opaque(self.inherited),
         }
     }
+    pub fn source_valid(&self, cx: &App) -> bool {
+        ColorDraft::new(self.source.read(cx).value().to_string(), self.automatic).choice()
+            != ColorChoice::Invalid
+    }
     pub fn preview_value(&self, cx: &App) -> SharedString {
         if self.open {
             self.draft.raw().to_owned().into()
@@ -125,6 +161,8 @@ impl ColorSetting {
             return;
         }
         self.last_source = raw.clone();
+        self.inline
+            .update(cx, |input, cx| input.set_value(raw.clone(), window, cx));
         self.draft.set_text(raw.clone());
         if let Some(editor) = &self.editor {
             editor.update(cx, |input, cx| input.set_value(raw, window, cx));
@@ -259,6 +297,8 @@ impl ColorSetting {
     fn write_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let value = self.draft.raw().to_owned();
         self.last_source = value.clone();
+        self.inline
+            .update(cx, |input, cx| input.set_value(value.clone(), window, cx));
         self.source
             .update(cx, |input, cx| input.set_value(value, window, cx));
         // InputState::set_value intentionally suppresses InputEvent::Change.
@@ -646,9 +686,8 @@ impl Render for ColorSetting {
         let trigger = if self.disabled {
             self.trigger().into_any_element()
         } else {
-            Popover::new("color-popover")
+            crate::interactive_surface::popover(Popover::new("color-popover"))
                 .open(self.open)
-                .arrow(true)
                 .on_surface_geometry(move |geometry, cx| {
                     let _ = weak.update(cx, |this, cx| {
                         this.surface_geometry(revision, surface.clone(), geometry, cx)
@@ -662,16 +701,36 @@ impl Render for ColorSetting {
                 .children(self.open.then(|| self.palette(cx)))
                 .into_any_element()
         };
-        let mut field = row().min_w_0().gap_2().child(trigger);
+        let mut field = row().min_w_0().flex_wrap().gap_2().child(trigger).child(
+            div()
+                .w(px(164.))
+                .max_w_full()
+                .child(form::input(&self.inline, self.disabled)),
+        );
         if self.automatic && self.draft.choice() != ColorChoice::Automatic {
             field = field.child(
                 Button::new(SharedString::from(format!("color-auto-{}", self.key)))
                     .small()
                     .ghost()
-                    .label("自动适配")
+                    .label(self.automatic_label.clone())
                     .selected(self.draft.choice() == ColorChoice::Automatic)
                     .disabled(self.disabled)
                     .on_click(cx.listener(|this, _, window, cx| this.use_automatic(window, cx))),
+            );
+        }
+        if let Some(value) = self.reset_value.clone() {
+            field = field.child(
+                Button::new(SharedString::from(format!("color-default-{}", self.key)))
+                    .small()
+                    .ghost()
+                    .label("恢复默认")
+                    .disabled(self.disabled || self.source.read(cx).value().as_ref() == value)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.draft.set_text(value.clone());
+                        this.write_source(window, cx);
+                        this.sync_picker(window, cx);
+                        this.dismiss(cx);
+                    })),
             );
         }
         column().min_w_0().gap_1().child(field).children(

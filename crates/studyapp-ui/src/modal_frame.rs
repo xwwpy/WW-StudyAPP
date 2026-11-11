@@ -6,6 +6,7 @@ use crate::{
 };
 use gpui_kit::{
     component::{Sizable, button::ButtonVariants},
+    prelude::FluentBuilder,
     *,
 };
 
@@ -43,6 +44,7 @@ pub struct ModalFrame {
     tone: ModalTone,
     width: ModalWidth,
     scroll: Option<ScrollHandle>,
+    component: studyapp_core::NoticeStyle,
 }
 
 impl ModalFrame {
@@ -55,6 +57,7 @@ impl ModalFrame {
             tone: ModalTone::Neutral,
             width: ModalWidth::Regular,
             scroll: None,
+            component: studyapp_core::NoticeStyle::Dialog,
         }
     }
     pub fn description(mut self, text: impl Into<SharedString>) -> Self {
@@ -66,7 +69,16 @@ impl ModalFrame {
         self
     }
     pub fn tone(mut self, tone: ModalTone) -> Self {
+        self.component = if tone == ModalTone::Neutral {
+            studyapp_core::NoticeStyle::Dialog
+        } else {
+            studyapp_core::NoticeStyle::ModalCard
+        };
         self.tone = tone;
+        self
+    }
+    pub fn component(mut self, component: studyapp_core::NoticeStyle) -> Self {
+        self.component = component;
         self
     }
     pub fn width(mut self, width: ModalWidth) -> Self {
@@ -81,86 +93,130 @@ impl ModalFrame {
 
 impl RenderOnce for ModalFrame {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        use gpui_kit::component::{Icon, IconName};
+        use studyapp_core::{NoticeLayout, NoticeStyle, RgbaColor};
         let palette = theme::palette();
+        let appearance = theme::notification_appearance();
+        let surface = appearance.surface(self.component);
+        let alert = self.component == NoticeStyle::ModalCard;
+        let centered_alert = alert && appearance.layout(self.component) == NoticeLayout::Primary;
+        let near_full = self.component == NoticeStyle::Dialog
+            && appearance.layout(self.component) == NoticeLayout::Alternative;
         let scroll = self.scroll.unwrap_or_else(|| {
             window
                 .use_keyed_state("modal-frame-scroll", cx, |_, _| ScrollHandle::new())
                 .read(cx)
                 .clone()
         });
-        let (symbol, tone) = match self.tone {
+        let raw = surface
+            .background
+            .as_deref()
+            .and_then(studyapp_core::parse_rgba_color)
+            .unwrap_or(RgbaColor::opaque(palette.surface_raised));
+        let background = RgbaColor::new(
+            raw.rgb(),
+            (u16::from(raw.alpha()) * u16::from(surface.opacity) / 100) as u8,
+        );
+        let edge = surface
+            .border_color
+            .as_deref()
+            .and_then(studyapp_core::parse_rgba_color)
+            .unwrap_or(RgbaColor::opaque(palette.border));
+        let (_, tone) = match self.tone {
             ModalTone::Neutral => ("i", Tone::Neutral),
             ModalTone::Warning => ("!", Tone::Warning),
             ModalTone::Danger => ("!", Tone::Danger),
         };
-        let (foreground, soft) = tone.colors(palette);
+        let (accent, _) = tone.colors(palette);
+        let title = typography(TypeRole::Title)
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(self.title);
+        let icon = Icon::new(if self.tone == ModalTone::Danger {
+            IconName::CircleX
+        } else {
+            IconName::TriangleAlert
+        })
+        .with_size(px(if centered_alert { 44. } else { 36. }))
+        .text_color(rgb(accent));
+        let heading = if centered_alert {
+            column().items_center().gap_3().child(icon).child(title)
+        } else {
+            row()
+                .items_center()
+                .gap_3()
+                .children(alert.then_some(icon))
+                .child(title)
+        };
+        let header = column()
+            .id("modal-header")
+            .test_support()
+            .relative()
+            .flex_shrink_0()
+            .gap_2()
+            .p_5()
+            .pr_10()
+            .when(centered_alert, |view| view.text_center())
+            .child(heading)
+            .children(self.description.map(muted))
+            .child(div().absolute().top(px(12.)).right(px(12.)).child(
+                gpui_kit::component::dialog::DialogClose::new().trigger(|button| {
+                    button
+                        .small()
+                        .ghost()
+                        .icon(IconName::Close)
+                        .tooltip("关闭弹窗")
+                        .accessibility_label("关闭弹窗")
+                        .tab_index(-1)
+                }),
+            ));
         let padding = space(palette.spacing, 3.).min(px(32.));
-        let body_height = (window.viewport_size().height * 0.60).min(px(520.));
+        let viewport = window.viewport_size();
+        let custom_width = appearance
+            .surface_patches
+            .get(&self.component)
+            .and_then(|patch| patch.width)
+            .or_else(|| {
+                appearance
+                    .surfaces
+                    .get(&self.component)
+                    .map(|surface| surface.width)
+            });
+        let width = custom_width.map_or(self.width.pixels(), f32::from);
+        let body_height = if near_full {
+            (viewport.height - px(200.)).max(px(80.))
+        } else {
+            (viewport.height * 0.60).min(px(f32::from(surface.max_height).max(120.)))
+        };
         column()
             .id("modal-frame")
             .test_support()
             .min_w_0()
             .gap_0()
-            .w(px(self.width.pixels()).min(window.viewport_size().width * 0.9))
-            .max_h((window.viewport_size().height - px(48.)).max(px(120.)))
-            .rounded(px(16.))
-            .border_1()
-            .border_color(rgb(palette.border))
+            .w(if near_full {
+                viewport.width * 0.94
+            } else {
+                px(width).min(viewport.width * 0.9)
+            })
+            .max_h((viewport.height - px(48.)).max(px(120.)))
+            .rounded(px(f32::from(surface.radius)))
+            .border(px(f32::from(surface.border_width)))
+            .border_color(rgba(edge.packed_rgba()))
             .shadow_lg()
             .overflow_hidden()
-            .bg(rgb(palette.surface_raised))
-            .child(
-                row()
-                    .id("modal-header")
-                    .test_support()
-                    .items_start()
-                    .flex_shrink_0()
-                    .p(padding)
-                    .gap_3()
-                    .child(
-                        div()
-                            .size(px(36.))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(rgb(soft))
-                            .text_color(rgb(foreground))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(symbol),
-                    )
-                    .child(
-                        column()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(
-                                typography(TypeRole::Title)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(self.title),
-                            )
-                            .children(self.description.map(muted)),
-                    )
-                    .child(div().size(px(28.)).flex_shrink_0().child(
-                        gpui_kit::component::dialog::DialogClose::new().trigger(|button| {
-                            button
-                                .small()
-                                .ghost()
-                                .icon(gpui_kit::assets::IconName::Close)
-                                .tooltip("关闭弹窗")
-                                .accessibility_label("关闭弹窗")
-                                .tab_index(-1)
-                        }),
-                    )),
-            )
+            .bg(rgba(background.packed_rgba()))
+            .text_color(rgb(studyapp_core::readable_theme_color(
+                palette.text,
+                &[background.over(palette.surface)],
+            )))
+            .child(header)
             .child(
                 scroll_body("modal-content-scroll", &scroll)
                     .test_support()
                     .min_h_0()
                     .max_h(body_height)
-                    .p(padding)
-                    .pt_0()
-                    .gap(space(palette.spacing, 2.))
+                    .px(padding)
+                    .pb(padding)
+                    .when(centered_alert, |view| view.text_center())
                     .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
                     .child(self.body),
             )
@@ -170,7 +226,9 @@ impl RenderOnce for ModalFrame {
                     .test_support()
                     .flex_shrink_0()
                     .min_w_0()
+                    .flex_wrap()
                     .justify_end()
+                    .when(centered_alert, |view| view.justify_center())
                     .px(padding)
                     .py(space(palette.spacing, 2.).min(px(24.)))
                     .border_t_1()

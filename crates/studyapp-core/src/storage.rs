@@ -20,6 +20,12 @@ pub(crate) struct State {
     #[serde(default)]
     pub table_views: Arc<crate::LibraryTableViews>,
     pub settings: Settings,
+    #[serde(default)]
+    pub saved_bodies: Arc<HashMap<String, SavedNoteBody>>,
+    #[serde(default)]
+    pub snapshot_warning: Option<String>,
+    #[serde(skip)]
+    pub snapshot_changes: Arc<Vec<SnapshotChange>>,
     pub notes: Vec<Note>,
     #[serde(default)]
     pub folders: Vec<NoteFolder>,
@@ -97,6 +103,9 @@ impl State {
         Self {
             table_views: Default::default(),
             settings: Settings::default(),
+            saved_bodies: Arc::default(),
+            snapshot_changes: Arc::default(),
+            snapshot_warning: None,
             notes: vec![],
             folders: vec![],
             sessions: vec![],
@@ -120,8 +129,22 @@ impl State {
             document_stamps: HashMap::new(),
         }
     }
+    pub fn note_body(&self, id: &str) -> Option<(&str, &str)> {
+        self.saved_bodies
+            .get(id)
+            .map(|b| (b.content.as_str(), b.hash.as_str()))
+            .or_else(|| {
+                self.versions
+                    .iter()
+                    .rev()
+                    .find(|v| v.note_id == id)
+                    .map(|v| (v.content.as_str(), v.hash.as_str()))
+            })
+    }
     pub fn snapshot(&self, path: String) -> Snapshot {
         Snapshot {
+            saved_bodies: self.saved_bodies.clone(),
+            snapshot_changes: self.snapshot_changes.clone(),
             pending_snapshot_count: self.candidates.len(),
             table_views: self.table_views.clone(),
             settings: self.settings.clone(),
@@ -192,6 +215,13 @@ impl State {
             }
         }
         let notes = ids;
+        for (id, body) in self.saved_bodies.iter() {
+            ensure!(
+                self.notes.iter().any(|note| note.id == *id && note.managed)
+                    && body.hash == crate::notes::hash(&body.content),
+                "持久正文关联或摘要无效"
+            );
+        }
         let mut version_ids = std::collections::HashSet::new();
         for v in self.versions.iter() {
             use sha2::{Digest, Sha256};

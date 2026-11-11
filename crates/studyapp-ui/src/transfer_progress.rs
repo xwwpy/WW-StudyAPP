@@ -1,45 +1,41 @@
 //! Progress for a background file operation. Fractions apply to one phase.
 use gpui_kit::*;
+use studyapp_core::NoticeLayout;
 
 #[derive(Clone, Debug)]
 pub struct TransferProgress {
     pub label: String,
-    fraction: Option<f32>,
+    completed: Option<(u64, u64)>,
 }
 
 impl TransferProgress {
     pub fn bytes(phase: &str, done: u64, total: u64) -> Self {
         Self {
             label: format!("{phase} · {done} / {total} 字节"),
-            fraction: (total != 0).then(|| (done as f64 / total as f64).clamp(0., 1.) as f32),
+            completed: (total != 0 && done <= total).then_some((done, total)),
         }
     }
+    pub fn completed(&self) -> Option<(u64, u64)> {
+        self.completed
+    }
     pub fn panel(&self) -> Div {
-        let mut panel = crate::settings_components::section("正在迁移")
+        self.panel_with_layout(NoticeLayout::Primary)
+    }
+    pub fn panel_with_layout(&self, layout: NoticeLayout) -> Div {
+        crate::settings_components::section("正在迁移")
             .child(crate::components::muted("迁移期间暂时不能编辑。"))
-            .child(crate::components::muted(self.label.clone()));
-        if let Some(fraction) = self.fraction {
-            panel = panel.child(
-                div()
-                    .h(px(5.))
-                    .w_full()
-                    .bg(crate::theme::color(crate::components::BG))
-                    .child(
-                        div()
-                            .h_full()
-                            .w(relative(fraction))
-                            .bg(crate::theme::color(crate::components::GREEN)),
-                    ),
-            );
-        }
-        panel
+            .child(crate::notification_surfaces::hud(
+                self.label.clone(),
+                self.completed,
+                layout,
+            ))
     }
 }
 impl From<&str> for TransferProgress {
     fn from(label: &str) -> Self {
         Self {
             label: label.into(),
-            fraction: None,
+            completed: None,
         }
     }
 }

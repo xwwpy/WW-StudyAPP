@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod action_sheet;
+mod activity_ui;
 mod app;
 mod app_migration;
 mod app_startup;
@@ -17,6 +19,7 @@ mod document_renderer;
 mod draft_moves;
 mod drafts;
 mod editor_lifecycle;
+mod export_panel;
 mod external_drop;
 mod external_drop_ui;
 mod feedback;
@@ -58,11 +61,14 @@ mod overlay_regions;
 mod owned_poll;
 mod preferences;
 mod resize_overlay;
+mod review_settings;
 mod selection_settings;
 mod settings_cache;
 mod settings_color;
 mod settings_components;
 mod settings_lists;
+mod settings_navigation;
+mod settings_numbers;
 mod settings_search;
 mod settings_ui;
 mod shortcuts;
@@ -101,6 +107,7 @@ mod smoke_visibility;
 mod smoke_window_drag;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_workspace;
+mod snapshot_preview;
 mod snapshot_settings;
 mod storage_backend;
 mod storage_policy;
@@ -126,6 +133,7 @@ mod update_signature;
 mod update_ui;
 mod views;
 mod web_editor_host;
+mod widget_preset_settings;
 mod window_chrome;
 mod worker;
 mod workspace_layout;

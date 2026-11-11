@@ -3,6 +3,7 @@ use crate::{app::StudyApp, components::*, controls::Button, settings_components 
 use gpui_kit::{
     component::{
         Disableable, Selectable, Sizable,
+        button::ButtonVariants,
         menu::{DropdownMenu, PopupMenuItem},
     },
     *,
@@ -18,6 +19,8 @@ impl StudyApp {
             .map(|s| s.appearance.list_style)
             .unwrap_or_default();
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
+        let pages = LIST_LEVELS.div_ceil(4);
+        let page = self.preferences_ui.list_levels_page.min(pages - 1);
         form::section("多级无序列表")
             .child(muted(
                 "按实际列表嵌套层级显示；有序列表和任务框不变。第九级起重复这八级，不修改源文。",
@@ -53,29 +56,10 @@ impl StudyApp {
                         )
                     })),
             )
-            .child(
-                crate::controls::Checkbox::new("list-indent-subtree")
-                    .label("Tab 调整当前项时，同时调整其子项（默认仅当前行）")
-                    .checked(style.indent_subtree)
-                    .disabled(busy)
-                    .on_click(cx.listener(|this, value, window, cx| {
-                        if this.preferences_ui.busy
-                            || this.preferences_ui.replacing
-                            || this.storage_busy
-                        {
-                            return;
-                        }
-                        if let Some(draft) = &mut this.preferences_ui.draft {
-                            draft.appearance.list_style.indent_subtree = *value;
-                        }
-                        this.refresh_appearance(window, cx);
-                        cx.notify();
-                    })),
-            )
             .child(muted(
                 "选择预设会替换逐级自定义。每级可单独选择标记，或恢复沿用预设。",
             ))
-            .children((0..LIST_LEVELS).map(|level| {
+            .children((page * 4..((page + 1) * 4).min(LIST_LEVELS)).map(|level| {
                 let owner = cx.weak_entity();
                 let marker = style.marker(level + 1);
                 form::settings_row(
@@ -145,6 +129,38 @@ impl StudyApp {
                         }),
                 )
             }))
+            .child(
+                row()
+                    .flex_wrap()
+                    .child(
+                        Button::new("list-levels-previous")
+                            .small()
+                            .ghost()
+                            .label("上一页")
+                            .disabled(busy || page == 0)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.preferences_ui.list_levels_page = page.saturating_sub(1);
+                                cx.notify();
+                            })),
+                    )
+                    .child(muted(format!(
+                        "第 {} / {} 页 · 共 {} 级",
+                        page + 1,
+                        pages,
+                        LIST_LEVELS
+                    )))
+                    .child(
+                        Button::new("list-levels-next")
+                            .small()
+                            .ghost()
+                            .label("下一页")
+                            .disabled(busy || page + 1 >= pages)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.preferences_ui.list_levels_page = (page + 1).min(pages - 1);
+                                cx.notify();
+                            })),
+                    ),
+            )
             .child(muted(
                 "适用于所有主题、正文和原生摘要；即时预览，保存全部设置后写入资料库。",
             ))

@@ -92,11 +92,8 @@ impl StudyApp {
                         if record.active()
                             && let Some(target) = record.save_target.as_ref()
                             && self.snapshot.as_ref().is_some_and(|s| {
-                                s.versions
-                                    .iter()
-                                    .rev()
-                                    .find(|v| &v.note_id == target)
-                                    .is_some_and(|v| v.content == record.draft.content)
+                                s.note_body(target)
+                                    .is_some_and(|(content, _)| content == record.draft.content)
                             })
                         {
                             record.retire(
@@ -314,9 +311,10 @@ impl StudyApp {
         let saving = self.note_saving;
         let same_reader = !self.reader_key.is_empty()
             && self.snapshot.as_ref().is_some_and(|snapshot| {
-                snapshot.versions.iter().any(|version| {
-                    version.id == self.reader_key
-                        && Some(&version.note_id) == draft.note_id.as_ref()
+                draft.note_id.as_ref().is_some_and(|id| {
+                    snapshot
+                        .note_body(id)
+                        .is_some_and(|(_, hash)| self.reader_key == format!("current:{id}:{hash}"))
                 })
             })
             && self.note_content.read(cx).value() == draft.content;
@@ -425,30 +423,32 @@ impl StudyApp {
                 .notes
                 .iter()
                 .find(|n| Some(&n.id) == self.selected_note.as_ref() && (!n.detached || copy))?;
-            let version = s.versions.iter().rev().find(|v| {
-                v.note_id == note.id
-                    && (!copy || self.selected_version.as_ref().is_none_or(|id| id == &v.id))
-            })?;
-            if version
-                .content
-                .starts_with(studyapp_core::documents::DOCUMENT_PREFIX)
-            {
+            let (content, hash) = if copy && let Some(version_id) = self.selected_version.as_ref() {
+                let version = s
+                    .versions
+                    .iter()
+                    .find(|v| v.note_id == note.id && &v.id == version_id)?;
+                (version.content.as_str(), version.hash.as_str())
+            } else {
+                s.note_body(&note.id)?
+            };
+            if content.starts_with(studyapp_core::documents::DOCUMENT_PREFIX) {
                 return None;
             }
             Some(NoteDraft {
                 asset_group: crate::media::asset_group(
                     (!copy).then_some(note.id.as_str()),
-                    &version.content,
+                    content,
                 ),
                 note_id: (!copy).then(|| note.id.clone()),
-                expected_hash: (!copy).then(|| version.hash.clone()),
+                expected_hash: (!copy).then(|| hash.to_owned()),
                 folder_id: note.folder_id.clone(),
                 title: if copy {
                     format!("{}（副本）", note.title)
                 } else {
                     note.title.clone()
                 },
-                content: version.content.clone(),
+                content: content.to_owned(),
             })
         });
         if let Some(draft) = draft {
@@ -818,41 +818,6 @@ impl StudyApp {
             }))
             .child(self.note_content.clone());
         column().flex_1().min_h_0().h_full().min_w_0().child(view)
-    }
-    pub fn export_note(&self, note_id: String, version_id: Option<String>) {
-        let sender = self.worker.sender.clone();
-        let library = self.last_library.clone();
-        let extension = self
-            .snapshot
-            .as_ref()
-            .and_then(|snapshot| {
-                snapshot.versions.iter().rev().find(|version| {
-                    version.note_id == note_id
-                        && version_id.as_ref().is_none_or(|id| id == &version.id)
-                })
-            })
-            .and_then(|version| {
-                studyapp_core::documents::DocumentPreview::from_content(&version.content)
-            })
-            .map(|document| document.kind)
-            .unwrap_or_else(|| "md".into());
-        std::thread::spawn(move || {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_title("导出笔记原文（请选择新文件名）")
-                .add_filter(extension.to_uppercase(), &[extension.as_str()])
-                .set_file_name(format!("笔记快照.{extension}"))
-                .save_file()
-            {
-                let _ = sender.send(crate::worker::Work::Scoped {
-                    library,
-                    work: Box::new(crate::worker::Work::Apply(Command::ExportNote {
-                        note_id,
-                        version_id,
-                        path,
-                    })),
-                });
-            }
-        });
     }
 }
 

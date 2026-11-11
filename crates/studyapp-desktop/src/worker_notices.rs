@@ -37,7 +37,9 @@ impl Context {
                 | Command::Submit { .. }
                 | Command::Manual { .. }
                 | Command::EditSession { .. } => Self::Save,
-                Command::Backup(_) | Command::ExportNote { .. } => Self::Export,
+                Command::Backup(_)
+                | Command::ExportNote { .. }
+                | Command::ExportPreviewedNote { .. } => Self::Export,
                 Command::Import(_) | Command::Restore(_) => Self::Import,
                 _ => Self::Operation,
             },
@@ -184,6 +186,7 @@ pub(crate) fn work_key(work: &Work, generation: u64) -> String {
                     | Command::MoveFolder { folder_id, .. }
                     | Command::DeleteFolder { folder_id } => folder_id.hash(hash),
                     Command::ExportNote { note_id, path, .. }
+                    | Command::ExportPreviewedNote { note_id, path, .. }
                     | Command::Relink { note_id, path } => {
                         note_id.hash(hash);
                         path.hash(hash);

@@ -2,7 +2,7 @@
 use crate::{
     app::{Page, StudyApp},
     components::*,
-    controls::{Button, Checkbox},
+    controls::Button,
     settings_components as form,
     settings_ui::SettingsSection,
 };
@@ -97,7 +97,8 @@ impl StudyApp {
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let mut panel = form::section("本地日志")
             .child(
-                Checkbox::new("logging-enabled")
+                studyapp_ui::settings_switch::SettingSwitch::new("logging-enabled")
+                    .default_value(true)
                     .label("启用日志")
                     .checked(settings.enabled)
                     .disabled(busy)
@@ -111,6 +112,9 @@ impl StudyApp {
             .child(muted(
                 "默认开启 Info。日志仅保存在本机；通知开关、免打扰和提示音不会改变日志输出。",
             ));
+        if !settings.enabled {
+            panel = panel.child(muted("启用日志后可调整输出等级和目录；当前草稿保留。"));
+        }
         let mut levels = row().flex_wrap().gap_1();
         for level in LogLevel::ALL {
             levels = levels.child(
@@ -121,7 +125,7 @@ impl StudyApp {
                 .small()
                 .ghost()
                 .label(level.label())
-                .disabled(busy)
+                .disabled(busy || !settings.enabled)
                 .when(settings.minimum_level == level, |button| {
                     button.bg(crate::theme::selection_color())
                 })
@@ -135,7 +139,6 @@ impl StudyApp {
         }
         panel=panel.child(form::settings_row("输出等级",levels)).child(muted("Error：错误；Warn：警告及错误；Info：常规运行信息；Debug / Trace：更细的阶段与计数。任何等级都不记录正文、剪贴板、凭据、完整路径或技术堆栈。"));
         if let Some(input) = &self.preferences_ui.logging_directory {
-            let expanded = self.preferences_ui.logging_directory_expanded;
             panel = panel.child(
                 form::DirectoryField::new(
                     "logging-directory-detail",
@@ -153,26 +156,14 @@ impl StudyApp {
                     },
                 )
                 .fallback("应用本地数据 / logs")
-                .expanded(expanded)
-                .editor(form::input(input, busy))
+                .editor(form::input(input, busy || !settings.enabled))
                 .actions(
                     row()
-                        .child(
-                            Button::new("logging-directory-expand")
-                                .small()
-                                .ghost()
-                                .action(if expanded { "收起" } else { "编辑路径" })
-                                .disabled(busy)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.preferences_ui.logging_directory_expanded = !expanded;
-                                    cx.notify();
-                                })),
-                        )
                         .child(
                             Button::new("pick-logging-directory")
                                 .small()
                                 .action("选择文件夹")
-                                .disabled(busy)
+                                .disabled(busy || !settings.enabled)
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     let current = this
                                         .preferences_ui
@@ -193,7 +184,7 @@ impl StudyApp {
                                 .small()
                                 .ghost()
                                 .action("使用默认位置")
-                                .disabled(busy)
+                                .disabled(busy || !settings.enabled)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.preferences_ui.logging_picker.invalidate();
                                     if let Some(input) = &this.preferences_ui.logging_directory {

@@ -30,25 +30,29 @@ pub(crate) fn resize(window: &mut Window, requested: Size<Pixels>) {
     window.resize(requested);
 }
 
-/// Exercise the compact library dropdown and its keyboard navigation. PopupMenu
-/// items deliberately have no app-owned button IDs; the chosen item is asserted
-/// by each caller's resulting application state.
+/// Exercise the actual bottom Action Sheet, not the unrelated popup menu.
+/// Callers assert the resulting note/folder operation as before.
 pub(crate) fn library_add(
     window: &mut Window,
     folder: bool,
     view: &Entity<StudyApp>,
     cx: &mut App,
 ) {
-    // Previous scenario results can overlap + on a narrow window. Notification
-    // geometry, dismissal and queue behavior have their own native coverage.
     view.update(cx, |app, cx| app.clear_notices(cx));
     window.render_frame(cx);
     window.click("library-add-menu", cx);
-    window.press("down", cx);
-    if folder {
-        window.press("down", cx);
-    }
-    window.press("enter", cx);
+    window.render_frame(cx);
+    assert!(view.read(cx).action_sheet_open);
+    assert!(window.try_find("sheet-cancel").is_some());
+    window.click(
+        if folder {
+            "sheet-new-folder"
+        } else {
+            "sheet-new-note"
+        },
+        cx,
+    );
+    assert!(!view.read(cx).action_sheet_open);
 }
 
 pub(crate) fn editor_action(
@@ -1498,8 +1502,8 @@ pub async fn exercise(
                 .map(|v| (v.id.clone(), v.content.clone()))
                 .collect::<Vec<_>>();
             window.click(("nav", 4_usize), cx);
-            window.click("settings-section-storage", cx);
-            window.click("storage-copies", cx);
+            crate::smoke_settings::select_page(window, view, "storage", cx);
+            crate::smoke_settings::select_page(window, view, "storage-copies", cx);
             click_scrolled(window, "refresh-storage".into(), "page-scroll", cx);
             versions
         })

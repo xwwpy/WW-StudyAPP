@@ -63,6 +63,8 @@ fn version(id: &str, hash: &str) -> NoteVersion {
 }
 fn snapshot() -> Snapshot {
     Snapshot {
+        saved_bodies: Default::default(),
+        snapshot_changes: Default::default(),
         pending_snapshot_count: 0,
         table_views: Default::default(),
         settings: Settings::default(),
@@ -308,4 +310,27 @@ ame.md"
         r"part
 ame.md"
     );
+}
+
+#[test]
+fn unsnapshotted_current_body_updates_search_and_status_without_reindexing_history() {
+    let mut snapshot = snapshot();
+    let index = LibraryIndex::build(&snapshot);
+    let history = snapshot.versions.clone();
+    Arc::make_mut(&mut snapshot.saved_bodies).insert(
+        "note".into(),
+        studyapp_core::SavedNoteBody {
+            content: "uniquely saved current body".into(),
+            hash: "current-hash".into(),
+        },
+    );
+    assert!(index.needs_update(&snapshot));
+    let updated = LibraryIndex::build(&snapshot);
+    assert!(updated.matches("note", "uniquely saved"));
+    assert_eq!(
+        updated.note("note").unwrap().version_count,
+        snapshot.versions.len()
+    );
+    assert!(Arc::ptr_eq(&history, &snapshot.versions));
+    assert!(!updated.needs_update(&snapshot));
 }
