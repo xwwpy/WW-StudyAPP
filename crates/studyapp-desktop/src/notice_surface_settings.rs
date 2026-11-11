@@ -464,6 +464,11 @@ impl StudyApp {
             .preferences_ui
             .notice_component
             .unwrap_or(NoticeStyle::Bubble);
+        if style.configurable_fields().is_empty() {
+            return form::section("组件默认内容").child(muted(
+                "此组件的任务状态、表单、菜单或必要风险说明由实际用途提供，没有可选隐藏字段；可在本页调整布局和外观。",
+            ));
+        }
         let content = self
             .preferences_ui
             .draft

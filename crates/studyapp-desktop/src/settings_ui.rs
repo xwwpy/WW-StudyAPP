@@ -6817,6 +6817,49 @@ mod scoped_tests {
         }
     }
 
+    struct NoticeFieldsFixture(Entity<StudyApp>);
+    impl Render for NoticeFieldsFixture {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.0.update(cx, |app, cx| app.notice_content_controls(cx))
+        }
+    }
+    #[gpui_kit::test]
+    fn components_without_optional_fields_do_not_offer_inoperative_content_presets(
+        cx: &mut TestAppContext,
+    ) {
+        let (app, visual) = fixture(cx);
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            NoticeFieldsFixture(app.clone())
+        });
+        for style in studyapp_core::NoticeStyle::ALL {
+            visual.update(|window, cx| {
+                app.update(cx, |app, cx| {
+                    app.preferences_ui.notice_component = Some(style);
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                let configurable = !style.configurable_fields().is_empty();
+                assert_eq!(
+                    window.try_find("notice-fields-brief").is_some(),
+                    configurable,
+                    "{style:?}"
+                );
+                assert_eq!(
+                    window.try_find("notice-fields-detailed").is_some(),
+                    configurable,
+                    "{style:?}"
+                );
+                assert_eq!(
+                    window.try_find("notice-fields-inherit").is_some(),
+                    configurable,
+                    "{style:?}"
+                );
+                assert!(!app.read(cx).settings_dirty(cx));
+            });
+        }
+    }
+
     struct WorkspaceFixture {
         app: Entity<StudyApp>,
         scroll: gpui_kit::ScrollHandle,
