@@ -1253,17 +1253,43 @@ impl StudyApp {
     pub fn settings(
         &self,
         snapshot: &Snapshot,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        let owner = cx.weak_entity();
+        let data_path = snapshot.data_path.clone();
+        div().size_full().min_w_0().min_h_0().child(
+            container_query(move |available, window, cx| {
+                owner
+                    .update(cx, |this, cx| {
+                        this.settings_workspace(&data_path, available, window, cx)
+                            .into_any_element()
+                    })
+                    .unwrap_or_else(|_| div().into_any_element())
+            })
+            .size_full(),
+        )
+    }
+
+    fn settings_workspace(
+        &self,
+        data_path: &str,
+        available: Size<Pixels>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        use crate::settings_components as form;
         use crate::settings_ui::{SettingsSection, StoragePage};
-        let compact = window.viewport_size().width < px(1120.);
+        let compact = form::compact_navigation(
+            available.width,
+            px(f32::from(self.preferences_ui.browsing.width)),
+        );
         let section = self.preferences_ui.section;
         let content = page_content().id("settings-page-content").test_support().flex_shrink_0().gap_3().child(self.preference_controls(cx))
-            .children((section == SettingsSection::Storage && self.preferences_ui.storage_page == StoragePage::Library).then(|| self.library_storage_controls(&snapshot.data_path, cx)))
+            .children((section == SettingsSection::Storage && self.preferences_ui.storage_page == StoragePage::Library).then(|| self.library_storage_controls(data_path, cx)))
             .children((section == SettingsSection::Storage && matches!(self.preferences_ui.storage_page, StoragePage::Overview | StoragePage::Copies)).then(|| self.storage_view(cx)))
             .children((section == SettingsSection::Sync).then(|| self.sync_panel.clone()))
-            .children((section == SettingsSection::AboutAccount).then(|| card().id("about-identity").test_support()
+            .children((section == SettingsSection::AboutAccount).then(|| form::section("关于").id("about-identity").test_support()
                 .child(row().gap_4().items_center()
                     .child(img("images/app-icon.png").size(px(56.)))
                     .child(column().gap_1().child(heading("WW-StudyApp"))
@@ -1277,10 +1303,10 @@ impl StudyApp {
                     .child(Button::new("about-license").ghost().action("MIT 许可")
                         .on_click(|_, _, cx| cx.open_url("https://github.com/xwwpy/WW-StudyAPP/blob/main/LICENSE"))))))
             .children((section == SettingsSection::AboutAccount).then(|| self.update_panel.clone()))
-            .children((section == SettingsSection::AboutAccount).then(|| card().child(heading("账户与微信登录"))
+            .children((section == SettingsSection::AboutAccount).then(|| form::section("账户与微信登录")
                 .child(row().child(pill("本地访客", LIGHT)).child(Button::new("wechat-disabled").label("微信登录 · 尚未连接服务").disabled(true)))
                 .child(muted("无需登录即可使用本地功能及自己的文件同步服务。微信登录仍保留后续接入。"))))
-            .children((section == SettingsSection::AboutAccount).then(|| card().child(heading("资料与隐私"))
+            .children((section == SettingsSection::AboutAccount).then(|| form::section("资料与隐私")
                 .child(muted("笔记、草稿和学习记录优先保存在本机。同步仅连接你自行配置的服务。"))
                 .child(muted("托管笔记保存正文，版本历史由快照策略管理；外部文件保持只读。学习时长由你确认后计入，并非对实际专注程度的自动测量。"))));
         let transitioning = !cx.reduce_motion()
@@ -1324,9 +1350,13 @@ impl StudyApp {
                             .w(available.width)
                             .h(available.height)
                             .min_w_0()
-                            .pr_3()
+                            .px(px(form::PANE_INSET))
+                            .pt_2()
                             .pb_4()
-                            .children(this.auxiliary_settings_page(available.width, cx))
+                            .children(this.auxiliary_settings_page(
+                                (available.width - px(form::PANE_INSET * 2.)).max(px(0.)),
+                                cx,
+                            ))
                             .into_any_element()
                     })
                     .unwrap_or_else(|_| column().into_any_element())
@@ -1347,12 +1377,13 @@ impl StudyApp {
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
-                .pr_3()
+                .px(px(form::PANE_INSET))
+                .pt_2()
                 .pb_4()
                 .child(content)
                 .into_any_element()
         };
-        let mut workspace = row().flex_1().min_h_0().min_w_0().items_stretch().gap_3();
+        let mut workspace = row().flex_1().min_h_0().min_w_0().items_stretch().gap_0();
         if !compact {
             workspace = workspace
                 .child(
@@ -1363,10 +1394,14 @@ impl StudyApp {
                 .child(self.settings_tree_separator(cx));
         }
         let mut root = column()
+            .id("settings-workspace")
+            .test_support()
             .relative()
             .h_full()
             .min_h_0()
             .min_w_0()
+            .gap_0()
+            .bg(rgb(crate::theme::palette().surface))
             .child(
                 workspace.child(
                     column()
@@ -1375,7 +1410,7 @@ impl StudyApp {
                         .flex_1()
                         .min_h_0()
                         .min_w_0()
-                        .gap_2()
+                        .gap_0()
                         .child(self.settings_header(compact, cx))
                         .child(self.settings_search_bar(cx))
                         .child(inner)
@@ -1416,7 +1451,8 @@ impl StudyApp {
                             .left_0()
                             .top_0()
                             .bottom_0()
-                            .p_3()
+                            .border_r_1()
+                            .border_color(crate::theme::color(BORDER))
                             .occlude()
                             .bg(crate::theme::color(BG))
                             .child(self.settings_tree(cx)),

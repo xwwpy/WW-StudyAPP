@@ -146,7 +146,7 @@ pub fn virtual_rows(
                 div()
                     .w_full()
                     .min_w_0()
-                    .pr_2()
+                    .px(px(PANE_INSET))
                     .child(render(row, window, cx))
                     .into_any_element()
             })
@@ -158,6 +158,15 @@ pub fn virtual_rows(
             state,
             px(0.),
         ))
+}
+
+/// Shared form geometry. A tree stays visible whenever the allocated settings
+/// pane can fit it and a usable form, independently of the main navigation.
+pub const PANE_INSET: f32 = 16.;
+pub const LABEL_WIDTH: f32 = 176.;
+pub const CONTROL_WIDTH: f32 = 260.;
+pub fn compact_navigation(available: Pixels, navigation: Pixels) -> bool {
+    available < navigation + px(6. + PANE_INSET * 2. + LABEL_WIDTH + CONTROL_WIDTH + 12.)
 }
 
 pub fn navigation_button(
@@ -172,10 +181,11 @@ pub fn navigation_button(
         .flat_selection()
         .selection_category(studyapp_core::SelectionCategory::Navigation)
         .selected(selected)
-        .label(label)
+        .wrapped_label(label)
         .w_full()
         .min_h(px(36.))
-        .px_3()
+        .rounded(px(2.))
+        .px_2()
         .justify_start()
 }
 
@@ -207,21 +217,32 @@ fn section_frame(title: SharedString, actions: Option<AnyElement>) -> Div {
         .w_full()
         .min_w_0()
         .flex_wrap()
-        .gap_2()
+        .gap_3()
         .pb_2()
-        .child(heading(title.clone()).min_w_0().flex_1())
+        .child(
+            typography(crate::design::TypeRole::Body)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title.clone()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(16.))
+                .h(px(1.))
+                .bg(crate::theme::color(BORDER)),
+        )
         .children(actions);
+    // Groups share the form canvas. Only the heading rule separates them;
+    // nested controls never acquire another padded, rounded card surface.
     column()
         .relative()
-        .child(crate::settings_anchor::probe(title.clone()))
+        .child(crate::settings_anchor::probe(title))
+        .w_full()
         .min_w_0()
         .flex_shrink_0()
-        .gap_3()
-        .p(px(20.))
-        .rounded(px(crate::design::CARD_RADIUS))
-        .border_1()
-        .border_color(crate::theme::color(BORDER))
-        .bg(crate::theme::color(0xFFFFFF))
+        .gap_2()
+        .pt_2()
+        .pb_3()
         .child(header)
 }
 
@@ -251,20 +272,21 @@ pub fn settings_row(label: impl Into<SharedString>, control: impl IntoElement) -
         .min_w_0()
         .flex_wrap()
         .items_start()
-        .gap_3()
-        .py_3()
+        .gap_2()
+        .py_1()
         .child(
             div()
-                .flex_basis(px(180.))
-                .flex_grow(0.7)
+                .flex_basis(px(LABEL_WIDTH))
+                .flex_shrink_0()
                 .min_w_0()
+                .max_w_full()
+                .pt_2()
                 .text_sm()
-                .font_weight(FontWeight::MEDIUM)
                 .child(label),
         )
         .child(
             div()
-                .flex_basis(px(280.))
+                .flex_basis(px(CONTROL_WIDTH))
                 .flex_grow(1.)
                 .max_w_full()
                 .min_w_0()
@@ -402,7 +424,7 @@ pub fn input(state: &Entity<InputState>, disabled: bool) -> Input {
                 + px(10.),
         ))
         .disabled(disabled)
-        .rounded(px(crate::design::CONTROL_RADIUS))
+        .rounded(px(3.))
         .border_color(rgb(crate::theme::palette().border_strong))
         .bg(rgb(crate::theme::palette().inset))
 }
@@ -414,7 +436,7 @@ pub fn binding_cell() -> Div {
         .px_2()
         .py_1()
         .gap_1()
-        .rounded(px(crate::design::CONTROL_RADIUS))
+        .rounded(px(3.))
         .border_1()
         .border_color(crate::theme::color(BORDER))
         .bg(crate::theme::color(BG))
@@ -462,6 +484,154 @@ mod tests {
     use gpui_kit::{TestSupportExt, component::input::InputState};
     use std::cell::RefCell;
     use std::{cell::Cell, collections::BTreeSet, rc::Rc};
+
+    #[gpui_kit::test]
+    fn compact_groups_align_control_columns_and_stack_without_extra_card_frames(
+        cx: &mut TestAppContext,
+    ) {
+        struct FormFixture {
+            width: f32,
+        }
+        impl Render for FormFixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let control = |id| {
+                    div()
+                        .id(id)
+                        .test_support()
+                        .w_full()
+                        .h(px(34.))
+                        .bg(gpui_kit::rgb(0x123456))
+                };
+                super::column()
+                    .w(px(self.width))
+                    .p(px(super::PANE_INSET))
+                    .bg(gpui_kit::rgb(0xFFFFFF))
+                    .child(
+                        super::section("第一组")
+                            .id("form-group-one")
+                            .test_support()
+                            .child(
+                                super::settings_row("短名称", control("form-control-one"))
+                                    .id("form-row-one")
+                                    .test_support(),
+                            )
+                            .child(super::settings_row(
+                                "较长的设置名称",
+                                control("form-control-two"),
+                            )),
+                    )
+                    .child(
+                        super::section("第二组")
+                            .id("form-group-two")
+                            .test_support()
+                            .child(super::settings_row(
+                                "另一个设置",
+                                control("form-control-three"),
+                            )),
+                    )
+            }
+        }
+        cx.update(gpui_kit::init);
+        let (view, visual) = cx.add_window_view(|_, _| FormFixture { width: 720. });
+        for font in [12, 14, 22] {
+            for width in [720., 360., 720.] {
+                view.update(visual, |view, cx| {
+                    view.width = width;
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                visual.update(|window, cx| {
+                    let appearance = studyapp_core::AppearanceSettings {
+                        font_size: font,
+                        ..Default::default()
+                    };
+                    crate::theme::apply(&appearance, false, cx);
+                    window.render_frame(cx);
+                    let row = window.find("form-row-one").bounds();
+                    let controls = ["form-control-one", "form-control-two", "form-control-three"]
+                        .map(|id| window.find(id).bounds());
+                    for control in controls {
+                        assert!((control.left() - controls[0].left()).abs() < px(1.));
+                        assert!(control.right() <= px(width - super::PANE_INSET + 1.));
+                    }
+                    if width > 500. {
+                        assert!(
+                            (controls[0].left() - row.left() - px(super::LABEL_WIDTH + 8.)).abs()
+                                < px(1.)
+                        );
+                        assert!(row.size.height <= px(50.));
+                    } else {
+                        assert!((controls[0].left() - row.left()).abs() < px(1.));
+                        assert!(controls[0].top() >= row.top() + px(24.));
+                    }
+                    let first = window.find("form-group-one").bounds();
+                    let second = window.find("form-group-two").bounds();
+                    assert!(second.top() >= first.bottom());
+                    let surfaces = window
+                        .painted_quads()
+                        .iter()
+                        .filter(|quad| {
+                            quad.background.as_solid() == Some(gpui_kit::rgb(0xFFFFFF).into())
+                        })
+                        .count();
+                    assert_eq!(
+                        surfaces, 1,
+                        "groups must share one canvas instead of painting nested cards"
+                    );
+                });
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn narrow_tree_wraps_complete_names_at_large_type_without_losing_activation(
+        cx: &mut TestAppContext,
+    ) {
+        struct TreeFixture(Rc<Cell<usize>>);
+        impl Render for TreeFixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let calls = self.0.clone();
+                super::column()
+                    .w(px(176.))
+                    .child(
+                        super::navigation_button(
+                            "tree-long-name",
+                            "通知规则与场景及分区设置 / Notifications, delivery channels, queue and appearance settings",
+                            true,
+                        )
+                        .on_click(move |_, _, _| calls.set(calls.get() + 1)),
+                    )
+                    .child(super::navigation_button("tree-short-name", "外观", false))
+            }
+        }
+        cx.update(gpui_kit::init);
+        let calls = Rc::new(Cell::new(0));
+        let (_, visual) = cx.add_window_view({
+            let calls = calls.clone();
+            move |_, _| TreeFixture(calls)
+        });
+        visual.update(|window, cx| {
+            let appearance = studyapp_core::AppearanceSettings {
+                font_size: 22,
+                ..Default::default()
+            };
+            crate::theme::apply(&appearance, false, cx);
+            window.render_frame(cx);
+            let long = window.find("tree-long-name");
+            let short = window.find("tree-short-name");
+            assert_eq!(long.label(), Some("通知规则与场景及分区设置 / Notifications, delivery channels, queue and appearance settings"));
+            assert!(
+                long.bounds().size.height > short.bounds().size.height,
+                "long={:?}, short={:?}",
+                long.bounds(),
+                short.bounds()
+            );
+            assert!(long.bounds().right() <= px(176.));
+            assert!(short.bounds().top() >= long.bounds().bottom());
+            window.click("tree-long-name", cx);
+        });
+        assert_eq!(calls.get(), 1);
+    }
 
     #[gpui_kit::test]
     fn flat_navigation_keeps_selection_inheritance_single_marker_and_disabled_inertia(
@@ -1481,6 +1651,20 @@ impl RenderOnce for NumericSetting {
 }
 #[cfg(test)]
 mod integer_tests {
+    #[test]
+    fn navigation_breakpoint_uses_the_allocated_form_and_remembered_tree_width() {
+        use super::{CONTROL_WIDTH, LABEL_WIDTH, PANE_INSET, compact_navigation};
+        use gpui_kit::px;
+        for tree in [176., 224., 340.] {
+            let minimum = tree + 6. + PANE_INSET * 2. + LABEL_WIDTH + CONTROL_WIDTH + 12.;
+            assert!(compact_navigation(px(minimum - 1.), px(tree)));
+            assert!(!compact_navigation(px(minimum), px(tree)));
+            assert!(!compact_navigation(px(minimum + 1.), px(tree)));
+        }
+        assert!(!compact_navigation(px(806.), px(224.)));
+        assert!(compact_navigation(px(600.), px(224.)));
+    }
+
     #[test]
     fn inheritance_sentinel_does_not_expand_the_custom_range() {
         use super::numeric_valid;

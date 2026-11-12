@@ -673,11 +673,22 @@ async fn measure_appearance_cache(
     // Keep this initialization evidence separate from all 20 measured samples.
     let started = std::time::Instant::now();
     let mut initialization = vec![serde_json::json!({"phase":"entry", "state":entry})];
+    let mut revealed = false;
     loop {
         let (ready, trace) = window
             .update(cx, |_, window, cx| {
                 let before = view.read(cx).appearance_render_work().0;
                 window.draw(cx).clear(cx);
+                if !revealed && window.try_find("appearance-preview-pane").is_some() {
+                    reveal_scrolled(
+                        window,
+                        "appearance-preview-pane".into(),
+                        "settings-section-scroll",
+                        cx,
+                    );
+                    revealed = true;
+                    window.draw(cx).clear(cx);
+                }
                 let state = appearance_cache_state(view.read(cx), window, cx);
                 (
                     state["readyForMeasurement"] == true,
@@ -985,7 +996,9 @@ pub async fn exercise(
             crate::smoke_settings::select_page(window, view, "shortcuts", cx);
             window.render_frame(cx);
             let content = window.find("settings-section-scroll").bounds();
-            if window.viewport_size().width < px(1120.) {
+            let workspace = window.find("settings-workspace").bounds();
+            let tree_width = px(f32::from(view.read(cx).preferences_ui.browsing.width));
+            if crate::settings_components::compact_navigation(workspace.size.width, tree_width) {
                 assert!(window.try_find("settings-category-navigation").is_none());
                 assert!(window.try_find("settings-drawer-toggle").is_some());
             } else {
@@ -1269,13 +1282,24 @@ pub async fn exercise(
         .unwrap();
     // Windows resize queues SetWindowPos asynchronously; yield before reading
     // the viewport or asserting responsive layout, unlike an in-process draw.
-    let original_size = window
+    let (original_size, original_layout, original_tree_width) = window
         .update(cx, |_, window, cx| {
             window.click(("nav", 4_usize), cx);
             crate::smoke_settings::select_page(window, view, "shortcuts", cx);
             let original = window.viewport_size();
+            let (layout, tree_width) = view.update(cx, |app, cx| {
+                let original = (app.layout.clone(), app.preferences_ui.browsing.width);
+                // Exercise a genuinely constrained pane, not a window-size
+                // proxy: both rails at their supported maximum leave the form
+                // too narrow, even in the minimum supported desktop window.
+                app.layout.navigation_visible = true;
+                app.layout.navigation_width = 320;
+                app.preferences_ui.browsing.width = 340;
+                cx.notify();
+                original
+            });
             crate::smoke_library::resize(window, size(px(1024.), px(720.)));
-            original
+            (original, layout, tree_width)
         })
         .unwrap();
     for attempt in 0..100 {
@@ -1310,6 +1334,12 @@ pub async fn exercise(
                 .save(database.with_file_name("settings-compact.png"))
                 .unwrap();
             capture_task_pages(window, view, database, cx);
+            view.update(cx, |app, cx| {
+                app.layout = original_layout;
+                app.preferences_ui.browsing.width = original_tree_width;
+                app.persist_settings_browsing();
+                cx.notify();
+            });
             crate::smoke_library::resize(window, original_size);
         })
         .unwrap();
@@ -1426,7 +1456,7 @@ async fn exercise_markdown_preview(
     database: &Path,
     cx: &mut AsyncApp,
 ) {
-    // The preview is above its controls inside a scrollable card. Use a
+    // The preview follows its controls inside a scrollable group. Use a
     // supported tall Popover configuration so its clamped body really reaches
     // the native sample; default compact popovers need not overlap at all.
     // Keep the real intersection/hit checks and restore the draft afterward.
@@ -1506,6 +1536,19 @@ async fn exercise_markdown_preview(
         cx,
     )
     .await;
+    window
+        .update(cx, |_, window, cx| {
+            // The embedded sample follows its parameters. Reveal the complete
+            // sample before measuring the native viewport, rather than assuming
+            // that its position or the amount of visible clipping is unchanged.
+            reveal_scrolled(
+                window,
+                "appearance-preview-pane".into(),
+                "settings-section-scroll",
+                cx,
+            );
+        })
+        .unwrap();
     settle_preview_viewport(window, view, overlap_size, cx).await;
     let preview = window
         .update(cx, |_, _, cx| {

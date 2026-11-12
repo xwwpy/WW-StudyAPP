@@ -294,6 +294,9 @@ impl StudyApp {
         row()
             .relative()
             .min_w_0()
+            .flex_shrink_0()
+            .px(px(crate::settings_components::PANE_INSET))
+            .py_2()
             .gap_2()
             .children(self.preferences_ui.search.as_ref().map(|input| {
                 div()

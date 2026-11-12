@@ -334,7 +334,7 @@ impl StudyApp {
         let busy = self.preferences_ui.busy || self.preferences_ui.replacing || self.storage_busy;
         let state = &self.preferences_ui.browsing;
         let colors = crate::theme::selection(SelectionCategory::Navigation);
-        let mut tree = column().gap_2().w_full().min_w_0().flex_shrink_0();
+        let mut tree = column().gap_0().w_full().min_w_0().flex_shrink_0();
         for (group, label, icon) in [
             ("learning", "学习与复习", IconName::BookOpen),
             ("notes", "笔记与编辑", IconName::FileText),
@@ -353,16 +353,27 @@ impl StudyApp {
             let expandable = children.len() > 1;
             let expanded = state.expanded.contains(group);
             let selected = children.iter().any(|target| target.id == state.selected);
-            let mut group_button = navigation_button(
+            let group_button = navigation_button(
                 SharedString::from(format!("settings-group-{group}")),
                 label,
                 selected && !expandable,
             )
-            .icon(Icon::new(icon).with_size(px(16.)))
+            .icon(
+                Icon::new(if expandable {
+                    if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    }
+                } else {
+                    icon
+                })
+                .with_size(px(14.)),
+            )
             .font_weight(if selected {
                 FontWeight::SEMIBOLD
             } else {
-                FontWeight::MEDIUM
+                FontWeight::NORMAL
             })
             .disabled(busy)
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -376,25 +387,14 @@ impl StudyApp {
                 }
                 cx.notify();
             }));
-            if expandable {
-                group_button = group_button.child(div().flex_1()).child(
-                    Icon::new(if expanded {
-                        IconName::ChevronDown
-                    } else {
-                        IconName::ChevronRight
-                    })
-                    .with_size(px(14.))
-                    .text_color(rgb(colors.idle_text)),
-                );
-            }
             let mut group_view = column()
-                .gap_1()
+                .gap_0()
                 .child(navigation_item(group_button, selected && !expandable));
             if expandable && expanded {
                 let mut branch = column()
-                    .gap_1()
-                    .ml(px(19.))
-                    .pl_3()
+                    .gap_0()
+                    .ml(px(14.))
+                    .pl_2()
                     .border_l_1()
                     .border_color(crate::theme::color(BORDER));
                 for target in children {
@@ -425,16 +425,15 @@ impl StudyApp {
             .h_full()
             .min_h_0()
             .flex_shrink_0()
-            .gap_3()
+            .gap_0()
             .bg(rgb(colors.idle_background))
             .child(
-                column()
-                    .gap_1()
+                row()
+                    .min_h(px(54.))
                     .px_3()
-                    .pt_3()
-                    .pb_2()
-                    .child(heading("偏好设置"))
-                    .child(muted("按分类调整你的使用体验")),
+                    .border_b_1()
+                    .border_color(crate::theme::color(BORDER))
+                    .child(heading("设置")),
             )
             .child(
                 scroll_body(
@@ -445,6 +444,7 @@ impl StudyApp {
                 .flex_1()
                 .min_h_0()
                 .px_1()
+                .py_2()
                 .child(tree),
             )
             .child(
@@ -541,7 +541,11 @@ impl StudyApp {
 }
 
 impl StudyApp {
-    pub(crate) fn settings_header(&self, compact: bool, cx: &mut Context<Self>) -> Div {
+    pub(crate) fn settings_header(
+        &self,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let category = match self
             .preferences_ui
             .browsing
@@ -560,45 +564,52 @@ impl StudyApp {
             "logging" => "日志",
             _ => "关于与账户",
         };
-        column()
+        let title = self.settings_target_title();
+        row()
+            .id("settings-titlebar")
+            .test_support()
             .w_full()
-            .gap_2()
+            .min_w_0()
+            .min_h(px(54.))
             .flex_shrink_0()
-            .px_1()
-            .py_3()
-            .child(muted(format!("偏好设置  /  {category}")))
+            .flex_wrap()
+            .gap_2()
+            .px(px(studyapp_ui::settings_components::PANE_INSET))
+            .py_2()
+            .border_b_1()
+            .border_color(crate::theme::color(BORDER))
+            .children(compact.then(|| {
+                Button::new("settings-drawer-toggle")
+                    .small()
+                    .ghost()
+                    .icon(gpui_kit::assets::IconName::PanelLeft)
+                    .label("分类")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.preferences_ui.settings_drawer = !this.preferences_ui.settings_drawer;
+                        cx.notify();
+                    }))
+            }))
             .child(
                 row()
-                    .w_full()
-                    .gap_3()
+                    .flex_1()
+                    .min_w_0()
                     .flex_wrap()
-                    .children(compact.then(|| {
-                        Button::new("settings-drawer-toggle")
-                            .small()
-                            .ghost()
-                            .icon(gpui_kit::assets::IconName::PanelLeft)
-                            .label("分类")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.preferences_ui.settings_drawer =
-                                    !this.preferences_ui.settings_drawer;
-                                cx.notify();
-                            }))
-                    }))
+                    .gap_2()
+                    .children((category != title).then(|| muted(format!("{category}  ›"))))
                     .child(
-                        typography(studyapp_ui::design::TypeRole::Title)
+                        typography(studyapp_ui::design::TypeRole::Body)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(self.settings_target_title()),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("settings-show-search")
-                            .small()
-                            .ghost()
-                            .icon(gpui_kit::assets::IconName::Search)
-                            .label("搜索 · Ctrl+F")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_settings_search(window, cx)
-                            })),
+                            .child(title),
+                    ),
+            )
+            .child(
+                Button::new("settings-show-search")
+                    .small()
+                    .ghost()
+                    .icon(gpui_kit::assets::IconName::Search)
+                    .label("搜索 · Ctrl+F")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_settings_search(window, cx)),
                     ),
             )
     }

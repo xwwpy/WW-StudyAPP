@@ -1784,18 +1784,18 @@ impl StudyApp {
         row()
             .w_full()
             .min_w_0()
-            .items_end()
+            .items_center()
             .justify_between()
             .flex_wrap()
-            .gap_3()
-            .px_1()
-            .py_3()
+            .gap_2()
+            .px(px(form::PANE_INSET))
+            .py_2()
             .child(
                 column()
                     .min_w_0()
                     .gap_1()
                     .child(muted(if dirty {
-                        "有未保存的修改 · 保存后应用到所有分类"
+                        "有未保存修改 · 作用于全部分类"
                     } else {
                         "所有修改已保存"
                     }))
@@ -1852,7 +1852,6 @@ impl StudyApp {
                         Button::new("save-settings")
                             .primary()
                             .small()
-                            .icon(gpui_kit::assets::IconName::Save)
                             .label(if self.preferences_ui.busy {
                                 "正在保存…"
                             } else {
@@ -2926,6 +2925,7 @@ impl StudyApp {
                     .id("appearance-preview-pane")
                     .test_support()
                     .h(px(220.))
+                    .flex_shrink_0()
                     .min_h_0()
                     .min_w_0()
                     .overflow_hidden()
@@ -3017,11 +3017,10 @@ impl StudyApp {
             ).child(div().col_span_full().id("appearance-list-card").test_support().child(self.list_style_settings(cx)));
         }
         if part == 1 {
-            let mut custom = card().gap_3().child(heading("自定义主题"));
+            let mut custom = form::section("自定义主题");
             custom = custom.child(muted(
                 "颜色和版式会即时更新阅读预览；保存全部设置后才会写入资料库。",
             ));
-            custom = custom.child(self.inline_reading_preview(cx));
             for (key, label) in [
                 ("name", "主题名称"),
                 ("accent", "强调色"),
@@ -3049,7 +3048,9 @@ impl StudyApp {
                         })),
                 );
             }
-            return custom.child(self.theme_preset_controls(cx));
+            return custom
+                .child(self.inline_reading_preview(cx))
+                .child(self.theme_preset_controls(cx));
         }
         if part == 2 {
             return form::section("Markdown 预览").child(self.markdown_style_preview(cx));
@@ -4336,6 +4337,87 @@ mod scoped_tests {
         (app.unwrap(), visual)
     }
 
+    struct CompleteWorkspaceFixture {
+        app: Entity<StudyApp>,
+        snapshot: studyapp_core::Snapshot,
+        width: f32,
+    }
+    impl Render for CompleteWorkspaceFixture {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            self.app.update(cx, |app, cx| {
+                div()
+                    .w(gpui_kit::px(self.width))
+                    .h(gpui_kit::px(700.))
+                    .child(app.settings(&self.snapshot, window, cx))
+            })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn complete_workspace_uses_allocated_width_and_keeps_header_footer_outside_scroll(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine = studyapp_core::Engine::open(&root.path().join("layout.sqlite"), 1000).unwrap();
+        let original = app.read_with(visual, |app, _| app.preferences_ui.draft.clone());
+        let surface = visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 1000.,
+            }
+        });
+        for font in [12, 22] {
+            for width in [1000., 820., 620., 1000.] {
+                surface.update(visual, |surface, cx| {
+                    surface.width = width;
+                    cx.notify();
+                });
+                visual.update(|_, cx| {
+                    let appearance = studyapp_core::AppearanceSettings {
+                        font_size: font,
+                        ..Default::default()
+                    };
+                    crate::theme::apply(&appearance, false, cx);
+                });
+                for _ in 0..4 {
+                    visual.run_until_parked();
+                    visual.update(|window, cx| window.draw(cx).clear(cx));
+                }
+                visual.update(|window, cx| {
+                    let pane = window.find("settings-section-pane").bounds();
+                    let header = window.find("settings-titlebar").bounds();
+                    let body = window.find("settings-section-scroll").bounds();
+                    let footer = window.find("settings-save-footer").bounds();
+                    assert!(header.bottom() <= body.top());
+                    assert!(body.bottom() <= footer.top());
+                    assert!(body.size.height > px(200.));
+                    assert!(footer.bottom() <= px(701.));
+                    assert!(window.find("save-settings").bounds().right() <= pane.right());
+                    if width >= 710. {
+                        let tree = window.find("settings-category-navigation").bounds();
+                        assert!(tree.right() <= pane.left());
+                        assert!(window.try_find("settings-drawer-toggle").is_none());
+                    } else {
+                        assert!(window.try_find("settings-category-navigation").is_none());
+                        window.click("settings-drawer-toggle", cx);
+                        window.render_frame(cx);
+                        assert!(app.read(cx).preferences_ui.settings_drawer);
+                        window.click("settings-group-learning", cx);
+                        window.render_frame(cx);
+                        assert!(!app.read(cx).preferences_ui.settings_drawer);
+                    }
+                    assert_eq!(app.read(cx).preferences_ui.draft, original);
+                    assert!(!app.read(cx).settings_dirty(cx));
+                });
+            }
+        }
+    }
+
     struct NavigationTreeFixture(Entity<StudyApp>);
     impl Render for NavigationTreeFixture {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -5431,6 +5513,12 @@ mod scoped_tests {
         visual.update(|window, cx| {
             window.draw(cx).clear(cx);
             studyapp_ui::settings_components::select_choice(window, "notification-position", 0, cx);
+        });
+        // Close the menu and deliver the cached form's layout notification
+        // before clicking a control whose compact row may have moved.
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.draw(cx).clear(cx);
             window.click("notification-width-increase", cx);
             assert_eq!(
                 app.read(cx).preferences_ui.number_fields.borrow()["notification-width"]

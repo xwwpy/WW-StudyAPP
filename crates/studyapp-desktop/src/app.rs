@@ -2072,7 +2072,7 @@ impl Render for StudyApp {
                                     .when(continuous || self.page == Page::Settings, |c| {
                                         c.overflow_hidden()
                                     })
-                                    .when(continuous || self.page == Page::Settings, |c| c.p_4())
+                                    .when(continuous, |c| c.p_4())
                                     .when(!continuous && self.page != Page::Settings, |c| c.p_8())
                                     .when(!continuous && self.page != Page::Settings, |view| {
                                         view.items_center()

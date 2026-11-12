@@ -96,6 +96,27 @@ impl AppButton {
         self
     }
 
+    /// Form navigation keeps the complete name at narrow widths and large
+    /// type; the component still owns focus, activation and the accessible name.
+    pub fn wrapped_label(mut self, label: impl Into<SharedString>) -> Self {
+        let label = label.into();
+        self.has_label = true;
+        self.has_children = true;
+        self.inner = self
+            .inner
+            .accessibility_label(label.clone())
+            .h_auto()
+            .child(
+                gpui_kit::div()
+                    .w_full()
+                    .min_w_0()
+                    .whitespace_normal()
+                    .text_size(gpui_kit::px(crate::theme::palette().font_size as f32))
+                    .child(label),
+            );
+        self
+    }
+
     /// Icon-first operation with an explicit name. Unknown operations remain
     /// readable text; parameter values and destructive confirmations use label().
     pub fn action(self, label: impl Into<SharedString>) -> Self {

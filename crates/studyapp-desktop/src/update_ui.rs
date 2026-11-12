@@ -1021,9 +1021,8 @@ fn progress_text(progress: &UpdateProgress) -> String {
 impl Render for UpdatePanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !cfg!(any(windows, target_os = "linux", target_os = "macos")) {
-            return card()
+            return crate::settings_components::section("软件更新")
                 .id("application-updates")
-                .child(heading("软件更新"))
                 .child(muted(format!("WW-StudyApp {}", env!("CARGO_PKG_VERSION"))))
                 .child(muted(
                     "下载适合当前系统的安装包后安装更新，原有资料库会保留。",
@@ -1042,8 +1041,7 @@ impl Render for UpdatePanel {
             .as_ref()
             .map(|release| release.page_url.clone())
             .unwrap_or_else(|| "https://github.com/xwwpy/WW-StudyAPP/releases".into());
-        card().id("application-updates").test_support()
-            .child(heading("软件更新"))
+        crate::settings_components::section("软件更新").id("application-updates").test_support()
             .child(studyapp_ui::update_available::version_entry(
                 "about-version", env!("CARGO_PKG_VERSION"), self.available_version(), self.unread_update(),
             ).on_click(cx.listener(|this, _, _, cx| {
