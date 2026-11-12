@@ -4360,6 +4360,7 @@ mod scoped_tests {
     ) {
         use gpui_kit::px;
         let (app, visual) = fixture(cx);
+        visual.update(|_, cx| cx.set_reduce_motion(true));
         visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
         let root = tempfile::tempdir().unwrap();
         let engine = studyapp_core::Engine::open(&root.path().join("sync.sqlite"), 1000).unwrap();
@@ -4384,11 +4385,20 @@ mod scoped_tests {
             visual.update(|window, cx| {
                 crate::smoke::select_settings_page(window, &app, "learning", cx);
                 crate::smoke::select_settings_page(window, &app, "sync", cx);
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
                 assert!(app.read(cx).preferences_ui.section == SettingsSection::Sync);
                 assert!(!app.read(cx).preferences_ui.settings_drawer);
                 assert!(!app.read(cx).settings_dirty(cx));
+                crate::smoke_library::reveal_scrolled(
+                    window,
+                    "sync-target".into(),
+                    "settings-section-scroll",
+                    cx,
+                );
                 studyapp_ui::settings_components::select_choice(window, "sync-target", 1, cx);
-                assert_eq!(app.read(cx).sync_panel.read(cx).target, 1);
+                assert_eq!(app.read(cx).sync_panel.read(cx).target, 1, "width={width}");
                 assert!(app.read(cx).settings_dirty(cx));
                 assert_eq!(
                     app.read(cx).preferences_ui.saved.as_ref().unwrap().settings,
@@ -4399,6 +4409,74 @@ mod scoped_tests {
                 assert!(!app.read(cx).settings_dirty(cx));
             });
         }
+    }
+
+    #[gpui_kit::test]
+    fn settings_transition_completion_and_reduced_motion_keep_an_open_choice_menu(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine =
+            studyapp_core::Engine::open(&root.path().join("transition.sqlite"), 1000).unwrap();
+        visual.update(|_, cx| {
+            app.update(cx, |app, cx| {
+                app.select_settings_target("sync", cx);
+                // Keep the transition active until the test explicitly expires it.
+                app.preferences_ui.section_changed_at =
+                    Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+            });
+        });
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 1000.,
+                height: 700.,
+            }
+        });
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            window.click("sync-target", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_some());
+            let menu_focus = window.focused(cx);
+            assert!(menu_focus.is_some());
+            let revision = app.read(cx).preferences_ui.section_revision;
+            app.update(cx, |app, cx| {
+                app.preferences_ui.section_changed_at =
+                    Some(std::time::Instant::now() - std::time::Duration::from_millis(200));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                window.try_find("popup-menu").is_some(),
+                "finishing a category transition dismissed the open choice menu"
+            );
+            cx.set_reduce_motion(true);
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_some());
+            assert_eq!(app.read(cx).preferences_ui.section_revision, revision);
+            assert_eq!(window.focused(cx), menu_focus);
+            assert!(!app.read(cx).settings_dirty(cx));
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            for key in ["down", "down", "enter"] {
+                window.press(key, cx);
+                window.render_frame(cx);
+            }
+            assert_eq!(app.read(cx).sync_panel.read(cx).target, 1);
+            assert!(app.read(cx).settings_dirty(cx));
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_none());
+        });
     }
 
     #[gpui_kit::test]

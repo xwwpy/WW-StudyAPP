@@ -1314,20 +1314,24 @@ impl StudyApp {
                 .preferences_ui
                 .section_changed_at
                 .is_some_and(|changed| changed.elapsed() < std::time::Duration::from_millis(140));
-        let content = if transitioning {
-            content
-                .with_animation(
-                    (
-                        "settings-section-transition",
-                        self.preferences_ui.section_revision as usize,
-                    ),
-                    Animation::new(std::time::Duration::from_millis(120)),
-                    |content, progress| content.opacity(0.94 + 0.06 * progress),
-                )
-                .into_any_element()
-        } else {
-            content.into_any_element()
-        };
+        // Keep the element-state path stable when the transition ends. Removing
+        // its wrapper would discard open menus and other stateful child controls.
+        let content = content
+            .with_animation(
+                (
+                    "settings-section-transition",
+                    self.preferences_ui.section_revision as usize,
+                ),
+                Animation::new(std::time::Duration::from_millis(120)),
+                move |content, progress| {
+                    content.opacity(if transitioning {
+                        0.94 + 0.06 * progress
+                    } else {
+                        1.
+                    })
+                },
+            )
+            .into_any_element();
         let auxiliary = matches!(
             self.preferences_ui.browsing.selected.as_str(),
             "notes.snapshots"
