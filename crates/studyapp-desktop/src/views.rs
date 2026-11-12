@@ -1418,7 +1418,9 @@ impl StudyApp {
                         .child(self.settings_header(compact, cx))
                         .child(self.settings_search_bar(cx))
                         .child(inner)
-                        .child(
+                        .child(studyapp_ui::notification_anchor::NotificationAnchor::new(
+                            "settings-actions",
+                            self.notifications.clone(),
                             div()
                                 .id("settings-save-footer")
                                 .test_support()
@@ -1426,7 +1428,7 @@ impl StudyApp {
                                 .border_t_1()
                                 .border_color(crate::theme::color(BORDER))
                                 .child(self.settings_footer(cx)),
-                        ),
+                        )),
                 ),
             )
             .child(self.settings_resize_events(cx));

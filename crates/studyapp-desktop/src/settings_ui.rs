@@ -4688,7 +4688,7 @@ mod scoped_tests {
     #[gpui_kit::test]
     fn portable_smoke_interval_save_from_restored_about_page(cx: &mut TestAppContext) {
         use gpui_kit::px;
-        for width in [1000., 620.] {
+        for width in [1400., 1000., 620.] {
             let (app, visual) = fixture(cx);
             visual.update(|_, cx| cx.set_reduce_motion(true));
             visual.simulate_resize(gpui_kit::size(px(width), px(700.)));
@@ -4710,7 +4710,7 @@ mod scoped_tests {
                     notifications: app.read(cx).notifications.clone(),
                 }
             });
-            visual.update(|window, cx| {
+            let due_id = visual.update(|window, cx| {
                 crate::smoke::select_settings_page(window, &app, "about", cx);
                 let center = app.read(cx).notifications.clone();
                 center.update(cx, |center, cx| {
@@ -4731,7 +4731,16 @@ mod scoped_tests {
                         cx,
                     );
                 });
-                app.update(cx, |app, cx| app.push_notice(Ok("计时已暂停".into()), cx));
+                app.update(cx, |app, cx| {
+                    app.push_notice(Ok("计时已暂停".into()), cx);
+                    let mut due = studyapp_core::NoticeEvent::new(
+                        studyapp_core::NoticeCategory::ReviewDue,
+                        studyapp_core::NoticeSeverity::Information,
+                        "有 1 项复习已到期，可以按自己的节奏开始。",
+                    );
+                    due.action = Some(studyapp_core::NoticeAction::OpenReviews);
+                    app.emit_notification(due, cx).unwrap()
+                })
             });
             visual.run_until_parked();
             visual.update(|window, cx| {
@@ -4739,6 +4748,15 @@ mod scoped_tests {
                 let center = app.read(cx).notifications.read(cx);
                 assert!(center.visible_count() > 0);
                 assert!(!center.occlusions().is_empty());
+                let footer = window.find("settings-save-footer").bounds();
+                assert!(
+                    center
+                        .occlusions()
+                        .iter()
+                        .all(|rect| !rect.intersects(&footer)),
+                    "notification covers settings actions at width {width}: {:?}",
+                    center.occlusions()
+                );
             });
             let handle = visual.update(|window, _| window.window_handle());
             crate::smoke::queue_interval_save(handle, &app, 25, None, &mut visual.to_async());
@@ -4748,6 +4766,13 @@ mod scoped_tests {
                 assert_eq!(app.interval.read(cx).value(), "25");
                 assert!(app.preferences_ui.busy);
                 assert!(app.preferences_ui.error.is_none());
+                assert!(
+                    app.notifications.read(cx).test_event_route(due_id)
+                        == Some(studyapp_core::NoticeRoute::Foreground(
+                            studyapp_core::NoticeStyle::CornerCard
+                        )),
+                    "saving must not dismiss or activate the visible or queued review notification"
+                );
                 assert_eq!(
                     app.preferences_ui
                         .baseline

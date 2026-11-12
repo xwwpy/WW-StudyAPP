@@ -208,6 +208,17 @@ impl NotificationCenter {
             .collect()
     }
 
+    /// Observe an event even while layout has queued it for lack of space.
+    #[cfg(feature = "ui-test")]
+    pub fn test_event_route(
+        &self,
+        event_id: studyapp_core::NoticeEventId,
+    ) -> Option<studyapp_core::NoticeRoute> {
+        self.queue
+            .routes()
+            .find_map(|(id, route)| (id == event_id).then_some(route))
+    }
+
     #[cfg(feature = "ui-test")]
     pub fn test_state(&self) -> Vec<(u64, f32)> {
         self.queue

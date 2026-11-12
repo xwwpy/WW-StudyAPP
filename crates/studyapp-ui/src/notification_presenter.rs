@@ -414,7 +414,7 @@ impl NotificationCenter {
             .map(|surface| surface.clone().into_any_element())
     }
     pub(super) fn structured_surface(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        use crate::notice_placement::{Candidate, place};
+        use crate::notice_placement::{Candidate, Rect, place};
         let viewport = window.viewport_size();
         let entries: Vec<_> = self.queue.candidates().cloned().collect();
         let candidates: Vec<_> = entries
@@ -441,11 +441,22 @@ impl NotificationCenter {
                 })
             })
             .collect();
+        let protected: Vec<_> = self
+            .anchors
+            .values()
+            .map(|bounds| Rect {
+                x: bounds.left().into(),
+                y: bounds.top().into(),
+                width: bounds.size.width.into(),
+                height: bounds.size.height.into(),
+            })
+            .collect();
         let placement = place(
             &candidates,
             &self.appearance,
             viewport.width.into(),
             viewport.height.into(),
+            &protected,
         );
         if self.queue.set_layout_visible(placement.ids(), self.now()) {
             cx.notify();

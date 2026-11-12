@@ -1,4 +1,4 @@
-//! Pure feedback-space arbitration. No card may cover another card's actions.
+//! Pure feedback-space arbitration. Cards must leave notice and host actions reachable.
 use studyapp_core::{NoticeLayout, NoticePosition, NoticeStyle, NotificationAppearance};
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Rect {
@@ -41,6 +41,7 @@ pub(crate) fn place(
     appearance: &NotificationAppearance,
     width: f32,
     height: f32,
+    protected: &[Rect],
 ) -> Placement {
     let mut result = Placement::default();
     if !width.is_finite() || !height.is_finite() || width < 64. || height < 96. {
@@ -140,14 +141,34 @@ pub(crate) fn place(
             } else {
                 x - step
             };
-            let rect = Rect {
+            let mut rect = Rect {
                 x,
                 y,
                 width: w,
                 height: h,
             };
+            let bottom_up = style == NoticeStyle::Snackbar
+                || (style == NoticeStyle::CornerCard
+                    && matches!(
+                        appearance.position,
+                        NoticePosition::BottomLeft | NoticePosition::BottomRight
+                    ));
+            // Preserve the chosen region, but move its stack past mounted host
+            // actions. A card that cannot fit remains queued, never dismissed.
+            for _ in 0..protected.len() {
+                let Some(blocker) = protected.iter().find(|other| rect.intersects(**other)) else {
+                    break;
+                };
+                rect.y = if bottom_up {
+                    blocker.y - h - 8.
+                } else {
+                    blocker.y + blocker.height + 8.
+                };
+            }
+            let y = rect.y;
             if y < top
                 || y + h > height - if edge_to_edge { 0. } else { 16. }
+                || protected.iter().any(|other| rect.intersects(*other))
                 || result
                     .floating
                     .iter()
@@ -201,7 +222,7 @@ mod tests {
             },
         ];
         let appearance = NotificationAppearance::default();
-        let wide = place(&items, &appearance, 1200., 800.);
+        let wide = place(&items, &appearance, 1200., 800., &[]);
         assert_eq!(wide.floating.len(), 3);
         for (i, (_, rect)) in wide.floating.iter().enumerate() {
             assert!(
@@ -211,7 +232,7 @@ mod tests {
                     .all(|(_, other)| !rect.intersects(*other))
             );
         }
-        let narrow = place(&items, &appearance, 400., 350.);
+        let narrow = place(&items, &appearance, 400., 350., &[]);
         assert!(narrow.floating.len() < 3);
         assert!(
             narrow
@@ -237,7 +258,7 @@ mod tests {
             },
         ];
         let appearance = NotificationAppearance::default();
-        let normal = place(&items, &appearance, 1000., 800.);
+        let normal = place(&items, &appearance, 1000., 800., &[]);
         assert_eq!(normal.inline, [1]);
         assert!(normal.floating[0].1.y >= crate::design::TITLE_BAR_HEIGHT + 88.);
         items.push(Candidate {
@@ -246,7 +267,7 @@ mod tests {
             width: 500.,
             height: 300.,
         });
-        let modal = place(&items, &appearance, 1000., 800.);
+        let modal = place(&items, &appearance, 1000., 800., &[]);
         assert_eq!(modal.inline, [3]);
         assert!(modal.floating.is_empty());
     }
@@ -268,7 +289,7 @@ mod tests {
                 max_visible: 3,
             },
         );
-        let placed = place(&items, &appearance, 1200., 800.);
+        let placed = place(&items, &appearance, 1200., 800., &[]);
         assert_eq!(placed.floating.len(), 3);
         assert_ne!(placed.floating[0].1.x, placed.floating[1].1.x);
         for (index, (_, rect)) in placed.floating.iter().enumerate() {
@@ -297,8 +318,100 @@ mod tests {
             &appearance,
             800.,
             600.,
+            &[],
         );
         let rect = placed.floating[0].1;
         assert_eq!((rect.x, rect.width, rect.y + rect.height), (0., 800., 600.));
+    }
+    #[test]
+    fn footer_moves_bottom_regions_up_and_leaves_notifications_visible() {
+        let footer = super::Rect {
+            x: 160.,
+            y: 620.,
+            width: 1240.,
+            height: 80.,
+        };
+        let items = [
+            Candidate {
+                id: 1,
+                style: S::Snackbar,
+                width: 360.,
+                height: 48.,
+            },
+            Candidate {
+                id: 2,
+                style: S::CornerCard,
+                width: 360.,
+                height: 128.,
+            },
+        ];
+        let appearance = NotificationAppearance::default();
+        let placed = place(&items, &appearance, 1400., 700., &[footer]);
+        assert_eq!(placed.ids().len(), 2);
+        for (_, rect) in placed.floating {
+            assert!(!rect.intersects(footer));
+            assert_eq!(rect.y + rect.height, footer.y - 8.);
+        }
+    }
+
+    #[test]
+    fn protected_regions_move_top_cards_down_and_follow_footer_height() {
+        let items = [Candidate {
+            id: 1,
+            style: S::CornerCard,
+            width: 360.,
+            height: 128.,
+        }];
+        for position in [
+            studyapp_core::NoticePosition::TopLeft,
+            studyapp_core::NoticePosition::TopRight,
+        ] {
+            let appearance = NotificationAppearance {
+                position,
+                ..Default::default()
+            };
+            let toolbar = super::Rect {
+                x: 0.,
+                y: 44.,
+                width: 1000.,
+                height: 64.,
+            };
+            let placed = place(&items, &appearance, 1000., 700., &[toolbar]);
+            assert_eq!(placed.floating.len(), 1);
+            assert_eq!(placed.floating[0].1.y, toolbar.y + toolbar.height + 8.);
+        }
+        for footer_height in [64., 120.] {
+            let footer = super::Rect {
+                x: 0.,
+                y: 700. - footer_height,
+                width: 620.,
+                height: footer_height,
+            };
+            let appearance = NotificationAppearance::default();
+            let placed = place(&items, &appearance, 620., 700., &[footer]);
+            assert_eq!(placed.floating.len(), 1);
+            assert_eq!(placed.floating[0].1.y + 128., footer.y - 8.);
+        }
+    }
+
+    #[test]
+    fn insufficient_host_space_queues_then_releases_when_controls_unmount() {
+        let items = [Candidate {
+            id: 1,
+            style: S::CornerCard,
+            width: 360.,
+            height: 128.,
+        }];
+        let appearance = NotificationAppearance::default();
+        let footer = super::Rect {
+            x: 0.,
+            y: 160.,
+            width: 620.,
+            height: 100.,
+        };
+        let blocked = place(&items, &appearance, 620., 260., &[footer]);
+        assert!(blocked.ids().is_empty());
+        let unmounted = place(&items, &appearance, 620., 260., &[]);
+        assert_eq!(unmounted.ids(), [1].into_iter().collect());
     }
 }

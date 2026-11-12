@@ -21,7 +21,8 @@ impl Drop for MountedAnchor {
             .detach();
     }
 }
-/// Wraps a real control without adding layout, focus or input handlers.
+/// Wraps a real control or action bar without adding layout, focus or input handlers.
+/// Floating notices avoid the mounted, clipped bounds and queue if space is insufficient.
 pub struct NotificationAnchor {
     key: &'static str,
     center: Entity<NotificationCenter>,
