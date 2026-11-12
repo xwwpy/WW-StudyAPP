@@ -181,6 +181,81 @@ fn explicit_body_saves_advance_revision_once_without_waiting_for_snapshots() {
 }
 
 #[test]
+fn automatic_final_capture_preserves_saved_bodies_and_is_idempotent() {
+    let (dir, mut engine, _) = setup(SnapshotMode::Manual);
+    engine
+        .apply(
+            Command::CreateNote {
+                title: "managed".into(),
+                content: "baseline".into(),
+            },
+            1003,
+        )
+        .unwrap();
+    let before = engine.snapshot();
+    let note = before.notes.last().unwrap();
+    engine
+        .apply(
+            Command::SaveNote {
+                note_id: note.id.clone(),
+                expected_hash: before.note_body(&note.id).unwrap().1.to_owned(),
+                content: "durable pending body".into(),
+            },
+            1004,
+        )
+        .unwrap();
+    assert_eq!(engine.snapshot().versions.len(), before.versions.len());
+    assert_eq!(
+        engine.snapshot().note_body(&note.id).unwrap().0,
+        "durable pending body"
+    );
+    assert_eq!(
+        engine.snapshot().versions.last().unwrap().content,
+        "baseline"
+    );
+    let mut settings = engine.settings().clone();
+    settings.snapshots.mode = SnapshotMode::Automatic;
+    engine
+        .apply(Command::SaveSettings(Box::new(settings)), 1005)
+        .unwrap();
+    engine.finish_snapshots(1006).unwrap();
+    let captured = engine.snapshot();
+    assert_eq!(captured.versions.len(), before.versions.len() + 1);
+    assert_eq!(captured.pending_snapshot_count, 0);
+    assert_eq!(
+        serde_json::to_value(&captured.versions[..before.versions.len()]).unwrap(),
+        serde_json::to_value(&before.versions).unwrap()
+    );
+    let version = captured.versions.last().unwrap();
+    assert_eq!(version.note_id, note.id);
+    assert_eq!(version.content, "durable pending body");
+    assert_eq!(
+        captured.note_body(&note.id),
+        Some((version.content.as_str(), version.hash.as_str()))
+    );
+    assert_eq!(
+        std::fs::read_to_string(&note.path).unwrap(),
+        version.content
+    );
+    engine.finish_snapshots(1007).unwrap();
+    assert!(engine.snapshot_warning().is_none());
+    assert_eq!(
+        serde_json::to_value(&engine.snapshot().versions).unwrap(),
+        serde_json::to_value(&captured.versions).unwrap()
+    );
+    drop(engine);
+    let engine = Engine::open(&dir.join("library.sqlite"), 2000).unwrap();
+    assert_eq!(
+        serde_json::to_value(&engine.snapshot().versions).unwrap(),
+        serde_json::to_value(&captured.versions).unwrap()
+    );
+    assert_eq!(
+        engine.snapshot().note_body(&note.id),
+        captured.note_body(&note.id)
+    );
+}
+
+#[test]
 fn authoritative_settings_are_restored_before_the_first_scan() {
     let (root, engine, source) = setup(SnapshotMode::Automatic);
     let original = engine.snapshot().versions;

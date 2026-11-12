@@ -637,6 +637,40 @@ pub(crate) async fn application_migration(
         cx,
     )
     .await;
+    // Relocation finishes automatic snapshots, so capture pending bodies before comparing history.
+    send(window, view, Command::CaptureSnapshots, cx);
+    until(
+        window,
+        view,
+        "saved bodies captured before relocation baseline",
+        |app, _| {
+            app.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot.pending_snapshot_count == 0
+                    && snapshot
+                        .notes
+                        .iter()
+                        .filter(|note| !note.detached)
+                        .all(|note| {
+                            !note.missing
+                                && note.error.is_none()
+                                && snapshot
+                                    .versions
+                                    .iter()
+                                    .rev()
+                                    .find(|version| version.note_id == note.id)
+                                    .is_some_and(|version| {
+                                        snapshot.note_body(&note.id)
+                                            == Some((
+                                                version.content.as_str(),
+                                                version.hash.as_str(),
+                                            ))
+                                    })
+                        })
+            })
+        },
+        cx,
+    )
+    .await;
     let before = window
         .update(cx, |_, w, c| {
             let snapshot = view.read(c).snapshot.as_ref().unwrap();
