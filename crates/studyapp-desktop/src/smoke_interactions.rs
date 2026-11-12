@@ -1478,16 +1478,23 @@ pub async fn exercise(
         cx,
     )
     .await;
-    // The dedicated copies page is intentionally shorter than the previous
-    // all-in-one Storage page. Use a real compact-height window to exercise
-    // outer overflow while keeping the complete 340px inner list reachable.
-    // Respect the production window's 700px minimum; Windows clamps smaller
-    // requests, so waiting for a 640px client area can never succeed.
-    let storage_size = window
-        .update(cx, |_, window, _| {
+    // The compact copies page can fit at the default density. Exercise outer
+    // overflow with the supported large-type/roomy-density settings, while
+    // retaining the real 340px list and the production 700px window minimum.
+    let (storage_size, storage_appearance) = window
+        .update(cx, |_, window, cx| {
             let original = window.viewport_size();
+            let appearance = view.update(cx, |app, cx| {
+                let appearance = &mut app.preferences_ui.draft.as_mut().unwrap().appearance;
+                let original = appearance.clone();
+                appearance.font_size = 22;
+                appearance.spacing = 16;
+                app.refresh_appearance(window, cx);
+                cx.notify();
+                original
+            });
             crate::smoke_library::resize(window, size(px(1280.), px(700.)));
-            original
+            (original, appearance)
         })
         .unwrap();
     for attempt in 0..100 {
@@ -1622,6 +1629,12 @@ pub async fn exercise(
             scroll_settings(window, f32::from(old_top - outer_bottom_anchor), cx);
             assert_eq!(window.find("storage-copy-list").bounds().origin.y, old_top, "outer boundary probe did not restore the original offset");
             assert_eq!(view.read(cx).storage_ui.scroll.scroll_px_offset_for_scrollbar(), inner_offset);
+            view.update(cx, |app, cx| {
+                app.preferences_ui.draft.as_mut().unwrap().appearance = storage_appearance;
+                app.refresh_appearance(window, cx);
+                cx.notify();
+            });
+            window.render_frame(cx);
             crate::smoke_settings::select_page(window, view, "appearance", cx);
             crate::smoke_settings::select_page(window, view, "appearance-workspace", cx);
             click_scrolled(window, "show-file-paths".into(), "page-scroll", cx);

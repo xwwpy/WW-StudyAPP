@@ -4341,13 +4341,14 @@ mod scoped_tests {
         app: Entity<StudyApp>,
         snapshot: studyapp_core::Snapshot,
         width: f32,
+        height: f32,
     }
     impl Render for CompleteWorkspaceFixture {
         fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             self.app.update(cx, |app, cx| {
                 div()
                     .w(gpui_kit::px(self.width))
-                    .h(gpui_kit::px(700.))
+                    .h(gpui_kit::px(self.height))
                     .child(app.settings(&self.snapshot, window, cx))
             })
         }
@@ -4369,6 +4370,7 @@ mod scoped_tests {
                 app: app.clone(),
                 snapshot: engine.snapshot(),
                 width: 1000.,
+                height: 700.,
             }
         });
         for font in [12, 22] {
@@ -4419,6 +4421,64 @@ mod scoped_tests {
                 });
             }
         }
+    }
+
+    #[gpui_kit::test]
+    fn roomy_storage_fixture_has_real_outer_overflow_without_clipping_its_inner_list(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::storage_backend::{CopyState, ManagedCopy, StorageReport};
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(px(1024.), px(720.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine = studyapp_core::Engine::open(&root.path().join("layout.sqlite"), 1000).unwrap();
+        let mut report = StorageReport {
+            copies: (0..18)
+                .map(|index| ManagedCopy {
+                    note_id: format!("fixture-{index}"),
+                    title: format!("空间滚动测试 {index:02}"),
+                    path: format!("C:/fixture/notes/{index}.md"),
+                    bytes: 41,
+                    state: CopyState::Present,
+                    deletable: true,
+                    reason: None,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        report.prepare_presentation();
+        app.update(visual, |app, cx| {
+            app.storage_report = Some(report);
+            let appearance = &mut app.preferences_ui.draft.as_mut().unwrap().appearance;
+            appearance.font_size = 22;
+            appearance.spacing = 16;
+            crate::theme::apply(appearance, false, cx);
+            app.select_settings_target("storage.copies", cx);
+        });
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 840.,
+                height: 656.,
+            }
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            crate::smoke_library::scroll_settings(window, 10000., cx);
+            let top = window.find("storage-copy-list").bounds();
+            crate::smoke_library::scroll_settings(window, -10000., cx);
+            let bottom = window.find("storage-copy-list").bounds();
+            let viewport = window.find("settings-section-scroll").bounds();
+            assert!(top.top() > bottom.top(), "fixture has no outer range");
+            assert_eq!(bottom.size.height, px(340.));
+            assert!(bottom.top() >= viewport.top());
+            assert!(bottom.bottom() <= viewport.bottom());
+            assert!(app.read(cx).storage_ui.scroll.max_offset_for_scrollbar().y > px(0.));
+        });
     }
 
     struct NavigationTreeFixture(Entity<StudyApp>);
