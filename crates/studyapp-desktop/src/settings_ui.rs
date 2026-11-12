@@ -4412,6 +4412,79 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
+    fn portable_smoke_reopens_the_theme_preview_in_tree_and_drawer(cx: &mut TestAppContext) {
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.update(|_, cx| cx.set_reduce_motion(true));
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine =
+            studyapp_core::Engine::open(&root.path().join("preview.sqlite"), 1000).unwrap();
+        let saved = app.read_with(visual, |app, _| {
+            app.preferences_ui.saved.as_ref().unwrap().settings.clone()
+        });
+        let preview = app.read_with(visual, |app, _| {
+            app.preferences_ui.appearance_preview.clone().unwrap()
+        });
+        let surface = visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 1000.,
+                height: 700.,
+            }
+        });
+        for width in [1000., 620., 1000.] {
+            surface.update(visual, |surface, cx| {
+                surface.width = width;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                // The group entry is an overview, not the theme editor.
+                app.update(cx, |app, cx| {
+                    app.select_settings_section(SettingsSection::Appearance, cx);
+                });
+                assert!(!app.read(cx).appearance_preview_visible(window, cx));
+                for page in [
+                    "appearance-theme-editor",
+                    "learning",
+                    "appearance-theme-editor",
+                ] {
+                    crate::smoke::select_settings_page(window, &app, page, cx);
+                    let state = app.read(cx);
+                    let is_theme = page == "appearance-theme-editor";
+                    assert_eq!(state.appearance_preview_visible(window, cx), is_theme);
+                    assert!(!state.preferences_ui.settings_drawer);
+                    if is_theme {
+                        assert!(
+                            state.preferences_ui.appearance_page == AppearancePage::ThemeEditor
+                        );
+                        assert_eq!(state.preferences_ui.browsing.selected, "appearance.theme");
+                        assert!(window.try_find("appearance-markdown-preview").is_some());
+                    }
+                    assert_eq!(
+                        state
+                            .preferences_ui
+                            .appearance_preview
+                            .as_ref()
+                            .unwrap()
+                            .entity_id(),
+                        preview.entity_id()
+                    );
+                    assert!(state.preferences_ui.editing_preset.is_none());
+                    assert!(!state.preferences_ui.appearance_touched);
+                    assert!(!state.settings_dirty(cx));
+                    assert_eq!(state.preferences_ui.saved.as_ref().unwrap().settings, saved);
+                }
+                // This fixture only checks navigation and never configures or mounts a WebView.
+                assert!(preview.read(cx).editor().is_none());
+            });
+        }
+    }
+
+    #[gpui_kit::test]
     fn settings_transition_completion_and_reduced_motion_keep_an_open_choice_menu(
         cx: &mut TestAppContext,
     ) {

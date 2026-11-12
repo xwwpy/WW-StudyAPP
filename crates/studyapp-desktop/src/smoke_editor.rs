@@ -512,16 +512,12 @@ async fn default_appearance_sample(
     database: &Path,
     cx: &mut AsyncApp,
 ) {
-    use crate::settings_ui::{AppearancePage, SettingsSection};
     window
         .update(cx, |_, window, cx| {
-            view.update(cx, |app, cx| {
-                app.navigate(Page::Settings, window, cx);
-                app.select_settings_section(SettingsSection::Appearance, cx);
-                app.select_appearance_page(AppearancePage::ThemeEditor, cx);
-                assert!(app.preferences_ui.editing_preset.is_none());
-                assert!(!app.preferences_ui.appearance_touched);
-            })
+            view.update(cx, |app, cx| app.navigate(Page::Settings, window, cx));
+            crate::smoke::select_settings_page(window, view, "appearance-theme-editor", cx);
+            assert!(view.read(cx).preferences_ui.editing_preset.is_none());
+            assert!(!view.read(cx).preferences_ui.appearance_touched);
         })
         .unwrap();
     crate::smoke_library::until(
@@ -568,24 +564,31 @@ async fn default_appearance_sample(
     .await;
     modal_preview_continuity(window, view, &editor, database, "appearance", cx).await;
     window
-        .update(cx, |_, _, cx| {
-            view.update(cx, |app, cx| {
-                app.select_settings_section(SettingsSection::Learning, cx)
-            })
+        .update(cx, |_, window, cx| {
+            crate::smoke::select_settings_page(window, view, "learning", cx);
         })
         .unwrap();
     cx.background_executor()
         .timer(Duration::from_millis(250))
         .await;
     window
-        .update(cx, |_, _, cx| {
+        .update(cx, |_, window, cx| {
             assert_eq!(
                 editor.read(cx).native_state().unwrap()["appliedVisible"],
                 false
             );
-            view.update(cx, |app, cx| {
-                app.select_settings_section(SettingsSection::Appearance, cx)
-            });
+            crate::smoke::select_settings_page(window, view, "appearance-theme-editor", cx);
+            let preview = view
+                .read(cx)
+                .preferences_ui
+                .appearance_preview
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                preview.read(cx).editor().unwrap().entity_id(),
+                editor.entity_id()
+            );
+            assert!(view.read(cx).appearance_preview_visible(window, cx));
         })
         .unwrap();
     cx.background_executor()
