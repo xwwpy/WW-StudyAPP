@@ -225,6 +225,38 @@ pub(crate) fn select_settings_page(
     assert!(!view.read(cx).preferences_ui.settings_drawer);
 }
 
+#[cfg(feature = "ui-test")]
+fn settings_save_state(window: &Window, view: &Entity<StudyApp>, cx: &App) -> serde_json::Value {
+    use gpui_kit::test::TestWindowExt;
+    let app = view.read(cx);
+    let button = window.find("save-settings");
+    let bounds = button.bounds();
+    let center = bounds.center();
+    let occlusions = app.notifications.read(cx).occlusions();
+    serde_json::json!({
+        "page":format!("{:?}",app.page),
+        "target":app.preferences_ui.browsing.selected,
+        "value":app.interval.read(cx).value().as_str(),
+        "dirty":app.settings_dirty(cx),
+        "preferences_busy":app.preferences_ui.busy,
+        "replacing":app.preferences_ui.replacing,
+        "recording":app.preferences_ui.recording.is_some(),
+        "storage_busy":app.storage_busy,
+        "sync_busy":app.sync_panel.read(cx).status.busy,
+        "modal":app.has_modal(cx),
+        "error":app.preferences_ui.error,
+        "window_active":window.is_window_active(),
+        "viewport":[f32::from(window.viewport_size().width),f32::from(window.viewport_size().height)],
+        "button":{"disabled":button.disabled(),"visible":button.visible(),
+            "bounds":[f32::from(bounds.left()),f32::from(bounds.top()),
+                f32::from(bounds.size.width),f32::from(bounds.size.height)]},
+        "notification_covers_center":occlusions.iter().any(|bounds|bounds.contains(&center)),
+        "notification_bounds":occlusions.iter().map(|bounds|[
+            f32::from(bounds.left()),f32::from(bounds.top()),
+            f32::from(bounds.size.width),f32::from(bounds.size.height)]).collect::<Vec<_>>()
+    })
+}
+
 /// Edit the current numeric control, commit its change notification, then
 /// click the real global save button in a separate update transaction.
 #[cfg(feature = "ui-test")]
@@ -232,6 +264,7 @@ pub(crate) fn queue_interval_save(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
     minutes: u32,
+    evidence: Option<&Path>,
     cx: &mut AsyncApp,
 ) {
     use gpui_kit::component::input::InputEvent;
@@ -249,15 +282,28 @@ pub(crate) fn queue_interval_save(
         .expect("edit learning interval");
     window
         .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            let before = settings_save_state(window, view, cx);
             window.click("save-settings", cx);
-            let app = view.read(cx);
+            let after = settings_save_state(window, view, cx);
+            let queued = view.read(cx).preferences_ui.busy;
+            if !queued && let Some(database) = evidence {
+                let record = serde_json::json!({"before":before,"after":after});
+                let path = database.with_file_name("settings-save-failure.json");
+                if let Err(error) =
+                    std::fs::write(path, serde_json::to_vec_pretty(&record).unwrap())
+                {
+                    eprintln!("could not write settings save diagnostic: {error}");
+                }
+                if let Err(error) =
+                    capture(window, database.with_file_name("settings-save-failure.png"))
+                {
+                    eprintln!("could not capture settings save failure: {error}");
+                }
+            }
             assert!(
-                app.preferences_ui.busy,
-                "settings save was not queued: value={}, dirty={}, error={:?}, notice={:?}",
-                app.interval.read(cx).value(),
-                app.settings_dirty(cx),
-                app.preferences_ui.error,
-                app.notice
+                queued,
+                "settings save was not queued: before={before}; after={after}"
             );
         })
         .expect("queue settings save");
@@ -267,10 +313,11 @@ pub(crate) fn queue_interval_save(
 async fn save_interval(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
+    database: &Path,
     minutes: u32,
     cx: &mut AsyncApp,
 ) {
-    queue_interval_save(window, view, minutes, cx);
+    queue_interval_save(window, view, minutes, Some(database), cx);
     crate::smoke_library::until(
         window,
         view,
@@ -471,7 +518,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert!(view.read(cx).snapshot.as_ref().unwrap().timer.paused);
                 window.click(("nav", 4_usize), cx);
             }).expect("settings navigation");
-            save_interval(window, &view, 25, cx).await;
+            save_interval(window, &view, &database, 25, cx).await;
             window.update(cx, |_, _, cx| {
                 assert_eq!(view.read(cx).snapshot.as_ref().unwrap().settings.interval_minutes, 25);
             }).expect("settings persisted");
@@ -481,7 +528,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             }).expect("backup command");
             cx.background_executor().timer(Duration::from_secs(1)).await;
             assert!(backup.exists());
-            save_interval(window, &view, 10, cx).await;
+            save_interval(window, &view, &database, 10, cx).await;
             window.update(cx, |_, window, cx| {
                 assert_eq!(view.read(cx).snapshot.as_ref().unwrap().settings.interval_minutes, 10);
                 view.update(cx, |app, cx| {

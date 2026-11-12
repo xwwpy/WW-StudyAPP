@@ -1498,6 +1498,17 @@ impl StudyApp {
     }
 
     pub fn save_preferences(&mut self, cx: &mut Context<Self>) {
+        #[cfg(feature = "ui-test")]
+        eprintln!(
+            "settings save handler entered: value={}, dirty={}, preferences_busy={}, replacing={}, recording={}, storage_busy={}, sync_busy={}",
+            self.interval.read(cx).value(),
+            self.settings_dirty(cx),
+            self.preferences_ui.busy,
+            self.preferences_ui.replacing,
+            self.preferences_ui.recording.is_some(),
+            self.storage_busy,
+            self.sync_panel.read(cx).status.busy,
+        );
         if self.preferences_ui.busy
             || self.preferences_ui.replacing
             || self.preferences_ui.recording.is_some()
@@ -4660,31 +4671,77 @@ mod scoped_tests {
         }
     }
 
+    struct NotifiedWorkspaceFixture {
+        workspace: Entity<CompleteWorkspaceFixture>,
+        notifications: Entity<crate::notifications::NotificationCenter>,
+    }
+    impl Render for NotifiedWorkspaceFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .relative()
+                .size_full()
+                .child(self.workspace.clone())
+                .child(self.notifications.clone())
+        }
+    }
+
     #[gpui_kit::test]
     fn portable_smoke_interval_save_from_restored_about_page(cx: &mut TestAppContext) {
         use gpui_kit::px;
         for width in [1000., 620.] {
             let (app, visual) = fixture(cx);
             visual.update(|_, cx| cx.set_reduce_motion(true));
-            visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+            visual.simulate_resize(gpui_kit::size(px(width), px(700.)));
             let root = tempfile::tempdir().unwrap();
             let engine =
                 studyapp_core::Engine::open(&root.path().join("save.sqlite"), 1000).unwrap();
             visual.replace_root_view(|_, cx| {
-                cx.observe(&app, |_, _, cx| cx.notify()).detach();
-                CompleteWorkspaceFixture {
-                    app: app.clone(),
-                    snapshot: engine.snapshot(),
-                    width,
-                    height: 700.,
+                let workspace = cx.new(|cx| {
+                    cx.observe(&app, |_, _, cx| cx.notify()).detach();
+                    CompleteWorkspaceFixture {
+                        app: app.clone(),
+                        snapshot: engine.snapshot(),
+                        width,
+                        height: 700.,
+                    }
+                });
+                NotifiedWorkspaceFixture {
+                    workspace,
+                    notifications: app.read(cx).notifications.clone(),
                 }
             });
             visual.update(|window, cx| {
                 crate::smoke::select_settings_page(window, &app, "about", cx);
+                let center = app.read(cx).notifications.clone();
+                center.update(cx, |center, cx| {
+                    center.freeze_time();
+                    center.configure(
+                        &studyapp_core::NotificationSettings::default(),
+                        &studyapp_core::NotificationAppearance {
+                            reduce_motion: true,
+                            ..Default::default()
+                        },
+                        studyapp_core::NoticeEnvironment {
+                            foreground: true,
+                            desktop_available: false,
+                            anchor_available: false,
+                            minute: 720,
+                        },
+                        false,
+                        cx,
+                    );
+                });
+                app.update(cx, |app, cx| app.push_notice(Ok("计时已暂停".into()), cx));
             });
             visual.run_until_parked();
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let center = app.read(cx).notifications.read(cx);
+                assert!(center.visible_count() > 0);
+                assert!(!center.occlusions().is_empty());
+            });
             let handle = visual.update(|window, _| window.window_handle());
-            crate::smoke::queue_interval_save(handle, &app, 25, &mut visual.to_async());
+            crate::smoke::queue_interval_save(handle, &app, 25, None, &mut visual.to_async());
             app.read_with(visual, |app, cx| {
                 assert_eq!(app.preferences_ui.browsing.selected, "learning");
                 assert!(!app.preferences_ui.settings_drawer);
