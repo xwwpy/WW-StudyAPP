@@ -791,7 +791,7 @@ fn assert_modal_native_cutout(window: &Window, native: &serde_json::Value) {
     let overlap = card.intersect(&editor);
     assert!(
         overlap.size.width > px(1.) && overlap.size.height > px(1.),
-        "fixture must exercise a card over the native surface"
+        "fixture must exercise a card over the native surface: card={card:?}, editor={editor:?}, native={native}"
     );
     let hwnd = HWND(native["hwnd"].as_u64().unwrap() as usize as *mut _);
     // Inspect the OS paint region, not just the bounds passed to SetWindowRgn.

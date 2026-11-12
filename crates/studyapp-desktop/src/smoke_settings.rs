@@ -1547,6 +1547,24 @@ async fn exercise_markdown_preview(
                 "settings-section-scroll",
                 cx,
             );
+            // The reveal helper guarantees a clickable center, not full bounds.
+            // Put this native sample near the middle of the real scroll area so
+            // the centered alert actually intersects it in the cutout scenario.
+            for _ in 0..8 {
+                let pane = window.find("appearance-preview-pane").bounds();
+                let scroll = window.find("settings-section-scroll").bounds();
+                let delta = scroll.center().y - pane.center().y;
+                if delta.abs() <= px(1.) {
+                    break;
+                }
+                crate::smoke_library::scroll_settings(window, delta.into(), cx);
+            }
+            let pane = window.find("appearance-preview-pane").bounds();
+            let scroll = window.find("settings-section-scroll").bounds();
+            assert!(
+                pane.top() >= scroll.top() && pane.bottom() <= scroll.bottom(),
+                "native overlap sample must be fully visible: pane={pane:?}, scroll={scroll:?}"
+            );
         })
         .unwrap();
     settle_preview_viewport(window, view, overlap_size, cx).await;
