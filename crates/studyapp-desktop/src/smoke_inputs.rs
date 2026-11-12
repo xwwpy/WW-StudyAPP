@@ -148,9 +148,8 @@ fn click_entity(window: AnyWindowHandle, input_id: EntityId, native: &Value, cx:
     send(native, &events);
 }
 
-fn wheel_at_input(
+fn wheel_in_settings_gutter(
     window: AnyWindowHandle,
-    input: &Entity<InputState>,
     native: &Value,
     delta: i32,
     cx: &mut AsyncApp,
@@ -158,7 +157,8 @@ fn wheel_at_input(
     let center = window
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
-            window.find(("input", input.entity_id())).bounds().center()
+            let viewport = window.find("settings-section-scroll").bounds();
+            point(viewport.left() + px(5.), viewport.center().y)
         })
         .unwrap();
     let parent = HWND(native["parentHwnd"].as_u64().unwrap() as usize as *mut _);
@@ -923,8 +923,9 @@ pub async fn exercise(
     }
 
     // A focused virtual row is intentionally kept mounted by VirtualRows.
-    // Click the global search input first to blur it, then scroll with real
-    // Windows wheel messages from the name input's visible center.
+    // Blur via the real search input, then send real Windows wheels through
+    // the section gutter. A stationary point in the value column can become
+    // covered by the scrolling native preview, which has its own wheel target.
     click_input(window, &settings_search, &native, cx);
     settle(cx).await;
     let virtual_id = theme_name.entity_id();
@@ -944,7 +945,7 @@ pub async fn exercise(
     if !initially_visible {
         failures.push("appearance-virtual-scroll-initial-visibility".into());
     } else {
-        wheel_at_input(window, &theme_name, &native, -120, cx);
+        wheel_in_settings_gutter(window, &native, -120, cx);
         let mut unmounted = false;
         for step in 0..48 {
             tick(cx).await;
@@ -1047,12 +1048,17 @@ pub async fn exercise(
         }
     }
 
-    // The HEX input exists only while its palette popup is mounted. The
-    // synthetic click here opens the fixture; typing still uses Win32 input.
+    // The HEX input exists only while its palette popup is mounted. Reveal
+    // its opener after the virtual-row wheel exercise before the synthetic
+    // fixture click; typing still uses Win32 input.
     let accent = window
         .update(cx, |_, window, cx| {
-            window.render_frame(cx);
-            window.click("color-open-accent", cx);
+            crate::smoke_library::click_scrolled(
+                window,
+                "color-open-accent".into(),
+                "settings-section-scroll",
+                cx,
+            );
             window.render_frame(cx);
             // Palette text is a transactional draft, not the unmounted source
             // preference input. Exercise the actual mounted native input.
