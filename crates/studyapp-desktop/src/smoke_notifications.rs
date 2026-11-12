@@ -10,7 +10,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-use studyapp_core::{NoticeCategory, NoticeEvent, NoticeRule, NoticeSeverity, NoticeStyle};
+use studyapp_core::{NoticeCategory, NoticeEvent, NoticeSeverity, NoticeStyle};
 
 async fn settle(
     window: AnyWindowHandle,
@@ -50,37 +50,64 @@ impl Render for Witness {
             .child("Notification focus witness")
     }
 }
-fn configure(
-    app: &mut StudyApp,
-    style: NoticeStyle,
-    category: NoticeCategory,
-    cx: &mut Context<StudyApp>,
+async fn persist_fixture_settings(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    settings: studyapp_core::Settings,
+    cx: &mut AsyncApp,
 ) {
-    let mut policy = studyapp_core::NotificationSettings::default();
-    policy.rules.insert(
-        category,
-        NoticeRule {
-            style: Some(style),
-            ..Default::default()
+    let current = window
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, _| {
+                assert!(!app.preferences_ui.busy && !app.preferences_ui.replacing);
+                assert!(app.preferences_ui.baseline.is_some());
+                let current = app
+                    .preferences_ui
+                    .saved
+                    .clone()
+                    .expect("saved native settings");
+                assert_ne!(
+                    current.settings, settings,
+                    "fixture must change durable settings"
+                );
+                // Backend fixture setup must preserve controls and unsaved drafts;
+                // it is not a UI save invoking begin_settings on completion.
+                app.worker
+                    .sender
+                    .send(crate::worker::Work::Scoped {
+                        library: app.last_library.clone(),
+                        work: Box::new(crate::worker::Work::SavePreferences(Box::new(
+                            crate::smoke::notification_capture_request(&current, settings.clone()),
+                        ))),
+                    })
+                    .expect("queue durable notification fixture");
+                current
+            })
+        })
+        .unwrap();
+    crate::smoke_library::until(
+        window,
+        view,
+        "durable notification fixture preferences",
+        |app, _| {
+            app.preferences_ui.saved.as_ref().is_some_and(|saved| {
+                saved.revision != current.revision
+                    && saved.settings == settings
+                    && saved.shortcuts == current.shortcuts
+                    && saved.sync == current.sync
+                    && saved.image_secret_saved == current.image_secret_saved
+            }) && app
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.settings == settings)
         },
-    );
-    let appearance = studyapp_core::NotificationAppearance {
-        reduce_motion: true,
-        max_visible: 1,
-        ..Default::default()
-    };
-    let saved = app
-        .preferences_ui
-        .saved
-        .as_mut()
-        .expect("saved native settings");
-    saved.settings.notifications = policy.clone();
-    saved.settings.appearance.notifications = appearance.clone();
-    let draft = app.preferences_ui.draft.as_mut().expect("settings draft");
-    draft.notifications = policy;
-    draft.appearance.notifications = appearance;
-    app.clear_notices(cx);
-    cx.notify();
+        cx,
+    )
+    .await;
+    view.update(cx, |app, _| {
+        // Retain the actual committed revision, never the stale original one.
+        app.preferences_ui.baseline = app.preferences_ui.saved.clone();
+    });
 }
 fn event() -> NoticeEvent {
     let mut event = crate::smoke::notification_capture_event(NoticeStyle::CornerCard);
@@ -417,6 +444,22 @@ pub async fn exercise(
     })
     .await;
     measure_notification_cache(window, view, database, cx).await;
+    let original_settings = original
+        .0
+        .as_ref()
+        .expect("original saved settings")
+        .settings
+        .clone();
+    let fixture = crate::smoke::notification_capture_settings(&original_settings);
+    persist_fixture_settings(window, view, fixture.clone(), cx).await;
+    view.update(cx, |app, cx| {
+        let draft = app.preferences_ui.draft.as_mut().expect("settings draft");
+        // Cache measurements modify drafts, not the original saved settings.
+        draft.notifications = fixture.notifications;
+        draft.appearance.notifications = fixture.appearance.notifications;
+        app.clear_notices(cx);
+        cx.notify();
+    });
     let mut accepted = Vec::new();
     let mut captured_styles = Vec::new();
     let mut route_checks = Vec::new();
@@ -434,7 +477,7 @@ pub async fn exercise(
         let event_id = window
             .update(cx, |_, window, cx| {
                 view.update(cx, |app, cx| {
-                    configure(app, style, notice.category, cx);
+                    app.clear_notices(cx);
                     app.sync_notification_preferences(window, cx);
                     let id = notice.id;
                     assert_eq!(app.emit_notification(notice, cx), Some(id));
@@ -500,12 +543,7 @@ pub async fn exercise(
     window
         .update(cx, |_, _, cx| {
             view.update(cx, |app, cx| {
-                configure(
-                    app,
-                    NoticeStyle::CornerCard,
-                    NoticeCategory::SaveFailure,
-                    cx,
-                )
+                app.clear_notices(cx);
             })
         })
         .unwrap();
@@ -671,21 +709,17 @@ pub async fn exercise(
     let secondary_id = window
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| {
-                app.preferences_ui
-                    .saved
-                    .as_mut()
-                    .unwrap()
-                    .settings
-                    .appearance
-                    .notifications
-                    .max_visible = 2;
-                app.preferences_ui
-                    .draft
-                    .as_mut()
-                    .unwrap()
-                    .appearance
-                    .notifications
-                    .max_visible = 2;
+                assert_eq!(
+                    app.preferences_ui
+                        .saved
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .appearance
+                        .notifications
+                        .max_visible,
+                    2
+                );
                 app.sync_notification_preferences(window, cx);
                 let event = NoticeEvent::new(
                     NoticeCategory::OperationResult,
@@ -776,10 +810,10 @@ pub async fn exercise(
         before_close,
         "closing G must not activate the main window"
     );
+    persist_fixture_settings(window, view, original_settings, cx).await;
     window
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| {
-                app.preferences_ui.saved = original.0;
                 app.preferences_ui.draft = original.1;
                 app.page = original.2;
                 app.preferences_ui.section = original.3;
@@ -800,7 +834,7 @@ pub async fn exercise(
         .update(cx, |_, window, _| window.remove_window())
         .unwrap();
     std::fs::write(database.with_file_name("notification-native-result.json"),serde_json::to_vec_pretty(&serde_json::json!({
-        "foreground_styles":captured_styles,"foreground_route_checks":route_checks,"desktop_style":"G","created_without_activation":true,
+        "foreground_styles":captured_styles,"foreground_route_checks":route_checks,"fixture_persisted_and_restored":true,"desktop_style":"G","created_without_activation":true,
         "painted_without_activation":true,"closed_without_activation":true,"same_event_on_foreground_return":event_id.to_string(),
         "foreground_events":accepted,
         "content_fit":{"compact":compact_geometry,"stacked":stacked_geometry,"restored":restored_geometry},

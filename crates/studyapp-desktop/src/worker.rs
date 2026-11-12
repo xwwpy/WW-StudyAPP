@@ -1834,6 +1834,76 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "ui-test")]
+    fn native_notification_fixture_survives_worker_ticks_and_restores_durably() {
+        let root = tempfile::tempdir().unwrap().keep();
+        let database = root.join("studyapp.sqlite3");
+        let worker = Worker::start(database.clone(), None);
+        let initial = initial_update(&worker);
+        let original = initial.preferences.unwrap();
+        let library = initial.snapshot.unwrap().data_path.clone();
+        let fixture = crate::smoke::notification_capture_settings(&original.settings);
+        worker
+            .sender
+            .send(Work::Scoped {
+                library: library.clone(),
+                work: Box::new(Work::SavePreferences(Box::new(
+                    crate::smoke::notification_capture_request(&original, fixture.clone()),
+                ))),
+            })
+            .unwrap();
+        let committed = receive_notice(&worker);
+        assert_eq!(committed.preferences_result, Some(Ok(())));
+        assert_eq!(committed.snapshot.unwrap().settings, fixture);
+        let committed = committed.preferences.unwrap();
+        assert_ne!(committed.revision, original.revision);
+        assert_eq!(committed.settings, fixture);
+        assert_eq!(committed.shortcuts, original.shortcuts);
+        assert_eq!(committed.sync, original.sync);
+        assert_eq!(committed.image_secret_saved, original.image_secret_saved);
+        // Observe an actual periodic publication, not a guessed delay.
+        let periodic = worker
+            .receiver
+            .recv_timeout(STORAGE_COMPLETION_BUDGET)
+            .unwrap();
+        assert!(periodic.preferences_result.is_none());
+        let periodic = periodic.preferences.expect("periodic saved preferences");
+        assert_eq!(periodic.revision, committed.revision);
+        assert_eq!(periodic.settings, fixture);
+        drop(worker);
+        let worker = Worker::start(database.clone(), None);
+        let reopened = initial_update(&worker).preferences.unwrap();
+        assert_eq!(reopened.settings, fixture);
+        worker
+            .sender
+            .send(Work::Scoped {
+                library,
+                work: Box::new(Work::SavePreferences(Box::new(
+                    crate::smoke::notification_capture_request(
+                        &reopened,
+                        original.settings.clone(),
+                    ),
+                ))),
+            })
+            .unwrap();
+        let restored = receive_notice(&worker);
+        assert_eq!(restored.preferences_result, Some(Ok(())));
+        let restored = restored.preferences.unwrap();
+        assert_ne!(restored.revision, reopened.revision);
+        assert_eq!(restored.settings, original.settings);
+        assert_eq!(restored.shortcuts, original.shortcuts);
+        assert_eq!(restored.sync, original.sync);
+        assert_eq!(restored.image_secret_saved, original.image_secret_saved);
+        drop(worker);
+        let worker = Worker::start(database, None);
+        let restored = initial_update(&worker).preferences.unwrap();
+        assert_eq!(restored.settings, original.settings);
+        assert_eq!(restored.shortcuts, original.shortcuts);
+        assert_eq!(restored.sync, original.sync);
+        assert_eq!(restored.image_secret_saved, original.image_secret_saved);
+    }
+
+    #[test]
     fn unified_preferences_results_and_legacy_patches_preserve_all_categories() {
         let root = tempfile::tempdir().unwrap().keep();
         let worker = Worker::start(root.join("studyapp.sqlite3"), None);

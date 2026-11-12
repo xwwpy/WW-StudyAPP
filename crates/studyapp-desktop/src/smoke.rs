@@ -86,19 +86,79 @@ pub(crate) fn notification_capture_event(
     style: studyapp_core::NoticeStyle,
 ) -> studyapp_core::NoticeEvent {
     use studyapp_core::{NoticeCategory, NoticeEvent, NoticeSeverity, NoticeStyle};
-    if matches!(style, NoticeStyle::Bubble | NoticeStyle::Snackbar) {
-        NoticeEvent::new(
-            NoticeCategory::OperationResult,
-            NoticeSeverity::Success,
-            "操作已完成。",
-        )
-    } else {
-        NoticeEvent::new(
-            NoticeCategory::SaveFailure,
-            NoticeSeverity::Error,
+    // Unique categories let one durable policy cover all cases without
+    // overwrites; unsupported interactive surfaces still fall back safely.
+    let category = match style {
+        NoticeStyle::Bubble => NoticeCategory::OperationResult,
+        NoticeStyle::CornerCard => NoticeCategory::SaveFailure,
+        NoticeStyle::Banner => NoticeCategory::SyncFailure,
+        NoticeStyle::ModalCard => NoticeCategory::StartupRecovery,
+        NoticeStyle::Anchored => NoticeCategory::ImageFailure,
+        NoticeStyle::ActionSheet => NoticeCategory::OperationFailure,
+        NoticeStyle::Snackbar => NoticeCategory::ExportResult,
+        NoticeStyle::ActivityView => NoticeCategory::UpdateCheckFailure,
+        NoticeStyle::Hud => NoticeCategory::UpdateDownloadFailure,
+        NoticeStyle::Share => NoticeCategory::UpdateInstallFailure,
+        NoticeStyle::Dialog => NoticeCategory::SyncConflict,
+        NoticeStyle::Actionbar => NoticeCategory::MigrationResult,
+        NoticeStyle::PopupMenu => NoticeCategory::IntegrityResult,
+        NoticeStyle::Tooltip => NoticeCategory::ReviewDue,
+    };
+    let severity = match style {
+        NoticeStyle::Bubble | NoticeStyle::Snackbar => NoticeSeverity::Success,
+        NoticeStyle::ModalCard => NoticeSeverity::Critical,
+        _ => NoticeSeverity::Error,
+    };
+    NoticeEvent::new(
+        category,
+        severity,
+        if severity == NoticeSeverity::Success {
+            "操作已完成。"
+        } else {
             "这是通知显示回归样例。关闭提示不会丢弃尚未保存的内容。
-长消息仍在卡片内部滚动，不移动下方页面。",
-        )
+长消息仍在卡片内部滚动，不移动下方页面。"
+        },
+    )
+}
+
+#[cfg(all(feature = "ui-test", any(windows, test)))]
+pub(crate) fn notification_capture_settings(
+    original: &studyapp_core::Settings,
+) -> studyapp_core::Settings {
+    use studyapp_core::{NoticeRule, NoticeStyle, NotificationAppearance, NotificationSettings};
+    let mut settings = original.clone();
+    let mut policy = NotificationSettings::default();
+    for style in NoticeStyle::ALL {
+        let event = notification_capture_event(style);
+        policy.rules.insert(
+            event.category,
+            NoticeRule {
+                style: Some(style),
+                ..Default::default()
+            },
+        );
+    }
+    settings.notifications = policy;
+    settings.appearance.notifications = NotificationAppearance {
+        reduce_motion: true,
+        max_visible: 2,
+        ..Default::default()
+    };
+    settings
+}
+
+#[cfg(all(feature = "ui-test", any(windows, test)))]
+pub(crate) fn notification_capture_request(
+    current: &crate::preferences::PreferenceSnapshot,
+    settings: studyapp_core::Settings,
+) -> crate::preferences::SavePreferences {
+    crate::preferences::SavePreferences {
+        expected_revision: current.revision.clone(),
+        settings,
+        shortcuts: current.shortcuts.clone(),
+        sync: current.sync.clone(),
+        password: None,
+        image_secret: Default::default(),
     }
 }
 
@@ -745,22 +805,37 @@ mod tests {
 
     #[test]
     #[cfg(feature = "ui-test")]
-    fn native_notification_capture_events_reach_requested_feedback_surfaces() {
-        use studyapp_core::{
-            NoticeEnvironment, NoticeRoute, NoticeRule, NoticeStyle, NotificationAppearance,
-            NotificationSettings,
+    fn native_notification_fixture_preserves_unrelated_settings_and_unique_categories() {
+        let mut original = studyapp_core::Settings {
+            answer_minutes: 9,
+            show_file_paths: true,
+            ..Default::default()
         };
+        original.layout.folders_visible = false;
+        let mut fixture = super::notification_capture_settings(&original);
+        fixture.validate().unwrap();
+        let categories: std::collections::BTreeSet<_> = studyapp_core::NoticeStyle::ALL
+            .into_iter()
+            .map(|style| super::notification_capture_event(style).category)
+            .collect();
+        assert_eq!(categories.len(), studyapp_core::NoticeStyle::ALL.len());
+        assert_eq!(fixture.notifications.rules.len(), categories.len());
+        assert_eq!(fixture.appearance.notifications.max_visible, 2);
+        assert!(fixture.appearance.notifications.reduce_motion);
+        fixture.notifications = original.notifications.clone();
+        fixture.appearance.notifications = original.appearance.notifications.clone();
+        assert_eq!(fixture, original);
+    }
+
+    #[test]
+    #[cfg(feature = "ui-test")]
+    fn native_notification_capture_events_reach_requested_feedback_surfaces() {
+        use studyapp_core::{NoticeEnvironment, NoticeRoute, NoticeStyle};
+        let settings = super::notification_capture_settings(&Default::default());
+        settings.validate().unwrap();
         for style in NoticeStyle::ALL {
             let event = super::notification_capture_event(style);
             event.validate().unwrap();
-            let mut policy = NotificationSettings::default();
-            policy.rules.insert(
-                event.category,
-                NoticeRule {
-                    style: Some(style),
-                    ..Default::default()
-                },
-            );
             let expected = if matches!(
                 style,
                 NoticeStyle::Bubble
@@ -774,9 +849,9 @@ mod tests {
                 NoticeStyle::CornerCard
             };
             assert_eq!(
-                policy.route_event(
+                settings.notifications.route_event(
                     &event,
-                    &NotificationAppearance::default(),
+                    &settings.appearance.notifications,
                     NoticeEnvironment {
                         foreground: true,
                         desktop_available: false,
