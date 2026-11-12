@@ -4389,7 +4389,10 @@ mod scoped_tests {
                     visual.update(|window, cx| window.draw(cx).clear(cx));
                 }
                 visual.update(|window, cx| {
+                    let workspace = window.find("settings-workspace").bounds();
                     let pane = window.find("settings-section-pane").bounds();
+                    assert_eq!(workspace.size.width, px(width));
+                    assert_eq!(pane.right(), workspace.right());
                     let header = window.find("settings-titlebar").bounds();
                     let body = window.find("settings-section-scroll").bounds();
                     let footer = window.find("settings-save-footer").bounds();

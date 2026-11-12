@@ -1397,7 +1397,7 @@ impl StudyApp {
             .id("settings-workspace")
             .test_support()
             .relative()
-            .h_full()
+            .size_full()
             .min_h_0()
             .min_w_0()
             .gap_0()
