@@ -1,0 +1,76 @@
+name: Windows settings and notification acceptance
+
+on:
+  push:
+    branches: ['validation/settings-*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: settings-native-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  settings:
+    name: Bounded desktop tests and native settings
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: '1'
+      CARGO_BUILD_JOBS: '2'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: 1.98.0
+          components: rustfmt
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          shared-key: desktop-windows-windows
+          key: desktop-windows
+          cache-on-failure: true
+      - name: Record runner resources without changing storage or timeout policies
+        run: |
+          Write-Output "Logical processors: $([Environment]::ProcessorCount); Rust test threads: 2"
+          Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID, FreeSpace, Size
+      - name: Check source formatting and user documentation
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { throw 'Source formatting failed' }
+          python scripts/check-user-docs.py
+          if ($LASTEXITCODE -ne 0) { throw 'User documentation boundary failed' }
+      - name: Verify desktop and shared UI with bounded test concurrency
+        run: |
+          cargo test --locked -p studyapp-desktop -p studyapp-ui --all-features -- --test-threads=2
+          if ($LASTEXITCODE -ne 0) { throw 'Bounded desktop and UI regressions failed' }
+      - name: Build the affected native settings validation binary
+        run: |
+          cargo build --locked -p studyapp-desktop --features ui-test
+          if ($LASTEXITCODE -ne 0) { throw 'Native settings validation build failed' }
+      - name: Verify actual settings and notification routes
+        run: |
+          $settingsDir = Join-Path $env:RUNNER_TEMP ('studyapp-focused-settings-' + [guid]::NewGuid().ToString('N'))
+          "SETTINGS_DIR=$settingsDir" >> $env:GITHUB_ENV
+          ./scripts/smoke-settings.ps1 -DataDirectory $settingsDir -BinaryPath ./target/debug/studyapp.exe
+      - name: Preserve focused native evidence
+        if: always() && env.SETTINGS_DIR != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-settings-focused-${{ github.run_attempt }}
+          path: |
+            ${{ env.SETTINGS_DIR }}/settings-*
+            ${{ env.SETTINGS_DIR }}/notification-*
+            ${{ env.SETTINGS_DIR }}/native-*.json
+            ${{ env.SETTINGS_DIR }}/native-*.bmp
+            ${{ env.SETTINGS_DIR }}/*.log
+            ${{ env.SETTINGS_DIR }}/smoke-input-mode.txt
+          if-no-files-found: error
+          retention-days: 14
