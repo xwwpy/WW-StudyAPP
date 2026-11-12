@@ -4355,6 +4355,53 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
+    fn portable_smoke_settings_navigation_reaches_folder_sync_in_tree_and_drawer(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine = studyapp_core::Engine::open(&root.path().join("sync.sqlite"), 1000).unwrap();
+        let saved = app.read_with(visual, |app, _| {
+            app.preferences_ui.saved.as_ref().unwrap().settings.clone()
+        });
+        let surface = visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 1000.,
+                height: 700.,
+            }
+        });
+        for width in [1000., 620., 1000.] {
+            surface.update(visual, |surface, cx| {
+                surface.width = width;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                crate::smoke::select_settings_page(window, &app, "learning", cx);
+                crate::smoke::select_settings_page(window, &app, "sync", cx);
+                assert!(app.read(cx).preferences_ui.section == SettingsSection::Sync);
+                assert!(!app.read(cx).preferences_ui.settings_drawer);
+                assert!(!app.read(cx).settings_dirty(cx));
+                studyapp_ui::settings_components::select_choice(window, "sync-target", 1, cx);
+                assert_eq!(app.read(cx).sync_panel.read(cx).target, 1);
+                assert!(app.read(cx).settings_dirty(cx));
+                assert_eq!(
+                    app.read(cx).preferences_ui.saved.as_ref().unwrap().settings,
+                    saved
+                );
+                app.update(cx, |app, cx| app.discard_settings(window, cx));
+                assert_eq!(app.read(cx).sync_panel.read(cx).target, 0);
+                assert!(!app.read(cx).settings_dirty(cx));
+            });
+        }
+    }
+
+    #[gpui_kit::test]
     fn complete_workspace_uses_allocated_width_and_keeps_header_footer_outside_scroll(
         cx: &mut TestAppContext,
     ) {

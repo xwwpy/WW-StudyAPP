@@ -136,6 +136,67 @@ pub fn prepare(database: &Path) -> anyhow::Result<()> {
 }
 
 #[cfg(feature = "ui-test")]
+/// Navigate by actual drawer/tree interactions, including scrolled categories.
+pub(crate) fn select_settings_page(
+    window: &mut Window,
+    view: &Entity<StudyApp>,
+    page: &str,
+    cx: &mut App,
+) {
+    use crate::smoke_library::{click_scrolled, reveal_scrolled};
+    use gpui_kit::test::TestWindowExt;
+
+    let target = match page {
+        "appearance" | "appearance-overview" => "appearance.overview",
+        "appearance-theme-editor" => "appearance.theme",
+        "appearance-workspace" => "appearance.workspace",
+        "appearance-widget" => "appearance.widget",
+        "appearance-notifications" => "notices.general",
+        "notifications" => "notices.rules",
+        "storage" | "storage-overview" => "storage.overview",
+        "storage-copies" => "storage.copies",
+        "storage-images" => "storage.images",
+        "storage-library" => "storage.library",
+        "about-account" => "about",
+        other => other,
+    };
+    let group = target.split('.').next().unwrap();
+    let group_id = SharedString::from(format!("settings-group-{group}"));
+    window.render_frame(cx);
+    if window.try_find(group_id.clone()).is_none() {
+        window.click("settings-drawer-toggle", cx);
+        window.render_frame(cx);
+    }
+    assert!(window.try_find("settings-tree-width-reset").is_none());
+    reveal_scrolled(window, group_id.clone(), "settings-tree-scroll", cx);
+    let tree_viewport = window.find("settings-tree-scroll").bounds();
+    assert!(
+        window.find(group_id.clone()).bounds().right()
+            <= tree_viewport.right() - gpui_kit::component::scroll::Scrollbar::width(),
+        "category controls overlap the scrollbar lane"
+    );
+    let id = if target.contains('.') {
+        if !view
+            .read(cx)
+            .preferences_ui
+            .browsing
+            .expanded
+            .contains(group)
+        {
+            window.click(group_id, cx);
+            window.render_frame(cx);
+        }
+        SharedString::from(format!("settings-target-{target}"))
+    } else {
+        group_id
+    };
+    click_scrolled(window, id, "settings-tree-scroll", cx);
+    window.render_frame(cx);
+    assert_eq!(view.read(cx).preferences_ui.browsing.selected, target);
+    assert!(!view.read(cx).preferences_ui.settings_drawer);
+}
+
+#[cfg(feature = "ui-test")]
 fn reveal_learning_control(
     window: &mut Window,
     view: &Entity<StudyApp>,
@@ -426,18 +487,17 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
                 assert_eq!(snapshot.versions.iter().filter(|v| v.note_id == managed_id).count(), 2);
                 view.update(cx, |app, cx| app.clear_notices(cx));
                 window.click(("nav", 4_usize), cx);
-                crate::smoke_settings::select_page(window, &view, "sync", cx);
+                select_settings_page(window, &view, "sync", cx);
                 assert!(view.read(cx).preferences_ui.section == crate::settings_ui::SettingsSection::Sync,
                     "Sync category must be selected before using its controls");
                 window.render_frame(cx);
-                crate::smoke_settings::select_choice(window, "sync-target", 1, cx);
+                studyapp_ui::settings_components::select_choice(window, "sync-target", 1, cx);
                 let panel = view.read(cx).sync_panel.clone();
                 panel.update(cx, |panel, cx| panel.folder.update(cx, |s, cx| s.set_value(sync_folder.to_string_lossy().into_owned(), window, cx)));
                 window.click("save-settings", cx);
             }).expect("configure folder sync through interface");
             cx.background_executor().timer(Duration::from_secs(1)).await;
             window.update(cx, |_, window, cx| {
-                #[cfg(windows)]
                 crate::smoke_library::reveal_scrolled(window, "test-sync".into(), "page-scroll", cx);
                 window.click("test-sync", cx);
             }).expect("test folder connection");

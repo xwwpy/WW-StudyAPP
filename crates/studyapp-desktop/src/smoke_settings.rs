@@ -19,57 +19,7 @@ const LIVE_PREVIEW_VIEWPORT: (f32, f32) = (1000., 700.);
 /// Exercise either responsive representation without changing the model directly.
 pub(crate) use studyapp_ui::settings_components::select_choice;
 
-/// Navigate by actual drawer/tree interactions, including scrolled categories.
-pub(crate) fn select_page(window: &mut Window, view: &Entity<StudyApp>, page: &str, cx: &mut App) {
-    let target = match page {
-        "appearance" | "appearance-overview" => "appearance.overview",
-        "appearance-theme-editor" => "appearance.theme",
-        "appearance-workspace" => "appearance.workspace",
-        "appearance-widget" => "appearance.widget",
-        "appearance-notifications" => "notices.general",
-        "notifications" => "notices.rules",
-        "storage" | "storage-overview" => "storage.overview",
-        "storage-copies" => "storage.copies",
-        "storage-images" => "storage.images",
-        "storage-library" => "storage.library",
-        "about-account" => "about",
-        other => other,
-    };
-    let group = target.split('.').next().unwrap();
-    let group_id = SharedString::from(format!("settings-group-{group}"));
-    window.render_frame(cx);
-    if window.try_find(group_id.clone()).is_none() {
-        window.click("settings-drawer-toggle", cx);
-        window.render_frame(cx);
-    }
-    assert!(window.try_find("settings-tree-width-reset").is_none());
-    reveal_scrolled(window, group_id.clone(), "settings-tree-scroll", cx);
-    let tree_viewport = window.find("settings-tree-scroll").bounds();
-    assert!(
-        window.find(group_id.clone()).bounds().right()
-            <= tree_viewport.right() - gpui_kit::component::scroll::Scrollbar::width(),
-        "category controls overlap the scrollbar lane"
-    );
-    let id = if target.contains('.') {
-        if !view
-            .read(cx)
-            .preferences_ui
-            .browsing
-            .expanded
-            .contains(group)
-        {
-            window.click(group_id, cx);
-            window.render_frame(cx);
-        }
-        SharedString::from(format!("settings-target-{target}"))
-    } else {
-        group_id
-    };
-    click_scrolled(window, id, "settings-tree-scroll", cx);
-    window.render_frame(cx);
-    assert_eq!(view.read(cx).preferences_ui.browsing.selected, target);
-    assert!(!view.read(cx).preferences_ui.settings_drawer);
-}
+pub(crate) use crate::smoke::select_settings_page as select_page;
 
 fn preview_overlap_notices() -> [studyapp_core::NoticeEvent; 2] {
     use studyapp_core::{NoticeCategory, NoticeEvent, NoticeSeverity};
