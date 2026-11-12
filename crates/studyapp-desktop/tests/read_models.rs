@@ -277,3 +277,42 @@ fn version_replacement_reordering_and_note_membership_keep_positions_aligned() {
     assert_eq!(first.note_position("b"), Some(1));
     assert_eq!(first.version_positions("a"), &[0, 2]);
 }
+
+#[test]
+fn unchanged_engine_scans_preserve_the_library_metadata_index() {
+    for mode in studyapp_core::SnapshotMode::ALL {
+        let root = tempfile::tempdir().unwrap();
+        let mut engine =
+            studyapp_core::Engine::open(&root.path().join("library.sqlite"), 1000).unwrap();
+        let mut settings = engine.snapshot().settings;
+        settings.snapshots.mode = mode;
+        engine
+            .apply(
+                studyapp_core::Command::SaveSettings(Box::new(settings)),
+                1001,
+            )
+            .unwrap();
+        engine
+            .apply(
+                studyapp_core::Command::CreateNote {
+                    title: "stable metadata".into(),
+                    content: "unchanged body".into(),
+                },
+                1002,
+            )
+            .unwrap();
+        let mut cache = ReadModelCache::default();
+        let first = cache.refresh(&engine.snapshot(), &chrono::Utc, 1002);
+        for now in 1003..1006 {
+            engine
+                .apply(studyapp_core::Command::Scan { offline: false }, now)
+                .unwrap();
+            let current = cache.refresh(&engine.snapshot(), &chrono::Utc, now);
+            assert!(
+                Arc::ptr_eq(&first.library, &current.library),
+                "an unchanged background scan rebuilt library metadata in {mode:?}"
+            );
+            assert!(Arc::ptr_eq(&first, &current));
+        }
+    }
+}

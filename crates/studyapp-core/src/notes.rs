@@ -457,7 +457,12 @@ fn scan_filtered(
                     if let Some(stamp) = stamp {
                         state.document_stamps.insert(note_id.clone(), stamp);
                     }
-                    Arc::make_mut(&mut state.saved_bodies).remove(&note_id);
+                    // Avoid cloning every pending body when this unchanged note
+                    // has nothing to remove. Shared identity also keeps derived
+                    // library metadata reusable during background scans.
+                    if state.saved_bodies.contains_key(&note_id) {
+                        Arc::make_mut(&mut state.saved_bodies).remove(&note_id);
+                    }
                     state.candidates.remove(&note_id);
                     state.unattributed_notes.remove(&note_id);
                     state.offline_unreconciled_notes.remove(&note_id);

@@ -534,3 +534,73 @@ fn saving_back_to_the_last_snapshot_clears_only_the_pending_body() {
     assert_eq!(engine.snapshot().note_body(&note.id).unwrap().0, "baseline");
     assert_eq!(std::fs::read_to_string(&note.path).unwrap(), "baseline");
 }
+
+#[test]
+fn unchanged_scans_and_explicit_capture_retain_shared_body_and_history_caches() {
+    for mode in SnapshotMode::ALL {
+        let (_dir, mut engine, _) = setup(mode);
+        let before = engine.snapshot();
+        for now in 1003..1006 {
+            engine.apply(Command::Scan { offline: false }, now).unwrap();
+            let after = engine.snapshot();
+            assert!(
+                std::sync::Arc::ptr_eq(&before.saved_bodies, &after.saved_bodies),
+                "unchanged scan replaced the saved-body cache in {mode:?}"
+            );
+            assert!(std::sync::Arc::ptr_eq(&before.versions, &after.versions));
+            assert_eq!(after.notes[0].revision, before.notes[0].revision);
+            assert_eq!(after.pending_snapshot_count, 0);
+        }
+        engine.apply(Command::CaptureSnapshots, 1006).unwrap();
+        let after = engine.snapshot();
+        assert!(std::sync::Arc::ptr_eq(
+            &before.saved_bodies,
+            &after.saved_bodies
+        ));
+        assert!(std::sync::Arc::ptr_eq(&before.versions, &after.versions));
+    }
+}
+
+#[test]
+fn unchanged_scans_do_not_clone_other_notes_pending_saved_bodies() {
+    for mode in [SnapshotMode::ScanOnly, SnapshotMode::Manual] {
+        let (_dir, mut engine, _) = setup(mode);
+        engine
+            .apply(
+                Command::CreateNote {
+                    title: "managed".into(),
+                    content: "baseline".into(),
+                },
+                1003,
+            )
+            .unwrap();
+        let snapshot = engine.snapshot();
+        let note = snapshot.notes.last().unwrap();
+        engine
+            .apply(
+                Command::SaveNote {
+                    note_id: note.id.clone(),
+                    expected_hash: snapshot.note_body(&note.id).unwrap().1.into(),
+                    content: "durable body awaiting a snapshot".into(),
+                },
+                1004,
+            )
+            .unwrap();
+        let before = engine.snapshot();
+        assert_eq!(before.saved_bodies.len(), 1);
+        for now in 1005..1008 {
+            engine.apply(Command::Scan { offline: false }, now).unwrap();
+            let after = engine.snapshot();
+            assert!(
+                std::sync::Arc::ptr_eq(&before.saved_bodies, &after.saved_bodies),
+                "scanning an unchanged note cloned another note's pending body in {mode:?}"
+            );
+            assert!(std::sync::Arc::ptr_eq(&before.versions, &after.versions));
+            assert_eq!(after.note_body(&note.id), before.note_body(&note.id));
+            assert_eq!(
+                after.pending_snapshot_count,
+                usize::from(mode == SnapshotMode::ScanOnly),
+            );
+        }
+    }
+}
