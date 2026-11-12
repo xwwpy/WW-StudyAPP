@@ -225,6 +225,79 @@ pub(crate) fn select_settings_page(
     assert!(!view.read(cx).preferences_ui.settings_drawer);
 }
 
+/// Edit the current numeric control, commit its change notification, then
+/// click the real global save button in a separate update transaction.
+#[cfg(feature = "ui-test")]
+pub(crate) fn queue_interval_save(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    minutes: u32,
+    cx: &mut AsyncApp,
+) {
+    use gpui_kit::component::input::InputEvent;
+    use gpui_kit::test::TestWindowExt;
+    window
+        .update(cx, |_, window, cx| {
+            select_settings_page(window, view, "learning", cx);
+            let input = view.read(cx).interval.clone();
+            input.update(cx, |input, cx| {
+                input.set_value(minutes.to_string(), window, cx);
+                cx.emit(InputEvent::Change);
+            });
+            assert!(view.read(cx).settings_dirty(cx));
+        })
+        .expect("edit learning interval");
+    window
+        .update(cx, |_, window, cx| {
+            window.click("save-settings", cx);
+            let app = view.read(cx);
+            assert!(
+                app.preferences_ui.busy,
+                "settings save was not queued: value={}, dirty={}, error={:?}, notice={:?}",
+                app.interval.read(cx).value(),
+                app.settings_dirty(cx),
+                app.preferences_ui.error,
+                app.notice
+            );
+        })
+        .expect("queue settings save");
+}
+
+#[cfg(feature = "ui-test")]
+async fn save_interval(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    minutes: u32,
+    cx: &mut AsyncApp,
+) {
+    queue_interval_save(window, view, minutes, cx);
+    crate::smoke_library::until(
+        window,
+        view,
+        "settings save acknowledged with the expected interval",
+        |app, cx| {
+            assert!(
+                app.preferences_ui.error.is_none(),
+                "{:?}",
+                app.preferences_ui.error
+            );
+            !app.preferences_ui.busy
+                && !app.settings_dirty(cx)
+                && app
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.settings.interval_minutes == minutes)
+                && app
+                    .preferences_ui
+                    .saved
+                    .as_ref()
+                    .is_some_and(|saved| saved.settings.interval_minutes == minutes)
+        },
+        cx,
+    )
+    .await;
+}
+
 #[cfg(feature = "ui-test")]
 fn reveal_learning_control(
     window: &mut Window,
@@ -397,10 +470,8 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             window.update(cx, |_, window, cx| {
                 assert!(view.read(cx).snapshot.as_ref().unwrap().timer.paused);
                 window.click(("nav", 4_usize), cx);
-                view.update(cx, |app, cx| app.interval.update(cx, |s, cx| s.set_value("25", window, cx)));
-                window.click("save-settings", cx);
-            }).expect("settings click");
-            cx.background_executor().timer(Duration::from_secs(1)).await;
+            }).expect("settings navigation");
+            save_interval(window, &view, 25, cx).await;
             window.update(cx, |_, _, cx| {
                 assert_eq!(view.read(cx).snapshot.as_ref().unwrap().settings.interval_minutes, 25);
             }).expect("settings persisted");
@@ -410,11 +481,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             }).expect("backup command");
             cx.background_executor().timer(Duration::from_secs(1)).await;
             assert!(backup.exists());
-            window.update(cx, |_, window, cx| {
-                view.update(cx, |app, cx| app.interval.update(cx, |s, cx| s.set_value("10", window, cx)));
-                window.click("save-settings", cx);
-            }).expect("temporary settings");
-            cx.background_executor().timer(Duration::from_secs(1)).await;
+            save_interval(window, &view, 10, cx).await;
             window.update(cx, |_, window, cx| {
                 assert_eq!(view.read(cx).snapshot.as_ref().unwrap().settings.interval_minutes, 10);
                 view.update(cx, |app, cx| {

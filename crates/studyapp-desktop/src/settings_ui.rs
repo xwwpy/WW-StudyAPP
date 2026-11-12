@@ -4661,6 +4661,59 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
+    fn portable_smoke_interval_save_from_restored_about_page(cx: &mut TestAppContext) {
+        use gpui_kit::px;
+        for width in [1000., 620.] {
+            let (app, visual) = fixture(cx);
+            visual.update(|_, cx| cx.set_reduce_motion(true));
+            visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+            let root = tempfile::tempdir().unwrap();
+            let engine =
+                studyapp_core::Engine::open(&root.path().join("save.sqlite"), 1000).unwrap();
+            visual.replace_root_view(|_, cx| {
+                cx.observe(&app, |_, _, cx| cx.notify()).detach();
+                CompleteWorkspaceFixture {
+                    app: app.clone(),
+                    snapshot: engine.snapshot(),
+                    width,
+                    height: 700.,
+                }
+            });
+            visual.update(|window, cx| {
+                crate::smoke::select_settings_page(window, &app, "about", cx);
+            });
+            visual.run_until_parked();
+            let handle = visual.update(|window, _| window.window_handle());
+            crate::smoke::queue_interval_save(handle, &app, 25, &mut visual.to_async());
+            app.read_with(visual, |app, cx| {
+                assert_eq!(app.preferences_ui.browsing.selected, "learning");
+                assert!(!app.preferences_ui.settings_drawer);
+                assert_eq!(app.interval.read(cx).value(), "25");
+                assert!(app.preferences_ui.busy);
+                assert!(app.preferences_ui.error.is_none());
+                assert_eq!(
+                    app.preferences_ui
+                        .baseline
+                        .as_ref()
+                        .unwrap()
+                        .settings
+                        .interval_minutes,
+                    60
+                );
+                assert!(
+                    app.preferences_ui
+                        .appearance_preview
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .editor()
+                        .is_none()
+                );
+            });
+        }
+    }
+
+    #[gpui_kit::test]
     fn settings_transition_completion_and_reduced_motion_keep_an_open_choice_menu(
         cx: &mut TestAppContext,
     ) {
