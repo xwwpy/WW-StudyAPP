@@ -190,7 +190,7 @@ pub(crate) fn select_settings_page(
         other => other,
     };
     let group = target.split('.').next().unwrap();
-    let group_id = SharedString::from(format!("settings-group-{group}"));
+    let group_id = crate::settings_navigation::group_element_id(group);
     window.render_frame(cx);
     if window.try_find(group_id.clone()).is_none() {
         window.click("settings-drawer-toggle", cx);

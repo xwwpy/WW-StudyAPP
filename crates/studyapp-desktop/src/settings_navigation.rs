@@ -14,6 +14,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use studyapp_core::{NoticeStyle, SelectionCategory};
 
+/// Shared by the rendered category tree and native acceptance drivers.
+pub(crate) fn group_element_id(group: &str) -> SharedString {
+    format!("settings-group-{group}").into()
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct SettingsBrowsing {
@@ -353,40 +358,37 @@ impl StudyApp {
             let expandable = children.len() > 1;
             let expanded = state.expanded.contains(group);
             let selected = children.iter().any(|target| target.id == state.selected);
-            let group_button = navigation_button(
-                SharedString::from(format!("settings-group-{group}")),
-                label,
-                selected && !expandable,
-            )
-            .icon(
-                Icon::new(if expandable {
-                    if expanded {
-                        IconName::ChevronDown
+            let group_button =
+                navigation_button(group_element_id(group), label, selected && !expandable)
+                    .icon(
+                        Icon::new(if expandable {
+                            if expanded {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            }
+                        } else {
+                            icon
+                        })
+                        .with_size(px(14.)),
+                    )
+                    .font_weight(if selected {
+                        FontWeight::SEMIBOLD
                     } else {
-                        IconName::ChevronRight
-                    }
-                } else {
-                    icon
-                })
-                .with_size(px(14.)),
-            )
-            .font_weight(if selected {
-                FontWeight::SEMIBOLD
-            } else {
-                FontWeight::NORMAL
-            })
-            .disabled(busy)
-            .on_click(cx.listener(move |this, _, _, cx| {
-                if expandable {
-                    if !this.preferences_ui.browsing.expanded.remove(group) {
-                        this.preferences_ui.browsing.expanded.insert(group.into());
-                    }
-                    this.persist_settings_browsing();
-                } else {
-                    this.select_settings_target(group, cx);
-                }
-                cx.notify();
-            }));
+                        FontWeight::NORMAL
+                    })
+                    .disabled(busy)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if expandable {
+                            if !this.preferences_ui.browsing.expanded.remove(group) {
+                                this.preferences_ui.browsing.expanded.insert(group.into());
+                            }
+                            this.persist_settings_browsing();
+                        } else {
+                            this.select_settings_target(group, cx);
+                        }
+                        cx.notify();
+                    }));
             let mut group_view = column()
                 .gap_0()
                 .child(navigation_item(group_button, selected && !expandable));

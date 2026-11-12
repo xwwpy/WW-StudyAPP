@@ -593,7 +593,7 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
             HOLD_AUTOSAVE.store(false,Ordering::Relaxed);
             click_visible(window,("nav",4_usize).into(),cx).await;
             wait(window,&view,cx,"settings navigation saved editor",|a,_|a.page==Page::Settings&&a.note_editor.is_none()&&a.preferences_ui.saved.is_some()).await;
-            click_visible(window,"settings-section-learning".into(),cx).await;
+            click_visible(window,crate::settings_navigation::group_element_id("learning").into(),cx).await;
             let values=window.update(cx,|_,window,cx|{
                 let app=view.read(cx);
                 let original=app.preferences_ui.saved.as_ref().unwrap().settings.interval_minutes;

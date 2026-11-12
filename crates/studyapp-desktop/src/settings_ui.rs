@@ -4384,6 +4384,24 @@ mod scoped_tests {
             visual.run_until_parked();
             visual.update(|window, cx| {
                 crate::smoke::select_settings_page(window, &app, "learning", cx);
+                // The installed-update guard uses the same rendered category
+                // identity before editing the independent settings draft.
+                let learning = crate::settings_navigation::group_element_id("learning");
+                if width >= 710. {
+                    assert!(window.find(learning).visible());
+                } else {
+                    assert!(window.try_find(learning).is_none());
+                    assert!(!app.read(cx).preferences_ui.settings_drawer);
+                }
+                assert!(window.try_find("settings-section-learning").is_none());
+                assert!(window.find("learning-interval").visible());
+                app.update(cx, |app, cx| {
+                    app.interval
+                        .update(cx, |input, cx| input.set_value("35", window, cx));
+                });
+                assert!(app.read(cx).settings_dirty(cx));
+                app.update(cx, |app, cx| app.discard_settings(window, cx));
+                assert!(!app.read(cx).settings_dirty(cx));
                 crate::smoke::select_settings_page(window, &app, "sync", cx);
             });
             visual.run_until_parked();
