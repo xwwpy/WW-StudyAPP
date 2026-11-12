@@ -1026,12 +1026,77 @@ async fn browser_key(
     panic!("CDP shortcut dispatch timed out");
 }
 
+async fn set_saved_snapshot_mode(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    mode: studyapp_core::SnapshotMode,
+    cx: &mut AsyncApp,
+) -> studyapp_core::SnapshotMode {
+    window
+        .update(cx, |_, window, cx| window.click(("nav", 4_usize), cx))
+        .unwrap();
+    until(
+        window,
+        view,
+        "snapshot fixture settings opened",
+        |app, _| {
+            app.page == Page::Settings
+                && !app.preferences_ui.busy
+                && app.preferences_ui.draft.is_some()
+        },
+        cx,
+    )
+    .await;
+    let original = window
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, cx| {
+                assert!(
+                    !app.settings_dirty(cx),
+                    "fixture must not commit unrelated drafts"
+                );
+                let draft = app.preferences_ui.draft.as_mut().unwrap();
+                let original = draft.snapshots.mode;
+                draft.snapshots.mode = mode;
+                app.save_preferences(cx);
+                original
+            })
+        })
+        .unwrap();
+    until(
+        window,
+        view,
+        "snapshot mode committed for body-save fixture",
+        |app, cx| {
+            !app.preferences_ui.busy
+                && !app.settings_dirty(cx)
+                && app
+                    .preferences_ui
+                    .saved
+                    .as_ref()
+                    .is_some_and(|saved| saved.settings.snapshots.mode == mode)
+                && app
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.settings.snapshots.mode == mode)
+        },
+        cx,
+    )
+    .await;
+    window
+        .update(cx, |_, window, cx| window.click(("nav", 1_usize), cx))
+        .unwrap();
+    original
+}
+
 pub(crate) async fn saved_shortcuts(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
     database: &Path,
     cx: &mut AsyncApp,
 ) {
+    // Background snapshot capture also increments revisions independently of body saves.
+    let original_mode =
+        set_saved_snapshot_mode(window, view, studyapp_core::SnapshotMode::Manual, cx).await;
     let note = create_note(window, view, "原生设置快捷键回归", None, cx).await;
     let original = window
         .update(cx, |_, window, cx| {
@@ -1086,7 +1151,7 @@ pub(crate) async fn saved_shortcuts(
         cx,
     )
     .await;
-    let (editor, versions) = window
+    let (editor, revision) = window
         .update(cx, |_, window, cx| {
             window.click(("nav", 1_usize), cx);
             window.render_frame(cx);
@@ -1109,10 +1174,11 @@ pub(crate) async fn saved_shortcuts(
                     .snapshot
                     .as_ref()
                     .unwrap()
-                    .versions
+                    .notes
                     .iter()
-                    .filter(|version| version.note_id == note.id)
-                    .count(),
+                    .find(|saved| saved.id == note.id)
+                    .unwrap()
+                    .revision,
             )
         })
         .unwrap();
@@ -1131,28 +1197,33 @@ pub(crate) async fn saved_shortcuts(
         .unwrap();
     crate::smoke_visibility::focus_body(window, &editor, cx).await;
     crate::smoke_visibility::visible(window, &editor, cx).await;
-    window.update(cx, |_, _, cx| view.update(cx, |app, cx| {
-        eprintln!("custom shortcut native setup: expected_note={}; selected={:?}; draft_note={:?}; generation={}; revision={}; intent={:?}", note.id, app.selected_note, app.note_editor.as_ref().map(|draft| &draft.note_id), editor.read(cx).generation(), editor.read(cx).revision(), app.note_intent.as_ref().map(|(request, _)| request));
-        cx.subscribe(&editor, |app, _, event: &crate::markdown_editor::MarkdownEvent, cx| {
-            let event = match event {
-                crate::markdown_editor::MarkdownEvent::Save => "Save".to_owned(),
-                crate::markdown_editor::MarkdownEvent::Flushed(request) => format!("Flushed({request})"),
-                crate::markdown_editor::MarkdownEvent::Shortcut(action) => format!("Shortcut({action})"),
-                _ => return,
-            };
-            eprintln!("custom shortcut native event: {event}; draft_note={:?}; generation={}; revision={}; intent={:?}", app.note_editor.as_ref().map(|draft| &draft.note_id), app.note_content.read(cx).generation(), app.note_content.read(cx).revision(), app.note_intent.as_ref().map(|(request, _)| request));
-        }).detach();
-    })).unwrap();
+    let save_events = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (draft_id, _subscription) = window
+        .update(cx, |_, _, cx| {
+            view.update(cx, |app, cx| {
+                let observed = save_events.clone();
+                let subscription = cx.subscribe(
+                    &editor,
+                    move |_, _, event: &crate::markdown_editor::MarkdownEvent, _| {
+                        if matches!(event, crate::markdown_editor::MarkdownEvent::Save) {
+                            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    },
+                );
+                (app.active_draft_id.clone().unwrap(), subscription)
+            })
+        })
+        .unwrap();
     let current = browser(window, &editor, json!({"type":"snapshot"}), cx).await;
     eprintln!("custom shortcut before dispatch: {current}");
     assert_eq!(
         current["bindings"]["editor.save"], "Ctrl+Shift+S",
         "committed shortcut did not reach the editor"
     );
-    let expected = format!(
-        "{}\n自定义保存组合键已应用。\n",
-        current["text"].as_str().unwrap()
-    );
+    let original_body = std::fs::read_to_string(&note.path).unwrap();
+    assert_eq!(current["text"].as_str().unwrap(), original_body);
+    let expected = format!("{original_body}\n自定义保存组合键已应用。\n");
+    let expected_hash = StudyApp::draft_hash(&expected);
     browser(window, &editor, json!({"type":"replace","from":0,"to":current["text"].as_str().unwrap().encode_utf16().count(),"text":expected}), cx).await;
     browser_key(window, &editor, "s", "KeyS", 2, 83, cx).await;
     for _ in 0..3 {
@@ -1161,20 +1232,27 @@ pub(crate) async fn saved_shortcuts(
     window
         .update(cx, |_, _, cx| {
             let app = view.read(cx);
+            let snapshot = app.snapshot.as_ref().unwrap();
             assert_eq!(
-                app.snapshot
-                    .as_ref()
-                    .unwrap()
-                    .versions
+                snapshot
+                    .notes
                     .iter()
-                    .filter(|version| version.note_id == note.id)
-                    .count(),
-                versions,
+                    .find(|saved| saved.id == note.id)
+                    .unwrap()
+                    .revision,
+                revision,
                 "old Ctrl+S still saved after settings remap"
             );
+            assert_eq!(snapshot.note_body(&note.id).unwrap().0, original_body);
+            assert_eq!(app.active_draft_id.as_ref(), Some(&draft_id));
+            assert!(app.draft_catalog[&draft_id].active());
+            assert!(app.note_editor.is_some());
             assert!(!app.note_saving && app.note_intent.is_none());
+            assert!(app.pending_note_save.is_none() && app.draft_persist.is_none());
         })
         .unwrap();
+    assert_eq!(std::fs::read_to_string(&note.path).unwrap(), original_body);
+    assert_eq!(save_events.load(std::sync::atomic::Ordering::SeqCst), 0);
     browser_key(window, &editor, "S", "KeyS", 10, 83, cx).await;
     let dispatched = browser(window, &editor, json!({"type":"snapshot"}), cx).await;
     eprintln!("custom shortcut after dispatch: {dispatched}");
@@ -1185,15 +1263,28 @@ pub(crate) async fn saved_shortcuts(
         |app, _| {
             !app.note_saving
                 && app.note_intent.is_none()
-                && app
-                    .snapshot
-                    .as_ref()
-                    .unwrap()
-                    .versions
-                    .iter()
-                    .filter(|version| version.note_id == note.id)
-                    .count()
-                    == versions + 1
+                && app.pending_note_save.is_none()
+                && app.draft_persist.is_none()
+                && !app.media_busy()
+                && app.note_editor.is_none()
+                && app.active_draft_id.is_none()
+                && app.selected_note.as_ref() == Some(&note.id)
+                && app.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.note_body(&note.id)
+                        == Some((expected.as_str(), expected_hash.as_str()))
+                        && snapshot
+                            .notes
+                            .iter()
+                            .any(|saved| saved.id == note.id && saved.revision == revision + 1)
+                })
+                && app.draft_catalog.get(&draft_id).is_some_and(|record| {
+                    matches!(&record.status, crate::drafts::DraftStatus::Saved { note_id, hash }
+                        if note_id == &note.id && hash == &expected_hash)
+                        && app
+                            .draft_durable
+                            .get(&draft_id)
+                            .is_some_and(|durable| *durable >= record.revision)
+                })
         },
         cx,
     )
@@ -1202,6 +1293,7 @@ pub(crate) async fn saved_shortcuts(
         native_tick(cx).await;
     }
     assert_eq!(std::fs::read_to_string(&note.path).unwrap(), expected);
+    assert_eq!(save_events.load(std::sync::atomic::Ordering::SeqCst), 1);
     window
         .update(cx, |_, window, cx| {
             assert_eq!(
@@ -1209,12 +1301,13 @@ pub(crate) async fn saved_shortcuts(
                     .snapshot
                     .as_ref()
                     .unwrap()
-                    .versions
+                    .notes
                     .iter()
-                    .filter(|version| version.note_id == note.id)
-                    .count(),
-                versions + 1,
-                "one shortcut created more than one saved version"
+                    .find(|saved| saved.id == note.id)
+                    .unwrap()
+                    .revision,
+                revision + 1,
+                "one shortcut must update the saved body exactly once"
             );
             window.click(("nav", 4_usize), cx);
             for (action, binding) in &original {
@@ -1243,8 +1336,9 @@ pub(crate) async fn saved_shortcuts(
     window
         .update(cx, |_, window, cx| window.click(("nav", 1_usize), cx))
         .unwrap();
+    set_saved_snapshot_mode(window, view, original_mode, cx).await;
     std::fs::write(database.with_file_name("native-shortcut-settings-result.txt"),
-        "PASS: shortcut draft requires explicit save; committed Ctrl+Shift+S reaches the persistent WebView; old Ctrl+S does not save; new chord saves one version through native flush; original bindings restored. Shortcut chords used explicit CDP Input.dispatchKeyEvent; the existing strict Win32 cursor/keyboard gates remain separate.\n").unwrap();
+        "PASS: shortcut draft requires explicit save; committed Ctrl+Shift+S reaches the persistent WebView; old Ctrl+S does not save; new chord dispatches one save and persists the current body through native flush and durable terminal draft acknowledgement; original bindings restored. Shortcut chords used explicit CDP Input.dispatchKeyEvent; the existing strict Win32 cursor/keyboard gates remain separate.\n").unwrap();
 }
 
 pub async fn exercise(
@@ -2021,6 +2115,8 @@ async fn exercise_images(
     database: &Path,
     cx: &mut AsyncApp,
 ) {
+    let original_mode =
+        set_saved_snapshot_mode(window, view, studyapp_core::SnapshotMode::Manual, cx).await;
     let note = create_note(window, view, "本地图片采用与拖入回归", None, cx).await;
     let source = Path::new(&note.path)
         .parent()
@@ -2160,8 +2256,12 @@ async fn exercise_images(
         cx,
     )
     .await;
-    window
-        .update(cx, |_, window, cx| window.click("save-note", cx))
+    let draft_id = window
+        .update(cx, |_, window, cx| {
+            let draft_id = view.read(cx).active_draft_id.clone().unwrap();
+            window.click("save-note", cx);
+            draft_id
+        })
         .unwrap();
     until(
         window,
@@ -2170,17 +2270,21 @@ async fn exercise_images(
         |app, _| {
             !app.media_busy()
                 && !app.note_saving
+                && app.note_intent.is_none()
+                && app.pending_note_save.is_none()
+                && app.draft_persist.is_none()
                 && app.note_editor.is_none()
-                && app
-                    .snapshot
-                    .as_ref()
-                    .unwrap()
-                    .versions
-                    .iter()
-                    .any(|version| {
-                        version.note_id == note.id
-                            && version.content.matches("studyapp-media:").count() == 3
+                && app.active_draft_id.is_none()
+                && app.snapshot.as_ref().is_some_and(|snapshot| {
+                    snapshot.note_body(&note.id).is_some_and(|(content, hash)| {
+                        content.matches("studyapp-media:").count() == 3
+                            && app.draft_catalog.get(&draft_id).is_some_and(|record| {
+                                matches!(&record.status, crate::drafts::DraftStatus::Saved { note_id, hash: saved_hash }
+                                    if note_id == &note.id && saved_hash == hash)
+                                    && app.draft_durable.get(&draft_id).is_some_and(|durable| *durable >= record.revision)
+                            })
                     })
+                })
         },
         cx,
     )
@@ -2217,6 +2321,8 @@ async fn exercise_images(
         .update(cx, |_, _, cx| {
             let app = view.read(cx);
             let snapshot = app.snapshot.as_ref().unwrap();
+            assert_eq!(snapshot.note_body(&note.id).unwrap().0, saved);
+            assert_eq!(saved.matches("studyapp-media:").count(), 3);
             (
                 serde_json::to_value(snapshot.notes.iter().find(|n| n.id == note.id).unwrap())
                     .unwrap(),
@@ -2373,6 +2479,7 @@ async fn exercise_images(
         cx,
     )
     .await;
+    set_saved_snapshot_mode(window, view, original_mode, cx).await;
     std::fs::write(database.with_file_name("native-image-smoke-result.txt"), "PASS: relative image resolved in native editor; native-window image drop dismisses overlay and queues managed insertion; saving adopts relative and inserted assets before note write; three managed images render without placeholders; historical group preserved; two actual reopen/no-op saves retain exact Markdown, metadata/history and image inventories; save-as-copy creates independent resources and its ordinary reopen creates none; source image bytes preserved.\n").unwrap();
 }
 

@@ -135,6 +135,52 @@ fn explicit_editor_saves_remain_durable_without_creating_manual_snapshots() {
 }
 
 #[test]
+fn explicit_body_saves_advance_revision_once_without_waiting_for_snapshots() {
+    for mode in SnapshotMode::ALL {
+        let (_dir, mut engine, _) = setup(mode);
+        engine
+            .apply(
+                Command::CreateNote {
+                    title: "managed".into(),
+                    content: "original body".into(),
+                },
+                1003,
+            )
+            .unwrap();
+        let before = engine.snapshot();
+        let note = before.notes.last().unwrap();
+        let mut hash = before.note_body(&note.id).unwrap().1.to_owned();
+        for now in [1004, 1005] {
+            engine
+                .apply(
+                    Command::SaveNote {
+                        note_id: note.id.clone(),
+                        expected_hash: hash,
+                        content: "saved body".into(),
+                    },
+                    now,
+                )
+                .unwrap();
+            let saved = engine.snapshot();
+            assert_eq!(saved.versions.len(), before.versions.len());
+            assert_eq!(saved.note_body(&note.id).unwrap().0, "saved body");
+            assert_eq!(std::fs::read_to_string(&note.path).unwrap(), "saved body");
+            assert_eq!(
+                saved
+                    .notes
+                    .iter()
+                    .find(|saved| saved.id == note.id)
+                    .unwrap()
+                    .revision,
+                note.revision + 1,
+                "a no-op save must not increment the note revision"
+            );
+            hash = saved.note_body(&note.id).unwrap().1.to_owned();
+        }
+    }
+}
+
+#[test]
 fn authoritative_settings_are_restored_before_the_first_scan() {
     let (root, engine, source) = setup(SnapshotMode::Automatic);
     let original = engine.snapshot().versions;
