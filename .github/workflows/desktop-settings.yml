@@ -4,6 +4,14 @@ on:
   push:
     branches: ['validation/settings-*']
   workflow_dispatch:
+    inputs:
+      test_scope:
+        description: Use notifications only when unchanged regressions have valid prior evidence
+        type: choice
+        options:
+          - full
+          - notifications
+        default: full
 
 permissions:
   contents: read
@@ -47,10 +55,21 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Source formatting failed' }
           python scripts/check-user-docs.py
           if ($LASTEXITCODE -ne 0) { throw 'User documentation boundary failed' }
-      - name: Verify desktop and shared UI with bounded test concurrency
+      - name: Verify selected regressions with bounded test concurrency
+        env:
+          TEST_SCOPE: ${{ inputs.test_scope || 'full' }}
         run: |
-          cargo test --locked -p studyapp-desktop -p studyapp-ui --all-features -- --test-threads=2
-          if ($LASTEXITCODE -ne 0) { throw 'Bounded desktop and UI regressions failed' }
+          $testArgs = @('test', '--locked', '-p', 'studyapp-desktop', '--all-features')
+          switch ($env:TEST_SCOPE) {
+            'full' { $testArgs += @('-p', 'studyapp-ui') }
+            'notifications' { $testArgs += @('--bin', 'studyapp', 'native_notification') }
+            default { throw 'Unknown focused test scope' }
+          }
+          Write-Output "Executing test scope: $env:TEST_SCOPE"
+          "Test scope: **$env:TEST_SCOPE**. Notifications mode runs affected regressions only; this is not a full-suite receipt." >> $env:GITHUB_STEP_SUMMARY
+          $testArgs += @('--', '--test-threads=2')
+          cargo @testArgs
+          if ($LASTEXITCODE -ne 0) { throw 'Selected bounded regressions failed' }
       - name: Build the affected native settings validation binary
         run: |
           cargo build --locked -p studyapp-desktop --features ui-test
