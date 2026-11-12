@@ -81,6 +81,27 @@ pub(crate) fn settings_capture_filename(window: &Window, label: &str) -> String 
     )
 }
 
+#[cfg(all(feature = "ui-test", any(windows, test)))]
+pub(crate) fn notification_capture_event(
+    style: studyapp_core::NoticeStyle,
+) -> studyapp_core::NoticeEvent {
+    use studyapp_core::{NoticeCategory, NoticeEvent, NoticeSeverity, NoticeStyle};
+    if matches!(style, NoticeStyle::Bubble | NoticeStyle::Snackbar) {
+        NoticeEvent::new(
+            NoticeCategory::OperationResult,
+            NoticeSeverity::Success,
+            "操作已完成。",
+        )
+    } else {
+        NoticeEvent::new(
+            NoticeCategory::SaveFailure,
+            NoticeSeverity::Error,
+            "这是通知显示回归样例。关闭提示不会丢弃尚未保存的内容。
+长消息仍在卡片内部滚动，不移动下方页面。",
+        )
+    }
+}
+
 /// Yield to platform frames after navigation; consecutive Window::update calls
 /// alone do not let the native frame loop present the selected page.
 #[cfg(all(feature = "ui-test", any(windows, test)))]
@@ -721,6 +742,53 @@ pub fn exercise(window: AnyWindowHandle, view: Entity<StudyApp>, database: PathB
 mod tests {
     use super::prepare;
     use studyapp_core::Engine;
+
+    #[test]
+    #[cfg(feature = "ui-test")]
+    fn native_notification_capture_events_reach_requested_feedback_surfaces() {
+        use studyapp_core::{
+            NoticeEnvironment, NoticeRoute, NoticeRule, NoticeStyle, NotificationAppearance,
+            NotificationSettings,
+        };
+        for style in NoticeStyle::ALL {
+            let event = super::notification_capture_event(style);
+            event.validate().unwrap();
+            let mut policy = NotificationSettings::default();
+            policy.rules.insert(
+                event.category,
+                NoticeRule {
+                    style: Some(style),
+                    ..Default::default()
+                },
+            );
+            let expected = if matches!(
+                style,
+                NoticeStyle::Bubble
+                    | NoticeStyle::Snackbar
+                    | NoticeStyle::CornerCard
+                    | NoticeStyle::Banner
+                    | NoticeStyle::ModalCard
+            ) {
+                style
+            } else {
+                NoticeStyle::CornerCard
+            };
+            assert_eq!(
+                policy.route_event(
+                    &event,
+                    &NotificationAppearance::default(),
+                    NoticeEnvironment {
+                        foreground: true,
+                        desktop_available: false,
+                        anchor_available: false,
+                        minute: 720,
+                    }
+                ),
+                NoticeRoute::Foreground(expected),
+                "capture fixture does not exercise {style:?}"
+            );
+        }
+    }
 
     #[test]
     fn prepare_rejects_nonempty_directory_without_overwriting_notes_or_creating_database() {

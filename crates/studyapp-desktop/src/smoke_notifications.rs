@@ -50,10 +50,15 @@ impl Render for Witness {
             .child("Notification focus witness")
     }
 }
-fn configure(app: &mut StudyApp, style: NoticeStyle, cx: &mut Context<StudyApp>) {
+fn configure(
+    app: &mut StudyApp,
+    style: NoticeStyle,
+    category: NoticeCategory,
+    cx: &mut Context<StudyApp>,
+) {
     let mut policy = studyapp_core::NotificationSettings::default();
     policy.rules.insert(
-        NoticeCategory::SaveFailure,
+        category,
         NoticeRule {
             style: Some(style),
             ..Default::default()
@@ -78,11 +83,7 @@ fn configure(app: &mut StudyApp, style: NoticeStyle, cx: &mut Context<StudyApp>)
     cx.notify();
 }
 fn event() -> NoticeEvent {
-    let mut event = NoticeEvent::new(
-        NoticeCategory::SaveFailure,
-        NoticeSeverity::Error,
-        "这是通知显示回归样例。关闭提示不会丢弃尚未保存的内容。\n长消息仍在卡片内部滚动，不移动下方页面。",
-    );
+    let mut event = crate::smoke::notification_capture_event(NoticeStyle::CornerCard);
     event.anchor = Some("settings-save".into());
     event
 }
@@ -417,22 +418,30 @@ pub async fn exercise(
     .await;
     measure_notification_cache(window, view, database, cx).await;
     let mut accepted = Vec::new();
+    let mut captured_styles = Vec::new();
+    let mut route_checks = Vec::new();
     for style in NoticeStyle::ALL {
-        window
-            .update(cx, |_, _, cx| {
-                view.update(cx, |app, cx| configure(app, style, cx))
-            })
-            .unwrap();
+        let notice = crate::smoke::notification_capture_event(style);
+        let routed_style = if notice.category.notification_styles().contains(&style) {
+            style
+        } else {
+            notice.category.default_style(notice.severity)
+        };
         settle(window, view, cx, |_, window, _| {
             window.try_find("save-settings").is_some()
         })
         .await;
         let event_id = window
-            .update(cx, |_, _, cx| {
+            .update(cx, |_, window, cx| {
                 view.update(cx, |app, cx| {
-                    let event = event();
-                    let id = event.id;
-                    assert_eq!(app.emit_notification(event, cx), Some(id));
+                    configure(app, style, notice.category, cx);
+                    app.sync_notification_preferences(window, cx);
+                    let id = notice.id;
+                    assert_eq!(app.emit_notification(notice, cx), Some(id));
+                    assert_eq!(
+                        app.notifications.read(cx).test_event_route(id),
+                        Some(studyapp_core::NoticeRoute::Foreground(routed_style))
+                    );
                     id
                 })
             })
@@ -450,18 +459,36 @@ pub async fn exercise(
                 let center = view.read(cx).notifications.clone();
                 let id = center.read(cx).test_state()[0].0;
                 assert_eq!(
+                    center.read(cx).test_event_route(event_id),
+                    Some(studyapp_core::NoticeRoute::Foreground(routed_style)),
+                    "notification route changed before capture: {style:?}"
+                );
+                assert_eq!(
                     center.read(cx).modal_visible(),
-                    style == NoticeStyle::ModalCard
+                    routed_style == NoticeStyle::ModalCard
                 );
                 let bounds = window.find(format!("notice-{id}")).bounds();
                 assert!(bounds.size.width > px(100.) && bounds.size.height > px(32.));
                 assert!(bounds.left() >= px(0.) && bounds.right() <= window.viewport_size().width);
-                crate::smoke::capture(
-                    window,
-                    database.with_file_name(format!("notification-{style:?}.png")),
-                )
-                .unwrap();
-                window.click(format!("dismiss-notice-{id}"), cx);
+                // A safety fallback is route evidence, never a picture of the
+                // requested interactive component. Those use real controllers.
+                if style == routed_style {
+                    crate::smoke::capture(
+                        window,
+                        database.with_file_name(format!("notification-{style:?}.png")),
+                    )
+                    .unwrap();
+                    captured_styles.push(format!("{style:?}"));
+                }
+                if routed_style == NoticeStyle::Bubble {
+                    assert!(window.try_find(format!("dismiss-notice-{id}")).is_none());
+                } else {
+                    window.click(format!("dismiss-notice-{id}"), cx);
+                }
+                route_checks.push(serde_json::json!({
+                    "event_id": event_id.to_string(), "requested": format!("{style:?}"),
+                    "actual": format!("{routed_style:?}"), "captured": style == routed_style,
+                }));
             })
             .unwrap();
         settle(window, view, cx, |app, _, cx| {
@@ -472,7 +499,14 @@ pub async fn exercise(
     }
     window
         .update(cx, |_, _, cx| {
-            view.update(cx, |app, cx| configure(app, NoticeStyle::CornerCard, cx))
+            view.update(cx, |app, cx| {
+                configure(
+                    app,
+                    NoticeStyle::CornerCard,
+                    NoticeCategory::SaveFailure,
+                    cx,
+                )
+            })
         })
         .unwrap();
     // Native editor/pixel prerequisites may temporarily raise this process's
@@ -766,7 +800,7 @@ pub async fn exercise(
         .update(cx, |_, window, _| window.remove_window())
         .unwrap();
     std::fs::write(database.with_file_name("notification-native-result.json"),serde_json::to_vec_pretty(&serde_json::json!({
-        "foreground_styles":["A","B","C","D","E"],"desktop_style":"G","created_without_activation":true,
+        "foreground_styles":captured_styles,"foreground_route_checks":route_checks,"desktop_style":"G","created_without_activation":true,
         "painted_without_activation":true,"closed_without_activation":true,"same_event_on_foreground_return":event_id.to_string(),
         "foreground_events":accepted,
         "content_fit":{"compact":compact_geometry,"stacked":stacked_geometry,"restored":restored_geometry},
