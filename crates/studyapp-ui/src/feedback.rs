@@ -4,11 +4,12 @@ use gpui_kit::{
     *,
 };
 
-/// Retains one focus scope across renders. Focus changes only when a blocking
-/// dialog opens or closes; result notifications never enter this scope.
+/// Retains one focus scope across renders. Focus changes when a blocking dialog
+/// opens, closes or supplies a different initial target, not on ordinary redraws.
 pub struct ModalFocus {
     handle: FocusHandle,
     previous: Option<WeakFocusHandle>,
+    initial: Option<WeakFocusHandle>,
     active: bool,
     scroll: ScrollHandle,
     background_scope: TextSelectionScopeId,
@@ -19,6 +20,7 @@ impl ModalFocus {
         Self {
             handle: cx.focus_handle(),
             previous: None,
+            initial: None,
             active: false,
             scroll: ScrollHandle::new(),
             background_scope: TextSelectionScopeId::new(),
@@ -62,11 +64,19 @@ impl ModalFocus {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let next_initial = if active {
+            initial.as_ref().map(FocusHandle::downgrade)
+        } else {
+            None
+        };
+        let replaced = self.initial != next_initial;
+        self.initial = next_initial;
         if active == self.active {
-            // A menu or asynchronous input callback may restore an older
-            // focus target after the dialog opens. Reclaim only escaped focus,
-            // keeping every input and action already inside the dialog intact.
-            if active && !self.handle.contains_focused(window, cx) {
+            // A sheet can become a form without closing the shared modal scope.
+            // Apply its new initial target once, preserving the original prior
+            // focus and any later input/action focus during ordinary redraws.
+            // Also reclaim focus escaped by a deferred menu/input callback.
+            if active && (replaced || !self.handle.contains_focused(window, cx)) {
                 initial.as_ref().unwrap_or(&self.handle).focus(window, cx);
             }
             return;
@@ -369,6 +379,105 @@ mod tests {
                     })
                 }))
         }
+    }
+
+    #[gpui_kit::test]
+    fn replacing_a_modal_focuses_its_new_form_without_resetting_focus_on_redraw(
+        cx: &mut TestAppContext,
+    ) {
+        struct FormFixture {
+            focus: ModalFocus,
+            initial: Option<FocusHandle>,
+            first: FocusHandle,
+            second: FocusHandle,
+            footer: FocusHandle,
+            outside: FocusHandle,
+            open: bool,
+        }
+        impl Render for FormFixture {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.focus
+                    .sync_with_initial(self.open, self.initial.clone(), window, cx);
+                div()
+                    .child(div().track_focus(&self.outside))
+                    .children(self.open.then(|| {
+                        super::modal_frame_shell(
+                            div()
+                                .child(div().track_focus(&self.first))
+                                .child(div().track_focus(&self.second))
+                                .child(div().track_focus(&self.footer)),
+                            &self.focus,
+                            window,
+                            cx,
+                        )
+                    }))
+            }
+        }
+        cx.update(gpui_kit::init);
+        let (handle, view) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
+                cx.new(|cx| FormFixture {
+                    focus: ModalFocus::new(cx),
+                    initial: None,
+                    first: cx.focus_handle(),
+                    second: cx.focus_handle(),
+                    footer: cx.focus_handle(),
+                    outside: cx.focus_handle(),
+                    open: false,
+                })
+            })
+            .unwrap()
+        });
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            let outside = view.read(cx).outside.clone();
+            outside.focus(window, cx);
+            view.update(cx, |this, cx| {
+                this.open = true;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(view.read(cx).focus.handle().is_focused(window));
+            view.update(cx, |this, cx| {
+                this.initial = Some(this.first.clone());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                view.read(cx).first.is_focused(window),
+                "new form did not take initial focus"
+            );
+            let footer = view.read(cx).footer.clone();
+            footer.focus(window, cx);
+            window.render_frame(cx);
+            assert!(
+                view.read(cx).footer.is_focused(window),
+                "redraw stole focus from a form action"
+            );
+            view.update(cx, |this, cx| {
+                this.initial = Some(this.second.clone());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(view.read(cx).second.is_focused(window));
+            // Returning to a non-form modal uses the scope, not a stale input.
+            view.update(cx, |this, cx| {
+                this.initial = None;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(view.read(cx).focus.handle().is_focused(window));
+            view.update(cx, |this, cx| {
+                this.open = false;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(
+                view.read(cx).outside.is_focused(window),
+                "replacement lost the original background focus"
+            );
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

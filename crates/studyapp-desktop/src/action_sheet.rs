@@ -105,6 +105,82 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn sheet_to_folder_form_focuses_the_name_and_enter_submits_once(cx: &mut TestAppContext) {
+        use gpui_kit::WindowOptions;
+        use std::{cell::RefCell, rc::Rc, time::Duration};
+
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        let directory = tempfile::tempdir().unwrap().keep();
+        let worker = crate::worker::Worker::start(directory.join("studyapp.sqlite3"), None);
+        let initial = worker
+            .receiver
+            .recv_timeout(Duration::from_secs(60))
+            .unwrap();
+        let snapshot = initial.snapshot.unwrap();
+        let (handle, app) = cx.update(|cx| {
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| {
+                    let mut app = StudyApp::new(worker, window, cx);
+                    app.preferences_ui.saved = initial.preferences;
+                    app.accept_snapshot(snapshot, false, window, cx);
+                    app.startup_busy = false;
+                    app.page = Page::Notes;
+                    app
+                })
+            })
+            .unwrap()
+        });
+        let panel = cx.read(|cx| app.read(cx).folders.clone());
+        let commands = Rc::new(RefCell::new(Vec::new()));
+        let observed = commands.clone();
+        cx.update(|cx| {
+            cx.subscribe(
+                &panel,
+                move |_, event: &crate::folders_ui::FolderEvent, _| {
+                    if let crate::folders_ui::FolderEvent::Command(command) = event {
+                        observed.borrow_mut().push(command.as_ref().clone());
+                    }
+                },
+            )
+            .detach();
+        });
+        for cancel in [true, false] {
+            cx.update_window(handle, |_, window, cx| {
+                window.click("library-add-menu", cx);
+                assert!(app.read(cx).action_sheet_open);
+                window.click("sheet-new-folder", cx);
+                assert!(!app.read(cx).action_sheet_open);
+                assert!(panel.read(cx).modal_open());
+                let name = panel.read(cx).modal_initial_focus(cx).unwrap();
+                assert!(
+                    name.is_focused(window),
+                    "sheet-to-form transition did not focus the name"
+                );
+                window.input("目录键盘回归", cx);
+                if cancel {
+                    window.press("escape", cx);
+                } else {
+                    window.press("enter", cx);
+                    window.press("enter", cx);
+                }
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(!cx.read(|cx| panel.read(cx).modal_open()));
+            if cancel {
+                assert!(commands.borrow().is_empty());
+            }
+        }
+        assert_eq!(commands.borrow().len(), 1);
+        assert!(
+            matches!(&commands.borrow()[0], studyapp_core::Command::CreateFolder { name, parent_id: None } if name == "目录键盘回归")
+        );
+    }
+
+    #[gpui_kit::test]
     fn sheet_operations_ignore_own_modal_but_obey_tasks_and_keep_cancel_fixed(
         cx: &mut TestAppContext,
     ) {

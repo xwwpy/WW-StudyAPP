@@ -1730,6 +1730,16 @@ pub async fn exercise(
     window
         .update(cx, |_, window, cx| {
             crate::smoke_library::library_add(window, true, view, cx);
+            let initial = view
+                .read(cx)
+                .folders
+                .read(cx)
+                .modal_initial_focus(cx)
+                .unwrap();
+            assert!(
+                initial.is_focused(window),
+                "folder form did not receive initial focus"
+            );
             window.input(DESTINATION, cx); // Initial modal focus must accept typing.
             window.press("enter", cx);
             window.press("enter", cx);
