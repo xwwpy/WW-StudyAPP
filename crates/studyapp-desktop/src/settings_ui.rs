@@ -4598,6 +4598,11 @@ mod scoped_tests {
         });
         visual.update(|window, cx| {
             window.render_frame(cx);
+            let tree_viewport = window.find("settings-tree-scroll").bounds();
+            assert!(
+                window.find("settings-group-learning").bounds().right()
+                    <= tree_viewport.right() - gpui_kit::component::scroll::Scrollbar::width()
+            );
             assert!(
                 app.read(cx)
                     .preferences_ui
@@ -4616,6 +4621,63 @@ mod scoped_tests {
             let viewport = window.find("settings-tree-scroll").bounds();
             assert!(target.visible() && viewport.contains(&target.bounds().center()));
             assert_eq!(app.read(cx).preferences_ui.draft, original);
+        });
+    }
+
+    #[gpui_kit::test]
+    fn search_result_controls_leave_the_scrollbar_lane_and_track_drag_keeps_the_page(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::{point, px};
+        let (app, visual) = fixture(cx);
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine = studyapp_core::Engine::open(&root.path().join("search.sqlite"), 1000).unwrap();
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 1000.,
+                height: 700.,
+            }
+        });
+        visual.update(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.open_settings_search(window, cx);
+                app.preferences_ui
+                    .search
+                    .as_ref()
+                    .unwrap()
+                    .update(cx, |input, cx| input.set_value("通知", window, cx));
+            })
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            window.render_frame(cx);
+            let viewport = window.find("settings-search-results").bounds();
+            let scrollbar_width = gpui_kit::component::scroll::Scrollbar::width();
+            assert!(
+                window
+                    .find(("settings-search-result", 0_usize))
+                    .bounds()
+                    .right()
+                    <= viewport.right() - scrollbar_width
+            );
+            let scroll = app.read(cx).preferences_ui.settings_search_scroll.clone();
+            assert!(scroll.max_offset().y > px(0.));
+            let selected = app.read(cx).preferences_ui.browsing.selected.clone();
+            let draft = app.read(cx).preferences_ui.draft.clone();
+            let x = viewport.right() - scrollbar_width / 2.;
+            window.drag(
+                point(x, viewport.top() + px(8.)),
+                point(x, viewport.bottom() - px(2.)),
+                cx,
+            );
+            assert_eq!(scroll.offset().y, -scroll.max_offset().y);
+            assert!(app.read(cx).preferences_ui.settings_search_open);
+            assert_eq!(app.read(cx).preferences_ui.browsing.selected, selected);
+            assert_eq!(app.read(cx).preferences_ui.draft, draft);
         });
     }
 

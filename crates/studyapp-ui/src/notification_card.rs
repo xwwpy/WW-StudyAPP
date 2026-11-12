@@ -229,6 +229,10 @@ pub fn notification_card_state(
                 }
         };
         let body_id = SharedString::from(format!("notification-body-{}", model.key));
+        let text_size = crate::design::type_size(palette.font_size, crate::design::TypeRole::Body);
+        let line_height =
+            px(palette.font_size as f32
+                * crate::design::line_height(crate::design::TypeRole::Body));
         let body = if collapsed {
             div()
                 .id(body_id)
@@ -236,24 +240,24 @@ pub fn notification_card_state(
                 .min_w_0()
                 .line_clamp(2)
                 .overflow_hidden()
+                .text_color(rgb(foreground))
+                .text_size(text_size)
+                .line_height(line_height)
                 .child(summary)
+                .into_any_element()
         } else {
             scroll_body(body_id, scroll)
                 .test_support()
                 .min_w_0()
                 .max_h(px(f32::from(surface.max_height)))
+                .text_color(rgb(foreground))
+                .text_size(text_size)
+                .line_height(line_height)
                 .child(summary)
                 .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                .into_any_element()
         };
-        card = card.child(
-            body.text_color(rgb(foreground))
-                .text_size(crate::design::type_size(
-                    palette.font_size,
-                    crate::design::TypeRole::Body,
-                ))
-                .line_height(px(palette.font_size as f32
-                    * crate::design::line_height(crate::design::TypeRole::Body))),
-        );
+        card = card.child(body);
     }
     if fields.event_id
         && let Some(id) = model.event_id

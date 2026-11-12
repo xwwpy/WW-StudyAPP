@@ -444,6 +444,7 @@ impl StudyApp {
                 .flex_1()
                 .min_h_0()
                 .px_1()
+                .pr(gpui_kit::component::scroll::Scrollbar::width())
                 .py_2()
                 .child(tree),
             )

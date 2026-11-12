@@ -44,6 +44,12 @@ pub(crate) fn select_page(window: &mut Window, view: &Entity<StudyApp>, page: &s
     }
     assert!(window.try_find("settings-tree-width-reset").is_none());
     reveal_scrolled(window, group_id.clone(), "settings-tree-scroll", cx);
+    let tree_viewport = window.find("settings-tree-scroll").bounds();
+    assert!(
+        window.find(group_id.clone()).bounds().right()
+            <= tree_viewport.right() - gpui_kit::component::scroll::Scrollbar::width(),
+        "category controls overlap the scrollbar lane"
+    );
     let id = if target.contains('.') {
         if !view
             .read(cx)

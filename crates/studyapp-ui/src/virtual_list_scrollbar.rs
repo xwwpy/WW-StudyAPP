@@ -129,6 +129,105 @@ mod tests {
         check_list_scrollbar(cx, 18.);
     }
 
+    #[gpui_kit::test]
+    fn settings_virtual_rows_keep_controls_outside_the_track_on_the_first_frame(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::StatefulInteractiveElement;
+        use std::{cell::Cell, rc::Rc};
+        struct SettingsFixture {
+            state: ListState,
+            width: f32,
+            height: f32,
+            clicks: Rc<Cell<usize>>,
+        }
+        impl Render for SettingsFixture {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let clicks = self.clicks.clone();
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(px(self.width))
+                    .h(px(self.height))
+                    .child(crate::settings_components::virtual_rows(
+                        &self.state,
+                        move |index, _, _| {
+                            let clicks = clicks.clone();
+                            div()
+                                .id(("setting-row", index))
+                                .test_support()
+                                .w_full()
+                                .h(px(if index % 2 == 0 { 32. } else { 48. }))
+                                .bg(rgb(ROW_COLOR))
+                                .on_click(move |_, _, _| clicks.set(clicks.get() + 1))
+                                .into_any_element()
+                        },
+                    ))
+            }
+        }
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        let clicks = Rc::new(Cell::new(0));
+        let (view, visual) = cx.add_window_view(|_, _| SettingsFixture {
+            state: ListState::new(0, ListAlignment::Top, px(0.)),
+            width: 700.,
+            height: 400.,
+            clicks: clicks.clone(),
+        });
+        for (width, height) in [(700., 400.), (460., 240.)] {
+            let state = ListState::new(40, ListAlignment::Top, px(0.));
+            state.reset_with_uniform_height(40, px(40.));
+            assert_eq!(state.viewport_bounds().size.height, px(0.));
+            visual.update(|window, cx| {
+                view.update(cx, |view, cx| {
+                    view.state = state.clone();
+                    view.width = width;
+                    view.height = height;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                let viewport = window.find("settings-section-scroll").bounds();
+                assert_eq!(viewport.size, gpui_kit::size(px(width), px(height)));
+                assert_eq!(state.viewport_bounds(), viewport);
+                let row = window.find(("setting-row", 0_usize)).bounds();
+                assert!(
+                    row.right()
+                        <= viewport.right() - gpui_kit::component::scroll::Scrollbar::width()
+                );
+                let quads = window.painted_quads();
+                let rows: Vec<_> = quads
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, quad)| quad.background == rgb(ROW_COLOR).into())
+                    .collect();
+                let thumbs: Vec<_> = quads
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, quad)| {
+                        !quad.background.is_transparent()
+                            && quad.background != rgb(ROW_COLOR).into()
+                    })
+                    .collect();
+                assert_eq!(thumbs.len(), 1);
+                assert!(rows.iter().all(|(index, _)| *index < thumbs[0].0));
+                let x = viewport.right() - px(8.);
+                window.drag(
+                    point(x, viewport.top() + px(8.)),
+                    point(x, viewport.bottom() - px(2.)),
+                    cx,
+                );
+                assert!(state.logical_scroll_top().item_ix > 0);
+                let last = state
+                    .bounds_for_item(39)
+                    .expect("last setting row remains reachable");
+                assert!(last.bottom() <= viewport.bottom());
+                assert_eq!(clicks.get(), 0, "track drag activated a setting row");
+            });
+        }
+    }
+
     fn check_list_scrollbar(cx: &mut TestAppContext, gutter: f32) {
         cx.update(|cx| {
             gpui_kit::init(cx);

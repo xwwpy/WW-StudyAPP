@@ -1,31 +1,7 @@
-use gpui_kit::component::{InteractiveElementExt, scroll::ScrollableElement};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
-/// Shared bounded scroll surface. The original ID remains the actual viewport,
-/// so wheel containment, reveal and native clipping use the same rectangle.
-pub fn scroll_body(id: impl Into<ElementId>, handle: &ScrollHandle) -> Stateful<Div> {
-    let wheel_handle = handle.clone();
-    column()
-        .id(id)
-        .relative()
-        .min_h_0()
-        .min_w_0()
-        .overflow_y_scroll()
-        .track_scroll(handle)
-        .vertical_scrollbar(handle)
-        .lock_scroll_axis()
-        .on_scroll_wheel(move |event, window, cx| {
-            // Children (including text inputs and horizontal tables) run first.
-            // An overflowing pane stays independent even at its first/last row.
-            // Fitting content can still pass vertical wheels to its parent.
-            if event.delta.pixel_delta(window.line_height()).y != px(0.)
-                && wheel_handle.max_offset().y > px(0.)
-            {
-                cx.stop_propagation();
-            }
-        })
-}
+pub use crate::scroll_body::{ScrollBody, scroll_body};
 
 pub const INK: u32 = 0x233631;
 pub const MUTED: u32 = 0x74827C;
@@ -613,12 +589,14 @@ mod tests {
                     .h(px(160.))
                     .pb(px(12.))
                     .child(div().w(px(self.content)).h(px(80.)).flex_shrink_0())
+                    .into_any_element()
             } else {
                 scroll_body("geometry-viewport", &self.handle)
                     .w(px(360.))
                     .h(px(160.))
                     .p(px(16.))
                     .child(div().w(px(80.)).h(px(self.content)).flex_shrink_0())
+                    .into_any_element()
             };
             div().w(px(500.)).h(px(300.)).p(px(32.)).child(viewport)
         }

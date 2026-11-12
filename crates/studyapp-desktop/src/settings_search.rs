@@ -356,7 +356,9 @@ impl StudyApp {
                                 "settings-search-results",
                                 &self.preferences_ui.settings_search_scroll,
                             )
+                            .test_support()
                             .max_h(px(360.))
+                            .pr(gpui_kit::component::scroll::Scrollbar::width())
                             .child(self.settings_search_results(cx)),
                         ),
                 )

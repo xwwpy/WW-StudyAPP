@@ -24,6 +24,7 @@ pub mod notification_card;
 pub mod notification_surfaces;
 pub mod notifications;
 pub mod release_notes;
+mod scroll_body;
 pub mod settings_anchor;
 pub mod settings_color;
 pub mod settings_color_value;
