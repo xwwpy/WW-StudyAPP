@@ -415,10 +415,10 @@ async fn capture_task_pages(
                 window
                     .render_to_image()
                     .unwrap()
-                    .save(database.with_file_name(format!(
-                        "settings-{label}-{}.png",
-                        f32::from(window.viewport_size().width) as u32
-                    )))
+                    .save(
+                        database
+                            .with_file_name(crate::smoke::settings_capture_filename(window, label)),
+                    )
                     .unwrap();
             },
             cx,

@@ -4599,6 +4599,7 @@ mod scoped_tests {
             }
         });
         let handle = visual.update(|window, _| window.window_handle());
+        let mut captures = std::collections::BTreeMap::new();
         for width in [1000., 620.] {
             surface.update(visual, |surface, cx| {
                 surface.width = width;
@@ -4670,10 +4671,21 @@ mod scoped_tests {
                                     .editor()
                                     .is_none()
                             );
+                            assert_eq!(f32::from(window.viewport_size().width), 1400.);
+                            let filename = crate::smoke::settings_capture_filename(window, page);
+                            let layout = if width == 1000. { "tree" } else { "drawer" };
+                            let pane_width =
+                                f32::from(window.find("settings-section-pane").bounds().size.width)
+                                    as u32;
+                            assert_eq!(
+                                filename,
+                                format!("settings-{page}-1400-{layout}-{pane_width}.png")
+                            );
+                            filename
                         },
                         &mut cx,
                     )
-                    .await;
+                    .await
                 });
                 visual.run_until_parked();
                 assert!(!called.get(), "capture ran before the platform frame");
@@ -4687,7 +4699,13 @@ mod scoped_tests {
                 });
                 visual.run_until_parked();
                 assert!(called.get(), "capture did not follow the platform frames");
-                visual.foreground_executor().block_test(task);
+                let filename = visual.foreground_executor().block_test(task);
+                if let Some(previous) = captures.insert(page, filename.clone()) {
+                    assert_ne!(
+                        previous, filename,
+                        "drawer capture overwrote the tree: {page}"
+                    );
+                }
             }
         }
     }

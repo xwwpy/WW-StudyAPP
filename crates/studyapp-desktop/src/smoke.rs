@@ -66,6 +66,21 @@ pub(crate) fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
+#[cfg(all(feature = "ui-test", any(windows, test)))]
+pub(crate) fn settings_capture_filename(window: &Window, label: &str) -> String {
+    use gpui_kit::test::TestWindowExt;
+    let layout = if window.try_find("settings-drawer-toggle").is_some() {
+        "drawer"
+    } else {
+        "tree"
+    };
+    let pane_width = f32::from(window.find("settings-section-pane").bounds().size.width) as u32;
+    format!(
+        "settings-{label}-{}-{layout}-{pane_width}.png",
+        f32::from(window.viewport_size().width) as u32
+    )
+}
+
 /// Yield to platform frames after navigation; consecutive Window::update calls
 /// alone do not let the native frame loop present the selected page.
 #[cfg(all(feature = "ui-test", any(windows, test)))]
