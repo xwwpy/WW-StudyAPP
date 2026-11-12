@@ -1282,37 +1282,67 @@ pub async fn exercise(
         .unwrap();
     // Windows resize queues SetWindowPos asynchronously; yield before reading
     // the viewport or asserting responsive layout, unlike an in-process draw.
-    let (original_size, original_layout, original_tree_width) = window
+    let (original_size, original_layout, original_draft_layout, original_tree_width) = window
         .update(cx, |_, window, cx| {
             window.click(("nav", 4_usize), cx);
             crate::smoke_settings::select_page(window, view, "shortcuts", cx);
             let original = window.viewport_size();
-            let (layout, tree_width) = view.update(cx, |app, cx| {
-                let original = (app.layout.clone(), app.preferences_ui.browsing.width);
+            let (layout, draft_layout, tree_width) = view.update(cx, |app, cx| {
+                let original = (
+                    app.layout.clone(),
+                    app.preferences_ui.draft.as_ref().unwrap().layout.clone(),
+                    app.preferences_ui.browsing.width,
+                );
                 // Exercise a genuinely constrained pane, not a window-size
                 // proxy: both rails at their supported maximum leave the form
                 // too narrow, even in the minimum supported desktop window.
                 app.layout.navigation_visible = true;
                 app.layout.navigation_width = 320;
+                // Use the production draft transaction so a worker snapshot
+                // cannot replace the temporary layout while resize is queued.
+                app.stage_layout(cx);
                 app.preferences_ui.browsing.width = 340;
                 cx.notify();
                 original
             });
             crate::smoke_library::resize(window, size(px(1024.), px(720.)));
-            (original, layout, tree_width)
+            (original, layout, draft_layout, tree_width)
         })
         .unwrap();
     for attempt in 0..100 {
         cx.background_executor()
             .timer(std::time::Duration::from_millis(40))
             .await;
-        let compact = window
-            .update(cx, |_, window, _| window.viewport_size().width <= px(1024.))
+        let (compact, diagnostic) = window
+            .update(cx, |_, window, cx| {
+                window.render_frame(cx);
+                let app = view.read(cx);
+                let workspace = window.find("settings-workspace").bounds();
+                let compact = window.viewport_size().width <= px(1024.)
+                    && crate::settings_components::compact_navigation(
+                        workspace.size.width,
+                        px(f32::from(app.preferences_ui.browsing.width)),
+                    )
+                    && window.try_find("settings-category-navigation").is_none()
+                    && window.try_find("settings-drawer-toggle").is_some();
+                (
+                    compact,
+                    format!(
+                        "viewport={:?}; workspace={workspace:?}; navigation={}; tree={}",
+                        window.viewport_size(),
+                        app.layout.navigation_width,
+                        app.preferences_ui.browsing.width,
+                    ),
+                )
+            })
             .unwrap();
         if compact {
             break;
         }
-        assert!(attempt < 99, "native resize did not reach compact viewport");
+        assert!(
+            attempt < 99,
+            "native compact layout did not settle: {diagnostic}"
+        );
     }
     window
         .update(cx, |_, window, cx| {
@@ -1336,8 +1366,13 @@ pub async fn exercise(
             capture_task_pages(window, view, database, cx);
             view.update(cx, |app, cx| {
                 app.layout = original_layout;
+                app.preferences_ui.draft.as_mut().unwrap().layout = original_draft_layout;
                 app.preferences_ui.browsing.width = original_tree_width;
                 app.persist_settings_browsing();
+                assert!(
+                    !app.settings_dirty(cx),
+                    "compact fixture leaked a layout draft"
+                );
                 cx.notify();
             });
             crate::smoke_library::resize(window, original_size);

@@ -502,6 +502,47 @@ fn ordinary_pages_share_a_full_width_scrollable_content_surface(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
+fn compact_settings_fixture_survives_worker_snapshots_and_restores_its_draft(
+    cx: &mut TestAppContext,
+) {
+    let (app, visual) = fixture(cx);
+    visual.simulate_resize(size(px(1024.), px(720.)));
+    let original = visual.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.navigate(Page::Settings, window, cx);
+            let original = (
+                app.layout.clone(),
+                app.preferences_ui.draft.as_ref().unwrap().layout.clone(),
+                app.preferences_ui.browsing.width,
+            );
+            app.layout.navigation_visible = true;
+            app.layout.navigation_width = 320;
+            app.stage_layout(cx);
+            app.preferences_ui.browsing.width = 340;
+            original
+        })
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        app.update(cx, |app, cx| {
+            app.accept_snapshot(app.snapshot.as_ref().unwrap().clone(), false, window, cx);
+        });
+        window.render_frame(cx);
+        assert_eq!(app.read(cx).layout.navigation_width, 320);
+        assert!(window.try_find("settings-category-navigation").is_none());
+        assert!(window.find("settings-drawer-toggle").visible());
+        app.update(cx, |app, cx| {
+            app.layout = original.0;
+            app.preferences_ui.draft.as_mut().unwrap().layout = original.1;
+            app.preferences_ui.browsing.width = original.2;
+            app.accept_snapshot(app.snapshot.as_ref().unwrap().clone(), false, window, cx);
+            assert!(!app.settings_dirty(cx));
+            cx.notify();
+        });
+    });
+}
+
+#[gpui_kit::test]
 fn settings_sections_use_the_full_remaining_pane_including_cached_surfaces(
     cx: &mut TestAppContext,
 ) {
