@@ -105,15 +105,24 @@ class OriginalReader {
   wordRoot:ShadowRoot|undefined;wordContent:HTMLElement|undefined;
   positionKey:string|undefined;initialPosition:DocumentPosition|undefined;positionEpoch=0;
   positionTimer:ReturnType<typeof setTimeout>|undefined;
-  readonly savePosition=():void=>{
-    if(!this.positionKey||this.initialPosition||!this.slots.length||this.dead)return;
+  visiblePosition():DocumentPosition|undefined {
+    if(this.pages.clientWidth<=32||!this.pages.clientHeight)return;
     const top=this.pages.getBoundingClientRect().top;
     const index=this.slots.findIndex(slot=>slot.getBoundingClientRect().bottom>top+16);
     if(index<0)return;
     const bounds=this.slots[index].getBoundingClientRect();
     if(!bounds.height)return;
+    return {page:index+1,offset:Math.max(0,Math.min(1,(top-bounds.top)/bounds.height)),scale:this.scale};
+  }
+  syncPage(force=false):void {
+    const position=this.visiblePosition();if(!position)return;
+    this.activePage=position.page;
+    if(force||document.activeElement!==this.pageInput)this.pageInput.value=String(position.page);
+  }
+  readonly savePosition=():void=>{
+    if(!this.positionKey||this.initialPosition||this.dead)return;
+    const position=this.visiblePosition();if(!position)return;
     // Only display metadata: no document bytes, source text or opening password.
-    const position:DocumentPosition={page:index+1,offset:Math.max(0,Math.min(1,(top-bounds.top)/bounds.height)),scale:this.scale};
     try{localStorage.setItem(this.positionKey,JSON.stringify(position));}catch{/* Reading remains available without browser storage. */}
   };
   constructor(readonly value:OriginalDocument,readonly open:(url:string)=>void,readonly request:RequestPage,identity?:unknown) {
@@ -137,21 +146,21 @@ class OriginalReader {
     this.zoom.setAttribute("aria-label","文档缩放");this.zoom.value=this.scale;this.zoom.onchange=()=>{this.scale=this.zoom.value;this.layout();this.schedulePositionSave();};
     this.toolbar.append(button("‹","上一页",()=>this.go(this.activePage-1)),this.pageInput,this.total,button("›","下一页",()=>this.go(this.activePage+1)),this.zoom,this.status);
     this.root.append(this.toolbar,this.pages);document.querySelector("#editor-workspace")!.append(this.root);
-    this.resize=new ResizeObserver(()=>{if(!this.wordContent&&this.scale!=="fit")return;clearTimeout(this.resizeTimer);this.resizeTimer=setTimeout(()=>this.layout(),100);});this.resize.observe(this.pages);
-    this.pages.addEventListener("scroll",()=>{const top=this.pages.getBoundingClientRect().top;const index=this.slots.findIndex(slot=>slot.getBoundingClientRect().bottom>top+16);if(index>=0){this.activePage=index+1;if(document.activeElement!==this.pageInput)this.pageInput.value=String(index+1);}this.schedulePositionSave();},{passive:true});
+    this.resize=new ResizeObserver(()=>{if(!this.wordContent&&this.scale!=="fit"&&!this.initialPosition){this.syncPage();return;}clearTimeout(this.resizeTimer);this.resizeTimer=setTimeout(()=>this.layout(),100);});this.resize.observe(this.pages);
+    this.pages.addEventListener("scroll",()=>{this.syncPage();this.schedulePositionSave();},{passive:true});
     window.addEventListener("pagehide",this.savePosition);window.addEventListener("beforeunload",this.savePosition);
     void this.start().catch(error=>this.fail(error));
   }
   schedulePositionSave():void {clearTimeout(this.positionTimer);this.positionTimer=setTimeout(this.savePosition,120);}
   restorePosition():void {
-    const saved=this.initialPosition;if(!saved||!this.slots.length)return;
+    const saved=this.initialPosition;if(!saved||!this.slots.length){this.syncPage();return;}
     const epoch=++this.positionEpoch;
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      if(this.dead||epoch!==this.positionEpoch)return;
+      if(this.dead||epoch!==this.positionEpoch||this.pages.clientWidth<=32||!this.pages.clientHeight)return;
       const index=Math.min(saved.page,this.slots.length)-1,slot=this.slots[index];
       const bounds=slot.getBoundingClientRect();
       this.pages.scrollTop+=bounds.top-this.pages.getBoundingClientRect().top+saved.offset*bounds.height;
-      this.activePage=index+1;this.pageInput.value=String(this.activePage);this.initialPosition=undefined;
+      this.syncPage(true);this.initialPosition=undefined;
     }));
   }
   fail(error:unknown):void {if(!this.dead){this.status.textContent=error instanceof Error?`文档未能显示：${error.message}`:"文档未能显示，请检查文件格式。";this.status.classList.add("error");}}
@@ -185,8 +194,11 @@ class OriginalReader {
     this.status.textContent=(this.password?"密码未被接受，请重试。":"")+"密码只用于本次阅读，不写入资料库或日志。";
   }
   layout():void {
-    if(this.dead)return;
+    if(this.dead||this.pages.clientWidth<=32||!this.pages.clientHeight)return;
     if(this.wordContent){this.wordLayout();return;}
+    // Keep a semantic anchor before changing every page's geometry. Pending
+    // restoration also survives the native host's initial 1x1 viewport.
+    this.initialPosition??=this.pages.scrollTop>0?this.visiblePosition():undefined;
     this.epoch++;this.observer?.disconnect();this.wanted.clear();
     for(let i=0;i<this.slots.length;i++) {
       const slot=this.slots[i],[w,h]=this.sizes[i];const scale=this.scale==="fit"?Math.max(.01,(this.pages.clientWidth-32)/w):Number(this.scale);
@@ -213,7 +225,7 @@ class OriginalReader {
       }
     } catch(error){this.fail(error);} finally {this.running=false;}
   }
-  go(page:number):void {if(!Number.isInteger(page)||!this.slots.length)return;const index=Math.max(0,Math.min(this.slots.length-1,page-1));this.slots[index].scrollIntoView({block:"start"});this.activePage=index+1;this.pageInput.value=String(index+1);}
+  go(page:number):void {if(!Number.isInteger(page)||!this.slots.length)return;const index=Math.max(0,Math.min(this.slots.length-1,page-1));this.slots[index].scrollIntoView({block:"start"});this.syncPage(true);}
   async word(bytes:Uint8Array):Promise<void> {
     const host=document.createElement("div");host.className="document-word";this.pages.append(host);
     const shadow=host.attachShadow({mode:"open"});this.wordRoot=shadow;
@@ -243,7 +255,8 @@ class OriginalReader {
     this.status.textContent="DOCX 原版式 · 使用本机字体，分页可能与 Word 略有差异";this.wordLayout();
   }
   wordLayout():void {
-    const content=this.wordContent,host=content?(content.getRootNode() as ShadowRoot).host as HTMLElement:undefined;if(!content||!host)return;
+    const content=this.wordContent,host=content?(content.getRootNode() as ShadowRoot).host as HTMLElement:undefined;if(!content||!host||this.pages.clientWidth<=32||!this.pages.clientHeight)return;
+    this.initialPosition??=this.pages.scrollTop>0?this.visiblePosition():undefined;
     content.style.transform="none";const width=Math.max(1,content.scrollWidth),height=Math.max(1,content.scrollHeight);
     const scale=this.scale==="fit"?Math.max(.01,(this.pages.clientWidth-24)/width):Number(this.scale);
     content.style.transform=`scale(${scale})`;host.style.width=`${width*scale}px`;host.style.height=`${height*scale}px`;

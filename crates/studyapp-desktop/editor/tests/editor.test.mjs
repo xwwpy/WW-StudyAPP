@@ -3072,15 +3072,15 @@ test('0.3.5 editor fields share themed surfaces focus rings and disabled states 
 });
 
 const documentPixel='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
-async function pdfReader(page,password=false,identity) {
-  await page.evaluate(({image,password,identity})=>{
+async function pdfReader(page,password=false,identity,dimensions=[[612,792],[792,612],[400,1800]]) {
+  await page.evaluate(({image,password,identity,dimensions})=>{
     const post=window.ipc.postMessage;window.ipc.postMessage=raw=>{
       post(raw);const message=JSON.parse(raw);if(message.type!=='renderDocument')return;
-      const response=message.page===0?(password&&message.password!=='local-password'?{passwordRequired:true}:{pages:[[612,792],[792,612],[400,1800]]}):{image};
+      const response=message.page===0?(password&&message.password!=='local-password'?{passwordRequired:true}:{pages:dimensions}):{image};
       setTimeout(()=>window.studyappEditor.documentResult({generation:message.generation,request:message.request,...response}),10);
     };
     window.studyappEditor.load({generation:42,text:'原文档阅读；页面内容和版式保存在资料库版本中。',readonly:false,canRequestEdit:true,positionKey:identity,document:{kind:'pdf',data:''}});
-  },{image:documentPixel,password,identity});
+  },{image:documentPixel,password,identity,dimensions});
 }
 
 test('0.3.5 PDF reader lazily requests original pages supports zoom and stays readonly',async()=>{
@@ -3445,6 +3445,55 @@ for(const kind of ['pdf','docx'])test(`original ${kind} reading position restore
   await page.evaluate(()=>window.studyappEditor.load({generation:71,text:'new Markdown survives',readonly:false}));
   assert.equal((await state(page)).text,'new Markdown survives');
   assert.deepEqual(externalRequests,[]);assert.deepEqual(errors,[]);await page.close();
+});
+
+for(const kind of ['pdf','docx'])for(const tinyHost of [false,true])test(`original ${kind} preserves reading anchor after ${tinyHost?'a tiny initial host':'fit width reflow'}`,async()=>{
+  const {page,errors,externalRequests}=await setup('old');
+  const data=kind==='docx'?await originalWordFixture():'';
+  if(kind==='pdf')await pdfReader(page,false,undefined,Array.from({length:100},()=>[612,792]));
+  const identity=`resize-${kind}-${tinyHost}`,key=`studyapp.document-reading.v1:${kind}:${identity}`;
+  const saved={page:kind==='pdf'?80:tinyHost?2:1,offset:kind==='docx'&&tinyHost?.2:.4,scale:'fit'};
+  if(tinyHost)await page.setViewportSize({width:1,height:1});
+  await page.evaluate(({identity,key,saved,kind,data})=>{
+    localStorage.setItem(key,JSON.stringify(saved));
+    window.studyappEditor.load({generation:90,text:'original',readonly:true,positionKey:identity,document:{kind,data}});
+  },{identity,key,saved,kind,data});
+  await page.locator(kind==='pdf'?'.document-page':'.document-word section.docx').first().waitFor({state:'attached'});
+  await page.waitForTimeout(250);
+  if(tinyHost)assert.deepEqual(await page.evaluate(key=>JSON.parse(localStorage.getItem(key)),key),saved,'a hidden host overwrote the saved anchor');
+  for(const width of tinyHost?[1100,900,1200]:[900,1200]) {
+    await page.setViewportSize({width,height:800});
+    await page.waitForTimeout(350);
+    const actual=await originalPosition(page);
+    assert.equal(actual.page,saved.page,JSON.stringify({saved,actual,width}));
+    assert.ok(Math.abs(actual.offset-saved.offset)<.005,JSON.stringify({saved,actual,width}));
+    assert.equal(await page.getByLabel('文档页码',{exact:true}).inputValue(),String(actual.page));
+    await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+    const stored=await page.evaluate(key=>JSON.parse(localStorage.getItem(key)),key);
+    assert.equal(stored.page,saved.page);assert.ok(Math.abs(stored.offset-saved.offset)<.005,JSON.stringify(stored));
+  }
+  assert.deepEqual(errors,[]);assert.deepEqual(externalRequests,[]);await page.close();
+});
+
+test('original reader synchronizes clamped restore and page navigation with the visible page',async()=>{
+  const {page,errors}=await setup('old');
+  await page.setViewportSize({width:1100,height:1600});
+  await pdfReader(page,false,undefined,Array.from({length:3},()=>[612,792]));
+  const key='studyapp.document-reading.v1:pdf:short-original';
+  await page.evaluate(key=>{
+    localStorage.setItem(key,JSON.stringify({page:2,offset:.3,scale:'0.5'}));
+    window.studyappEditor.load({generation:92,text:'short',readonly:true,positionKey:'short-original',document:{kind:'pdf',data:''}});
+  },key);
+  await page.locator('.document-page').first().waitFor();await page.waitForTimeout(250);
+  assert.equal(await page.locator('.document-pages').evaluate(pages=>pages.scrollTop),0);
+  for(const button of [undefined,'下一页','上一页']) {
+    if(button)await page.getByRole('button',{name:button,exact:true}).click();
+    const actual=await originalPosition(page);
+    assert.equal(await page.getByLabel('文档页码',{exact:true}).inputValue(),String(actual.page));
+  }
+  await page.evaluate(()=>window.dispatchEvent(new Event('pagehide')));
+  assert.equal((await page.evaluate(key=>JSON.parse(localStorage.getItem(key)),key)).page,1);
+  assert.deepEqual(errors,[]);await page.close();
 });
 
 test('original reader rejects corrupt position metadata clamps shortened documents and cancels stale restore',async()=>{
