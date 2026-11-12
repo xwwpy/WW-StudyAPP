@@ -66,10 +66,10 @@ pub(crate) fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Flush navigation and cached child-view effects before the capture callback.
-/// Call outside an enclosing Window::update, so each update can commit its effects.
+/// Yield to platform frames after navigation; consecutive Window::update calls
+/// alone do not let the native frame loop present the selected page.
 #[cfg(all(feature = "ui-test", any(windows, test)))]
-pub(crate) fn with_settings_capture<R>(
+pub(crate) async fn with_settings_capture<R>(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
     target: &str,
@@ -77,16 +77,35 @@ pub(crate) fn with_settings_capture<R>(
     cx: &mut AsyncApp,
 ) -> R {
     use gpui_kit::test::TestWindowExt;
+    let (send, receive) = async_channel::bounded(1);
     window
         .update(cx, |_, window, cx| {
-            select_settings_page(window, view, target, cx)
+            select_settings_page(window, view, target, cx);
+            // The first frame commits parent/child invalidations; the next
+            // observes their settled render. Neither callback captures pixels.
+            window.on_next_frame(move |window, cx| {
+                window.render_frame(cx);
+                window.on_next_frame(move |window, cx| {
+                    window.render_frame(cx);
+                    let _ = send.try_send(());
+                });
+            });
         })
         .unwrap();
-    // Rendering the parent can enqueue a cached settings subview's notification.
-    // Commit that update too before reading pixels in the final transaction.
-    window
-        .update(cx, |_, window, cx| window.render_frame(cx))
-        .unwrap();
+    let mut signal = std::pin::pin!(receive.recv());
+    let mut timeout = std::pin::pin!(cx.background_executor().timer(Duration::from_secs(5)));
+    std::future::poll_fn(|cx| {
+        if let std::task::Poll::Ready(result) = signal.as_mut().poll(cx) {
+            result.expect("settings capture frame was cancelled");
+            return std::task::Poll::Ready(());
+        }
+        assert!(
+            timeout.as_mut().poll(cx).is_pending(),
+            "settings capture did not receive platform frames for {target}"
+        );
+        std::task::Poll::Pending
+    })
+    .await;
     window
         .update(cx, |_, window, cx| {
             window.render_frame(cx);

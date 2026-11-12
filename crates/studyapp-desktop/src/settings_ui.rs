@@ -4599,7 +4599,6 @@ mod scoped_tests {
             }
         });
         let handle = visual.update(|window, _| window.window_handle());
-        let mut async_cx = visual.to_async();
         for width in [1000., 620.] {
             surface.update(visual, |surface, cx| {
                 surface.width = width;
@@ -4623,50 +4622,72 @@ mod scoped_tests {
                 ("storage-images", "storage.images", "images-storage"),
                 ("storage-library", "storage.library", "migrate-library"),
             ] {
-                crate::smoke::with_settings_capture(
-                    handle,
-                    &app,
-                    page,
-                    |window, cx| {
-                        let state = app.read(cx);
-                        assert_eq!(state.preferences_ui.browsing.selected, target);
-                        assert!(
-                            window.try_find(anchor).is_some(),
-                            "page={page}; width={width}"
-                        );
-                        assert!(!state.preferences_ui.settings_drawer);
-                        if target.starts_with("appearance.") {
-                            assert!(state.notification_appearance_cache_matches(cx));
-                            let expected = match target {
-                                "appearance.theme" => (1 << 1) | (1 << 3),
-                                "appearance.workspace" => 1 << 4,
-                                "appearance.overview" => 1,
-                                _ => unreachable!(),
-                            };
-                            // Rows are virtualized: only the visible subset needs
-                            // building, but none may belong to a previous page.
-                            let parts = state.preferences_ui.appearance_frame_parts.get();
-                            assert_ne!(parts, 0, "no appearance rows built for {target}");
-                            assert_eq!(
-                                parts & !expected,
-                                0,
-                                "cached rows did not match capture target {target}: {parts:b}"
+                let called = std::rc::Rc::new(std::cell::Cell::new(false));
+                let observed = called.clone();
+                let app = app.clone();
+                let task = visual.spawn(|mut cx| async move {
+                    let callback_app = app.clone();
+                    crate::smoke::with_settings_capture(
+                        handle,
+                        &app,
+                        page,
+                        move |window, cx| {
+                            observed.set(true);
+                            let app = &callback_app;
+                            let state = app.read(cx);
+                            assert_eq!(state.preferences_ui.browsing.selected, target);
+                            assert!(
+                                window.try_find(anchor).is_some(),
+                                "page={page}; width={width}"
                             );
-                        }
-                        assert!(!state.settings_dirty(cx));
-                        assert!(
-                            state
-                                .preferences_ui
-                                .appearance_preview
-                                .as_ref()
-                                .unwrap()
-                                .read(cx)
-                                .editor()
-                                .is_none()
-                        );
-                    },
-                    &mut async_cx,
-                );
+                            assert!(!state.preferences_ui.settings_drawer);
+                            if target.starts_with("appearance.") {
+                                assert!(state.notification_appearance_cache_matches(cx));
+                                let expected = match target {
+                                    "appearance.theme" => (1 << 1) | (1 << 3),
+                                    "appearance.workspace" => 1 << 4,
+                                    "appearance.overview" => 1,
+                                    _ => unreachable!(),
+                                };
+                                // Rows are virtualized: only the visible subset needs
+                                // building, but none may belong to a previous page.
+                                let parts = state.preferences_ui.appearance_frame_parts.get();
+                                assert_ne!(parts, 0, "no appearance rows built for {target}");
+                                assert_eq!(
+                                    parts & !expected,
+                                    0,
+                                    "cached rows did not match capture target {target}: {parts:b}"
+                                );
+                            }
+                            assert!(!state.settings_dirty(cx));
+                            assert!(
+                                state
+                                    .preferences_ui
+                                    .appearance_preview
+                                    .as_ref()
+                                    .unwrap()
+                                    .read(cx)
+                                    .editor()
+                                    .is_none()
+                            );
+                        },
+                        &mut cx,
+                    )
+                    .await;
+                });
+                visual.run_until_parked();
+                assert!(!called.get(), "capture ran before the platform frame");
+                visual.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                });
+                visual.run_until_parked();
+                assert!(!called.get(), "capture ran before the child-view frame");
+                visual.update(|window, cx| {
+                    window.simulate_next_frame(cx);
+                });
+                visual.run_until_parked();
+                assert!(called.get(), "capture did not follow the platform frames");
+                visual.foreground_executor().block_test(task);
             }
         }
     }

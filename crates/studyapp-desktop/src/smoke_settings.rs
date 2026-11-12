@@ -356,7 +356,7 @@ fn timing_summary(mut samples: Vec<u64>) -> serde_json::Value {
     })
 }
 
-fn capture_task_pages(
+async fn capture_task_pages(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
     database: &Path,
@@ -422,9 +422,10 @@ fn capture_task_pages(
                     .unwrap();
             },
             cx,
-        );
+        )
+        .await;
     }
-    crate::smoke::with_settings_capture(window, view, &original_target, |_, _| {}, cx);
+    crate::smoke::with_settings_capture(window, view, &original_target, |_, _| {}, cx).await;
 }
 
 /// Same-process A/B on the actual row builder. Event measurements end after
@@ -1252,7 +1253,7 @@ pub async fn exercise(
             view.update(cx, |app, cx| app.clear_notices(cx));
         })
         .unwrap();
-    capture_task_pages(window, view, database, cx);
+    capture_task_pages(window, view, database, cx).await;
     // Windows resize queues SetWindowPos asynchronously; yield before reading
     // the viewport or asserting responsive layout, unlike an in-process draw.
     let (original_size, original_layout, original_draft_layout, original_tree_width) = window
@@ -1333,7 +1334,7 @@ pub async fn exercise(
             assert!(window.find("save-settings").visible());
         })
         .unwrap();
-    capture_task_pages(window, view, database, cx);
+    capture_task_pages(window, view, database, cx).await;
     window
         .update(cx, |_, window, cx| {
             window.render_frame(cx);
