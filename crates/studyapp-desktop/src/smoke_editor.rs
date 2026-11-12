@@ -2007,6 +2007,27 @@ after code
             })
         })
         .unwrap();
+    for attempt in 0..100 {
+        let state = bridge(window, editor, json!({"type":"snapshot"}), cx).await;
+        if state["text"].as_str() == Some(text.as_str())
+            && state["readonly"] == true
+            && state["modalBlocked"] == false
+        {
+            assert_eq!(
+                state["canRequestEdit"], false,
+                "scroll fixture must not enter editing on click"
+            );
+            break;
+        }
+        assert!(
+            attempt < 99,
+            "long-code fixture did not reach its readonly generation"
+        );
+        pause(cx).await;
+    }
+    // Windows wheel routing depends on the real input target. A visible HWND
+    // and successful SendInput alone do not acknowledge WebView focus.
+    crate::smoke_visibility::focus_body(window, editor, cx).await;
     for (index, delta) in [-960, -1440, -1680, 720, 1200, -960]
         .into_iter()
         .enumerate()

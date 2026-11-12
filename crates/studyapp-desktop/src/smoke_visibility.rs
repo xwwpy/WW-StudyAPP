@@ -831,6 +831,12 @@ pub(crate) async fn wheel(
     let bounds = &state["bounds"];
     let x = bounds["x"].as_i64().unwrap() as i32 + bounds["width"].as_i64().unwrap() as i32 * 3 / 4;
     let y = bounds["y"].as_i64().unwrap() as i32 + bounds["height"].as_i64().unwrap() as i32 / 2;
+    let child = HWND(state["hwnd"].as_u64().unwrap() as usize as *mut _);
+    let target = unsafe { WindowFromPoint(POINT { x, y }) };
+    assert!(
+        target == child || unsafe { IsChild(child, target).as_bool() },
+        "wheel target is not our test editor at ({x}, {y}): {state}"
+    );
     unsafe { SetCursorPos(x, y).unwrap() };
     send(
         &state,
