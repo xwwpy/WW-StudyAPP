@@ -4342,9 +4342,11 @@ mod scoped_tests {
             use gpui_kit::{InteractiveElement, TestSupportExt, px};
             self.0.update(cx, |app, cx| {
                 crate::components::row()
+                    .relative()
                     .w(px(900.))
                     .h(px(400.))
                     .child(app.settings_tree(cx))
+                    .child(app.settings_tree_separator(cx))
                     .child(
                         div()
                             .id("settings-section-scroll")
@@ -4352,7 +4354,85 @@ mod scoped_tests {
                             .w(px(500.))
                             .h_full(),
                     )
+                    .child(app.settings_resize_events(cx))
             })
+        }
+    }
+
+    #[gpui_kit::test]
+    fn navigation_resize_ends_before_applying_unpressed_hover(cx: &mut TestAppContext) {
+        use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, point, px};
+
+        let (app, visual) = fixture(cx);
+        let original = app.read_with(visual, |app, _| app.preferences_ui.draft.clone());
+        visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            NavigationTreeFixture(app.clone())
+        });
+        for release_delivered in [false, true] {
+            app.update(visual, |app, cx| {
+                app.preferences_ui.browsing.width = 224;
+                cx.notify();
+            });
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let start = window.find("settings-tree-resizer").bounds().center();
+                window.dispatch_event(
+                    MouseDownEvent {
+                        button: MouseButton::Left,
+                        position: start,
+                        click_count: 1,
+                        ..Default::default()
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.render_frame(cx);
+                assert!(app.read(cx).preferences_ui.settings_resize.is_some());
+                window.dispatch_event(
+                    MouseMoveEvent {
+                        position: start + point(px(32.), px(0.)),
+                        pressed_button: Some(MouseButton::Left),
+                        ..Default::default()
+                    }
+                    .to_platform_input(),
+                    cx,
+                );
+                window.render_frame(cx);
+                assert_eq!(app.read(cx).preferences_ui.browsing.width, 256);
+                if release_delivered {
+                    window.dispatch_event(
+                        MouseUpEvent {
+                            button: MouseButton::Left,
+                            position: start + point(px(32.), px(0.)),
+                            click_count: 1,
+                            ..Default::default()
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                }
+                for delta in [96., -96.] {
+                    window.dispatch_event(
+                        MouseMoveEvent {
+                            position: start + point(px(delta), px(0.)),
+                            ..Default::default()
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(
+                        app.read(cx).preferences_ui.browsing.width,
+                        256,
+                        "unpressed hover changed the last actively dragged width"
+                    );
+                    assert!(app.read(cx).preferences_ui.settings_resize.is_none());
+                }
+                assert_eq!(app.read(cx).preferences_ui.draft, original);
+                assert!(!app.read(cx).settings_dirty(cx));
+            });
         }
     }
 

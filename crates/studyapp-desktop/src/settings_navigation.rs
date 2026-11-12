@@ -505,11 +505,15 @@ impl StudyApp {
                     }
                     let _ = moving.update(cx, |this, cx| {
                         if let Some((start, width)) = this.preferences_ui.settings_resize {
-                            this.preferences_ui.browsing.width =
-                                (f32::from(width) + f32::from(event.position.x - start))
-                                    .round()
-                                    .clamp(176., 340.) as u16;
-                            if event.pressed_button != Some(MouseButton::Left) {
+                            // A release outside the window may not deliver MouseUp.
+                            // End the drag before using a later unpressed hover's position.
+                            if event.pressed_button == Some(MouseButton::Left) {
+                                this.preferences_ui.browsing.width = (f32::from(width)
+                                    + f32::from(event.position.x - start))
+                                .round()
+                                .clamp(176., 340.)
+                                    as u16;
+                            } else {
                                 this.preferences_ui.settings_resize = None;
                                 this.persist_settings_browsing();
                             }
