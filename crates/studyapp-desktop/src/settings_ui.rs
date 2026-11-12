@@ -4451,6 +4451,7 @@ mod scoped_tests {
                     "appearance-theme-editor",
                     "learning",
                     "appearance-theme-editor",
+                    "about",
                 ] {
                     crate::smoke::select_settings_page(window, &app, page, cx);
                     let state = app.read(cx);
@@ -4463,6 +4464,12 @@ mod scoped_tests {
                         );
                         assert_eq!(state.preferences_ui.browsing.selected, "appearance.theme");
                         assert!(window.try_find("appearance-markdown-preview").is_some());
+                    }
+                    if page == "about" {
+                        assert!(state.preferences_ui.section == SettingsSection::AboutAccount);
+                        assert!(window.try_find("about-identity").is_some());
+                        assert!(window.try_find("about-version").is_some());
+                        assert!(window.try_find("update-release-notes").is_none());
                     }
                     assert_eq!(
                         state

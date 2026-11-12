@@ -654,10 +654,8 @@ async fn default_appearance_sample(
         .unwrap();
     window
         .update(cx, |_, window, cx| {
-            view.update(cx, |app, cx| {
-                app.navigate(Page::Settings, window, cx);
-                app.select_settings_section(SettingsSection::AboutAccount, cx);
-            })
+            view.update(cx, |app, cx| app.navigate(Page::Settings, window, cx));
+            crate::smoke::select_settings_page(window, view, "about", cx);
         })
         .unwrap();
     cx.background_executor()
