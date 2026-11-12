@@ -42,6 +42,7 @@ pub(crate) fn select_page(window: &mut Window, view: &Entity<StudyApp>, page: &s
         window.click("settings-drawer-toggle", cx);
         window.render_frame(cx);
     }
+    assert!(window.try_find("settings-tree-width-reset").is_none());
     reveal_scrolled(window, group_id.clone(), "settings-tree-scroll", cx);
     let id = if target.contains('.') {
         if !view

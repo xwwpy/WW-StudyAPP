@@ -447,25 +447,6 @@ impl StudyApp {
                 .py_2()
                 .child(tree),
             )
-            .child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .border_t_1()
-                    .border_color(crate::theme::color(BORDER))
-                    .child(
-                        Button::new("settings-tree-width-reset")
-                            .small()
-                            .ghost()
-                            .label("恢复默认宽度")
-                            .w_full()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.preferences_ui.browsing.width = 224;
-                                this.persist_settings_browsing();
-                                cx.notify();
-                            })),
-                    ),
-            )
     }
     pub(crate) fn settings_tree_separator(&self, cx: &Context<Self>) -> Div {
         div()

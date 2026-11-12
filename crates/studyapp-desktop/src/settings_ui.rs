@@ -4521,6 +4521,11 @@ mod scoped_tests {
             });
             visual.update(|window, cx| {
                 window.render_frame(cx);
+                assert!(window.try_find("settings-tree-width-reset").is_none());
+                assert_eq!(
+                    window.find("settings-tree-scroll").bounds().bottom(),
+                    px(400.)
+                );
                 let start = window.find("settings-tree-resizer").bounds().center();
                 window.dispatch_event(
                     MouseDownEvent {
