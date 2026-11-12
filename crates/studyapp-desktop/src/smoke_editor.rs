@@ -516,6 +516,12 @@ async fn default_appearance_sample(
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| app.navigate(Page::Settings, window, cx));
             crate::smoke::select_settings_page(window, view, "appearance-theme-editor", cx);
+            crate::smoke_library::reveal_fully_scrolled(
+                window,
+                "appearance-preview-pane".into(),
+                "settings-section-scroll",
+                cx,
+            );
             assert!(view.read(cx).preferences_ui.editing_preset.is_none());
             assert!(!view.read(cx).preferences_ui.appearance_touched);
         })
@@ -578,6 +584,12 @@ async fn default_appearance_sample(
                 false
             );
             crate::smoke::select_settings_page(window, view, "appearance-theme-editor", cx);
+            crate::smoke_library::reveal_fully_scrolled(
+                window,
+                "appearance-preview-pane".into(),
+                "settings-section-scroll",
+                cx,
+            );
             let preview = view
                 .read(cx)
                 .preferences_ui

@@ -4485,6 +4485,64 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
+    fn portable_smoke_fully_reveals_the_theme_preview_in_short_windows(cx: &mut TestAppContext) {
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.update(|_, cx| cx.set_reduce_motion(true));
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine =
+            studyapp_core::Engine::open(&root.path().join("preview-scroll.sqlite"), 1000).unwrap();
+        let surface = visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 1000.,
+                height: 700.,
+            }
+        });
+        for (width, height) in [(1000., 700.), (806., 600.), (620., 500.), (806., 460.)] {
+            surface.update(visual, |surface, cx| {
+                surface.width = width;
+                surface.height = height;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                crate::smoke::select_settings_page(window, &app, "learning", cx);
+                crate::smoke::select_settings_page(window, &app, "appearance-theme-editor", cx);
+                crate::smoke_library::reveal_fully_scrolled(
+                    window,
+                    "appearance-preview-pane".into(),
+                    "settings-section-scroll",
+                    cx,
+                );
+                let pane = window.find("appearance-preview-pane").bounds();
+                let viewport = window.find("settings-section-scroll").bounds();
+                assert_eq!(pane.size.height, px(220.));
+                assert_eq!(
+                    viewport.intersect(&pane),
+                    pane,
+                    "preview is still clipped in {width}x{height}: {viewport:?} / {pane:?}"
+                );
+                assert!(app.read(cx).appearance_preview_visible(window, cx));
+                assert!(!app.read(cx).settings_dirty(cx));
+                assert!(
+                    app.read(cx)
+                        .preferences_ui
+                        .appearance_preview
+                        .as_ref()
+                        .unwrap()
+                        .read(cx)
+                        .editor()
+                        .is_none()
+                );
+            });
+        }
+    }
+
+    #[gpui_kit::test]
     fn settings_transition_completion_and_reduced_motion_keep_an_open_choice_menu(
         cx: &mut TestAppContext,
     ) {

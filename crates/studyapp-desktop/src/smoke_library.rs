@@ -269,6 +269,27 @@ pub(crate) fn click_scrolled(window: &mut Window, id: SharedString, scroll: &str
 }
 
 pub(crate) fn reveal_scrolled(window: &mut Window, id: SharedString, scroll: &str, cx: &mut App) {
+    reveal_scrolled_extent(window, id, scroll, false, cx);
+}
+
+/// Reveal the whole surface before pixel/viewport acceptance, not only a click point.
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+pub(crate) fn reveal_fully_scrolled(
+    window: &mut Window,
+    id: SharedString,
+    scroll: &str,
+    cx: &mut App,
+) {
+    reveal_scrolled_extent(window, id, scroll, true, cx);
+}
+
+fn reveal_scrolled_extent(
+    window: &mut Window,
+    id: SharedString,
+    scroll: &str,
+    fully: bool,
+    cx: &mut App,
+) {
     window.render_frame(cx);
     let scroll = if scroll == "folder-tree-scroll" {
         "note-list-scroll"
@@ -351,7 +372,11 @@ pub(crate) fn reveal_scrolled(window: &mut Window, id: SharedString, scroll: &st
             && target.visible()
             && click_clip.size.width > px(0.)
             && click_clip.size.height > px(0.)
-            && click_clip.contains(&target.bounds().center())
+            && if fully {
+                click_clip.intersect(&target.bounds()) == target.bounds()
+            } else {
+                click_clip.contains(&target.bounds().center())
+            }
         {
             return;
         }
@@ -383,6 +408,15 @@ pub(crate) fn reveal_scrolled(window: &mut Window, id: SharedString, scroll: &st
         let delta = if target.is_none() && !searched_from_start {
             searched_from_start = true;
             100_000.
+        } else if fully && let Some(target) = target.as_ref() {
+            let bounds = target.bounds();
+            if bounds.top() < active_clip.top() {
+                f32::from(active_clip.top() - bounds.top()).min(160.)
+            } else if bounds.bottom() > active_clip.bottom() {
+                f32::from(active_clip.bottom() - bounds.bottom()).max(-160.)
+            } else {
+                -160.
+            }
         } else if target_y < active_clip.top() {
             160.
         } else {
