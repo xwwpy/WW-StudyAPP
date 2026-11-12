@@ -271,8 +271,13 @@ impl NoticeQueue {
         })
     }
     pub fn visible(&self) -> impl Iterator<Item = &Notice> {
-        self.candidates().filter(|entry| {
-            entry.route == NoticeRoute::Foreground(NoticeStyle::ModalCard)
+        // Only the structured renderer reports fitting IDs. Once its final
+        // candidate exits, the legacy surface owns placement; a stale fitting
+        // snapshot must not hide or stop the lifetime of subsequent feedback.
+        let structured = self.candidates().any(|entry| entry.event.is_some());
+        self.candidates().filter(move |entry| {
+            !structured
+                || entry.route == NoticeRoute::Foreground(NoticeStyle::ModalCard)
                 || self
                     .layout_visible
                     .as_ref()
@@ -975,6 +980,81 @@ mod region_tests {
             );
         }
     }
+    #[test]
+    fn legacy_feedback_is_visible_after_structured_feedback_exits() {
+        let mut queue = NoticeQueue::default();
+        queue.push_event(
+            NoticeEvent::new(C::OperationResult, S::Information, "structured"),
+            NoticeRoute::Foreground(T::Bubble),
+            &NotificationAppearance::default(),
+            Duration::ZERO,
+        );
+        let id = queue.visible().next().unwrap().id;
+        queue.set_layout_visible([id].into_iter().collect(), Duration::ZERO);
+        queue.dismiss(id, Duration::from_millis(250));
+        queue.tick(Duration::from_millis(500));
+        assert!(queue.is_empty());
+        let legacy = queue.push(Ok("legacy".into()), Duration::from_millis(500));
+        assert_eq!(
+            queue.visible().map(|entry| entry.id).collect::<Vec<_>>(),
+            [legacy]
+        );
+        assert!(queue.needs_timer(Duration::from_millis(500)));
+        queue.tick(Duration::from_millis(740));
+        assert_eq!(
+            queue
+                .visible()
+                .next()
+                .unwrap()
+                .opacity(Duration::from_millis(740)),
+            1.
+        );
+        queue.tick(Duration::from_secs(5));
+        queue.tick(Duration::from_millis(5300));
+        assert!(queue.is_empty(), "legacy lifetime must still expire");
+    }
+
+    #[test]
+    fn legacy_backlog_resumes_after_the_last_modal_without_another_push() {
+        let mut queue = NoticeQueue::default();
+        queue.push_event(
+            NoticeEvent::new(C::SaveFailure, S::Critical, "modal"),
+            NoticeRoute::Foreground(T::ModalCard),
+            &NotificationAppearance::default(),
+            Duration::ZERO,
+        );
+        let modal = queue.visible().next().unwrap().id;
+        queue.set_layout_visible([modal].into_iter().collect(), Duration::ZERO);
+        let legacy = queue.push(Ok("queued legacy".into()), Duration::ZERO);
+        assert_eq!(
+            queue.visible().map(|entry| entry.id).collect::<Vec<_>>(),
+            [modal]
+        );
+        queue.dismiss(modal, Duration::from_millis(250));
+        queue.tick(Duration::from_millis(500));
+        assert_eq!(
+            queue.visible().map(|entry| entry.id).collect::<Vec<_>>(),
+            [legacy]
+        );
+        assert_eq!(
+            queue
+                .visible()
+                .next()
+                .unwrap()
+                .opacity(Duration::from_millis(500)),
+            0.
+        );
+        queue.tick(Duration::from_millis(740));
+        assert_eq!(
+            queue
+                .visible()
+                .next()
+                .unwrap()
+                .opacity(Duration::from_millis(740)),
+            1.
+        );
+    }
+
     #[test]
     fn not_fitting_feedback_keeps_its_lifetime_until_space_returns() {
         let mut queue = NoticeQueue::default();
