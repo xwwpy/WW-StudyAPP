@@ -325,7 +325,13 @@ impl RenderOnce for AppButton {
                     .color(gpui_kit::rgb(bg).into())
                     .foreground(gpui_kit::rgb(fg).into())
                     .hover(crate::theme::hover_color())
-                    .active(crate::theme::pressed_color()),
+                    // ComponentButton uses the active variant for its selected
+                    // surface. Keep persistent selection distinct from pressing.
+                    .active(if selected {
+                        gpui_kit::rgb(bg).into()
+                    } else {
+                        crate::theme::pressed_color()
+                    }),
             );
             self.inner = self
                 .inner
