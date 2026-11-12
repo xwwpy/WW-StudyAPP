@@ -178,9 +178,22 @@ impl AppButton {
             Size::Medium | Size::Large => 36.,
             Size::Size(value) => value.into(),
         };
-        let minimum =
+        let mut minimum =
             nominal.max(crate::theme::palette().font_size as f32 * 1.25 + 8.) * self.target_scale;
-        self.inner = self.inner.min_h(gpui_kit::px(minimum));
+        // Do not replace a caller's larger minimum (e.g. navigation rows)
+        // with the small-button baseline. Explicit relative minima stay relative.
+        match self.inner.style().min_size.height {
+            Some(gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Absolute(
+                gpui_kit::AbsoluteLength::Pixels(requested),
+            ))) => {
+                minimum = minimum.max(requested.into());
+                self.inner = self.inner.min_h(gpui_kit::px(minimum));
+            }
+            None | Some(gpui_kit::Length::Auto) => {
+                self.inner = self.inner.min_h(gpui_kit::px(minimum));
+            }
+            _ => {}
+        }
         // The component's small icon default is 24px wide. Raising only its
         // height produces off-center rectangular targets throughout toolbars.
         // Keep explicit caller dimensions and text/navigation buttons intact.
@@ -477,6 +490,18 @@ mod tests {
                     .test_support()
                     .w(px(400.))
                     .child(Button::new("compact-control").small().label("操作"))
+                    .child(
+                        Button::new("explicit-minimum")
+                            .small()
+                            .min_h(px(48.))
+                            .label("宽松操作"),
+                    )
+                    .child(
+                        Button::new("undersized-minimum")
+                            .small()
+                            .min_h(px(1.))
+                            .label("仍保持可点击尺寸"),
+                    )
             }
         }
         cx.update(gpui_kit::init);
@@ -492,11 +517,17 @@ mod tests {
                     cx,
                 );
                 window.render_frame(cx);
-                let button = window.find("compact-control").bounds();
                 let card = window.find("control-card").bounds();
-                assert!(button.size.height >= px(32.));
-                assert!(button.size.height >= px(size as f32 * 1.25 + 8.));
-                assert!(button.bottom() <= card.bottom());
+                for (id, minimum) in [
+                    ("compact-control", 32.),
+                    ("explicit-minimum", 48.),
+                    ("undersized-minimum", 32.),
+                ] {
+                    let button = window.find(id).bounds();
+                    assert!(button.size.height >= px(minimum), "{id}: {button:?}");
+                    assert!(button.size.height >= px(size as f32 * 1.25 + 8.));
+                    assert!(button.bottom() <= card.bottom());
+                }
             });
         }
     }
@@ -517,6 +548,12 @@ mod tests {
                             .child(Button::new("xs-square").xsmall().action("设置"))
                             .child(Button::new("small-square").small().action("暂停"))
                             .child(Button::new("medium-square").action("保存"))
+                            .child(
+                                Button::new("large-minimum-square")
+                                    .small()
+                                    .min_h(px(48.))
+                                    .action("设置"),
+                            )
                             .child(
                                 Button::new("titlebar-icon")
                                     .icon_action(IconName::Close, "关闭")
@@ -549,6 +586,7 @@ mod tests {
                     ("xs-square", 28_f32),
                     ("small-square", 32.),
                     ("medium-square", 36.),
+                    ("large-minimum-square", 48.),
                 ] {
                     let bounds = window.find(id).bounds();
                     assert!(
