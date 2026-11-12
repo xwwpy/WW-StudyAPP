@@ -73,16 +73,20 @@ fn native_html_cache_is_bounded_and_invalidated_by_font_and_color() {
         &first,
         &super::cached_document(source, 16, color).unwrap()
     ));
-    assert!(super::cached_document("plain Markdown", 16, color).is_none());
+    assert_eq!(
+        super::cached_document("plain Markdown", 16, color)
+            .unwrap()
+            .plain
+            .trim(),
+        "plain Markdown"
+    );
+    // Summaries now share the native renderer even without HTML or lists.
+    // Fenced tags must remain literal code rather than becoming styled HTML.
     assert!(
-        super::cached_document(
-            "```html
-<b>code</b>
-```",
-            16,
-            color
-        )
-        .is_none()
+        super::cached_document("```html\n<b>code</b>\n```", 16, color)
+            .unwrap()
+            .plain
+            .contains("<b>code</b>")
     );
     assert!(super::cached_document(&format!("<b>{}</b>", "x".repeat(65_536)), 16, color).is_none());
 }
@@ -348,7 +352,10 @@ fn native_html_switch_and_code_fences_keep_the_original_boundaries(cx: &mut Test
             ..Default::default()
         };
         crate::theme::apply(&appearance, false, cx);
-        assert!(super::content("disabled", "<span>literal</span>").is_none());
+        assert!(super::content("disabled", "<span>literal</span>").is_some());
+        let literal =
+            super::cached_document("<span>literal</span>", 16, RgbaColor::opaque(0)).unwrap();
+        assert!(literal.plain.contains("<span>literal</span>"));
         crate::theme::apply(&Default::default(), false, cx);
         let source = "<b>visible</b>
 

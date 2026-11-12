@@ -474,11 +474,12 @@ mod tests {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 let calls = self.0.clone();
                 let disabled_calls = self.0.clone();
+                let current = super::navigation_button("flat-current", "主题与阅读", true);
+                assert!(gpui_kit::component::Selectable::is_selected(&current));
                 super::column()
                     .w(px(224.))
                     .child(crate::components::navigation_item(
-                        super::navigation_button("flat-current", "主题与阅读", true)
-                            .on_click(move |_, _, _| calls.set(calls.get() + 1)),
+                        current.on_click(move |_, _, _| calls.set(calls.get() + 1)),
                         true,
                     ))
                     .child(
@@ -512,7 +513,9 @@ mod tests {
                 crate::theme::apply(&appearance, false, cx);
                 window.render_frame(cx);
                 let current = window.find("flat-current");
-                assert_eq!(current.selected(), Some(true));
+                // Selected presentation does not turn a navigation action
+                // into an accessibility toggle or list-box option.
+                assert_eq!(current.role(), Some(gpui_kit::Role::Button));
                 assert_eq!(current.label(), Some("主题与阅读"));
                 assert!(current.bounds().size.height >= px(36.));
                 let color = rgb(if override_category {
