@@ -112,22 +112,32 @@ test("layout completion acknowledges readonly preview resize before the continui
   await action(page, { type: "select", anchor: text.indexOf("| 概念与定义") });
   const full = await action(page, { type: "layout", width: 830, height: 371 });
   assert.ok(full.scrollTop > 50);
-  // Hold the real browser measurement scheduler across the same full-width to
-  // split-pane transition as the native fixture. No color interaction occurs.
-  await page.evaluate(() => {
-    const frame = window.requestAnimationFrame.bind(window), pending = [];
-    window.requestAnimationFrame = callback => { pending.push(callback); return 999999; };
-    window.releasePreviewFrames = () => {
-      window.requestAnimationFrame = frame;
-      pending.forEach(callback => frame(callback));
-    };
-  });
+  // Freeze the real editor width while the host resizes, then release it and
+  // start acknowledgement in one browser task. Holding requestAnimationFrame
+  // alone misses already-queued frames and CM's synchronous scroll measures.
+  await page.evaluate(() => { document.querySelector("main").style.width = "830px"; });
   await page.setViewportSize({ width: 459, height: 371 });
-  const pending = await state(page);
-  await page.evaluate(() => window.releasePreviewFrames());
-  const opened = await action(page, { type: "layout", width: 459, height: 371 });
+  const { pending, opened } = await page.evaluate(async () => {
+    const main = document.querySelector("main"), scroller = document.querySelector(".cm-scroller");
+    const heldWidth = main.getBoundingClientRect().width;
+    main.style.removeProperty("width");
+    // snapshot() calls posAtCoords(), which can synchronously measure and repair
+    // the resize. Only passive DOM reads may precede the layout acknowledgement.
+    const pending = { heldWidth, width: main.getBoundingClientRect().width, scrollTop: scroller.scrollTop };
+    const opened = await window.studyappEditor.test({ type: "layout", width: 459, height: 371 });
+    return { pending, opened };
+  });
+  assert.equal(pending.heldWidth, 830);
+  assert.equal(pending.width, 459);
   assert.ok(Math.abs(opened.scrollTop - pending.scrollTop) >= 5,
     `fixture must expose pending resize scroll: ${JSON.stringify({ pending, opened })}`);
+  // Let subsequent scroll events and frames run before passively checking that
+  // acknowledgement included all corrections, rather than repairing via state().
+  const hoveredScroll = await page.evaluate(async () => {
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    return document.querySelector(".cm-scroller").scrollTop;
+  });
+  assert.ok(Math.abs(hoveredScroll - opened.scrollTop) < 5);
   const hovered = await state(page);
   assert.deepEqual(hovered.theme, opened.theme);
   assert.equal(hovered.generation, opened.generation);
