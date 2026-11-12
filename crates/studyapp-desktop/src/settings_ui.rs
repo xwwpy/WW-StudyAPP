@@ -6901,14 +6901,21 @@ mod scoped_tests {
             }
         });
         visual.run_until_parked();
+        let (start, end) = app.read_with(visual, |app, _| {
+            (
+                app.preferences_ui.notification_fields["notification-start"].clone(),
+                app.preferences_ui.notification_fields["notification-end"].clone(),
+            )
+        });
+        let hours = studyapp_core::QuietHours {
+            start_minute: 1420,
+            end_minute: 75,
+        };
         visual.update(|window, cx| {
             window.render_frame(cx);
             assert!(
                 window.find("quiet-hours-enabled-hint").bounds().size.height > gpui_kit::px(0.)
             );
-            let start =
-                app.read(cx).preferences_ui.notification_fields["notification-start"].clone();
-            let end = app.read(cx).preferences_ui.notification_fields["notification-end"].clone();
             let initial = start.read(cx).value();
             window.click("notification-start-hour-up", cx);
             assert_eq!(start.read(cx).value(), initial);
@@ -6920,11 +6927,12 @@ mod scoped_tests {
                     cx.emit(gpui_kit::component::input::InputEvent::Change);
                 });
             }
+        });
+        // Input events are delivered after the outer App update, as in the
+        // native event loop; rendering alone does not flush subscriptions.
+        visual.run_until_parked();
+        visual.update(|window, cx| {
             window.render_frame(cx);
-            let hours = studyapp_core::QuietHours {
-                start_minute: 1420,
-                end_minute: 75,
-            };
             assert_eq!(
                 app.read(cx)
                     .preferences_ui
@@ -7229,8 +7237,9 @@ mod scoped_tests {
         });
         visual.update(|window, cx| window.render_frame(cx));
         let saved = app.read_with(visual, |app, _| app.preferences_ui.saved.clone().unwrap());
+        visual.update(|window, cx| window.click("workspace-navigation-width-increase", cx));
+        visual.run_until_parked();
         visual.update(|window, cx| {
-            window.click("workspace-navigation-width-increase", cx);
             assert_eq!(app.read(cx).layout.navigation_width, 161);
             window.render_frame(cx);
             window.click("settings-navigation-visible", cx);
@@ -7241,6 +7250,9 @@ mod scoped_tests {
             window.click("settings-navigation-visible", cx);
             window.render_frame(cx);
             window.click("workspace-navigation-width-reset", cx);
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
             assert_eq!(app.read(cx).layout.navigation_width, 160);
             let input = app.read(cx).preferences_ui.number_fields.borrow()["workspace-notes-width"]
                 .input
@@ -7249,6 +7261,12 @@ mod scoped_tests {
                 input.set_value("333", window, cx);
                 cx.emit(gpui_kit::component::input::InputEvent::Change);
             });
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            let input = app.read(cx).preferences_ui.number_fields.borrow()["workspace-notes-width"]
+                .input
+                .clone();
             assert_eq!(app.read(cx).layout.notes_width, 333);
             assert_eq!(
                 app.read(cx)
