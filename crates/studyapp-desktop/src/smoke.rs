@@ -66,6 +66,35 @@ pub(crate) fn capture(window: &mut Window, path: PathBuf) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Flush navigation and cached child-view effects before the capture callback.
+/// Call outside an enclosing Window::update, so each update can commit its effects.
+#[cfg(all(feature = "ui-test", any(windows, test)))]
+pub(crate) fn with_settings_capture<R>(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    target: &str,
+    capture: impl FnOnce(&mut Window, &mut App) -> R,
+    cx: &mut AsyncApp,
+) -> R {
+    use gpui_kit::test::TestWindowExt;
+    window
+        .update(cx, |_, window, cx| {
+            select_settings_page(window, view, target, cx)
+        })
+        .unwrap();
+    // Rendering the parent can enqueue a cached settings subview's notification.
+    // Commit that update too before reading pixels in the final transaction.
+    window
+        .update(cx, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    window
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            capture(window, cx)
+        })
+        .unwrap()
+}
+
 #[cfg(feature = "ui-test")]
 pub(crate) fn styled_summary_geometry(window: &mut Window, database: &Path) {
     use gpui_kit::test::TestWindowExt;

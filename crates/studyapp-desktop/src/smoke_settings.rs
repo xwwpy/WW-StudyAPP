@@ -356,65 +356,75 @@ fn timing_summary(mut samples: Vec<u64>) -> serde_json::Value {
     })
 }
 
-fn capture_task_pages(window: &mut Window, view: &Entity<StudyApp>, database: &Path, cx: &mut App) {
-    let original_target = view.read(cx).preferences_ui.browsing.selected.clone();
-    for (category, id, label) in [
-        ("appearance", "appearance-overview", "appearance-overview"),
-        ("appearance", "appearance-theme-editor", "theme-editor"),
-        ("appearance", "appearance-workspace", "workspace"),
-        ("storage", "storage-overview", "storage-overview"),
-        ("storage", "storage-copies", "storage-copies"),
-        ("storage", "storage-images", "image-storage"),
-        ("storage", "storage-library", "library-storage"),
+fn capture_task_pages(
+    window: AnyWindowHandle,
+    view: &Entity<StudyApp>,
+    database: &Path,
+    cx: &mut AsyncApp,
+) {
+    let original_target = view.read_with(cx, |app, _| app.preferences_ui.browsing.selected.clone());
+    for (id, label) in [
+        ("appearance-overview", "appearance-overview"),
+        ("appearance-theme-editor", "theme-editor"),
+        ("appearance-workspace", "workspace"),
+        ("storage-overview", "storage-overview"),
+        ("storage-copies", "storage-copies"),
+        ("storage-images", "image-storage"),
+        ("storage-library", "library-storage"),
     ] {
-        let _ = category;
-        select_page(window, view, id, cx);
-        window.render_frame(cx);
-        match id {
-            "appearance-overview" => {
-                assert!(window.try_find("theme-mode").is_some());
-                assert!(window.try_find("color-open-accent").is_none());
-            }
-            "appearance-theme-editor" => {
-                assert!(
-                    view.read(cx).preferences_ui.appearance_page == AppearancePage::ThemeEditor
-                );
-                assert!(window.try_find("color-value-accent").is_none());
-            }
-            "appearance-workspace" => {
-                assert!(window.try_find("show-file-paths").is_some());
-                assert!(window.try_find("theme-mode").is_none());
-            }
-            "storage-overview" => {
-                assert!(view.read(cx).preferences_ui.storage_page == StoragePage::Overview);
-                assert!(window.try_find("refresh-storage").is_some());
-                assert!(window.try_find("storage-copy-list").is_none());
-            }
-            "storage-copies" => {
-                assert!(view.read(cx).preferences_ui.storage_page == StoragePage::Copies);
-                assert!(window.try_find(("storage-category", 0_usize)).is_none());
-            }
-            "storage-images" => {
-                assert!(window.try_find("images-storage").is_some());
-                assert!(window.try_find("refresh-storage").is_none());
-            }
-            "storage-library" => {
-                assert!(window.try_find("migrate-library").is_some());
-                assert!(window.try_find("images-storage").is_none());
-            }
-            _ => unreachable!(),
-        }
-        window
-            .render_to_image()
-            .unwrap()
-            .save(database.with_file_name(format!(
-                "settings-{label}-{}.png",
-                f32::from(window.viewport_size().width) as u32
-            )))
-            .unwrap();
+        crate::smoke::with_settings_capture(
+            window,
+            view,
+            id,
+            |window, cx| {
+                match id {
+                    "appearance-overview" => {
+                        assert!(window.try_find("theme-mode").is_some());
+                        assert!(window.try_find("color-open-accent").is_none());
+                    }
+                    "appearance-theme-editor" => {
+                        assert!(
+                            view.read(cx).preferences_ui.appearance_page
+                                == AppearancePage::ThemeEditor
+                        );
+                        assert!(window.try_find("color-value-accent").is_none());
+                    }
+                    "appearance-workspace" => {
+                        assert!(window.try_find("show-file-paths").is_some());
+                        assert!(window.try_find("theme-mode").is_none());
+                    }
+                    "storage-overview" => {
+                        assert!(view.read(cx).preferences_ui.storage_page == StoragePage::Overview);
+                        assert!(window.try_find("refresh-storage").is_some());
+                        assert!(window.try_find("storage-copy-list").is_none());
+                    }
+                    "storage-copies" => {
+                        assert!(view.read(cx).preferences_ui.storage_page == StoragePage::Copies);
+                        assert!(window.try_find(("storage-category", 0_usize)).is_none());
+                    }
+                    "storage-images" => {
+                        assert!(window.try_find("images-storage").is_some());
+                        assert!(window.try_find("refresh-storage").is_none());
+                    }
+                    "storage-library" => {
+                        assert!(window.try_find("migrate-library").is_some());
+                        assert!(window.try_find("images-storage").is_none());
+                    }
+                    _ => unreachable!(),
+                }
+                window
+                    .render_to_image()
+                    .unwrap()
+                    .save(database.with_file_name(format!(
+                        "settings-{label}-{}.png",
+                        f32::from(window.viewport_size().width) as u32
+                    )))
+                    .unwrap();
+            },
+            cx,
+        );
     }
-    select_page(window, view, &original_target, cx);
-    window.render_frame(cx);
+    crate::smoke::with_settings_capture(window, view, &original_target, |_, _| {}, cx);
 }
 
 /// Same-process A/B on the actual row builder. Event measurements end after
@@ -891,7 +901,6 @@ pub async fn exercise(
                     "category switching wrote configuration files"
                 );
             }
-            capture_task_pages(window, view, database, cx);
 
             crate::smoke_settings::select_page(window, view, "storage", cx);
             crate::smoke_settings::select_page(window, view, "storage-images", cx);
@@ -1237,6 +1246,13 @@ pub async fn exercise(
             assert_eq!(view.read(cx).page, Page::Notes);
         })
         .unwrap();
+    window
+        .update(cx, |_, window, cx| {
+            window.click(("nav", 4_usize), cx);
+            view.update(cx, |app, cx| app.clear_notices(cx));
+        })
+        .unwrap();
+    capture_task_pages(window, view, database, cx);
     // Windows resize queues SetWindowPos asynchronously; yield before reading
     // the viewport or asserting responsive layout, unlike an in-process draw.
     let (original_size, original_layout, original_draft_layout, original_tree_width) = window
@@ -1315,12 +1331,19 @@ pub async fn exercise(
             }
             select_page(window, view, "shortcuts", cx);
             assert!(window.find("save-settings").visible());
+        })
+        .unwrap();
+    capture_task_pages(window, view, database, cx);
+    window
+        .update(cx, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).preferences_ui.browsing.selected, "shortcuts");
+            assert!(view.read(cx).preferences_ui.section == SettingsSection::Shortcuts);
             window
                 .render_to_image()
                 .unwrap()
                 .save(database.with_file_name("settings-compact.png"))
                 .unwrap();
-            capture_task_pages(window, view, database, cx);
             view.update(cx, |app, cx| {
                 app.layout = original_layout;
                 app.preferences_ui.draft.as_mut().unwrap().layout = original_draft_layout;

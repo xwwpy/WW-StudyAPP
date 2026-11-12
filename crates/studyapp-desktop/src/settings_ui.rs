@@ -4550,6 +4550,99 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
+    fn settings_capture_transactions_preserve_page_state_in_tree_and_drawer(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.update(|_, cx| cx.set_reduce_motion(true));
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine =
+            studyapp_core::Engine::open(&root.path().join("capture.sqlite"), 1000).unwrap();
+        let surface = visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 1000.,
+                height: 700.,
+            }
+        });
+        let handle = visual.update(|window, _| window.window_handle());
+        let mut async_cx = visual.to_async();
+        for width in [1000., 620.] {
+            surface.update(visual, |surface, cx| {
+                surface.width = width;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            for (page, target, anchor) in [
+                ("shortcuts", "shortcuts", "record-shortcut-app.new"),
+                (
+                    "appearance-theme-editor",
+                    "appearance.theme",
+                    "appearance-preview-pane",
+                ),
+                (
+                    "appearance-workspace",
+                    "appearance.workspace",
+                    "show-file-paths",
+                ),
+                ("appearance-overview", "appearance.overview", "theme-mode"),
+                ("storage-overview", "storage.overview", "refresh-storage"),
+                ("storage-images", "storage.images", "images-storage"),
+                ("storage-library", "storage.library", "migrate-library"),
+            ] {
+                crate::smoke::with_settings_capture(
+                    handle,
+                    &app,
+                    page,
+                    |window, cx| {
+                        let state = app.read(cx);
+                        assert_eq!(state.preferences_ui.browsing.selected, target);
+                        assert!(
+                            window.try_find(anchor).is_some(),
+                            "page={page}; width={width}"
+                        );
+                        assert!(!state.preferences_ui.settings_drawer);
+                        if target.starts_with("appearance.") {
+                            assert!(state.notification_appearance_cache_matches(cx));
+                            let expected = match target {
+                                "appearance.theme" => (1 << 1) | (1 << 3),
+                                "appearance.workspace" => 1 << 4,
+                                "appearance.overview" => 1,
+                                _ => unreachable!(),
+                            };
+                            // Rows are virtualized: only the visible subset needs
+                            // building, but none may belong to a previous page.
+                            let parts = state.preferences_ui.appearance_frame_parts.get();
+                            assert_ne!(parts, 0, "no appearance rows built for {target}");
+                            assert_eq!(
+                                parts & !expected,
+                                0,
+                                "cached rows did not match capture target {target}: {parts:b}"
+                            );
+                        }
+                        assert!(!state.settings_dirty(cx));
+                        assert!(
+                            state
+                                .preferences_ui
+                                .appearance_preview
+                                .as_ref()
+                                .unwrap()
+                                .read(cx)
+                                .editor()
+                                .is_none()
+                        );
+                    },
+                    &mut async_cx,
+                );
+            }
+        }
+    }
+
+    #[gpui_kit::test]
     fn settings_transition_completion_and_reduced_motion_keep_an_open_choice_menu(
         cx: &mut TestAppContext,
     ) {
