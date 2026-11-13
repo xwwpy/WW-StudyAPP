@@ -27,6 +27,8 @@ pub(crate) struct ExportPanel {
     pub(crate) images: Option<ExportImageJob>,
     pub(crate) image_warning: Option<String>,
     extension: String,
+    #[cfg(feature = "ui-test")]
+    pub(crate) test_destination: Option<std::path::PathBuf>,
 }
 impl StudyApp {
     pub(crate) fn open_note_export(
@@ -90,6 +92,8 @@ impl StudyApp {
             extension,
             images: None,
             image_warning: None,
+            #[cfg(feature = "ui-test")]
+            test_destination: None,
         });
         self.start_export_preview_images(image_source, image_settings, cx);
         cx.notify();
@@ -162,6 +166,26 @@ impl StudyApp {
             return;
         }
         let sender = self.worker.sender.clone();
+        let export = move |path| {
+            let _ = sender.send(crate::worker::Work::Scoped {
+                library: state.library,
+                work: Box::new(crate::worker::Work::Apply(Command::ExportPreviewedNote {
+                    note_id: state.note_id,
+                    version_id: state.version_id,
+                    expected_hash: state.expected_hash,
+                    path,
+                })),
+            });
+        };
+        #[cfg(feature = "ui-test")]
+        if let Some(path) = state.test_destination {
+            // Substitute only the native chooser in the isolated runner. The
+            // explicit button, captured version/hash and real worker stay live.
+            assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+            export(path);
+            cx.notify();
+            return;
+        }
         std::thread::spawn(move || {
             if let Some(path) = rfd::FileDialog::new()
                 .set_title("导出原文（请选择新文件名）")
@@ -169,15 +193,7 @@ impl StudyApp {
                 .set_file_name(format!("笔记原文.{}", state.extension))
                 .save_file()
             {
-                let _ = sender.send(crate::worker::Work::Scoped {
-                    library: state.library,
-                    work: Box::new(crate::worker::Work::Apply(Command::ExportPreviewedNote {
-                        note_id: state.note_id,
-                        version_id: state.version_id,
-                        expected_hash: state.expected_hash,
-                        path,
-                    })),
-                });
+                export(path);
             }
         });
         cx.notify();

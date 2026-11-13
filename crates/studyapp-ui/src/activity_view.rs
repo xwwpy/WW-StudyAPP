@@ -155,7 +155,7 @@ pub fn task_list(
                 }
                 item.children(action)
             };
-            group = group.child(item);
+            group = group.child(item.test_support());
         }
         if count == 0 {
             group = group.child(muted(if running {

@@ -90,6 +90,8 @@ mod smoke_note_rename;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_notifications;
 #[cfg(all(windows, feature = "ui-test"))]
+mod smoke_panels;
+#[cfg(all(windows, feature = "ui-test"))]
 mod smoke_settings;
 #[cfg(all(windows, feature = "ui-test"))]
 mod smoke_statistics;
