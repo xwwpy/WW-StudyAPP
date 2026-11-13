@@ -622,13 +622,12 @@ async fn measure_appearance_cache(
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| {
                 app.navigate(Page::Settings, window, cx);
-                app.select_settings_section(SettingsSection::Appearance, cx);
-                app.select_appearance_page(AppearancePage::ThemeEditor, cx);
 
                 app.preferences_ui.section_changed_at = None;
                 app.preferences_ui.appearance_eager_baseline = false;
                 cx.notify();
             });
+            crate::smoke::select_settings_page(window, view, "appearance-theme-editor", cx);
             window.render_frame(cx);
             appearance_cache_state(view.read(cx), window, cx)
         })
@@ -1518,12 +1517,11 @@ async fn exercise_markdown_preview(
                     .notifications
                     .surface_patch_mut(studyapp_core::NoticeStyle::Anchored)
                     .max_height = Some(480);
-                app.select_settings_section(SettingsSection::Appearance, cx);
-                app.select_appearance_page(AppearancePage::ThemeEditor, cx);
 
                 cx.notify();
             });
             crate::smoke_library::resize(window, overlap_size);
+            crate::smoke::select_settings_page(window, view, "appearance-theme-editor", cx);
             window.render_frame(cx);
             (
                 note,
@@ -2233,9 +2231,9 @@ async fn exercise_markdown_preview(
                     .appearance
                     .notifications = original_notices;
 
-                app.select_appearance_page(AppearancePage::Workspace, cx);
                 cx.notify();
             });
+            crate::smoke::select_settings_page(window, view, "appearance-workspace", cx);
             crate::smoke_library::resize(window, original_size);
             window.render_frame(cx);
             assert!(view.read(cx).appearance_color_popup_bounds(cx).is_empty());
@@ -2256,9 +2254,7 @@ async fn exercise_markdown_preview(
     );
     window
         .update(cx, |_, window, cx| {
-            view.update(cx, |app, cx| {
-                app.select_appearance_page(AppearancePage::ThemeEditor, cx)
-            });
+            crate::smoke::select_settings_page(window, view, "appearance-theme-editor", cx);
             window.render_frame(cx);
         })
         .unwrap();
@@ -2301,9 +2297,7 @@ async fn exercise_markdown_preview(
     assert_preview_continuity(&before, &reopened, false);
     window
         .update(cx, |_, window, cx| {
-            view.update(cx, |app, cx| {
-                app.select_appearance_page(AppearancePage::Workspace, cx)
-            });
+            crate::smoke::select_settings_page(window, view, "appearance-workspace", cx);
             window.render_frame(cx);
         })
         .unwrap();

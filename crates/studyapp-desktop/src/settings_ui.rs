@@ -4837,7 +4837,7 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
-    fn settings_capture_transactions_preserve_page_state_in_tree_and_drawer(
+    fn native_settings_capture_transactions_preserve_page_state_in_tree_and_drawer(
         cx: &mut TestAppContext,
     ) {
         use gpui_kit::px;
@@ -4877,6 +4877,16 @@ mod scoped_tests {
                     "show-file-paths",
                 ),
                 ("appearance-overview", "appearance.overview", "theme-mode"),
+                (
+                    "appearance-notifications",
+                    "notices.general",
+                    "notification-width-increase",
+                ),
+                (
+                    "notifications",
+                    "notices.rules",
+                    "notification-update-badge",
+                ),
                 ("storage-overview", "storage.overview", "refresh-storage"),
                 ("storage-images", "storage.images", "images-storage"),
                 ("storage-library", "storage.library", "migrate-library"),
@@ -4895,6 +4905,13 @@ mod scoped_tests {
                             let app = &callback_app;
                             let state = app.read(cx);
                             assert_eq!(state.preferences_ui.browsing.selected, target);
+                            assert_eq!(
+                                state.settings_target_title(),
+                                crate::settings_navigation::target_title(target)
+                            );
+                            if target == "notices.general" {
+                                assert!(state.notification_task_cache_matches(cx));
+                            }
                             assert!(
                                 window.try_find(anchor).is_some(),
                                 "page={page}; width={width}"
