@@ -340,6 +340,17 @@ pub fn document_surface() -> Div {
         .bg(crate::theme::color(0xFFFFFF))
 }
 
+/// Fixed-height slot for a flex-growing native preview inside a modal or card.
+pub fn document_preview_viewport(height: Pixels) -> Div {
+    column()
+        .gap_0()
+        .h(height)
+        .flex_shrink_0()
+        .min_h_0()
+        .min_w_0()
+        .overflow_hidden()
+}
+
 /// Allocation surface for a native document view embedded below its header.
 pub fn document_viewport() -> Div {
     div()
@@ -599,6 +610,71 @@ mod tests {
                     .into_any_element()
             };
             div().w(px(500.)).h(px(300.)).p(px(32.)).child(viewport)
+        }
+    }
+
+    #[gpui_kit::test]
+    fn native_preview_fills_fixed_slot_in_both_share_layouts(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::apply(&Default::default(), false, cx);
+        });
+        struct PreviewFixture(studyapp_core::NoticeLayout);
+        impl Render for PreviewFixture {
+            fn render(&mut self, window: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let preview = column().child("Saved document").child(
+                    super::document_preview_viewport(px(260.))
+                        .id("preview-slot")
+                        .test_support()
+                        .child(
+                            column().flex_1().min_h_0().child(
+                                super::document_viewport()
+                                    .id("native-allocation")
+                                    .test_support(),
+                            ),
+                        ),
+                );
+                crate::modal_frame::ModalFrame::new(
+                    "Export",
+                    crate::notification_surfaces::share_panel(
+                        preview,
+                        column().child("Actual export target"),
+                        self.0,
+                        window.viewport_size(),
+                    ),
+                )
+                .preview(&Default::default())
+                .footer(div().child("Close"))
+            }
+        }
+        let (view, visual) =
+            cx.add_window_view(|_, _| PreviewFixture(studyapp_core::NoticeLayout::Primary));
+        for (width, layout) in [
+            (1024., studyapp_core::NoticeLayout::Primary),
+            (620., studyapp_core::NoticeLayout::Primary),
+            (1024., studyapp_core::NoticeLayout::Alternative),
+        ] {
+            visual.simulate_resize(gpui_kit::size(px(width), px(780.)));
+            view.update(visual, |view, cx| {
+                view.0 = layout;
+                cx.notify();
+            });
+            visual.update(|window, cx| {
+                window.render_frame(cx);
+                let slot = window.find("preview-slot").bounds();
+                let native = window.find("native-allocation").bounds();
+                assert_eq!(slot.size.height, px(260.), "{width} {layout:?}: {slot:?}");
+                let scroll = window.find("modal-content-scroll").bounds();
+                assert_eq!(
+                    slot.intersect(&scroll),
+                    slot,
+                    "{width} {layout:?}: preview escaped its scroll viewport"
+                );
+                assert_eq!(
+                    native, slot,
+                    "{width} {layout:?}: native preview must fill its slot"
+                );
+            });
         }
     }
 

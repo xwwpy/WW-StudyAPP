@@ -116,13 +116,9 @@ impl StudyApp {
             }))
             .children(state.image_warning.clone().map(muted))
             .child(
-                div()
+                studyapp_ui::components::document_preview_viewport(px(260.))
                     .id("share-document-preview")
                     .test_support()
-                    .h(px(260.))
-                    .min_h_0()
-                    .min_w_0()
-                    .overflow_hidden()
                     .child(state.preview.clone()),
             );
         let targets = column().gap_3().child(heading("导出目标"))
