@@ -94,6 +94,14 @@ mod startup_timing {
     }
 }
 
+// A paused executor owns a real SyncRuntime task. Tests can exercise busy
+// policies without racing network deadlines against durable SQLite writes.
+#[cfg(test)]
+pub struct SyncTaskGate {
+    entered: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
+}
+
 pub enum Work {
     Scoped {
         library: String,
@@ -117,6 +125,8 @@ pub enum Work {
     StartSync {
         test_only: bool,
     },
+    #[cfg(test)]
+    GateNextSync(SyncTaskGate),
     SyncFinished {
         generation: u64,
         result: Result<crate::sync_runtime::SyncCompletion, String>,
@@ -189,10 +199,20 @@ fn launch_sync(
     sender: &mpsc::Sender<Work>,
     generation: u64,
     test_only: bool,
+    #[cfg(test)] gate: Option<SyncTaskGate>,
 ) -> anyhow::Result<()> {
     let job = runtime.task(Arc::new(engine.snapshot()), test_only)?;
     let sender = sender.clone();
     thread::spawn(move || {
+        #[cfg(test)]
+        if let Some(gate) = gate {
+            let _ = gate.entered.send(());
+            // The test owns the only sender: unwinding also releases this wait.
+            // Each worker receipt still has its existing bounded deadline.
+            if gate.release.recv().is_err() {
+                return;
+            }
+        }
         let result = job().map_err(|error| error.to_string());
         let _ = sender.send(Work::SyncFinished { generation, result });
     });
@@ -697,6 +717,8 @@ impl Worker {
             let mut last_tick = Instant::now();
             let mut last_scan = Instant::now();
             let mut last_checkpoint = Instant::now();
+            #[cfg(test)]
+            let mut sync_gate = None;
             loop {
                 let work = commands.recv_timeout(Duration::from_millis(150));
                 let work = match work {
@@ -1089,6 +1111,8 @@ impl Worker {
                         }));
                         changed = true;
                     }
+                    #[cfg(test)]
+                    Ok(Work::GateNextSync(gate)) => sync_gate = Some(gate),
                     Ok(Work::StartSync { test_only }) => {
                         if let Err(error) = launch_sync(
                             &mut synchronization,
@@ -1096,6 +1120,8 @@ impl Worker {
                             &command_sender,
                             generation,
                             test_only,
+                            #[cfg(test)]
+                            sync_gate.take(),
                         ) {
                             if !synchronization.status.busy {
                                 synchronization.fail(error.to_string());
@@ -1401,6 +1427,8 @@ impl Worker {
                         &command_sender,
                         generation,
                         false,
+                        #[cfg(test)]
+                        sync_gate.take(),
                     ) {
                         synchronization.fail(error.to_string());
                         notifications.push(notices::Context::Sync.event(&Err(String::new())));
@@ -2129,7 +2157,7 @@ mod tests {
             },
         );
         let note = created.snapshot.unwrap().notes[0].clone();
-        let rejected = while_network_sync_is_busy(&worker, || {
+        let rejected = while_sync_is_busy(&worker, || {
             worker
                 .sender
                 .send(Work::DeleteManagedCopy {
@@ -2187,7 +2215,7 @@ mod tests {
     }
 
     #[test]
-    fn unmanage_is_rejected_while_network_sync_is_busy() {
+    fn unmanage_is_rejected_while_sync_is_busy() {
         let root = tempfile::tempdir().unwrap().keep();
         let worker = Worker::start(root.join("study.sqlite3"), None);
         initial_update(&worker);
@@ -2199,7 +2227,7 @@ mod tests {
             },
         );
         let id = created.snapshot.unwrap().notes[0].id.clone();
-        let result = while_network_sync_is_busy(&worker, || {
+        let result = while_sync_is_busy(&worker, || {
             apply(&worker, Command::UnmanageNote { note_id: id })
         });
         assert!(result.notice.unwrap().unwrap_err().contains("同步"));
@@ -2237,9 +2265,8 @@ mod tests {
         reimported.notice.unwrap().unwrap();
         assert!(!reimported.snapshot.unwrap().notes[0].detached);
 
-        let rejected = while_network_sync_is_busy(&worker, || {
-            apply(&worker, Command::Restore(backup.clone()))
-        });
+        let rejected =
+            while_sync_is_busy(&worker, || apply(&worker, Command::Restore(backup.clone())));
         assert!(rejected.notice.unwrap().unwrap_err().contains("同步"));
         assert!(!rejected.library_replaced);
         assert!(!rejected.snapshot.unwrap().notes[0].detached);
@@ -2259,7 +2286,7 @@ mod tests {
         let worker = Worker::start(root.join("study.sqlite3"), None);
         let origin = initial_update(&worker).snapshot.unwrap().data_path.clone();
         let next = root.join("next");
-        let rejected = while_network_sync_is_busy(&worker, || {
+        let rejected = while_sync_is_busy(&worker, || {
             worker
                 .sender
                 .send(Work::SwitchLibrary(next.clone()))
@@ -2284,29 +2311,12 @@ mod tests {
         assert!(next.join("studyapp.sqlite3").is_file());
     }
 
-    fn while_network_sync_is_busy(worker: &Worker, action: impl FnOnce() -> Update) -> Update {
-        use std::io::{Read, Write};
+    fn while_sync_is_busy(worker: &Worker, action: impl FnOnce() -> Update) -> Update {
         worker.sender.send(Work::RefreshStorage).unwrap();
         let current = receive_notice(worker).preferences.unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        // Hold the initial TLS handshake so the worker has a deterministic,
-        // in-flight network task. Release with invalid TLS after the assertion.
-        let url = format!("https://{}/", listener.local_addr().unwrap());
+        let target = tempfile::tempdir().unwrap().keep();
         let (entered, wait_entered) = mpsc::channel();
         let (release, wait_release) = mpsc::channel();
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let mut request = [0; 4096];
-            assert!(stream.read(&mut request).unwrap() > 0);
-            entered.send(()).unwrap();
-            wait_release.recv_timeout(Duration::from_secs(10)).unwrap();
-            stream
-                .write_all(b"HTTP/1.1 500 Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .unwrap();
-        });
         worker
             .sender
             .send(Work::SavePreferences(Box::new(SavePreferences {
@@ -2314,26 +2324,96 @@ mod tests {
                 settings: current.settings,
                 shortcuts: current.shortcuts,
                 sync: crate::sync_runtime::SyncSettings {
-                    target: crate::sync_runtime::SyncTarget::WebDav {
-                        url,
-                        username: "fixture".into(),
+                    target: crate::sync_runtime::SyncTarget::Folder {
+                        path: target.to_string_lossy().into_owned(),
                     },
                     auto_minutes: None,
                 },
-                password: Some(zeroize::Zeroizing::new("fixture".into())),
+                password: None,
                 image_secret: Default::default(),
             })))
             .unwrap();
         receive_notice(worker).notice.unwrap().unwrap();
         worker
             .sender
+            .send(Work::GateNextSync(SyncTaskGate {
+                entered,
+                release: wait_release,
+            }))
+            .unwrap();
+        worker
+            .sender
             .send(Work::StartSync { test_only: false })
             .unwrap();
-        wait_entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        wait_entered
+            .recv_timeout(STORAGE_COMPLETION_BUDGET)
+            .unwrap();
+        let deadline = Instant::now() + STORAGE_COMPLETION_BUDGET;
+        loop {
+            let update = worker
+                .receiver
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap();
+            if let Some(status) = update.sync_status {
+                assert!(status.busy && !status.failed);
+                break;
+            }
+            assert!(update.notice.is_none() && !update.library_replaced);
+        }
+        // The real folder task has been created, but its I/O cannot run until
+        // every busy-policy assertion completes. No fabricated busy flag and
+        // no production network timeout/transport change is involved.
+        assert!(!target.join("StudyApp").exists());
         let result = action();
+        assert!(!target.join("StudyApp").exists());
         release.send(()).unwrap();
-        server.join().unwrap();
         result
+    }
+
+    #[test]
+    fn gated_sync_executes_real_io_and_completes_after_busy_rejections() {
+        use studyapp_sync::Provider;
+        let root = tempfile::tempdir().unwrap().keep();
+        let worker = Worker::start(root.join("study.sqlite3"), None);
+        initial_update(&worker);
+        let created = apply(
+            &worker,
+            Command::CreateNote {
+                title: "real pending task".into(),
+                content: "retained and synchronized".into(),
+            },
+        );
+        let note = created.snapshot.unwrap().notes[0].clone();
+        let rejected = while_sync_is_busy(&worker, || {
+            worker
+                .sender
+                .send(Work::DeleteManagedCopy {
+                    note_id: note.id.clone(),
+                })
+                .unwrap();
+            receive_notice(&worker)
+        });
+        assert!(
+            storage_result(&rejected)
+                .as_ref()
+                .unwrap_err()
+                .contains("同步")
+        );
+        assert!(!rejected.snapshot.unwrap().notes[0].detached);
+        let finished = receive_notice(&worker);
+        assert!(finished.notice.unwrap().is_ok());
+        let status = finished.sync_status.unwrap();
+        assert!(!status.busy && !status.failed);
+        let crate::sync_runtime::SyncTarget::Folder { path } = status.settings.target else {
+            panic!("expected real folder sync");
+        };
+        let remote = studyapp_sync::LocalFolderProvider::new(path)
+            .unwrap()
+            .read(&note.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(remote.content, "retained and synchronized");
+        assert_eq!(std::fs::read_to_string(note.path).unwrap(), remote.content);
     }
 
     #[test]
