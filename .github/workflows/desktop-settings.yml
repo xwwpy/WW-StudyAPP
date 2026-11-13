@@ -6,11 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       test_scope:
-        description: Use notifications only when unchanged regressions have valid prior evidence
+        description: Partial scopes require valid prior evidence for unchanged regressions
         type: choice
         options:
           - full
           - notifications
+          - settings
         default: full
 
 permissions:
@@ -59,14 +60,15 @@ jobs:
         env:
           TEST_SCOPE: ${{ inputs.test_scope || 'full' }}
         run: |
-          $testArgs = @('test', '--locked', '-p', 'studyapp-desktop', '--all-features')
+          $testArgs = @('test', '--locked', '-p', 'studyapp-desktop')
           switch ($env:TEST_SCOPE) {
-            'full' { $testArgs += @('-p', 'studyapp-ui') }
-            'notifications' { $testArgs += @('--bin', 'studyapp', 'native_notification') }
+            'full' { $testArgs += @('--all-features', '-p', 'studyapp-ui') }
+            'notifications' { $testArgs += @('--features', 'ui-test', '--bin', 'studyapp', 'native_notification') }
+            'settings' { $testArgs += @('--features', 'ui-test', '--bin', 'studyapp', 'native_settings') }
             default { throw 'Unknown focused test scope' }
           }
           Write-Output "Executing test scope: $env:TEST_SCOPE"
-          "Test scope: **$env:TEST_SCOPE**. Notifications mode runs affected regressions only; this is not a full-suite receipt." >> $env:GITHUB_STEP_SUMMARY
+          "Test scope: **$env:TEST_SCOPE**. Partial modes run affected regressions only with ui-test, matching the native build; this is not a full-suite receipt." >> $env:GITHUB_STEP_SUMMARY
           $testArgs += @('--', '--test-threads=2')
           cargo @testArgs
           if ($LASTEXITCODE -ne 0) { throw 'Selected bounded regressions failed' }

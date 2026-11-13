@@ -2551,7 +2551,7 @@ impl StudyApp {
         )
     }
 
-    #[cfg(feature = "ui-test")]
+    #[cfg(all(feature = "ui-test", any(windows, test)))]
     pub(crate) fn notification_task_cache_matches(&self, cx: &App) -> bool {
         self.preferences_ui
             .notification_task_view
@@ -4779,6 +4779,36 @@ mod scoped_tests {
                 visual.update(|window, cx| {
                     crate::smoke::select_settings_page(window, &app, target, cx)
                 });
+                if target == "notices.general" {
+                    let before_scroll = visual.update(|window, _| {
+                        window.find("notification-width-increase").bounds().top()
+                    });
+                    visual.update(|window, cx| {
+                        let body = window.find("settings-section-scroll").bounds();
+                        window.dispatch_event(
+                            gpui_kit::ScrollWheelEvent {
+                                position: body.center(),
+                                delta: gpui_kit::ScrollDelta::Pixels(gpui_kit::point(
+                                    px(0.),
+                                    px(-80.),
+                                )),
+                                ..Default::default()
+                            }
+                            .to_platform_input(),
+                            cx,
+                        );
+                    });
+                    for _ in 0..3 {
+                        visual.update(|window, cx| window.draw(cx).clear(cx));
+                    }
+                    visual.update(|window, _| {
+                        assert!(
+                            window.find("notification-width-increase").bounds().top()
+                                < before_scroll,
+                            "cached task page swallowed real scrolling; width={width}"
+                        );
+                    });
+                }
                 for _ in 0..6 {
                     visual.run_until_parked();
                     visual.update(|window, cx| window.draw(cx).clear(cx));
