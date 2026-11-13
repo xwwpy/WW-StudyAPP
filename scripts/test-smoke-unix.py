@@ -279,7 +279,8 @@ class SmokeTests(unittest.TestCase):
             self.assertIn(check, widget_source)
         self.assertIn("settings-notification-cache-timing.json", smoke_source)
         for check in ("notification benchmark did not mount", "notification_cache_matches(cx)",
-                      "notification_appearance_cache_matches(cx)", "settings-notification-cache-edit.json",
+                      "notification_task_cache_matches(cx)", '"notices.general"', '"notices.rules"',
+                      "settings-notification-cache-edit.json",
                       "notification edit did not render within 5 seconds", "app.navigate(Page::Settings, window, cx)"):
             self.assertIn(check, smoke_source)
         edit = smoke_source.split("let changed = loop {", 1)[1].split("pub async fn exercise", 1)[0]
