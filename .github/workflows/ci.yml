@@ -148,7 +148,8 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       # Core/sync tests already run in the dedicated Windows verification group.
-      - run: cargo test --locked -p studyapp-desktop -p studyapp-ui --all-features
+      - name: Verify all desktop and shared UI regressions with bounded concurrency
+        run: cargo test --locked -p studyapp-desktop -p studyapp-ui --all-features -- --test-threads=2
       - run: cargo build --locked -p studyapp-desktop --features ui-test
         id: native-build
       - name: Preserve compiled native validation binary
