@@ -181,6 +181,39 @@ type AppearanceViewKey = (
     Option<studyapp_core::NoticeStyle>,
 );
 
+type NotificationTaskKey = (String, AppearanceViewKey);
+
+struct NotificationTaskView {
+    owner: WeakEntity<StudyApp>,
+    key: Option<NotificationTaskKey>,
+}
+impl Render for NotificationTaskView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let owner = self.owner.clone();
+        container_query(move |available, _, cx| {
+            owner
+                .update(cx, |app, cx| {
+                    scroll_body("settings-section-scroll", &app.settings_scroll)
+                        .test_support()
+                        .w(available.width)
+                        .h(available.height)
+                        .min_w_0()
+                        .px(px(form::PANE_INSET))
+                        .pt_2()
+                        .pb_4()
+                        .children(app.auxiliary_settings_page(
+                            (available.width - px(form::PANE_INSET * 2.)).max(px(0.)),
+                            cx,
+                        ))
+                })
+                .map(|element| element.into_any_element())
+                .unwrap_or_else(|_| column().into_any_element())
+        })
+        .min_w_0()
+        .min_h_0()
+    }
+}
+
 pub struct AppearanceView {
     owner: WeakEntity<StudyApp>,
     key: Option<AppearanceViewKey>,
@@ -297,6 +330,7 @@ pub struct PreferencesUi {
     appearance_rows: form::VirtualRows<AppearanceViewKey>,
     appearance_focus: Vec<FocusHandle>,
     appearance_view: Option<Entity<AppearanceView>>,
+    notification_task_view: Option<Entity<NotificationTaskView>>,
     #[cfg(feature = "ui-test")]
     pub appearance_eager_baseline: bool,
     #[cfg(feature = "ui-test")]
@@ -730,6 +764,11 @@ impl StudyApp {
             self.preferences_ui.appearance_view =
                 Some(cx.new(|_| AppearanceView { owner, key: None }));
             self.preferences_ui.appearance_focus = (0..5).map(|_| cx.focus_handle()).collect();
+        }
+        if self.preferences_ui.notification_task_view.is_none() {
+            let owner = cx.weak_entity();
+            self.preferences_ui.notification_task_view =
+                Some(cx.new(|_| NotificationTaskView { owner, key: None }));
         }
         if self.preferences_ui.appearance_preview.is_none() {
             self.preferences_ui.appearance_preview =
@@ -2497,12 +2536,55 @@ impl StudyApp {
         )
     }
 
-    #[cfg(feature = "ui-test")]
+    #[cfg(all(feature = "ui-test", test))]
     pub fn notification_appearance_cache_matches(&self, cx: &App) -> bool {
         self.preferences_ui
             .appearance_view
             .as_ref()
             .is_some_and(|view| view.read(cx).key.as_ref() == Some(&self.appearance_view_key(cx)))
+    }
+
+    fn notification_task_key(&self, cx: &App) -> NotificationTaskKey {
+        (
+            self.preferences_ui.browsing.selected.clone(),
+            self.appearance_view_key(cx),
+        )
+    }
+
+    #[cfg(feature = "ui-test")]
+    pub(crate) fn notification_task_cache_matches(&self, cx: &App) -> bool {
+        self.preferences_ui
+            .notification_task_view
+            .as_ref()
+            .is_some_and(|view| view.read(cx).key.as_ref() == Some(&self.notification_task_key(cx)))
+    }
+
+    pub(crate) fn notification_task_surface(&self, cx: &mut Context<Self>) -> Div {
+        let Some(view) = self.preferences_ui.notification_task_view.as_ref() else {
+            return column();
+        };
+        let key = self.notification_task_key(cx);
+        view.update(cx, |view, cx| {
+            if view.key.as_ref() != Some(&key) {
+                view.key = Some(key);
+                cx.notify();
+            }
+        });
+        // Bound the real task page, keeping its existing non-virtual scroll,
+        // responsive card grid and fixed settings header/footer unchanged.
+        div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .w_full()
+            .child(
+                div()
+                    .id("settings-notification-task-surface")
+                    .test_support()
+                    .size_full()
+                    .child(view.clone().cached(StyleRefinement::default().size_full())),
+            )
     }
 
     /// A definite-size view boundary lets GPUI reuse unchanged appearance
@@ -4575,6 +4657,100 @@ mod scoped_tests {
                         .is_none()
                 );
             });
+        }
+    }
+
+    #[gpui_kit::test]
+    fn native_settings_notification_tasks_cache_actual_tree_pages(cx: &mut TestAppContext) {
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.update(|_, cx| cx.set_reduce_motion(true));
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine =
+            studyapp_core::Engine::open(&root.path().join("notice-tasks.sqlite"), 1000).unwrap();
+        let surface = visual.replace_root_view(|_, cx| {
+            cx.observe(&app, |_, _, cx| cx.notify()).detach();
+            CompleteWorkspaceFixture {
+                app: app.clone(),
+                snapshot: engine.snapshot(),
+                width: 1000.,
+                height: 700.,
+            }
+        });
+        let saved = app.read_with(visual, |app, _| {
+            app.preferences_ui.saved.as_ref().unwrap().settings.clone()
+        });
+        let targets = std::iter::once("notices.general".to_owned())
+            .chain(
+                (0..studyapp_core::NoticeStyle::ALL.len())
+                    .map(|index| format!("notices.component.{index}")),
+            )
+            .collect::<Vec<_>>();
+        for width in [1000., 620.] {
+            surface.update(visual, |surface, cx| {
+                surface.width = width;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            for target in &targets {
+                visual.update(|window, cx| {
+                    crate::smoke::select_settings_page(window, &app, target, cx)
+                });
+                for _ in 0..6 {
+                    visual.run_until_parked();
+                    visual.update(|window, cx| window.draw(cx).clear(cx));
+                }
+                let before = app.read_with(visual, |app, _| app.notification_render_work());
+                for _ in 0..20 {
+                    app.update(visual, |_, cx| cx.notify());
+                    visual.update(|window, cx| window.draw(cx).clear(cx));
+                }
+                assert_eq!(
+                    app.read_with(visual, |app, _| app.notification_render_work()),
+                    before,
+                    "actual tree page rebuilt on shell frames: {target}; width={width}"
+                );
+                app.update(visual, |app, cx| {
+                    let appearance = &mut app
+                        .preferences_ui
+                        .draft
+                        .as_mut()
+                        .unwrap()
+                        .appearance
+                        .notifications;
+                    appearance.reduce_motion = !appearance.reduce_motion;
+                    cx.notify();
+                });
+                for _ in 0..3 {
+                    visual.update(|window, cx| window.draw(cx).clear(cx));
+                }
+                let changed =
+                    app.read_with(visual, |app, _| app.notification_render_work()) - before;
+                assert!(
+                    changed > 0 && changed < 22,
+                    "relevant edit did not rebuild only selected controls: {target}: {changed}"
+                );
+                app.read_with(visual, |app, cx| {
+                    assert_eq!(app.preferences_ui.browsing.selected, *target);
+                    assert!(app.notification_task_cache_matches(cx));
+                    assert_eq!(
+                        app.settings_target_title(),
+                        crate::settings_navigation::target_title(target)
+                    );
+                    assert!(!app.preferences_ui.settings_drawer);
+                    assert_eq!(app.preferences_ui.saved.as_ref().unwrap().settings, saved);
+                    assert!(
+                        app.preferences_ui
+                            .appearance_preview
+                            .as_ref()
+                            .unwrap()
+                            .read(cx)
+                            .editor()
+                            .is_none()
+                    );
+                });
+            }
         }
     }
 

@@ -1344,7 +1344,15 @@ impl StudyApp {
             .browsing
             .selected
             .starts_with("notices.component.");
-        let inner = if auxiliary {
+        let inner = if auxiliary
+            && self
+                .preferences_ui
+                .browsing
+                .selected
+                .starts_with("notices.")
+        {
+            self.notification_task_surface(cx).into_any_element()
+        } else if auxiliary {
             let owner = cx.weak_entity();
             container_query(move |available, _, cx| {
                 owner

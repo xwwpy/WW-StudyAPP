@@ -1,10 +1,7 @@
 //! Native focus/visual acceptance. Invoked only by Windows runner smoke profiles.
 #[path = "smoke_notification_capture.rs"]
 mod capture;
-use crate::{
-    app::{Page, StudyApp},
-    settings_ui::SettingsSection,
-};
+use crate::app::{Page, StudyApp};
 use gpui_kit::{test::TestWindowExt, *};
 use std::{
     path::Path,
@@ -178,24 +175,28 @@ async fn measure_notification_cache(
     let mut results = Vec::new();
     for appearance in [false, true] {
         window
-            .update(cx, |_, _, cx| {
-                view.update(cx, |app, cx| {
-                    app.select_settings_section(
-                        if appearance {
-                            SettingsSection::Appearance
-                        } else {
-                            SettingsSection::Notifications
-                        },
-                        cx,
-                    );
+            .update(cx, |_, window, cx| {
+                crate::smoke::select_settings_page(
+                    window,
+                    view,
                     if appearance {
-                        app.select_appearance_page(
-                            crate::settings_ui::AppearancePage::Notifications,
-                            cx,
-                        );
-                    }
+                        "appearance-notifications"
+                    } else {
+                        "notifications"
+                    },
+                    cx,
+                );
+                view.update(cx, |app, _| {
+                    assert_eq!(
+                        app.preferences_ui.browsing.selected,
+                        if appearance {
+                            "notices.general"
+                        } else {
+                            "notices.rules"
+                        }
+                    );
                     app.preferences_ui.section_changed_at = None;
-                })
+                });
             })
             .unwrap();
         // Warm the same parent-notify path before measuring steady-state work.
@@ -219,7 +220,7 @@ async fn measure_notification_cache(
                     (
                         app.notification_render_work() - before,
                         if appearance {
-                            app.notification_appearance_cache_matches(cx)
+                            app.notification_task_cache_matches(cx)
                         } else {
                             app.notification_cache_matches(cx)
                         },
@@ -278,7 +279,7 @@ async fn measure_notification_cache(
                     "notification benchmark did not mount {control}"
                 );
                 assert!(if appearance {
-                    app.notification_appearance_cache_matches(cx)
+                    app.notification_task_cache_matches(cx)
                 } else {
                     app.notification_cache_matches(cx)
                 });
@@ -341,7 +342,7 @@ async fn measure_notification_cache(
                     (
                         app.notification_render_work() - before,
                         if appearance {
-                            app.notification_appearance_cache_matches(cx)
+                            app.notification_task_cache_matches(cx)
                         } else {
                             app.notification_cache_matches(cx)
                         },
@@ -417,6 +418,7 @@ pub async fn exercise(
                         .search
                         .as_ref()
                         .map(|input| input.read(cx).value()),
+                    app.preferences_ui.browsing.selected.clone(),
                 );
                 app.navigate(Page::Settings, window, cx);
                 window.activate_window();
@@ -435,8 +437,8 @@ pub async fn exercise(
                 if let Some(search) = app.preferences_ui.search.clone() {
                     search.update(cx, |input, cx| input.set_value("", window, cx));
                 }
-                app.select_settings_section(SettingsSection::Notifications, cx);
-            })
+            });
+            crate::smoke::select_settings_page(window, view, "notifications", cx);
         })
         .unwrap();
     settle(window, view, cx, |_, window, _| {
@@ -815,6 +817,7 @@ pub async fn exercise(
         .update(cx, |_, window, cx| {
             view.update(cx, |app, cx| {
                 app.preferences_ui.draft = original.1;
+                app.select_settings_target(&original.6, cx);
                 app.page = original.2;
                 app.preferences_ui.section = original.3;
                 app.preferences_ui.appearance_page = original.4;
