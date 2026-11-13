@@ -4661,6 +4661,88 @@ mod scoped_tests {
     }
 
     #[gpui_kit::test]
+    fn native_settings_rgba_capture_reveals_the_complete_field_without_committing(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::px;
+        let (app, visual) = fixture(cx);
+        visual.update(|_, cx| cx.set_reduce_motion(true));
+        visual.simulate_resize(gpui_kit::size(px(1400.), px(1000.)));
+        let root = tempfile::tempdir().unwrap();
+        let engine =
+            studyapp_core::Engine::open(&root.path().join("color-capture.sqlite"), 1000).unwrap();
+        let mut surface = None;
+        visual.replace_root_view(|window, cx| {
+            let content = cx.new(|cx| {
+                cx.observe(&app, |_, _, cx| cx.notify()).detach();
+                CompleteWorkspaceFixture {
+                    app: app.clone(),
+                    snapshot: engine.snapshot(),
+                    width: 1000.,
+                    height: 700.,
+                }
+            });
+            surface = Some(content.clone());
+            gpui_kit::base::Root::new(content, window, cx)
+        });
+        let surface = surface.unwrap();
+        for width in [1000., 620.] {
+            surface.update(visual, |surface, cx| {
+                surface.width = width;
+                cx.notify();
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                crate::smoke::select_settings_page(window, &app, "appearance-theme-editor", cx);
+                crate::smoke_library::click_scrolled(
+                    window,
+                    "color-open-accent".into(),
+                    "settings-section-scroll",
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            let (control, source) = app.read_with(visual, |app, _| {
+                (
+                    app.preferences_ui.appearance_colors["accent"].clone(),
+                    app.preferences_ui.appearance_fields["accent"].clone(),
+                )
+            });
+            let original = source.read_with(visual, |input, _| input.value());
+            visual.update(|window, cx| {
+                crate::smoke_library::click_scrolled(
+                    window,
+                    "color-value-accent".into(),
+                    "color-palette-scroll",
+                    cx,
+                );
+                window.press(
+                    if cfg!(target_os = "macos") {
+                        "cmd-a"
+                    } else {
+                        "ctrl-a"
+                    },
+                    cx,
+                );
+            });
+            visual.run_until_parked();
+            visual.update(|window, cx| window.input("#33669980", cx));
+            visual.run_until_parked();
+            visual.update(|window, cx| {
+                assert_eq!(control.read(cx).preview_value(cx).as_str(), "#33669980");
+                assert_eq!(source.read(cx).value(), original);
+                crate::smoke::prepare_color_input_capture(window, "accent", cx);
+                window.click("color-cancel-accent", cx);
+            });
+            visual.run_until_parked();
+            control.read_with(visual, |control, cx| {
+                assert!(!control.popup_open());
+                assert_eq!(source.read(cx).value(), original);
+            });
+        }
+    }
+
+    #[gpui_kit::test]
     fn native_settings_notification_tasks_cache_actual_tree_pages(cx: &mut TestAppContext) {
         use gpui_kit::px;
         let (app, visual) = fixture(cx);

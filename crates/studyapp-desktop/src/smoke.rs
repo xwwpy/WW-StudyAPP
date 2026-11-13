@@ -162,6 +162,25 @@ pub(crate) fn notification_capture_request(
     }
 }
 
+#[cfg(all(feature = "ui-test", any(windows, test)))]
+pub(crate) fn prepare_color_input_capture(window: &mut Window, key: &str, cx: &mut App) {
+    use gpui_kit::test::TestWindowExt;
+    let id: SharedString = format!("color-value-{key}").into();
+    crate::smoke_library::reveal_fully_scrolled(window, id.clone(), "color-palette-scroll", cx);
+    let input = window.find(id).bounds();
+    let body = window.find("color-palette-scroll").bounds();
+    let apply = window.find(format!("color-close-{key}")).bounds();
+    assert_eq!(
+        body.intersect(&input),
+        input,
+        "RGBA capture clipped the input: {input:?}; body={body:?}"
+    );
+    assert!(
+        input.bottom() <= apply.top(),
+        "RGBA input overlaps fixed Apply action"
+    );
+}
+
 /// Yield to platform frames after navigation; consecutive Window::update calls
 /// alone do not let the native frame loop present the selected page.
 #[cfg(all(feature = "ui-test", any(windows, test)))]

@@ -240,7 +240,7 @@ async fn exercise_color_controls(
             );
             assert_eq!(control.read(cx).preview_value(cx).as_str(), "#33669980");
             assert_eq!(view.read(cx).preferences_ui.appearance_touched, touched);
-            window.render_frame(cx);
+            crate::smoke::prepare_color_input_capture(window, "accent", cx);
             window
                 .render_to_image()
                 .unwrap()

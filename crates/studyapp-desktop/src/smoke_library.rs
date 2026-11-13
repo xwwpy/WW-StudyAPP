@@ -273,7 +273,7 @@ pub(crate) fn reveal_scrolled(window: &mut Window, id: SharedString, scroll: &st
 }
 
 /// Reveal the whole surface before pixel/viewport acceptance, not only a click point.
-#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+#[cfg(any(test, feature = "ui-test", target_os = "macos", target_os = "linux"))]
 pub(crate) fn reveal_fully_scrolled(
     window: &mut Window,
     id: SharedString,
