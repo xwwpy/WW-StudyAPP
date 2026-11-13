@@ -220,6 +220,19 @@ async fn save_sync(
     .await;
 }
 
+fn read_client_hello(mut stream: std::net::TcpStream) -> std::net::TcpStream {
+    use std::io::Read;
+    // Accepted sockets inherit FIONBIO on Windows. The listener is polled,
+    // but the TLS gate must wait for actual client bytes within its deadline.
+    stream.set_nonblocking(false).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut bytes = [0; 4096];
+    assert!(stream.read(&mut bytes).unwrap() > 0);
+    stream
+}
+
 async fn exercise_activity(
     window: AnyWindowHandle,
     view: &Entity<StudyApp>,
@@ -264,10 +277,10 @@ async fn exercise_activity(
     let observed = entered.clone();
     let (release, wait_release) = mpsc::channel();
     let server = std::thread::spawn(move || {
-        use std::io::{Read, Write};
+        use std::io::Write;
         for attempt in 1..=2 {
             let deadline = std::time::Instant::now() + Duration::from_secs(15);
-            let mut stream = loop {
+            let stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -280,11 +293,7 @@ async fn exercise_activity(
                     Err(error) => panic!("native task listener: {error}"),
                 }
             };
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut bytes = [0; 4096];
-            assert!(stream.read(&mut bytes).unwrap() > 0);
+            let mut stream = read_client_hello(stream);
             observed.store(attempt, Ordering::SeqCst);
             wait_release.recv_timeout(Duration::from_secs(15)).unwrap();
             stream.write_all(b"not a TLS response").unwrap();
@@ -470,4 +479,37 @@ pub(crate) async fn exercise(
     assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
     exercise_export(window, view, database, cx).await;
     exercise_activity(window, view, database, cx).await;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn activity_gate_waits_for_bytes_on_an_inherited_nonblocking_socket() {
+        use std::{
+            io::Write,
+            net::{TcpListener, TcpStream},
+            sync::mpsc,
+            time::Duration,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted, ready) = mpsc::channel();
+        let (finished, done) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_nonblocking(true).unwrap();
+            accepted.send(()).unwrap();
+            let _stream = super::read_client_hello(stream);
+            finished.send(()).unwrap();
+        });
+        let mut client = TcpStream::connect(address).unwrap();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            done.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        );
+        client.write_all(b"test-client-hello").unwrap();
+        done.recv_timeout(Duration::from_secs(5)).unwrap();
+        server.join().unwrap();
+    }
 }
