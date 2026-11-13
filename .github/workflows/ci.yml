@@ -92,7 +92,7 @@ jobs:
         with:
           toolchain: 1.98.0
           components: rustfmt,clippy
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           shared-key: core-sync-ubuntu-latest-core
           key: core-sync-ubuntu-latest
@@ -112,7 +112,7 @@ jobs:
         with:
           toolchain: 1.98.0
           components: rustfmt,clippy
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           shared-key: core-sync-windows-latest-core
           key: core-sync-windows-latest
@@ -137,7 +137,7 @@ jobs:
         with:
           toolchain: 1.98.0
           components: rustfmt,clippy
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
         with:
           shared-key: desktop-windows-windows
           key: desktop-windows
@@ -421,7 +421,7 @@ jobs:
         if: needs.plan.outputs.package_run == ''
         with:
           toolchain: 1.98.0
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+      - uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31
         if: needs.plan.outputs.package_run == ''
         with:
           shared-key: desktop-windows-windows
