@@ -28,6 +28,205 @@ fn event() -> NoticeEvent {
 }
 
 #[gpui_kit::test]
+fn native_notification_fitted_feedback_restarts_expiry_after_an_idle_queue(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::theme::apply(&Default::default(), false, cx);
+    });
+    let (center, visual) = cx.add_window_view(|_, _| NotificationCenter::new());
+    visual.simulate_resize(size(px(800.), px(700.)));
+    let appearance = NotificationAppearance {
+        reduce_motion: true,
+        ..Default::default()
+    };
+    center.update(visual, |center, cx| {
+        center.freeze_time();
+        center.configure(
+            &NotificationSettings::default(),
+            &appearance,
+            environment(true),
+            false,
+            cx,
+        );
+        center.enqueue(event(), cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| window.render_frame(cx));
+    center.update(visual, |center, cx| {
+        let id = center.queue.visible().next().unwrap().id;
+        assert!(
+            center.timer.is_none(),
+            "persistent errors need no idle polling"
+        );
+        center.dismiss(id, cx);
+        assert!(center.queue.is_empty());
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| window.render_frame(cx));
+    for style in [NoticeStyle::Bubble, NoticeStyle::Snackbar] {
+        let mut policy = NotificationSettings::default();
+        policy.rules.insert(
+            NoticeCategory::OperationResult,
+            NoticeRule {
+                style: Some(style),
+                ..Default::default()
+            },
+        );
+        let notice = NoticeEvent::new(
+            NoticeCategory::OperationResult,
+            NoticeSeverity::Success,
+            "操作已完成。",
+        );
+        let event_id = notice.id;
+        center.update(visual, |center, cx| {
+            center.configure(&policy, &appearance, environment(true), false, cx);
+            assert_eq!(center.enqueue(notice, cx), Some(event_id));
+            assert_eq!(
+                center.visible_count(),
+                0,
+                "new feedback awaits a fresh fitting layout"
+            );
+            assert!(center.timer.is_none(), "unplaced feedback must not age");
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| window.render_frame(cx));
+        visual.update(|window, cx| {
+            let center = center.read(cx);
+            assert_eq!(center.visible_count(), 1);
+            let id = center.queue.visible().next().unwrap().id;
+            assert!(window.try_find(format!("notice-{id}")).is_some());
+            assert_eq!(
+                center.test_event_route(event_id),
+                Some(studyapp_core::NoticeRoute::Foreground(style))
+            );
+            assert!(
+                center.timer.is_some(),
+                "fitted {style:?} must restart its expiry timer"
+            );
+        });
+        // Advance only the clock, not queue.tick. The production task itself
+        // must expire the visible feedback and stop polling once it is empty.
+        center.update(visual, |center, _| {
+            center.advance_time_without_notification(Duration::from_secs(
+                u64::from(appearance.duration_seconds) + 1,
+            ));
+        });
+        visual.executor().advance_clock(Duration::from_millis(100));
+        visual.run_until_parked();
+        center.read_with(visual, |center, _| {
+            assert!(
+                center.queue.is_empty(),
+                "{style:?} did not expire naturally"
+            );
+            assert!(center.timer.is_none(), "empty queues must stop polling");
+        });
+        visual.update(|window, cx| window.render_frame(cx));
+    }
+}
+
+#[gpui_kit::test]
+fn native_notification_space_queued_feedback_keeps_lifetime_and_hover_pause(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::theme::apply(&Default::default(), false, cx);
+    });
+    let (center, visual) = cx.add_window_view(|_, _| NotificationCenter::new());
+    visual.simulate_resize(size(px(800.), px(80.)));
+    let appearance = NotificationAppearance {
+        reduce_motion: true,
+        ..Default::default()
+    };
+    let notice = NoticeEvent::new(
+        NoticeCategory::OperationResult,
+        NoticeSeverity::Success,
+        "操作已完成。",
+    );
+    let event_id = notice.id;
+    center.update(visual, |center, cx| {
+        center.freeze_time();
+        center.configure(
+            &Default::default(),
+            &appearance,
+            environment(true),
+            false,
+            cx,
+        );
+        center.enqueue(notice, cx);
+    });
+    visual.run_until_parked();
+    visual.update(|window, cx| window.render_frame(cx));
+    visual.executor().advance_clock(Duration::from_millis(100));
+    visual.run_until_parked();
+    center.update(visual, |center, _| {
+        assert_eq!(center.visible_count(), 0);
+        assert!(
+            center.timer.is_none(),
+            "space-queued feedback must stop polling"
+        );
+        center.advance_time_without_notification(Duration::from_secs(3600));
+    });
+    visual.simulate_resize(size(px(800.), px(700.)));
+    visual.run_until_parked();
+    let bounds = visual.update(|window, cx| {
+        window.render_frame(cx);
+        let center = center.read(cx);
+        assert_eq!(
+            center.visible_count(),
+            1,
+            "hidden feedback lost its lifetime"
+        );
+        assert!(center.timer.is_some(), "fitting feedback must start expiry");
+        let id = center.queue.visible().next().unwrap().id;
+        window.find(format!("notice-{id}")).bounds()
+    });
+    visual.simulate_event(gpui_kit::MouseMoveEvent {
+        position: bounds.center(),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    center.update(visual, |center, _| {
+        center.advance_time_without_notification(Duration::from_secs(3600));
+    });
+    visual.executor().advance_clock(Duration::from_millis(100));
+    visual.run_until_parked();
+    assert_eq!(
+        center.read_with(visual, |center, _| center.visible_count()),
+        1,
+        "actual card hover must pause expiry"
+    );
+    visual.simulate_event(gpui_kit::MouseMoveEvent {
+        position: point(px(0.), px(0.)),
+        ..Default::default()
+    });
+    visual.run_until_parked();
+    center.update(visual, |center, _| {
+        center.advance_time_without_notification(Duration::from_secs(
+            u64::from(appearance.duration_seconds) - 1,
+        ));
+    });
+    visual.executor().advance_clock(Duration::from_millis(100));
+    visual.run_until_parked();
+    assert_eq!(
+        center.read_with(visual, |center, _| center.visible_count()),
+        1,
+        "hidden and hovered time must not consume the visible lifetime"
+    );
+    center.update(visual, |center, _| {
+        center.advance_time_without_notification(Duration::from_secs(2));
+    });
+    visual.executor().advance_clock(Duration::from_millis(100));
+    visual.run_until_parked();
+    center.read_with(visual, |center, _| {
+        assert!(center.test_event_route(event_id).is_none());
+        assert!(center.timer.is_none());
+    });
+}
+
+#[gpui_kit::test]
 fn foreground_styles_keep_real_card_occlusions_and_explicit_actions(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);

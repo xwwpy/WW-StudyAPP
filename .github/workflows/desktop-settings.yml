@@ -63,7 +63,7 @@ jobs:
           $testArgs = @('test', '--locked', '-p', 'studyapp-desktop')
           switch ($env:TEST_SCOPE) {
             'full' { $testArgs += @('--all-features', '-p', 'studyapp-ui') }
-            'notifications' { $testArgs += @('--features', 'ui-test', '--bin', 'studyapp', 'native_notification') }
+            'notifications' { $testArgs += @('--features', 'ui-test', '-p', 'studyapp-ui', 'native_notification') }
             'settings' { $testArgs += @('--features', 'ui-test', '--bin', 'studyapp', 'native_settings') }
             default { throw 'Unknown focused test scope' }
           }

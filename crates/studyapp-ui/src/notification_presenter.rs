@@ -459,7 +459,10 @@ impl NotificationCenter {
             &protected,
         );
         if self.queue.set_layout_visible(placement.ids(), self.now()) {
-            cx.notify();
+            // Enqueue may see only stale/non-fitting layout IDs and leave an
+            // idle queue without a timer. Start expiry when feedback actually
+            // gains space, not while it is hidden in the layout backlog.
+            self.start_timer(cx);
         }
         self.scrolls
             .retain(|id, _| entries.iter().any(|entry| entry.id == *id));
